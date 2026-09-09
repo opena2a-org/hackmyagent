@@ -2131,6 +2131,9 @@ function lexMaskInto(
  * template literal spanning lines is read as code on its continuation lines.
  * That direction over-reports rather than under-reports, and it is the same
  * limit the per-line predicate already has, stated rather than silently shared.
+ * (`blankTemplateLiteralSpans` below repays that limit's template-literal half
+ * for the NEMO-009 gate, which threads its own carried state the way the sink
+ * walker threads this one.)
  * Regex literals ARE lexed here, under the predicate's own slash-meaning
  * rules (HMA-31.AC9): a literal's body is copied through verbatim, so the
  * `//` in `/^https?:\/\//` does not open a phantom line comment and the `/*`
@@ -2314,6 +2317,308 @@ function blankMaskInto(
     i++;
   }
   return inBlock;
+}
+
+/**
+ * Blank the spans of ONE line that sit inside a MULTI-LINE template literal,
+ * carrying the template state across the line boundary in `state`, and return
+ * a line of the same length with every such character replaced by a space.
+ *
+ * `isMatchInsideStringLiteral` above lexes its line from column 0 in code
+ * state, so a continuation line of a backtick literal spanning lines is read
+ * as code — the limit `blankCommentRegions` states for itself. For NEMO-009
+ * that limit meant a token standing alone on a continuation line (a skill
+ * document held in a template literal, say) was flagged as a live sink. The
+ * NEMO-009 TS/JS gate threads one state object through its line loop and
+ * hands each line through here first — the same shape the AST sink walker
+ * already threads through `blankCommentRegions`.
+ *
+ * SAME LENGTH IN, SAME LENGTH OUT: a match index measured on the returned
+ * line hands straight back to `isMatchInsideStringLiteral`, which keeps
+ * owning the strings, comments and regex literals of the line itself. Only
+ * template-literal spans are blanked here — a line that cannot touch the
+ * carried state comes back verbatim.
+ *
+ * `${...}` interpolation is a re-entry into code state and stays unblanked:
+ * an eval( inside the interpolation executes and must keep firing. The walk
+ * is quote-, comment- and regex-aware through the same slash-meaning rules
+ * the predicate uses — inside the interpolation too, so a `}` sitting in a
+ * quoted string, comment or regex literal there never closes the
+ * interpolation early — and block-comment state is carried across lines for one
+ * reason — a stray backtick in a doc comment (a markdown code fence, say)
+ * must not open a phantom template that swallows the real code after it.
+ * Every end-of-line state the walk cannot settle — an interpolation left
+ * open, an unclosed ordinary quote, the fork budget spent — drops the carry
+ * and reads the next line as code: over-reporting, never under-reporting,
+ * the direction every walker in this file rules.
+ */
+function blankTemplateLiteralSpans(
+  line: string,
+  state: { inTemplateLiteral: boolean; inBlockComment: boolean },
+): string {
+  // A line that starts in code state and holds neither a backtick nor a
+  // block-comment opener can neither blank anything nor change the carry,
+  // so the walk is skipped rather than run over every line of every file.
+  if (
+    !state.inTemplateLiteral &&
+    !state.inBlockComment &&
+    !line.includes('`') &&
+    !line.includes('/*')
+  ) {
+    return line;
+  }
+  const blank = new Uint8Array(line.length);
+  const end = templateMaskInto(
+    line, 0, 'regex', false, [], state.inTemplateLiteral, state.inBlockComment, [], 0, 0, blank,
+  );
+  state.inTemplateLiteral = end.inTemplateLiteral;
+  state.inBlockComment = end.inBlockComment;
+  let out = '';
+  for (let i = 0; i < line.length; i++) out += blank[i] === 1 ? ' ' : line[i];
+  return out;
+}
+
+/**
+ * One lexing of `line` from `start` for the template blanker: writes 1 into
+ * `blank` at every character of a template-literal span (delimiters and text,
+ * never the `${...}` interpolation interior) and returns the two carries the
+ * line ends with. Token walking — words, parens, the opener set, `.`-prefixed
+ * property names — mirrors `lexMaskInto` through the shared helpers, because
+ * whether a backtick is a template opener or regex/string/comment text is
+ * decided by the same slash meaning that decides which `/` opens a regex.
+ * `${...}` interpolation re-enters this same code walk with a brace depth
+ * pushed onto `interpDepths` (one entry per open interpolation, so templates
+ * nest): the interior's strings, comments and regex literals are lexed under
+ * the same rules, and only a code-level `}` at depth zero hands the walk back
+ * to template text — a `}` inside any of them never closes the interpolation.
+ * An interpolation still open at end of line is an unsettled state and drops
+ * the carry. On an undecidable slash both readings are lexed: a character is
+ * blanked, and a carry survives the line, only when both lexings agree.
+ */
+function templateMaskInto(
+  line: string,
+  start: number,
+  slashMeaningIn: SlashMeaning,
+  afterDotIn: boolean,
+  parenStack: number[],
+  inTemplateIn: boolean,
+  inBlockIn: boolean,
+  interpDepths: number[],
+  undecidableCount: number,
+  itersIn: number,
+  blank: Uint8Array,
+): { inTemplateLiteral: boolean; inBlockComment: boolean } {
+  const DROP_CARRY = { inTemplateLiteral: false, inBlockComment: false };
+  let i = start;
+  let slashMeaning: SlashMeaning = slashMeaningIn;
+  let afterDot = afterDotIn;
+  let inTemplate = inTemplateIn;
+  let inBlock = inBlockIn;
+  let iters = itersIn;
+  while (i < line.length) {
+    if (++iters > MAX_WALK_ITERATIONS) {
+      // Pathological input: stop blanking and drop the carry. Kept text
+      // over-reports at worst, and the predicate still owns this line.
+      return DROP_CARRY;
+    }
+    if (inBlock) {
+      // Comment text is the predicate's business, not this walker's: no
+      // blanking, and no backtick in here opens a template.
+      if (line[i] === '*' && line[i + 1] === '/') {
+        inBlock = false;
+        i += 2;
+        continue; // comments are whitespace: slashMeaning is unchanged
+      }
+      i++;
+      continue;
+    }
+    if (inTemplate) {
+      const cj = line[i];
+      if (cj === '\\' && i + 1 < line.length) {
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        i += 2;
+        continue;
+      }
+      if (cj === '$' && line[i + 1] === '{') {
+        // Template interpolation is a re-entry into code state: push a
+        // brace depth and fall back into the code walk below, which owns
+        // the interior's strings, comments and regex literals. A `}`
+        // inside any of those never closes the interpolation — the bug a
+        // bare brace counter had: `${'}'; eval(x)}` closed at the quoted
+        // brace and blanked the live eval( after it as template text,
+        // under-reporting. The span between the braces is real code and
+        // stays unblanked.
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        interpDepths.push(0);
+        inTemplate = false;
+        slashMeaning = 'regex';
+        afterDot = false;
+        i += 2;
+        continue;
+      }
+      blank[i] = 1;
+      if (cj === '`') {
+        inTemplate = false;
+        slashMeaning = 'division'; // a template literal is a value
+        afterDot = false;
+      }
+      i++;
+      continue;
+    }
+    const c = line[i];
+    if (c === '/') {
+      const next = line[i + 1];
+      if (next === '/') {
+        // A line comment eats the rest of the line and carries nothing out.
+        return DROP_CARRY;
+      }
+      if (next === '*') {
+        inBlock = true;
+        i += 2;
+        continue;
+      }
+      if (slashMeaning === 'undecidable') {
+        if (undecidableCount >= MAX_UNDECIDABLE_SLASHES) {
+          // Past the budget: blank nothing further and drop the carry —
+          // kept text over-reports at worst.
+          return DROP_CARRY;
+        }
+        // Lex both ways; blank only what both lexings call template text,
+        // and carry a state out only when both agree it is open.
+        const regexBlank = new Uint8Array(line.length);
+        const divisionBlank = new Uint8Array(line.length);
+        const regexEnd = templateMaskInto(
+          line, i, 'regex', false, [...parenStack], false, false, [...interpDepths], undecidableCount + 1, iters, regexBlank,
+        );
+        const divisionEnd = templateMaskInto(
+          line, i, 'division', false, [...parenStack], false, false, [...interpDepths], undecidableCount + 1, iters, divisionBlank,
+        );
+        for (let k = i; k < line.length; k++) blank[k] = regexBlank[k] & divisionBlank[k];
+        return {
+          inTemplateLiteral: regexEnd.inTemplateLiteral && divisionEnd.inTemplateLiteral,
+          inBlockComment: regexEnd.inBlockComment && divisionEnd.inBlockComment,
+        };
+      }
+      if (slashMeaning === 'division') {
+        i++;
+        slashMeaning = 'regex';
+        afterDot = false;
+        continue;
+      }
+      // A regex literal's body is copied through verbatim: a backtick
+      // inside it is regex text, not a template opener. Regex literals
+      // cannot span lines, so an unterminated one carries nothing out.
+      const end = scanRegexLiteralEnd(line, i);
+      if (end === -1) return DROP_CARRY;
+      iters += end - i;
+      i = end;
+      slashMeaning = 'division';
+      afterDot = false;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) return DROP_CARRY;
+        if (line[j] === '\\' && j + 1 < line.length) {
+          j += 2;
+          continue;
+        }
+        if (line[j] === c) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      // An unclosed quote owns the rest of the line: nothing in it opens a
+      // template, and this walker does not carry ordinary-string state.
+      if (!closed) return DROP_CARRY;
+      i = j + 1;
+      slashMeaning = 'division';
+      afterDot = false;
+      continue;
+    }
+    if (c === '`') {
+      blank[i] = 1;
+      inTemplate = true;
+      i++;
+      continue;
+    }
+    if (WORD_CHAR.test(c)) {
+      const j = scanWordEnd(line, i);
+      slashMeaning =
+        !afterDot && REGEX_OPENING_KEYWORDS.has(line.slice(i, j)) ? 'regex' : 'division';
+      iters += j - i;
+      i = j;
+      afterDot = false;
+      continue;
+    }
+    if (c === '(') {
+      parenStack.push(i);
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      slashMeaning = slashMeaningAfterCloseParen(line, parenStack.pop());
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '{') {
+      if (interpDepths.length > 0) interpDepths[interpDepths.length - 1]++;
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      if (interpDepths.length > 0 && interpDepths[interpDepths.length - 1] === 0) {
+        // The code-level `}` at depth zero: the interpolation closes and
+        // the walk hands back to the enclosing template's text.
+        blank[i] = 1;
+        interpDepths.pop();
+        inTemplate = true;
+        i++;
+        continue;
+      }
+      if (interpDepths.length > 0) interpDepths[interpDepths.length - 1]--;
+      slashMeaning = 'undecidable';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ']') {
+      slashMeaning = 'division';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '.') {
+      slashMeaning = 'division';
+      afterDot = true;
+      i++;
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\v' || c === '\f') {
+      i++;
+      continue;
+    }
+    slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
+    afterDot = false;
+    i++;
+  }
+  if (interpDepths.length > 0) {
+    // End of line inside an interpolation (or a template nested in one):
+    // an unsettled state. Drop the carry and read the next line as code —
+    // over-reporting, never under-reporting.
+    return DROP_CARRY;
+  }
+  return { inTemplateLiteral: inTemplate, inBlockComment: inBlock };
 }
 
 /**
@@ -16679,14 +16984,22 @@ dist/
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
+        // Template-literal state carried across the line boundary, the
+        // `blankCommentRegions(line, state)` shape the AST sink walker
+        // already threads: a token standing alone on a continuation line
+        // of a multi-line backtick literal is text, not code. The blanked
+        // line is same-length, so match indices hand straight to the
+        // per-line predicate, which keeps owning the strings, comments
+        // and regexes that open and close on the line itself.
+        const templateState = { inTemplateLiteral: false, inBlockComment: false };
         for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
+          const codeLine = blankTemplateLiteralSpans(lines[i], templateState);
           // For each pattern, locate the match index and require that the
           // match site is real code — not a string literal or comment.
           // `screenInput('eval(atob("malicious"))', 'piped')` puts the
           // eval( token inside a string passed to a screener; suppress.
-          const bareEval = /(?<!\.)\beval\s*\(/.exec(line);
-          if (bareEval && !isMatchInsideStringLiteral(line, bareEval.index)) {
+          const bareEval = /(?<!\.)\beval\s*\(/.exec(codeLine);
+          if (bareEval && !isMatchInsideStringLiteral(codeLine, bareEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -16708,9 +17021,9 @@ dist/
           // and bypass the negative-lookbehind guard above. Detected separately
           // so the bare-eval finding above can stay narrow against method-call FPs.
           const indirectEval =
-            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.exec(line) ??
-            /\(\s*0\s*,\s*eval\s*\)\s*\(/.exec(line);
-          if (indirectEval && !isMatchInsideStringLiteral(line, indirectEval.index)) {
+            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.exec(codeLine) ??
+            /\(\s*0\s*,\s*eval\s*\)\s*\(/.exec(codeLine);
+          if (indirectEval && !isMatchInsideStringLiteral(codeLine, indirectEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -16727,8 +17040,8 @@ dist/
               guidance: 'Indirect eval forms (globalThis.eval, (0,eval)) are commonly used to access the global scope; they execute arbitrary code with the same risks as bare eval().',
             });
           }
-          const newFunction = /new\s+Function\s*\(/.exec(line);
-          if (newFunction && !isMatchInsideStringLiteral(line, newFunction.index)) {
+          const newFunction = /new\s+Function\s*\(/.exec(codeLine);
+          if (newFunction && !isMatchInsideStringLiteral(codeLine, newFunction.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -16745,8 +17058,8 @@ dist/
               guidance: 'new Function() is equivalent to eval() -- it creates executable code from strings. If the string source is untrusted, this enables arbitrary code execution.',
             });
           }
-          const json5Parse = /JSON5\.parse/.exec(line);
-          if (json5Parse && !isMatchInsideStringLiteral(line, json5Parse.index)) {
+          const json5Parse = /JSON5\.parse/.exec(codeLine);
+          if (json5Parse && !isMatchInsideStringLiteral(codeLine, json5Parse.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
