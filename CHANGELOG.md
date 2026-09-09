@@ -4,6 +4,33 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The NEMO-009 TS/JS gate carries template-literal state across the line boundary
+
+A token standing alone on its own line inside a multi-line template literal
+was read as code by the NEMO-009 TS/JS gate. The gate asked its per-line
+string-literal predicate about one line at a time, and the predicate lexes
+each line from column 0 in code state — so `eval(code);` sitting on a
+continuation line of a backtick literal (a skill document or prompt held in a
+template, say) fired `Unsafe deserialization: eval()` at CRITICAL even though
+the token is text inside the string.
+
+The gate now carries ONE lexical state across the line boundary: each line is
+first passed through a template-literal blanker that threads the state through
+the file's line loop — the same carried-state shape the AST sink walker
+already uses for block comments — and all four TS/JS match sites (bare eval,
+indirect eval, `new Function`, `JSON5.parse`) match against the blanked line.
+
+Suppression is scoped to the literal's own span, never to the file. A real
+`eval(` outside the literal in the same file still reports at its own line;
+the closing backtick returns the walk to code state, so the very next line is
+read as code again; and `${...}` interpolation inside the literal is a
+re-entry into code state, so an eval( in the interpolation keeps firing. The
+walk is comment-aware across lines too, so a stray backtick in a doc comment
+(a markdown code fence, say) cannot open a phantom template that swallows the
+real code after it. The per-line predicate keeps its signature and its
+answers; every state the walk cannot settle at end of line drops the carry
+and over-reports rather than under-reports.
+
 ### The CRED-HARVEST prose rule is clause-scoped, not two whole-file regexes ANDed
 
 The rule behind the `Credential harvesting` risk surface — and therefore behind
