@@ -1566,7 +1566,12 @@ export class SoulScanner {
       // HTML comments — but PRESERVE the soul:profile / soul:tier
       // markers since downstream `detectProfile` parses them. We only
       // need to strip narrative comments that contain pseudo-headings.
-      .replace(/<!--(?!\s*soul:)[\s\S]*?-->/g, '');
+      // The lazy scan is bounded at the next `<!--` so a flood of unclosed
+      // openers costs O(n) total instead of O(n^2) (HMA-44): a failed match
+      // attempt dies at the next opener instead of scanning to end-of-input,
+      // and the later opener starts its own attempt. Comments cannot nest, so
+      // a match never needs to cross another `<!--`.
+      .replace(/<!--(?!\s*soul:)(?:(?!<!--)[\s\S])*?-->/g, '');
 
     // Phase 4.5 H1 fix: extend the heading regex to all 6 markdown
     // levels (H1-H6) AND a bold-as-heading branch so `# Capability

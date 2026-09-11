@@ -4,43 +4,58 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
-### The release is reviewed as the CI-packed tarball, never the tree (HMA-40)
+### `check <npm-name> --no-scan` no longer scans when the Registry query fails
 
-`release.yml` no longer grants `contents: write` and `id-token: write` to one
-job that also ran `npm ci` and `npm test` with them in hand. It is now four
-jobs joined by `needs:`: `build` (`contents: read`, `npm ci --ignore-scripts`,
-build, test, `npm pack`, sha256 recorded and the tarball uploaded), `review`
-(runs `scripts/release-artifact-review.mjs` against the downloaded artifact),
-`publish` (`id-token: write` and nothing else, no checkout, publishes the
-digest-checked tarball with `--provenance`), and `verify` (SLSA v1 predicate
-present and npm's `dist.integrity` equal to the sha512 of the reviewed bytes).
+`--no-scan` asks for the Registry's answer and nothing else. On the npm path a
+query that produced no answer (a timeout, a 5xx, a network error) was returned
+as `null`, read as "not found", and control fell through to a download-and-scan
+the user had switched off; in `--json` mode nothing said so, and the result was
+a valid scan document with exit 0 in place of the registry record. The parity
+gate measured exactly that on an unchanged base (opena2a-parity, fixture
+`check-registered-ai`: four registry keys absent, exit 0, and a retry keyed on a
+non-zero exit that could not see it).
 
-The review script refuses: entries outside the `files` allowlist, dotfiles,
-test-shaped paths, install-time scripts, caret/tilde ranges on `@opena2a/*`
-or `aim-sdk`, a CLI that cannot run `--version`/`--help`/`secure --ci` from a
-clean global prefix with an empty HOME and the network cut, a shipped scanner
-that misses a planted credential control, an integrity self-check that is not
-live in the shipped tarball, and high-or-above `npm audit --omit=dev`
-advisories. A check that cannot run is an error, never a pass, and every
-check appears in the census line on every outcome.
+Now the Registry's answer is three cases. A record is emitted as before. A
+query that did not complete exits 2 with a body that names the error
+(`source: registry`, `found: false`, `errorClass: registry-unreachable`, the
+message and status code) and says so on stderr in every mode; no scan runs. A
+genuine not-found keeps its prior behaviour on the npm path (the "not found on
+npm" block for a name npm does not carry), which the parity fixture
+`check-not-found` pins. The Registry timeout on the check path is 15 s, the
+same number ai-trust gives the same client for the same question, and
+`REGISTRY_URL` is honored on this path as on the other commands.
 
-Fallout absorbed in this change: the integrity manifest the CLI verifies
-itself against moves from `dist/.integrity-manifest.json` to
-`dist/integrity-manifest.json` (no leading dot — the review refuses dotfile
-entries). Already-installed versions are unaffected: each installed version
-reads only its own `dist/`, so no existing install ever looks for the new
-path. No documented interface and no external consumer reads the manifest
-path; it is internal to the CLI's startup self-check. And the release review
-now proves that self-check is live in the shipped tarball rather than
-assuming it: the `self-check-live` check requires the manifest to cover
-exactly the packed `dist/` files at the packed version, then corrupts
-`dist/index.js` in a scratch install and requires `hackmyagent --version` to
-quarantine (exit 3, `INTEGRITY CHECK FAILED`) — so a manifest that goes
-missing under any future rename is a named release failure, never a silent
-dev-mode CLEAN. Separately, the three floated `@opena2a/*` dependency ranges
-are pinned to their locked versions, and every workflow job that runs
-`npm ci` now refuses, before its install, a tree that tracks a `.npmrc` /
-`.yarnrc(.yml)` / `.pnpmfile.cjs` / `.envrc`.
+### The NEMO-009 TS/JS gate carries template-literal state across the line boundary
+
+A token standing alone on its own line inside a multi-line template literal
+was read as code by the NEMO-009 TS/JS gate. The gate asked its per-line
+string-literal predicate about one line at a time, and the predicate lexes
+each line from column 0 in code state — so `eval(code);` sitting on a
+continuation line of a backtick literal (a skill document or prompt held in a
+template, say) fired `Unsafe deserialization: eval()` at CRITICAL even though
+the token is text inside the string.
+
+The gate now carries ONE lexical state across the line boundary: each line is
+first passed through a template-literal blanker that threads the state through
+the file's line loop — the same carried-state shape the AST sink walker
+already uses for block comments — and all four TS/JS match sites (bare eval,
+indirect eval, `new Function`, `JSON5.parse`) match against the blanked line.
+
+Suppression is scoped to the literal's own span, never to the file. A real
+`eval(` outside the literal in the same file still reports at its own line;
+the closing backtick returns the walk to code state, so the very next line is
+read as code again; and `${...}` interpolation inside the literal is a
+re-entry into code state, so an eval( in the interpolation keeps firing. The
+interpolation walk lexes its own strings, comments and regex literals under
+the same rules as the rest of the line, so a `}` sitting inside a quoted
+string, a comment or a regex within `${...}` never closes the interpolation
+early and never blanks the live code after it as template text. The
+walk is comment-aware across lines too, so a stray backtick in a doc comment
+(a markdown code fence, say) cannot open a phantom template that swallows the
+real code after it. The per-line predicate keeps its signature and its
+answers; every state the walk cannot settle at end of line drops the carry
+and over-reports rather than under-reports.
+
 ### The CRED-HARVEST prose rule is clause-scoped, not two whole-file regexes ANDed
 
 The rule behind the `Credential harvesting` risk surface — and therefore behind
