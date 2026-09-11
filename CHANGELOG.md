@@ -4,6 +4,27 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `check <npm-name> --no-scan` no longer scans when the Registry query fails
+
+`--no-scan` asks for the Registry's answer and nothing else. On the npm path a
+query that produced no answer (a timeout, a 5xx, a network error) was returned
+as `null`, read as "not found", and control fell through to a download-and-scan
+the user had switched off; in `--json` mode nothing said so, and the result was
+a valid scan document with exit 0 in place of the registry record. The parity
+gate measured exactly that on an unchanged base (opena2a-parity, fixture
+`check-registered-ai`: four registry keys absent, exit 0, and a retry keyed on a
+non-zero exit that could not see it).
+
+Now the Registry's answer is three cases. A record is emitted as before. A
+query that did not complete exits 2 with a body that names the error
+(`source: registry`, `found: false`, `errorClass: registry-unreachable`, the
+message and status code) and says so on stderr in every mode; no scan runs. A
+genuine not-found keeps its prior behaviour on the npm path (the "not found on
+npm" block for a name npm does not carry), which the parity fixture
+`check-not-found` pins. The Registry timeout on the check path is 15 s, the
+same number ai-trust gives the same client for the same question, and
+`REGISTRY_URL` is honored on this path as on the other commands.
+
 ### The NEMO-009 TS/JS gate carries template-literal state across the line boundary
 
 A token standing alone on its own line inside a multi-line template literal

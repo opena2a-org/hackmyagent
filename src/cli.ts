@@ -12617,7 +12617,13 @@ function parseGitHubTarget(target: string): { org: string; repo: string; cloneUr
   };
 }
 
-const REGISTRY_URL = 'https://api.oa2a.org';
+const REGISTRY_URL = process.env.REGISTRY_URL || 'https://api.oa2a.org';
+// The check path asks the Registry the same trust/query through the same
+// @opena2a/registry-client that ai-trust uses, and ai-trust gives it 15 s
+// (ai-trust/src/utils/registry-client.ts REGISTRY_TIMEOUT_MS). A shorter
+// patience here for the same question is what let one tool fail a transient
+// the other survived on the parity gate (opena2a-parity check-registered-ai).
+const REGISTRY_QUERY_TIMEOUT_MS = 15000;
 
 // ============================================================================
 // Scan counter + contribute preference — delegated to telemetry/opt-in (canonical ~/.opena2a/config.json)
@@ -12755,39 +12761,103 @@ interface RegistryTrustData {
  * Query the OpenA2A Registry for existing trust data.
  * Returns null on any error (network, 404, timeout).
  */
-async function queryRegistry(name: string): Promise<RegistryTrustData | null> {
+/**
+ * The Registry's answer as three cases, because they mean three different
+ * things to `--no-scan`: a record; a genuine not-found; or a query that never
+ * produced an answer (timeout, 5xx, network). Until this existed the last two
+ * were both `null` and the caller read `null` as "not found", then fell through
+ * to a download-and-scan the user had switched off — a valid scan document with
+ * exit 0 in place of the registry record, invisible in `--json` mode and to any
+ * retry keyed on a non-zero exit.
+ */
+type RegistryQueryResult =
+  | { status: 'found'; data: RegistryTrustData }
+  | { status: 'not-found' }
+  | { status: 'error'; message: string; statusCode?: number };
+
+async function queryRegistryResult(name: string): Promise<RegistryQueryResult> {
+  let client: InstanceType<typeof import('@opena2a/registry-client').RegistryClient>;
+  let PackageNotFoundError: typeof import('@opena2a/registry-client').PackageNotFoundError;
   try {
-    const { RegistryClient } = await import('@opena2a/registry-client');
-    const client = new RegistryClient({
+    const mod = await import('@opena2a/registry-client');
+    PackageNotFoundError = mod.PackageNotFoundError;
+    client = new mod.RegistryClient({
       baseUrl: REGISTRY_URL,
       userAgent: `hackmyagent/${VERSION}`,
-      timeoutMs: 5000,
+      timeoutMs: REGISTRY_QUERY_TIMEOUT_MS,
     });
+  } catch (err) {
+    return { status: 'error', message: `registry client unavailable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  try {
     const data = await client.checkTrust(name);
-    if (!data.packageId) return null;
+    if (!data.packageId) return { status: 'not-found' };
     const deps = data.dependencies;
     return {
-      found: true,
-      name: data.name ?? name,
-      trustScore: data.trustScore ?? 0,
-      trustLevel: data.trustLevel ?? 0,
-      verdict: data.verdict ?? 'unknown',
-      scanStatus: data.scanStatus,
-      lastScannedAt: data.lastScannedAt,
-      packageType: data.packageType,
-      recommendation: data.recommendation,
-      cveCount: data.cveCount,
-      communityScans: data.communityScans,
-      dependencies: deps ? {
-        totalDeps: typeof deps.totalDeps === 'number' ? deps.totalDeps : undefined,
-        vulnerableDeps: typeof deps.vulnerableDeps === 'number' ? deps.vulnerableDeps : undefined,
-        minTrustLevel: typeof deps.minTrustLevel === 'number' ? deps.minTrustLevel : undefined,
-        riskSummary: deps.riskSummary as Record<string, unknown> | undefined,
-      } : undefined,
+      status: 'found',
+      data: {
+        found: true,
+        name: data.name ?? name,
+        trustScore: data.trustScore ?? 0,
+        trustLevel: data.trustLevel ?? 0,
+        verdict: data.verdict ?? 'unknown',
+        scanStatus: data.scanStatus,
+        lastScannedAt: data.lastScannedAt,
+        packageType: data.packageType,
+        recommendation: data.recommendation,
+        cveCount: data.cveCount,
+        communityScans: data.communityScans,
+        dependencies: deps ? {
+          totalDeps: typeof deps.totalDeps === 'number' ? deps.totalDeps : undefined,
+          vulnerableDeps: typeof deps.vulnerableDeps === 'number' ? deps.vulnerableDeps : undefined,
+          minTrustLevel: typeof deps.minTrustLevel === 'number' ? deps.minTrustLevel : undefined,
+          riskSummary: deps.riskSummary as Record<string, unknown> | undefined,
+        } : undefined,
+      },
     };
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof PackageNotFoundError) return { status: 'not-found' };
+    const statusCode = (err as { statusCode?: number } | null)?.statusCode;
+    return { status: 'error', message: err instanceof Error ? err.message : String(err), statusCode };
   }
+}
+
+/** The record or null. Callers that scan regardless of the Registry's answer use this. */
+async function queryRegistry(name: string): Promise<RegistryTrustData | null> {
+  const r = await queryRegistryResult(name);
+  return r.status === 'found' ? r.data : null;
+}
+
+/**
+ * `--no-scan` and the Registry query produced NO answer (timeout, 5xx, network):
+ * that is an error, never a "not found". It exits non-zero with the error named
+ * in the body AND on stderr in every mode, so a machine consumer and a retry
+ * keyed on the exit both see it. Shared by the npm, PyPI and GitHub paths,
+ * which used to read the same `null` as a definitive absence (and, on npm,
+ * fell through to a scan the user had switched off).
+ */
+function emitRegistryQueryError(
+  name: string,
+  result: { status: 'error'; message: string; statusCode?: number },
+  options: { json?: boolean },
+): void {
+  const message = `Registry query for "${name}" failed: ${result.message}`;
+  console.error(`${escapeForDisplay(message)} (--no-scan: not scanning; nothing was verified)`);
+  if (options.json) {
+    writeJsonStdout({
+      name,
+      source: 'registry',
+      found: false,
+      error: message,
+      errorClass: 'registry-unreachable',
+      ...(typeof result.statusCode === 'number' ? { statusCode: result.statusCode } : {}),
+      coverage: coverageJson(unmeasured(
+        'target-unreachable',
+        `${escapeForDisplay(name)}: the OpenA2A Registry query did not complete (${escapeForDisplay(result.message)}), so nothing was verified.`,
+      )),
+    });
+  }
+  raiseExitCode(EXIT_UNMEASURED);
 }
 
 /**
@@ -13278,18 +13348,29 @@ async function checkGitHubRepo(
   const { org, repo, cloneUrl } = parseGitHubTarget(target);
   const displayName = `${org}/${repo}`;
 
-  // Fetch registry data in parallel with clone (unless --no-registry)
-  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(displayName);
+  // Fetch registry data in parallel with clone (unless --no-registry).
+  // One query; the clone path reads the record-or-null view of the same answer.
+  const registryResultPromise: Promise<RegistryQueryResult> = options.registry === false
+    ? Promise.resolve({ status: 'not-found' as const })
+    : queryRegistryResult(displayName);
+  const registryPromise = registryResultPromise.then((r) => (r.status === 'found' ? r.data : null));
 
   // Registry-only mode (--no-scan): skip local scan
   if (options.scan === false) {
-    const registryData = await registryPromise;
-    if (registryData?.found) {
+    const result = await registryResultPromise;
+    if (result.status === 'found') {
       if (options.json) {
-        writeJsonStdout({ ...registryData, source: 'registry' });
+        writeJsonStdout({ ...result.data, source: 'registry' });
         return;
       }
-      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: registryData, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: result.data, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      return;
+    }
+    if (result.status === 'error') {
+      // A transient is not an absence: previously a timeout here was reported
+      // as `not found in the OpenA2A Registry`, a definitive answer to a
+      // question that never completed.
+      emitRegistryQueryError(displayName, result, options);
       return;
     }
     // --no-scan with no Registry hit: emit a not-found block in the same
@@ -13559,23 +13640,34 @@ async function checkPyPiPackage(
   // the same lifecycle for registry lookups. The Registry stores PyPI
   // packages under their bare names (not `pip:` / `pypi:` prefixed), so the
   // query key is the stripped `name`, matching the npm path.
-  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(name);
+  // One query; the download path reads the record-or-null view of the same answer.
+  const registryResultPromise: Promise<RegistryQueryResult> = options.registry === false
+    ? Promise.resolve({ status: 'not-found' as const })
+    : queryRegistryResult(name);
+  const registryPromise = registryResultPromise.then((r) => (r.status === 'found' ? r.data : null));
 
   // Registry-only mode (--no-scan): skip the PyPI download + local scan,
-  // emit Registry-shape output instead. Mirrors checkNpmPackage's
-  // (line ~9236) behavior so `--no-scan` is honored consistently across
-  // ecosystems. Closes #195: prior to this, --no-scan was silently dropped
-  // for pip:/pypi: targets and the user got a full scan they didn't ask
-  // for, with scan-shape JSON (findings/score/etc.) that didn't match the
-  // Registry-shape output emitted by the npm path.
+  // emit Registry-shape output instead. Closes #195: prior to this, --no-scan
+  // was silently dropped for pip:/pypi: targets and the user got a full scan
+  // they didn't ask for, with scan-shape JSON (findings/score/etc.) that
+  // didn't match the Registry-shape output emitted on a Registry hit.
+  // (An earlier comment here claimed to "mirror checkNpmPackage (line ~9236)";
+  // that function had moved and, until the 2026-09-11 parity-gate fix, was the one path WITHOUT
+  // this handling. A comment naming another site's behaviour is a claim with
+  // no test behind it, so the claim is dropped rather than re-pointed.)
   if (options.scan === false) {
-    const registryData = await registryPromise;
-    if (registryData?.found) {
+    const result = await registryResultPromise;
+    if (result.status === 'found') {
       if (options.json) {
-        writeJsonStdout({ ...registryData, source: 'registry' });
+        writeJsonStdout({ ...result.data, source: 'registry' });
         return;
       }
-      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      displayUnifiedCheck({ name, registry: result.data, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      return;
+    }
+    if (result.status === 'error') {
+      // A transient is not an absence (see the GitHub path).
+      emitRegistryQueryError(name, result, options);
       return;
     }
     // --no-scan with no Registry hit: emit a not-found block in the same
@@ -14098,20 +14190,39 @@ async function checkNpmPackage(
   name: string,
   options: { verbose?: boolean; json?: boolean; offline?: boolean; rescan?: boolean; scan?: boolean; registry?: boolean; nanomind?: boolean; analm?: boolean },
 ): Promise<void> {
-  // Fetch registry data in parallel with download+scan (unless --no-registry)
-  const registryPromise = options.registry === false ? Promise.resolve(null) : queryRegistry(name);
+  // Fetch registry data in parallel with download+scan (unless --no-registry).
+  // One query; the scan path reads the record-or-null view of the same answer.
+  const registryResultPromise: Promise<RegistryQueryResult> = options.registry === false
+    ? Promise.resolve({ status: 'not-found' as const })
+    : queryRegistryResult(name);
+  const registryPromise = registryResultPromise.then((r) => (r.status === 'found' ? r.data : null));
 
-  // Registry-only mode (--no-scan): skip local scan
-  if (options.scan === false) {
-    const registryData = await registryPromise;
-    if (registryData?.found) {
+  // Registry-only mode (--no-scan): a record is the output; a query that
+  // produced NO answer is an error and returns here; a genuine not-found keeps
+  // its prior path (see the end of this block).
+  if (options.scan === false && options.registry !== false) {
+    const result = await registryResultPromise;
+    if (result.status === 'found') {
       if (options.json) {
-        writeJsonStdout({ ...registryData, source: 'registry' });
+        writeJsonStdout({ ...result.data, source: 'registry' });
         return;
       }
-      displayUnifiedCheck({ name, registry: registryData, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      displayUnifiedCheck({ name, registry: result.data, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
       return;
     }
+    if (result.status === 'error') {
+      // A query that produced no answer is not a miss. Previously this fell
+      // through to a download-and-scan and exited 0 with a scan document.
+      emitRegistryQueryError(name, result, options); // errorClass: 'registry-unreachable'
+      return;
+    }
+    // --no-scan with no Registry record: UNCHANGED from before this fix. The
+    // npm path resolves the name against npm next (`npm pack`), and for a name
+    // npm does not carry that yields the "not found on npm" block that the
+    // parity fixture check-not-found and check-not-found-json.test.ts (F3)
+    // both pin. For a name npm DOES carry this still scans it under --no-scan,
+    // the #195 class on the npm path; changing it moves that golden and is a
+    // separate, coordinated change (named as a residual of the 2026-09-11 parity-gate fix).
     if (!options.json && !globalCiMode) {
       console.error(`No registry data found for ${name}. Running local scan...`);
     }

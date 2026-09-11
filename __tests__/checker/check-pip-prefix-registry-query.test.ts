@@ -57,11 +57,12 @@ describe('PyPI Registry-query key (lock-in: closes pip-prefix bug)', () => {
 
     // Forbidden: prefixed queries. These would route to a Registry key
     // that doesn't exist (Registry stores PyPI under bare names).
-    expect(body, 'queryRegistry call must not use pip:${name} (Registry stores PyPI under bare name)').not.toMatch(/queryRegistry\(\s*`pip:\$\{/);
-    expect(body, 'queryRegistry call must not use pypi:${name} either').not.toMatch(/queryRegistry\(\s*`pypi:\$\{/);
+    expect(body, 'queryRegistry call must not use pip:${name} (Registry stores PyPI under bare name)').not.toMatch(/queryRegistry(?:Result)?\(\s*`pip:\$\{/);
+    expect(body, 'queryRegistry call must not use pypi:${name} either').not.toMatch(/queryRegistry(?:Result)?\(\s*`pypi:\$\{/);
 
-    // Required: at least one queryRegistry call passing bare `name`.
-    expect(body, 'checkPyPiPackage must call queryRegistry(name) with the bare package name').toMatch(/queryRegistry\(\s*name\s*\)/);
+    // Required: at least one queryRegistry / queryRegistryResult call passing bare `name`
+    // (the --no-scan paths read the three-case result since the 2026-09-11 parity-gate fix; the KEY is what this pins).
+    expect(body, 'checkPyPiPackage must call queryRegistry(name) with the bare package name').toMatch(/queryRegistry(?:Result)?\(\s*name\s*\)/);
   });
 });
 
