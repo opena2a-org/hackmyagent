@@ -4,6 +4,21 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-13
+
+Everything below this heading down to the 0.32.0 entry landed on main after
+0.32.0 and ships here. Corpus goldens for `skill/malicious/exfil-skill` and
+`repo/malicious/kitchen-sink` were re-baked for this release (see
+`docs/testing/release-smoke.md` for the causes).
+
+### Known issues
+
+- `secure` reports `DEP-001` "No lock file found" (MEDIUM) on a tree that has
+  no package manifest at all, so an empty directory or a non-Node agent scores
+  93 where 0.32.0 scored 98. The finding existed in 0.32.0 and was hidden by
+  the file-less filter; #636 gave it a `file`. Tracked to read not-applicable
+  without a `package.json` in the next release.
+
 ### `detect` lists the agent projects under a workspace root
 
 `hackmyagent detect` read the target directory alone. From a folder holding
