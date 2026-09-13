@@ -300,12 +300,8 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
     // names the fixture.
     expect(checkIdsOf(GOLDEN_CARRIERS[0])).not.toContain('AST-CRED-001');
 
-    const changelog = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8');
-    const start = changelog.indexOf('## [Unreleased]');
-    expect(start, 'the [Unreleased] heading must exist').toBeGreaterThanOrEqual(0);
-    const nextRelease = changelog.indexOf('\n## ', start + 1);
-    const unreleased = nextRelease < 0 ? changelog.slice(start) : changelog.slice(start, nextRelease);
-    expect(unreleased, 'the [Unreleased] section must record the exfil-skill removal').toContain('exfil-skill');
+    const section = recordingSection(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8'));
+    expect(section, 'the recording section must record the exfil-skill removal').toContain('exfil-skill');
   });
 
   it('HMA-41.AC6 the canonical-format CRED-HARVEST source is not weakened by this leg', async () => {
@@ -326,20 +322,34 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
   });
 });
 
+/**
+ * `[Unreleased]` while it has a body, else the newest dated release: the
+ * record moves at the release cut and the invariant follows it.
+ */
+function recordingSection(changelog: string): string {
+  const start = changelog.indexOf('## [Unreleased]');
+  expect(start, 'the [Unreleased] heading must exist').toBeGreaterThanOrEqual(0);
+  const next = changelog.indexOf('\n## ', start + 1);
+  const unreleased = next < 0 ? changelog.slice(start) : changelog.slice(start, next);
+  if (unreleased.split('\n').slice(1).some((line) => line.trim().length > 0)) return unreleased;
+  expect(next, 'an empty [Unreleased] section with no release below it').toBeGreaterThanOrEqual(0);
+  const after = changelog.indexOf('\n## ', next + 1);
+  return after < 0 ? changelog.slice(next + 1) : changelog.slice(next + 1, after);
+}
+
 describe('HMA-41 delivery invariants', () => {
-  it('HMA-41.AC7 package.json version is unchanged from the base commit and no publish rides along', () => {
+  it('HMA-41.AC7 package.json names a released version: a fix leg bumps nothing, the release seat cuts the release', () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    expect(pkg.version, 'this leg ships no version bump, no tag and no publish').toBe('0.32.0');
+    const changelog = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8');
+    const newestDated = /^## \[(\d+\.\d+\.\d+)\] - /m.exec(changelog);
+    expect(newestDated, 'the changelog carries no dated release heading').not.toBeNull();
+    expect(pkg.version, 'a version bump with no dated changelog section rode along').toBe(newestDated![1]);
   });
 
-  it('HMA-41.AC7 CHANGELOG.md describes the clause-scoping under [Unreleased]', () => {
-    const changelog = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8');
-    const start = changelog.indexOf('## [Unreleased]');
-    expect(start, 'the [Unreleased] heading must exist').toBeGreaterThanOrEqual(0);
-    const nextHeading = changelog.indexOf('\n## ', start + 1);
-    const unreleased = nextHeading < 0 ? changelog.slice(start) : changelog.slice(start, nextHeading);
-    expect(unreleased.toLowerCase()).toContain('cred-harvest');
-    expect(unreleased.toLowerCase()).toContain('clause');
+  it('HMA-41.AC7 CHANGELOG.md describes the clause-scoping in the section that records it', () => {
+    const section = recordingSection(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8')).toLowerCase();
+    expect(section).toContain('cred-harvest');
+    expect(section).toContain('clause');
   });
 });
 

@@ -15,6 +15,16 @@ import { retargetInstruction, withheldLinkLines } from '../../src/hardening/with
 const ROOT = path.resolve(__dirname, '../..');
 const PHRASE = /point the scan at/;
 
+/**
+ * The first `## [` section with a body: `[Unreleased]` until the release seat
+ * rotates the changelog, the newest dated release after. The record moves at
+ * the release cut; the invariant follows it.
+ */
+function recordingSection(changelog: string): string {
+  const sections = changelog.split(/^## \[/m).slice(1);
+  return sections.find((s) => s.split('\n').slice(1).some((line) => line.trim().length > 0)) ?? '';
+}
+
 describe('out-of-tree link confinement is stated in the operator\'s terms', () => {
   it('README says it in one sentence containing the retarget phrase', () => {
     const readme = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
@@ -26,10 +36,9 @@ describe('out-of-tree link confinement is stated in the operator\'s terms', () =
     expect(lines[0]).toMatch(/hackmyagent secure /);
   });
 
-  it('CHANGELOG says it under Unreleased in one sentence containing the retarget phrase', () => {
-    const changelog = readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
-    const unreleased = changelog.split(/^## \[/m)[1] ?? '';
-    expect(unreleased.startsWith('Unreleased]')).toBe(true);
+  it('CHANGELOG says it in the recording section in one sentence containing the retarget phrase', () => {
+    const unreleased = recordingSection(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'));
+    expect(unreleased).toMatch(/^(Unreleased|\d+\.\d+\.\d+)\]/);
     // A CHANGELOG paragraph is hard-wrapped; the sentence is contiguous once
     // the wrap is undone, and the phrase itself sits on one line.
     const unwrapped = unreleased.replace(/\n(?!\n)/g, ' ');
@@ -40,8 +49,7 @@ describe('out-of-tree link confinement is stated in the operator\'s terms', () =
   });
 
   it('CHANGELOG makes no from-version range claim (none was execution-confirmed)', () => {
-    const changelog = readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
-    const unreleased = changelog.split(/^## \[/m)[1] ?? '';
+    const unreleased = recordingSection(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'));
     const section = unreleased.split(/^### /m).find((s) => /link out of the directory it scans/.test(s)) ?? '';
     expect(section.length).toBeGreaterThan(0);
     expect(section).not.toMatch(/versions? (before|since|from|through|up to) \d/i);
