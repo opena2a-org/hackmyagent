@@ -18,6 +18,18 @@ Everything below this heading down to the 0.32.0 entry landed on main after
   93 where 0.32.0 scored 98. The finding existed in 0.32.0 and was hidden by
   the file-less filter; #636 gave it a `file`. Tracked to read not-applicable
   without a `package.json` in the next release.
+- `secure --ci -b oasb-1` reports `5.1: No Hardcoded Credentials` as passed on
+  a tree whose `.claude/settings.json` holds a plaintext key, while `secure`
+  and `detect` on the same tree flag it. Present in 0.32.0. Target 0.34.0
+  ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
+- `check <local dir> --offline` prints a score (`96/100`, `Usable with caveats`)
+  and exits 0 while noting that the static checks were not run, so a local
+  directory holding a plaintext key gets a passing verdict. Present in 0.32.0.
+  Target 0.34.0 ([#740](https://github.com/opena2a-org/hackmyagent/issues/740)).
+- `-v` on `secure`, `scan-soul` and `check` prints the version and exits 0
+  without scanning, while each subcommand's `--help` documents `-v, --verbose`.
+  Present in 0.32.0. Target 0.34.0
+  ([#741](https://github.com/opena2a-org/hackmyagent/issues/741)).
 
 ### `detect` lists the agent projects under a workspace root
 
@@ -37,7 +49,9 @@ carries a credential, and the verdict. Each project's critical and high findings
 follow with their `file:line`, `Fix` and `Verify`; the machine-wide inventory
 prints once. The exit code is the worst project's. `--json` adds
 `projects: [...]`, each entry the single-directory result for that project;
-`--export-csv` writes one file with `Scan Directory` set per project.
+`--export-csv` writes one file with `Scan Directory` set per project, and a
+`Governance File` row per project so a directory identified only by its
+`SOUL.md` still appears in the inventory.
 
 A target that is itself an agent project renders exactly as before: a repo's
 governance fixtures and docs copies are not its shadow agents. The projects
