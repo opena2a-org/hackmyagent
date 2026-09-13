@@ -12506,9 +12506,9 @@ dist/
     // not credentials and are skipped.
     //
     // Anchored, because a skill body is prose: the unanchored alternation
-    // reads `risk-assessment-framework` as an OpenAI legacy key (`sk-` plus
-    // twenty slug characters) and raised an unfixable CRITICAL on a benign
-    // skill. This is a positive gate on a document, the polarity the anchored
+    // reads a slug such as "risk-assessment-…" as an OpenAI legacy key (`sk-`
+    // plus twenty slug characters) and raised an unfixable CRITICAL on a
+    // benign skill. This is a positive gate on a document, the polarity the anchored
     // form is reserved for; `sk-xxxxxxxx…` placeholders still match.
     const SIGNATURE_LINE = /opena2a_signature:|opena2a-guard hash=|-----(BEGIN|END) SIGNATURE-----/;
     const vendorRe = new RegExp(anchoredVendorAlternation());

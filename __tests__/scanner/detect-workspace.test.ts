@@ -191,6 +191,14 @@ describe('detect from a workspace root', () => {
     expect(out).toMatch(/Verify: sed -n '4p' hr-onboarding-assistant\/\.cursorrules/);
     expect(out).toContain('SOUL.md:4');
     expect(out).toMatch(/Verify: sed -n '4p' support-triage-agent\/SOUL\.md/);
+
+    // A credential citation names the key and shows a masked fragment of the
+    // value with its length, never the value itself.
+    expect(out).toMatch(/CLAUDE\.md:3 — "ANTHROPIC_API_KEY" = sk-ant-a…\w{3} \(\d+ chars\)/);
+    expect(out).not.toContain(FAKE_ANTHROPIC);
+
+    // Findings inside a project are separated by a blank line.
+    expect(out).toMatch(/Fix: [^\n]+\n(?:  │ Verify: [^\n]+\n)?\n  │ (?:CRITICAL|HIGH)/);
     expect(out).toContain('Fix: hackmyagent secure deploy-runbook-agent');
 
     // The header's agent count is the same union the AI Agents section lists.

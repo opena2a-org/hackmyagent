@@ -31,7 +31,7 @@ const FINDING = JSON.stringify([
 ]);
 
 /** Run `secure --deep` with Layer 3 answering with one fixed response shape. */
-function runDeep(shape: string, marker: string, extraArgs: string[] = []): { code: number; out: string } {
+function runDeep(shape: string, marker: string, extraArgs: string[] = []): { code: number; out: string; stdout: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'hma-462-verdict-'));
   try {
     // Content differs per case ON PURPOSE. The cache key is a hash of the file
@@ -51,7 +51,7 @@ function runDeep(shape: string, marker: string, extraArgs: string[] = []): { cod
         NODE_OPTIONS: `--require ${PRELOAD}`,
       },
     });
-    return { code: res.status ?? -1, out: (res.stdout ?? '') + (res.stderr ?? '') };
+    return { code: res.status ?? -1, out: (res.stdout ?? '') + (res.stderr ?? ''), stdout: res.stdout ?? '' };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -126,9 +126,12 @@ describe('#462 an incomplete deep scan cannot report a pass', () => {
   it('reaches the same verdict on the --json channel, not only on text', () => {
     // Four of the five output channels were pinned by nothing: deleting the
     // incomplete-scan branch from all four left the suite green.
-    const { code, out } = runDeep('I am unable to complete this analysis.', 'jsonchan', ['--json']);
+    const { code, stdout } = runDeep('I am unable to complete this analysis.', 'jsonchan', ['--json']);
     expect(code).toBe(2);
-    const payload = JSON.parse(out.slice(out.indexOf('{')));
+    // The --json channel is stdout. Notices such as the Registry "nothing
+    // sent" line go to stderr and are not part of the payload; parsing the
+    // concatenation failed on any machine with contribution enabled.
+    const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
     expect(
       (payload.findings ?? []).some((f: any) => f.checkId === 'SEM-LLM-NOT-ANALYZED'),
       'the json payload must carry the coverage gap, not just the exit code',

@@ -770,7 +770,22 @@ export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
 // `"ANTHROPIC_API_KEY": "<value>"` closes the key name before the colon, and
 // without it a `.claude/settings.json` `env` block holding a live key was
 // reported as low risk while `secure` flagged the same line (measured 0.32.0).
-const CREDENTIAL_IN_CONFIG = /(api[_-]?key|secret|token|password)["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/i;
+const CREDENTIAL_IN_CONFIG = /([A-Za-z0-9_-]*(?:api[_-]?key|secret|token|password))["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/i;
+
+/**
+ * Enough of a credential value to recognise it, never enough to use it: the
+ * first eight characters (the vendor prefix), an ellipsis, the last three,
+ * and the length. The prefixes are not spelled out here on purpose: the
+ * credential-vocabulary guard keeps every shape literal in its registry. `matched "API_KEY"` alone read as a false positive on the demo
+ * tree (Abdel, 2026-09-13); the fragment is what makes the finding checkable
+ * at a glance, and the Verify line prints the whole line for anyone who
+ * needs it.
+ */
+function credentialFragment(value: string): string {
+  const head = value.slice(0, 8);
+  const tail = value.length > 16 ? value.slice(-3) : '';
+  return `${head}…${tail} (${value.length} chars)`;
+}
 
 /**
  * The first line matching `pattern`, reported as the KEY that matched rather
@@ -781,11 +796,11 @@ const CREDENTIAL_IN_CONFIG = /(api[_-]?key|secret|token|password)["']?\s*[:=]\s*
  * carries the location and the key name and stops there — `text` is left unset
  * and the renderer has nothing to quote.
  */
-function firstMatchLine(content: string, pattern: RegExp): { line: number; token: string } | undefined {
+function firstMatchLine(content: string, pattern: RegExp): { line: number; token: string; value?: string } | undefined {
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const m = pattern.exec(lines[i]);
-    if (m) return { line: i + 1, token: m[1] ?? m[0] };
+    if (m) return { line: i + 1, token: m[1] ?? m[0], value: m[2] };
   }
   return undefined;
 }
@@ -830,7 +845,14 @@ export function scanAiConfigs(targetDir: string, withheld?: WithheldLink[]): AiC
         if (credential) {
           risk = 'critical';
           details = `${pattern.tool} config contains credential references`;
-          evidence = credential;
+          // The key name as written, then a masked fragment of the value in
+          // the reason slot, so the line reads
+          // `.claude/settings.json:3 — "ANTHROPIC_API_KEY" = <prefix>…<tail> (108 chars)`.
+          evidence = {
+            line: credential.line,
+            token: credential.token,
+            reason: credential.value ? `= ${credentialFragment(credential.value)}` : undefined,
+          };
         } else if (grant) {
           risk = 'high';
           details = `${pattern.tool} config grants broad permissions`;
@@ -1822,15 +1844,20 @@ function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoo
 
     lines.push('');
     lines.push(`  ${c.bold}${c.white}${r.rel}${R}  ${countParts.length > 0 ? countParts.join(dim(' · ')) : dim('no findings')}`);
-    for (const f of shown) {
+    shown.forEach((f, i) => {
       const pipe = riskColor(f.severity)('│');
+      // One blank line between findings: each is a title, a citation, a Fix
+      // and a Verify, and run together they read as one block (Abdel,
+      // 2026-09-13, on the demo tree).
+      if (i > 0) lines.push('');
       lines.push(`  ${pipe} ${sevBadge(f.severity)}  ${c.bold}${f.title}${R}`);
       if (f.detail) lines.push(`  ${pipe} ${c.dim}${f.detail}${R}`);
       if (verbose && f.whyItMatters) lines.push(`  ${pipe} ${f.whyItMatters}`);
       if (f.remediation) lines.push(`  ${pipe} ${c.cyan}Fix:${R} ${cyan(f.remediation)}`);
       if (f.verify) lines.push(`  ${pipe} ${c.dim}Verify:${R} ${dim(f.verify)}`);
-    }
+    });
     if (hidden > 0) {
+      lines.push('');
       lines.push(`  ${dim(`+ ${hidden} more — ${CLI_PREFIX} detect ${target} for the full report`)}`);
     }
   }

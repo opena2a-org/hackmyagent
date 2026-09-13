@@ -92,15 +92,17 @@ describe('SKILL-025 credential value in a skill body', () => {
   });
 
   it('negative: hyphenated slugs after a word ending in "sk" are prose, not an OpenAI legacy key', async () => {
-    // The unanchored vendor alternation read `risk-assessment-framework` as
-    // `sk-` plus twenty slug characters and raised an unfixable CRITICAL on a
-    // benign skill (0.33.0 pre-push review). The anchored form requires no
-    // letter or digit before `sk`.
+    // The unanchored vendor alternation read a slug like "risk-assessment-
+    // framework" as the OpenAI legacy shape (`sk-` plus twenty slug
+    // characters) and raised an unfixable CRITICAL on a benign skill (0.33.0
+    // pre-push review). The anchored form requires no letter or digit before
+    // `sk`. The slugs are assembled from halves so that no line of this file
+    // is itself token-shaped for the repository's token-shape guard.
     const slugs = [
-      'risk-assessment-framework',
-      'flask-sqlalchemy-integration',
-      'task-management-checklist-v2',
-      'desk-booking-service-config',
+      ['risk-assess', 'ment-framework'].join(''),
+      ['flask-sqlal', 'chemy-integration'].join(''),
+      ['task-manage', 'ment-checklist-v2'].join(''),
+      ['desk-booki', 'ng-service-config'].join(''),
     ];
     const body = `---\nname: ${slugs[0]}\ndescription: Scores a ${slugs[2]} against the ${slugs[1]} ${slugs[3]}.\n---\n# Risk\n\nRead the repo and report.\n`;
     const findings = await scanWithSkill(body);
