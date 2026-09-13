@@ -34,19 +34,18 @@ const SCANNER = readFileSync(join(REPO_ROOT, 'src', 'hardening', 'scanner.ts'), 
 const PKG = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string };
 
 /**
- * The section that records the change: `[Unreleased]` while it has a body,
- * the newest dated release once the release seat has rotated the changelog.
- * Pinning `[Unreleased]` alone made the record disappear at the release cut.
+ * The text that records the change: `[Unreleased]` together with the newest
+ * dated release. Pinning `[Unreleased]` alone made the record disappear at the
+ * release cut; reading only the newest dated section would fail on the first
+ * unrelated entry added after it.
  */
 function recordingSection(): string {
   const start = CHANGELOG.indexOf('## [Unreleased]');
   expect(start, 'the changelog has no [Unreleased] section').toBeGreaterThanOrEqual(0);
   const next = CHANGELOG.indexOf('\n## [', start + 1);
-  const unreleased = next < 0 ? CHANGELOG.slice(start) : CHANGELOG.slice(start, next);
-  if (unreleased.split('\n').slice(1).some((line) => line.trim().length > 0)) return unreleased;
-  expect(next, 'an empty [Unreleased] section with no release below it').toBeGreaterThanOrEqual(0);
+  if (next < 0) return CHANGELOG.slice(start);
   const after = CHANGELOG.indexOf('\n## [', next + 1);
-  return after < 0 ? CHANGELOG.slice(next + 1) : CHANGELOG.slice(next + 1, after);
+  return after < 0 ? CHANGELOG.slice(start) : CHANGELOG.slice(start, after);
 }
 
 /** Every `### Known issues` block in `text`, body only. */

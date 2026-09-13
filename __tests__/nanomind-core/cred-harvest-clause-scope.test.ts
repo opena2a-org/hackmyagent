@@ -323,18 +323,17 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
 });
 
 /**
- * `[Unreleased]` while it has a body, else the newest dated release: the
- * record moves at the release cut and the invariant follows it.
+ * `[Unreleased]` together with the newest dated release: the record moves at
+ * the release cut and the invariant follows it, and an unrelated entry added
+ * under `[Unreleased]` afterwards does not hide it.
  */
 function recordingSection(changelog: string): string {
   const start = changelog.indexOf('## [Unreleased]');
   expect(start, 'the [Unreleased] heading must exist').toBeGreaterThanOrEqual(0);
   const next = changelog.indexOf('\n## ', start + 1);
-  const unreleased = next < 0 ? changelog.slice(start) : changelog.slice(start, next);
-  if (unreleased.split('\n').slice(1).some((line) => line.trim().length > 0)) return unreleased;
-  expect(next, 'an empty [Unreleased] section with no release below it').toBeGreaterThanOrEqual(0);
+  if (next < 0) return changelog.slice(start);
   const after = changelog.indexOf('\n## ', next + 1);
-  return after < 0 ? changelog.slice(next + 1) : changelog.slice(next + 1, after);
+  return after < 0 ? changelog.slice(start) : changelog.slice(start, after);
 }
 
 describe('HMA-41 delivery invariants', () => {

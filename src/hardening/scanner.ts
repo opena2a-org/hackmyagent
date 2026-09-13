@@ -49,7 +49,7 @@ import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
-import { vendorAlternation, findJwtMatch } from '../types/credential-format';
+import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import {
   decodeArtifact,
   MAX_DECODE_DEPTH,
@@ -12504,13 +12504,19 @@ dist/
     // 1-based line of the first vendor-shaped key or JWT in a skill body, or
     // undefined. Lines that carry the skill's own signature or guard hash are
     // not credentials and are skipped.
+    //
+    // Anchored, because a skill body is prose: the unanchored alternation
+    // reads `risk-assessment-framework` as an OpenAI legacy key (`sk-` plus
+    // twenty slug characters) and raised an unfixable CRITICAL on a benign
+    // skill. This is a positive gate on a document, the polarity the anchored
+    // form is reserved for; `sk-xxxxxxxx…` placeholders still match.
     const SIGNATURE_LINE = /opena2a_signature:|opena2a-guard hash=|-----(BEGIN|END) SIGNATURE-----/;
-    const vendorRe = new RegExp(vendorAlternation());
+    const vendorRe = new RegExp(anchoredVendorAlternation());
     const findSkillCredentialLine = (bodyLines: readonly string[]): number | undefined => {
       for (let i = 0; i < bodyLines.length; i++) {
         const line = bodyLines[i];
         if (SIGNATURE_LINE.test(line)) continue;
-        if (vendorRe.test(line) || findJwtMatch(line, false)) return i + 1;
+        if (vendorRe.test(line) || findJwtMatch(line, true)) return i + 1;
       }
       return undefined;
     };

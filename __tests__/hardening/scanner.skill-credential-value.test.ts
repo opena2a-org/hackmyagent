@@ -90,4 +90,26 @@ describe('SKILL-025 credential value in a skill body', () => {
     const findings = await scanWithSkill(BENIGN_SKILL);
     expect(findings.find((f) => f.checkId === 'SKILL-025')).toBeUndefined();
   });
+
+  it('negative: hyphenated slugs after a word ending in "sk" are prose, not an OpenAI legacy key', async () => {
+    // The unanchored vendor alternation read `risk-assessment-framework` as
+    // `sk-` plus twenty slug characters and raised an unfixable CRITICAL on a
+    // benign skill (0.33.0 pre-push review). The anchored form requires no
+    // letter or digit before `sk`.
+    const slugs = [
+      'risk-assessment-framework',
+      'flask-sqlalchemy-integration',
+      'task-management-checklist-v2',
+      'desk-booking-service-config',
+    ];
+    const body = `---\nname: ${slugs[0]}\ndescription: Scores a ${slugs[2]} against the ${slugs[1]} ${slugs[3]}.\n---\n# Risk\n\nRead the repo and report.\n`;
+    const findings = await scanWithSkill(body);
+    expect(findings.find((f) => f.checkId === 'SKILL-025')).toBeUndefined();
+  });
+
+  it('positive: an sk- placeholder that is shaped like a key still counts', async () => {
+    const body = `---\nname: reconcile\n---\n# Reconcile\n\nexport OPENAI_API_KEY=sk-${'x'.repeat(24)}\n`;
+    const findings = await scanWithSkill(body);
+    expect(findings.find((f) => f.checkId === 'SKILL-025')).toBeTruthy();
+  });
 });

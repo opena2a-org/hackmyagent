@@ -16,13 +16,13 @@ const ROOT = path.resolve(__dirname, '../..');
 const PHRASE = /point the scan at/;
 
 /**
- * The first `## [` section with a body: `[Unreleased]` until the release seat
- * rotates the changelog, the newest dated release after. The record moves at
- * the release cut; the invariant follows it.
+ * `[Unreleased]` together with the newest dated release. The record moves at
+ * the release cut and the invariant follows it; an unrelated entry added
+ * under `[Unreleased]` afterwards does not hide it.
  */
 function recordingSection(changelog: string): string {
   const sections = changelog.split(/^## \[/m).slice(1);
-  return sections.find((s) => s.split('\n').slice(1).some((line) => line.trim().length > 0)) ?? '';
+  return sections.slice(0, 2).join('\n## [');
 }
 
 describe('out-of-tree link confinement is stated in the operator\'s terms', () => {
@@ -38,7 +38,7 @@ describe('out-of-tree link confinement is stated in the operator\'s terms', () =
 
   it('CHANGELOG says it in the recording section in one sentence containing the retarget phrase', () => {
     const unreleased = recordingSection(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'));
-    expect(unreleased).toMatch(/^(Unreleased|\d+\.\d+\.\d+)\]/);
+    expect(unreleased.startsWith('Unreleased]')).toBe(true);
     // A CHANGELOG paragraph is hard-wrapped; the sentence is contiguous once
     // the wrap is undone, and the phrase itself sits on one line.
     const unwrapped = unreleased.replace(/\n(?!\n)/g, ' ');

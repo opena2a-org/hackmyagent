@@ -50,8 +50,8 @@ follow with their `file:line`, `Fix` and `Verify`; the machine-wide inventory
 prints once. The exit code is the worst project's. `--json` adds
 `projects: [...]`, each entry the single-directory result for that project;
 `--export-csv` writes one file with `Scan Directory` set per project, and a
-`Governance File` row per project so a directory identified only by its
-`SOUL.md` still appears in the inventory.
+`Governance File` row for each project that has one, so a directory identified
+only by its `SOUL.md` still appears in the inventory.
 
 A target that is itself an agent project renders exactly as before: a repo's
 governance fixtures and docs copies are not its shadow agents. The projects
