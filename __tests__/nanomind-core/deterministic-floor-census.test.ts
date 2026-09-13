@@ -49,7 +49,7 @@ const COMMAND_SURFACE = [
   '--audit', '--aws-account-id', '--aws-region', '--batch', '--benchmark',
   '--broker-socket', '--broker-token', '--category', '--ci', '--ci-publish',
   '--all', '--check-id', '--reason', '--source-commit',        // HMA-08, see note below
-  '--contribute', '--deep', '--delay', '--directory', '--dry-run', '--explain',
+  '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',
   '--header', '--ignore', '--intensity', '--iterations', '--json', '--level',
@@ -60,7 +60,7 @@ const COMMAND_SURFACE = [
   '--registry-url', '--rescan', '--root', '--scan-depth', '--scan-only',
   '--static-only', '--status', '--stop-on-success', '--surface',
   '--system-prompt', '--target-type', '--tier', '--timeout', '--tool', '--type',
-  '--verbose', '--version', '--version-id', '--with-aim',
+  '--verbose', '--version', '--version-id', '--with-aim', '--workspace',
   '-H', '-b', '-c', '-d', '-f', '-i', '-l', '-n', '-o', '-p', '-t', '-v',
 ];
 

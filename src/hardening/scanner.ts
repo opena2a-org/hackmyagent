@@ -49,7 +49,7 @@ import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
-import { findCredentialFormatMatch } from '../types/credential-format';
+import { vendorAlternation, findJwtMatch } from '../types/credential-format';
 import {
   decodeArtifact,
   MAX_DECODE_DEPTH,
@@ -12501,6 +12501,20 @@ dist/
     targetDir: string,
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
+    // 1-based line of the first vendor-shaped key or JWT in a skill body, or
+    // undefined. Lines that carry the skill's own signature or guard hash are
+    // not credentials and are skipped.
+    const SIGNATURE_LINE = /opena2a_signature:|opena2a-guard hash=|-----(BEGIN|END) SIGNATURE-----/;
+    const vendorRe = new RegExp(vendorAlternation());
+    const findSkillCredentialLine = (bodyLines: readonly string[]): number | undefined => {
+      for (let i = 0; i < bodyLines.length; i++) {
+        const line = bodyLines[i];
+        if (SIGNATURE_LINE.test(line)) continue;
+        if (vendorRe.test(line) || findJwtMatch(line, false)) return i + 1;
+      }
+      return undefined;
+    };
+
     const findings: SecurityFindingDraft[] = [];
     const skillFiles = await this.findSkillFiles(targetDir);
 
@@ -12547,9 +12561,13 @@ dist/
       // detector is the shared credential-format registry, the same one the
       // config paths use, so the two surfaces agree on what a credential is.
       // The message carries the location and never the value.
-      const credential = findCredentialFormatMatch(content);
-      if (credential) {
-        const credentialLine = content.slice(0, credential.index).split('\n').length;
+      //
+      // Vendor prefixes and JWTs only, not the registry's entropy fallback: a
+      // signed skill carries a base64 signature and a guard hash in its
+      // frontmatter, and an entropy rule would report the signature as a
+      // credential on every signed skill. Signature lines are skipped as well.
+      const credentialLine = findSkillCredentialLine(lines);
+      if (credentialLine !== undefined) {
         findings.push({
           checkId: 'SKILL-025',
           name: 'Hardcoded Credential in Skill',

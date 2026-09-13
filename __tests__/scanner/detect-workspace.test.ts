@@ -31,7 +31,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
@@ -245,5 +245,63 @@ describe('detect from a workspace root', () => {
     const { out, err } = run(['--json', '--export-csv', csv]);
     expect(() => JSON.parse(out)).not.toThrow();
     expect(err).toContain('Asset inventory:');
+  });
+
+  it('rejects a --depth that is not a whole number with exit 2', () => {
+    const { code, err } = run(['--depth', 'abc']);
+    expect(code).toBe(2);
+    expect(err).toContain('--depth takes a whole number');
+  });
+});
+
+describe('detect on a target that is itself an agent project', () => {
+  let mono: string;
+
+  beforeAll(() => {
+    mono = mkdtempSync(path.join(tmpdir(), 'hma-detect-mono-'));
+    const w = (rel: string, content: string) => {
+      const full = path.join(mono, rel);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    };
+    // The root is a project (its own CLAUDE.md) and holds two more: a package
+    // with a shell MCP server and a docs copy of a governance file, which is
+    // what a repo's own fixtures look like.
+    w('CLAUDE.md', '# Monorepo\n\nAsk before deploying.\n');
+    w('packages/agent-a/.mcp.json', JSON.stringify({ mcpServers: { shell: { command: 'npx', args: ['-y', 'mcp-shell'] } } }));
+    w('docs/SOUL.md', '# SOUL.md\n\nA copy kept for reference.\n');
+  });
+
+  afterAll(() => {
+    if (mono) rmSync(mono, { recursive: true, force: true });
+  });
+
+  it('renders its own single-directory report and names the projects below it', () => {
+    const { out } = run([], mono);
+    expect(out).not.toContain('Shadow AI agents');
+    expect(out).toMatch(/Projects below:\s+hackmyagent detect --workspace/);
+    expect(out).toContain('2 agent projects under this directory');
+
+    const doc = JSON.parse(run(['--json'], mono).out);
+    expect(doc).toHaveProperty('identity');
+    expect(doc).not.toHaveProperty('projects');
+    // The child resolves its cwd to the real path (`/private/var/...` on macOS),
+    // so compare against the same resolution.
+    const real = realpathSync(mono);
+    expect(doc.nestedProjects.map((d: string) => path.relative(real, d)).sort())
+      .toEqual(['docs', path.join('packages', 'agent-a')]);
+  });
+
+  it('--workspace lists the target as "." alongside the projects below it', () => {
+    const { out, code } = run(['--workspace'], mono);
+    expect(out).toContain('Shadow AI agents (3)');
+    // The root row: `.`, identified by its CLAUDE.md, which is a Claude Code config.
+    expect(out).toMatch(/\n  \.\s+Claude Code/);
+    expect(code).toBe(1);
+
+    const doc = JSON.parse(run(['--workspace', '--json'], mono).out);
+    expect(doc.rootIsProject).toBe(true);
+    expect(doc.projects).toHaveLength(3);
+    expect(doc.projects[0].scanDirectory).toBe(path.join(realpathSync(mono), 'packages', 'agent-a'));
   });
 });

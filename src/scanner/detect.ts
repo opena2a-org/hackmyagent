@@ -41,6 +41,13 @@ export interface DetectOptions {
    * Default `DEFAULT_PROJECT_DEPTH`.
    */
   depth?: number;
+  /**
+   * List every agent project under the target even when the target is one
+   * itself. Without it a target that is a project renders its own report and
+   * names the projects below it; the default at a workspace root or a home
+   * directory is the list.
+   */
+  workspace?: boolean;
 }
 
 export type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
@@ -205,6 +212,8 @@ export interface WorkspaceDetectResult {
   mcpServers: DetectedMcpServer[];
   /** Worst first: by critical, high, medium, low counts, then governance score. */
   projects: DetectResult[];
+  /** True when the target itself is one of `projects` (listed as `.`). */
+  rootIsProject: boolean;
 }
 
 function isProjectMcp(server: Pick<DetectedMcpServer, 'source'>): boolean {
@@ -399,11 +408,19 @@ function projectMarkerFiles(): string[] {
   ];
 }
 
-/** Whether `dir` holds at least one file the per-project scan reads. */
+/**
+ * Whether `dir` holds at least one file the per-project scan reads.
+ *
+ * `lstatSync`, not `statSync`: discovery must not be the one probe that
+ * follows a link out of the tree (HMA-33 counts every such read). A marker
+ * that is a link counts as present by name; whether it may be read is the
+ * per-project scan's decision, which withholds and discloses it.
+ */
 export function isAgentProject(dir: string): boolean {
   for (const marker of projectMarkerFiles()) {
     try {
-      if (fs.statSync(path.join(dir, marker)).isFile()) return true;
+      const st = fs.lstatSync(path.join(dir, marker));
+      if (st.isFile() || st.isSymbolicLink()) return true;
     } catch { /* absent */ }
   }
   return false;
@@ -661,8 +678,8 @@ export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
  * literals in a branch.
  */
 // The optional quote between the key and the separator is the JSON shape:
-// `"ANTHROPIC_API_KEY": "sk-ant-..."` closes the key name before the colon,
-// and without it a `.claude/settings.json` `env` block holding a live key was
+// `"ANTHROPIC_API_KEY": "<value>"` closes the key name before the colon, and
+// without it a `.claude/settings.json` `env` block holding a live key was
 // reported as low risk while `secure` flagged the same line (measured 0.32.0).
 const CREDENTIAL_IN_CONFIG = /(api[_-]?key|secret|token|password)["']?\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/i;
 
@@ -1708,11 +1725,19 @@ function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoo
     steps.push({ label: 'Full scan:',     cmd: `${CLI_PREFIX} secure ${worstTarget}`, desc: 'deep security scan with findings' });
   }
   const rootTarget = citationTarget(rawRoot);
-  steps.push({
-    label: 'Inventory:',
-    cmd: `${CLI_PREFIX} detect ${rootTarget === '.' ? '' : `${rootTarget} `}--export-csv inventory.csv`,
-    desc: 'one row per asset across every project',
-  });
+  // Spelled out per case so every command is a literal template over quoted
+  // operands, which is what the #273 source gate checks for.
+  let inventoryCmd: string;
+  if (rootTarget === '.') {
+    inventoryCmd = ws.rootIsProject
+      ? `${CLI_PREFIX} detect --workspace --export-csv inventory.csv`
+      : `${CLI_PREFIX} detect --export-csv inventory.csv`;
+  } else {
+    inventoryCmd = ws.rootIsProject
+      ? `${CLI_PREFIX} detect --workspace ${rootTarget} --export-csv inventory.csv`
+      : `${CLI_PREFIX} detect ${rootTarget} --export-csv inventory.csv`;
+  }
+  steps.push({ label: 'Inventory:', cmd: inventoryCmd, desc: 'one row per asset across every project' });
   steps.push({ label: 'All commands:', cmd: `${CLI_PREFIX} --help`, desc: 'full command reference' });
 
   lines.push('');
@@ -1727,7 +1752,12 @@ function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoo
   return lines.join('\n');
 }
 
-function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string): string {
+function formatText(
+  result: DetectResult,
+  verbose: boolean,
+  rawTargetDir: string,
+  nestedProjects: readonly string[] = [],
+): string {
   const lines: string[] = [];
   const { summary } = result;
   // #339 — `targetDir` is a path out of the scanned tree and every Next Step
@@ -2025,6 +2055,18 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
     }
   }
 
+  // Agent projects below a target that is itself one: named, not listed, so
+  // this report stays the report of one project. The command that lists them
+  // is one flag away.
+  if (nestedProjects.length > 0) {
+    const n = nestedProjects.length;
+    steps.push({
+      label: 'Projects below:',
+      cmd: targetDir === '.' ? 'hackmyagent detect --workspace' : `hackmyagent detect --workspace ${targetDir}`,
+      desc: `${n} agent project${n === 1 ? '' : 's'} under this directory, listed worst first`,
+    });
+  }
+
   // Always show --help for discoverability
   steps.push({ label: 'All commands:', cmd: 'hackmyagent --help', desc: 'full command reference' });
 
@@ -2207,6 +2249,7 @@ async function detectWorkspace(
     agents: machine.agents,
     mcpServers: machine.mcpServers,
     projects,
+    rootIsProject: projectDirs.includes(root),
   };
 
   // Same coverage unit and derivation as the single-directory path, over the
@@ -2289,15 +2332,27 @@ export async function detect(options: DetectOptions): Promise<number> {
     return EXIT_UNMEASURED;
   }
 
+  const depth = options.depth ?? DEFAULT_PROJECT_DEPTH;
+  if (!Number.isInteger(depth) || depth < 0) {
+    // A usage error scans nothing, so it is 2 like an unreadable target, not
+    // a 1 that would read as a finding.
+    process.stderr.write('--depth takes a whole number of directory levels, 0 or more.\n');
+    return EXIT_UNMEASURED;
+  }
+
   const machine: MachineScan = { agents: scanProcesses(), mcpServers: scanGlobalMcpServers() };
 
-  // A target that is not itself the only agent project under it gets the
-  // workspace report; anything else renders exactly as it did before the
-  // walk existed, so `detect <repo>` inside one project is unchanged.
-  const depth = Math.max(0, Math.floor(options.depth ?? DEFAULT_PROJECT_DEPTH));
+  // Which report. A target that is NOT itself an agent project and holds some
+  // (a workspace root, a home directory) gets the list. A target that IS one
+  // renders its own report exactly as it did before the walk existed — the
+  // governance fixtures and docs copies inside a repo are not the repo's
+  // shadow agents — and names the projects below it so the reader can ask for
+  // them with `--workspace`, which lists everything including the target.
   const projectDirs = discoverAgentProjects(dir, depth);
-  const soleProjectIsRoot = projectDirs.length === 1 && projectDirs[0] === dir;
-  if (projectDirs.length > 0 && !soleProjectIsRoot) {
+  const rootIsProject = projectDirs.includes(dir);
+  const nested = projectDirs.filter((d) => d !== dir);
+  const workspaceView = options.workspace ? projectDirs.length > 0 : (!rootIsProject && nested.length > 0);
+  if (workspaceView) {
     return detectWorkspace(dir, projectDirs, machine, options);
   }
 
@@ -2365,9 +2420,12 @@ export async function detect(options: DetectOptions): Promise<number> {
       ...result,
       coverage: coverageJson(verdict),
       ...(withheldLinks.length > 0 ? { withheldLinks } : {}),
+      // Additive: the agent projects below a target that is itself one. The
+      // reader asks for their reports with `--workspace`.
+      ...(nested.length > 0 ? { nestedProjects: nested } : {}),
     }, null, 2) + '\n');
   } else {
-    process.stdout.write(formatText(result, options.verbose ?? false, dir) + '\n');
+    process.stdout.write(formatText(result, options.verbose ?? false, dir, nested) + '\n');
     for (const line of withheldLinkLines(withheldLinks)) {
       process.stdout.write(`${line}\n`);
     }

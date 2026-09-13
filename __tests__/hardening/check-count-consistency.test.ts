@@ -39,8 +39,8 @@ describe('check-count single source of truth', () => {
     // TAXONOMY_MAP keys now, as are the 8 SEM-MCP structural checks
     // (354/37/87 → 362/45/88), which are emitted as `id:` rather than
     // `checkId:` and so were missed by a literal-only census.
-    expect(counts.total).toBe(362);
-    expect(counts.static).toBe(317);
+    expect(counts.total).toBe(363);
+    expect(counts.static).toBe(318);
     expect(counts.semantic).toBe(45);
     expect(counts.totalCategories).toBe(88);
     expect(counts.staticCategories).toBe(73);

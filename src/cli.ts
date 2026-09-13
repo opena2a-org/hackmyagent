@@ -11848,6 +11848,7 @@ Examples:
   .option('--verbose', 'Show full MCP server list and identity details')
   .option('--export-csv <file>', 'Export asset inventory as CSV (for ServiceNow, CMDB, etc.)')
   .option('--depth <levels>', 'Directory levels below the target to search for agent projects (0 scans the target only)', '4')
+  .option('--workspace', 'List every agent project under the target, including the target itself when it is one')
   .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .action(async (directory: string | undefined, options: {
@@ -11855,14 +11856,12 @@ Examples:
     verbose?: boolean;
     exportCsv?: string;
     depth?: string;
+    workspace?: boolean;
     contribute?: boolean;
   }) => {
     const targetDir = directory ?? process.cwd();
-    const depth = Number.parseInt(options.depth ?? '4', 10);
-    if (!Number.isInteger(depth) || depth < 0) {
-      console.error(`--depth takes a whole number of directory levels, got ${JSON.stringify(options.depth)}.`);
-      process.exit(2);
-    }
+    // Validated in `detect`, which owns the exit code for a usage error.
+    const depth = /^\d+$/.test(options.depth ?? '4') ? Number(options.depth ?? '4') : Number.NaN;
     // In CI, never auto-contribute unless the user explicitly opts in (parity
     // with secure/scan-soul). Outside CI the flag falls through to config.
     if (globalCiMode && options.contribute === undefined) options.contribute = false;
@@ -11874,6 +11873,7 @@ Examples:
       verbose:   options.verbose,
       exportCsv: options.exportCsv,
       depth,
+      workspace: options.workspace,
     });
 
     // Wire detect scans into the community contribution pipeline.

@@ -24,9 +24,13 @@ prints once. The exit code is the worst project's. `--json` adds
 `projects: [...]`, each entry the single-directory result for that project;
 `--export-csv` writes one file with `Scan Directory` set per project.
 
-A target that is itself the only agent project, or holds none, renders exactly
-as before. `node_modules`, build output and hidden directories are not entered,
-symbolic links are not followed, and the walk stops at 20,000 directories.
+A target that is itself an agent project renders exactly as before: a repo's
+governance fixtures and docs copies are not its shadow agents. The projects
+below it are named under Next Steps and in the JSON's additive `nestedProjects`
+key, and `--workspace` lists them all with the target included as `.`. A target
+that holds no agent project also renders as before. `node_modules`, build output
+and hidden directories are not entered, symbolic links are not followed, and the
+walk stops at 20,000 directories.
 
 There is no workspace-level governance score. Governance is a measurement of one
 document; a minimum over five of them would be a third number that means nothing.

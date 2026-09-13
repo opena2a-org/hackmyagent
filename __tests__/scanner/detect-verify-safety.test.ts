@@ -112,16 +112,21 @@ afterAll(() => {
 });
 
 describe('#368 detect never emits a whole-file Verify', () => {
-  it('the fixture reaches the emitter: the permission finding is raised', () => {
+  it('the fixture reaches the emitter: the config finding is raised', () => {
     // Non-vacuity floor for the assertion below. If this config stops being
     // flagged, "no cat" becomes true for the wrong reason and the pin rots
     // silently — which is exactly how the branch survived four review rounds.
+    //
+    // Since 0.33.0 the JSON-quoted key in the `env` block is recognised as a
+    // credential, and a credential outranks the grant on the same file, so the
+    // finding this fixture raises is the credential one. Both go through the
+    // same emitter (`configVerifyCommand`), which is what the suite pins.
     const out = detect(target);
     expect(out.length, 'no output captured').toBeGreaterThan(0);
     expect(
       out,
-      'the AI-config permission finding no longer fires, so this suite proves nothing',
-    ).toMatch(/AI config files grant broad permissions/);
+      'no AI-config finding fires on the fixture, so this suite proves nothing',
+    ).toMatch(/AI config files (grant broad permissions|contain credential references)/);
   });
 
   it('emits no Verify that prints an entire file', () => {

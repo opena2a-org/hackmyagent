@@ -27,7 +27,7 @@ npx hackmyagent secure
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 47 files
-  Checks      317 static · 12 semantic (NanoMind AST) · 0 skipped
+  Checks      318 static · 12 semantic (NanoMind AST) · 0 skipped
   Categories  credentials (3 critical) · MCP (2 high) · 18 others clear
   Verdict     Not safe to ship. Fix 3 critical issues before using this in production.
 
@@ -45,7 +45,7 @@ No config files. No flags required. Exit code 1 if any critical or high finding 
 
 ## What it finds
 
-- **317 static checks across 73 categories** (362 checks across 88 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
+- **318 static checks across 73 categories** (363 checks across 88 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
 - **29 NanoMind semantic checks.** Every artifact (skill, MCP config, SOUL.md, system prompt) compiles into an Abstract Security Tree. The seven AST analyzers run against the tree: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`. Pattern matching misses undeclared capabilities, constraint weakness, scope mismatches, and scanner-evasion attempts. AST queries catch them. (This 29 is the fixed catalog of semantic checks. The `Checks` line in scan output — e.g. `12 semantic (NanoMind AST)` above — reports the number of artifacts compiled in that particular run, not this catalog size.)
 - **164 adversarial payloads across 16 categories.** Prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP and A2A exploitation, memory weaponisation, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement integrity.
 - **20-probe behavioural simulation** under `--deep`. Observes what a skill actually does, not only what it declares.
@@ -96,7 +96,7 @@ npm view hackmyagent dist.attestations --json
 
 | Surface | Command | What gets scanned |
 |---|---|---|
-| Your own project | `hackmyagent secure` | 317 static checks + NanoMind on current directory |
+| Your own project | `hackmyagent secure` | 318 static checks + NanoMind on current directory |
 | A local directory | `hackmyagent check ./my-agent/` | tree + auto-detected artifacts |
 | An npm package | `hackmyagent check express` | downloads tarball, scans before you install |
 | A PyPI package | `hackmyagent check pip:requests` | downloads sdist, scans before you install |
@@ -248,6 +248,8 @@ From a directory that holds agent projects below it (a workspace, a home directo
 ```
 
 A directory is an agent project when it holds an AI tool config (`.claude/settings.json`, `.cursorrules`, `CLAUDE.md`, ...), a project MCP file (`.mcp.json`, `mcp.json`), a governance file or a capability policy. The walk goes four levels down by default, does not enter `node_modules`, build output or hidden directories, and does not follow symbolic links. Each project's critical and high findings follow the table with their `file:line`, `Fix` and `Verify`; `hackmyagent detect <project>` prints the full report for one. The exit code is the worst project's.
+
+A target that is itself an agent project (a repo with its own `CLAUDE.md`) keeps its single-project report; the projects below it are named under Next Steps and in the JSON's `nestedProjects`, and `hackmyagent detect --workspace` lists them all, the target included.
 
 ### `trust`, `explain`, `nanomind`
 
