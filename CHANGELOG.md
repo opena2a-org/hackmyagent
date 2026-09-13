@@ -39,6 +39,22 @@ Citations now use the path relative to the current directory when the project
 sits below it (`hackmyagent secure deploy-runbook-agent`), the absolute path
 otherwise.
 
+### `detect` lists agents from installed evidence, not only running processes
+
+The agent list came from `ps` alone, so the "AI agents without governance"
+finding vanished the moment the developer closed the tool, and a project whose
+`.cursorrules` was present on a machine without Cursor listed no Cursor at all.
+Each agent now carries `state` (`running` or `installed`) and `source`
+(`process`, or the config that evidences it): a project AI config
+(`.cursorrules` is Cursor, `CLAUDE.md` and `.claude/settings.json` are Claude
+Code, ...) or a machine-wide tool config (`~/.cursor/mcp.json`,
+`~/.claude.json`, Claude Desktop's config, ...). A running entry outranks an
+installed one for the same tool. The governance finding fires for installed
+agents too and names the evidence; the "Running AI Agents" section is now
+"AI Agents" with a running/installed column; CSV agent rows carry
+`Installed: <config>` as their source. `pid` is present only for a running
+agent.
+
 ### `detect` reports a JSON-quoted credential key
 
 `"ANTHROPIC_API_KEY": "sk-ant-..."` in `.claude/settings.json` was not a

@@ -75,7 +75,10 @@ function detectFrom(cwd: string, arg: string): string {
       // `scanProcesses` runs `ps aux` through a shell, so a `ps` earlier on
       // PATH is the one it reads. Everything else about the environment is
       // left alone: this shadows one command, not the whole environment.
-      env: { ...process.env, NO_COLOR: '1', PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}` },
+      // HOME is the planted, empty one: `detect` also reads machine-wide tool
+      // configs under the home directory for installed agents and MCP servers,
+      // and this suite measures the fixture, not the developer's laptop.
+      env: { ...process.env, NO_COLOR: '1', HOME: fakeBin, PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}` },
     });
   } catch (e: unknown) {
     return String((e as { stdout?: string }).stdout ?? '');

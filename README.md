@@ -230,7 +230,7 @@ hackmyagent detect --json                       # machine-readable output
 hackmyagent detect --export-csv inventory.csv   # asset inventory for CMDB, one row per asset
 ```
 
-Inventory of AI tools, MCP servers, and governance gaps across your machine. Detects Claude Code, Cursor, Copilot, and similar tools; MCP configurations (project-local and machine-wide, including Claude Desktop and `~/.claude.json`); AI config files with credential references or broad permission grants; and SOUL.md files.
+Inventory of AI tools, MCP servers, and governance gaps across your machine. Detects Claude Code, Cursor, Copilot, and similar tools, both running (a process) and installed (a project config such as `.cursorrules` or a machine-wide config such as `~/.cursor/mcp.json`); MCP configurations (project-local and machine-wide, including Claude Desktop and `~/.claude.json`); AI config files with credential references or broad permission grants; and SOUL.md files. The governance finding applies to installed agents too: a tool that is closed right now still has its rules, servers and credentials in the tree.
 
 From a directory that holds agent projects below it (a workspace, a home directory) the report opens with one line per project, worst first:
 

@@ -54,7 +54,21 @@ export type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
 
 export interface DetectedAgent {
   name: string;
-  pid: number;
+  /** Present for a running agent only. */
+  pid?: number;
+  /**
+   * `running`: a process on this machine matched `AGENT_PATTERNS`.
+   * `installed`: no process, but a config the tool owns is present — a
+   * project AI config (`.cursorrules`, `CLAUDE.md`, ...) or a machine-wide
+   * MCP config (`~/.cursor/mcp.json`, ...). An agent that is not running
+   * at scan time still has its rules, its servers and its credentials in the
+   * tree, and the governance question applies to it the same way; deriving
+   * the list from processes alone made the ungoverned finding disappear
+   * whenever the developer had closed the tool.
+   */
+  state: 'running' | 'installed';
+  /** `process` for a running agent; the config path that evidences an installed one. */
+  source: string;
   category: 'ai-assistant' | 'local-llm' | 'ai-plugin';
   identityStatus: 'identified' | 'no identity';
   governanceStatus: 'governed' | 'no governance';
@@ -329,18 +343,18 @@ const AGENT_PATTERNS: { name: string; category: DetectedAgent['category']; patte
 // MCP config locations (home-relative)
 // ---------------------------------------------------------------------------
 
-const MCP_CONFIG_LOCATIONS: { path: string; label: string; rootIsServerMap?: boolean }[] = [
-  { path: '.claude/mcp_servers.json',                                       label: 'Claude Code (global)' },
+const MCP_CONFIG_LOCATIONS: { path: string; label: string; tool: string; rootIsServerMap?: boolean }[] = [
+  { path: '.claude/mcp_servers.json',                                       label: 'Claude Code (global)', tool: 'Claude Code' },
   // Claude Code's user-scope servers live under `mcpServers` in `~/.claude.json`,
   // a file whose other top-level keys are settings and per-project state.
   // `rootIsServerMap: false` keeps the fallback that treats the whole document
   // as a server map from listing those keys as servers.
-  { path: '.claude.json',                                                    label: 'Claude Code (user)', rootIsServerMap: false },
-  { path: 'Library/Application Support/Claude/claude_desktop_config.json',   label: 'Claude Desktop' },
-  { path: '.config/Claude/claude_desktop_config.json',                       label: 'Claude Desktop' },
-  { path: '.cursor/mcp.json',                                                label: 'Cursor (global)' },
-  { path: '.config/windsurf/mcp.json',                                       label: 'Windsurf (global)' },
-  { path: '.vscode/globalStorage/saoudrizwan.claude-dev/mcp_servers.json',   label: 'Cline (global)' },
+  { path: '.claude.json',                                                    label: 'Claude Code (user)', tool: 'Claude Code', rootIsServerMap: false },
+  { path: 'Library/Application Support/Claude/claude_desktop_config.json',   label: 'Claude Desktop', tool: 'Claude Desktop' },
+  { path: '.config/Claude/claude_desktop_config.json',                       label: 'Claude Desktop', tool: 'Claude Desktop' },
+  { path: '.cursor/mcp.json',                                                label: 'Cursor (global)', tool: 'Cursor' },
+  { path: '.config/windsurf/mcp.json',                                       label: 'Windsurf (global)', tool: 'Windsurf' },
+  { path: '.vscode/globalStorage/saoudrizwan.claude-dev/mcp_servers.json',   label: 'Cline (global)', tool: 'Cline' },
 ];
 
 const PROJECT_MCP_FILES = ['mcp.json', '.mcp.json', '.mcp/config.json'];
@@ -566,6 +580,8 @@ export function scanProcesses(psOutput?: string): DetectedAgent[] {
       agents.push({
         name: agent.name,
         pid,
+        state: 'running',
+        source: 'process',
         category: agent.category,
         identityStatus: 'no identity',
         governanceStatus: 'no governance',
@@ -576,6 +592,79 @@ export function scanProcesses(psOutput?: string): DetectedAgent[] {
   }
 
   return agents;
+}
+
+function installedAgent(name: string, source: string, category: DetectedAgent['category'] = 'ai-assistant'): DetectedAgent {
+  return {
+    name,
+    state: 'installed',
+    source,
+    category,
+    identityStatus: 'no identity',
+    governanceStatus: 'no governance',
+    risk: category === 'local-llm' ? 'medium' : 'high',
+  };
+}
+
+/**
+ * Agents evidenced by a machine-wide tool config, whether or not the tool is
+ * running. One entry per tool name; the first config found is the source.
+ */
+export function scanInstalledAgents(): DetectedAgent[] {
+  const home = os.homedir();
+  const agents: DetectedAgent[] = [];
+  const seen = new Set<string>();
+  const candidates: { file: string; tool: string; label: string }[] = [
+    ...MCP_CONFIG_LOCATIONS.map((loc) => ({ file: path.join(home, loc.path), tool: loc.tool, label: `~/${loc.path}` })),
+    { file: path.join(home, '.claude', '.mcp.json'), tool: 'Claude Code', label: '~/.claude/.mcp.json' },
+  ];
+  if (process.env.APPDATA) {
+    candidates.push({
+      file: path.join(process.env.APPDATA, 'Claude', 'claude_desktop_config.json'),
+      tool: 'Claude Desktop',
+      label: '%APPDATA%/Claude/claude_desktop_config.json',
+    });
+  }
+  for (const c of candidates) {
+    if (seen.has(c.tool)) continue;
+    try {
+      if (!fs.statSync(c.file).isFile()) continue;
+    } catch { continue; }
+    agents.push(installedAgent(c.tool, c.label));
+    seen.add(c.tool);
+  }
+  return agents;
+}
+
+/** Agents evidenced by a project's own AI config files. */
+function agentsFromConfigs(configs: readonly AiConfigFile[]): DetectedAgent[] {
+  const agents: DetectedAgent[] = [];
+  const seen = new Set<string>();
+  for (const cfg of configs) {
+    if (seen.has(cfg.tool)) continue;
+    const category: DetectedAgent['category'] =
+      cfg.tool === 'LangChain' || cfg.tool === 'AI Framework' ? 'ai-plugin' : 'ai-assistant';
+    agents.push(installedAgent(cfg.tool, cfg.file, category));
+    seen.add(cfg.tool);
+  }
+  return agents;
+}
+
+/**
+ * One row per agent name. A running entry outranks an installed one for the
+ * same tool, and among installed entries the first source wins.
+ */
+export function mergeAgents(...lists: readonly (readonly DetectedAgent[])[]): DetectedAgent[] {
+  const byName = new Map<string, DetectedAgent>();
+  for (const list of lists) {
+    for (const agent of list) {
+      const existing = byName.get(agent.name);
+      if (!existing || (existing.state === 'installed' && agent.state === 'running')) {
+        byName.set(agent.name, { ...agent });
+      }
+    }
+  }
+  return [...byName.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1277,11 @@ function configVerifyCommand(scanDirectory: string, config: AiConfigFile | undef
   return `sed -n '${config.evidence.line}p' ${quotedPath}`;
 }
 
+/** `running`, or `installed: <config>` naming the evidence. */
+function agentStateLabel(agent: DetectedAgent): string {
+  return agent.state === 'running' ? 'running' : `installed: ${escapePathForDisplay(agent.source)}`;
+}
+
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
   const findings: Finding[] = [];
   const target = citationTarget(result.scanDirectory);
@@ -1236,12 +1330,12 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
     if (soul.profileMismatch) reasons.push(`${soul.file} declares a narrower profile than its content`);
     if (soul.markerInvalid) reasons.push(`${soul.file} carries an unrecognized profile marker`);
 
-    const detail = ungoverned.map((a) => a.name).join(', ')
+    const detail = ungoverned.map((a) => `${a.name} (${agentStateLabel(a)})`).join(', ')
       + (reasons.length > 0 ? ` — ${reasons.join('; ')}` : '');
     findings.push({
       severity: 'high',
       category: 'governance',
-      title: `${ungoverned.length} AI agent${ungoverned.length !== 1 ? 's' : ''} running without governance`,
+      title: `${ungoverned.length} AI agent${ungoverned.length !== 1 ? 's' : ''} without governance`,
       detail,
       whyItMatters:
         'These agents can take actions in your project but have no rules defining what they '
@@ -1456,7 +1550,15 @@ function csvDeviceCols(scanDir: string, scanTime: string): string {
 
 function csvAgentRows(deviceCols: string, agents: readonly DetectedAgent[]): string[] {
   return agents.map((agent) =>
-    [deviceCols, 'AI Agent', csvEscape(agent.name), 'Running process', '', agent.category, agent.risk].join(','));
+    [
+      deviceCols,
+      'AI Agent',
+      csvEscape(agent.name),
+      agent.state === 'running' ? 'Running process' : csvEscape(`Installed: ${agent.source}`),
+      '',
+      agent.category,
+      agent.risk,
+    ].join(','));
 }
 
 function csvMcpRows(deviceCols: string, servers: readonly DetectedMcpServer[]): string[] {
@@ -1503,9 +1605,12 @@ function generateWorkspaceCsv(ws: WorkspaceDetectResult): string {
     ...csvAgentRows(machineCols, ws.agents),
     ...csvMcpRows(machineCols, ws.mcpServers),
   ];
+  const machineAgentNames = new Set(ws.agents.map((a) => a.name));
   for (const project of ws.projects) {
     const cols = csvDeviceCols(project.scanDirectory, ws.scanTimestamp);
     rows.push(
+      // Agents this project's own configs evidence; the machine-level ones are above.
+      ...csvAgentRows(cols, project.agents.filter((a) => !machineAgentNames.has(a.name))),
       ...csvMcpRows(cols, project.mcpServers.filter(isProjectMcp)),
       ...csvConfigRows(cols, project.aiConfigs),
     );
@@ -1693,19 +1798,27 @@ function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoo
     }
   }
 
-  // ── Running AI Agents ─────────────────────────────────────────────
-  const running = ws.agents.filter((a) => a.category === 'ai-assistant' || a.category === 'local-llm');
-  if (running.length > 0) {
+  // ── AI Agents ─────────────────────────────────────────────────────
+  // The union over the machine and every project, one row per tool: a
+  // running or machine-installed agent appears in every project, a
+  // project-installed one (its `.cursorrules`) only where its config is.
+  const allAgents = mergeAgents(ws.agents, ...ws.projects.map((p) => p.agents));
+  if (allAgents.length > 0) {
     lines.push('');
-    lines.push(sectionHeader(`Running AI Agents (${running.length})`));
-    for (const agent of running) {
-      const governedIn = ws.projects.filter((p) =>
-        p.agents.some((pa) => pa.pid === agent.pid && pa.governanceStatus === 'governed')).length;
-      const govStr = governedIn === n
-        ? green(`governed in all ${plural(n, 'project')}`)
-        : yellow(`governed in ${governedIn} of ${plural(n, 'project')}`);
-      const pidStr = verbose ? dim(` (PID ${agent.pid})`) : '';
-      lines.push(`  ${agent.name.padEnd(22)}${govStr}${pidStr}`);
+    lines.push(sectionHeader(`AI Agents (${allAgents.length})`));
+    for (const agent of allAgents) {
+      const appearsIn = ws.projects.filter((p) => p.agents.some((pa) => pa.name === agent.name));
+      const governedIn = appearsIn.filter((p) =>
+        p.agents.some((pa) => pa.name === agent.name && pa.governanceStatus === 'governed')).length;
+      const m = appearsIn.length;
+      const govStr = governedIn === m
+        ? green(`governed in all ${plural(m, 'project')}`)
+        : yellow(`governed in ${governedIn} of ${plural(m, 'project')}`);
+      const stateCol = agent.state === 'running' ? 'running    ' : dim('installed  ');
+      const tail = agent.state === 'running'
+        ? (verbose ? dim(` (PID ${agent.pid})`) : '')
+        : dim(` (${escapePathForDisplay(agent.source)})`);
+      lines.push(`  ${agent.name.padEnd(22)}${stateCol}${govStr}${tail}`);
     }
   }
 
@@ -1907,17 +2020,22 @@ function formatText(
     }
   }
 
-  // ── Running AI Agents ─────────────────────────────────────────────
-  const assistants = result.agents.filter((a) => a.category === 'ai-assistant');
-  const llms = result.agents.filter((a) => a.category === 'local-llm');
-  if (assistants.length + llms.length > 0) {
+  // ── AI Agents ─────────────────────────────────────────────────────
+  // Running first, then installed; within each, assistants before local LLMs.
+  const agentOrder = (a: DetectedAgent) =>
+    (a.state === 'running' ? 0 : 10) + (a.category === 'ai-assistant' ? 0 : a.category === 'local-llm' ? 1 : 2);
+  const agentRows = [...result.agents].sort((a, b) => agentOrder(a) - agentOrder(b));
+  if (agentRows.length > 0) {
     lines.push('');
-    lines.push(sectionHeader(`Running AI Agents (${assistants.length + llms.length})`));
-    for (const agent of [...assistants, ...llms]) {
+    lines.push(sectionHeader(`AI Agents (${agentRows.length})`));
+    for (const agent of agentRows) {
       const nameCol = agent.name.padEnd(22);
       const isGoverned = agent.governanceStatus === 'governed';
+      const stateCol = agent.state === 'running' ? 'running    ' : dim('installed  ');
       const govStr = isGoverned ? green('governed') : yellow('ungoverned');
-      const pidStr = verbose ? dim(` (PID ${agent.pid})`) : '';
+      const pidStr = agent.state === 'running'
+        ? (verbose ? dim(` (PID ${agent.pid})`) : '')
+        : dim(` (${escapePathForDisplay(agent.source)})`);
       // #303 — the same citation the ungoverned finding carries, chosen the
       // same way, so the row and the finding cannot disagree. `harden-soul`
       // adds control text; against a document whose problem is a sentence
@@ -1926,7 +2044,7 @@ function formatText(
       // of the predicate. An inline copy is what drifted.
       const govFix = governanceRemediation(result.findings, citationTarget(result.scanDirectory));
       const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan(govFix)}` : '';
-      lines.push(`  ${nameCol}${govStr}${pidStr}${fixHint}`);
+      lines.push(`  ${nameCol}${stateCol}${govStr}${pidStr}${fixHint}`);
     }
   }
 
@@ -2103,11 +2221,14 @@ interface ProjectScan {
  * of the project the agent is judged against, not of the process.
  */
 async function scanProject(dir: string, machine: MachineScan): Promise<ProjectScan> {
-  const agents     = machine.agents.map((a) => ({ ...a }));
   const mcpServers = [...machine.mcpServers, ...scanProjectMcpServers(dir)];
   const identity   = scanIdentity(dir);
   const aiConfigWithheld: WithheldLink[] = [];
   const aiConfigs  = scanAiConfigs(dir, aiConfigWithheld);
+  // Running processes and machine-wide configs, then this project's own
+  // configs: the tool that owns `.cursorrules` is an agent of this project
+  // whether or not it is open right now.
+  const agents     = mergeAgents(machine.agents, agentsFromConfigs(aiConfigs));
 
   identity.totalAgents = agents.length;
 
@@ -2340,7 +2461,10 @@ export async function detect(options: DetectOptions): Promise<number> {
     return EXIT_UNMEASURED;
   }
 
-  const machine: MachineScan = { agents: scanProcesses(), mcpServers: scanGlobalMcpServers() };
+  const machine: MachineScan = {
+    agents: mergeAgents(scanProcesses(), scanInstalledAgents()),
+    mcpServers: scanGlobalMcpServers(),
+  };
 
   // Which report. A target that is NOT itself an agent project and holds some
   // (a workspace root, a home directory) gets the list. A target that IS one

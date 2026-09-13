@@ -63,7 +63,10 @@ function detect(arg: string): string {
     return execFileSync(process.execPath, [BUILT_CLI, 'detect', arg, '--ci'], {
       encoding: 'utf8',
       timeout: 180_000,
-      env: { ...process.env, NO_COLOR: '1', PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}` },
+      // HOME is the planted, empty one: `detect` also reads machine-wide tool
+      // configs under the home directory for installed agents and MCP servers,
+      // and this suite measures the fixture, not the developer's laptop.
+      env: { ...process.env, NO_COLOR: '1', HOME: fakeBin, PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}` },
     });
   } catch (e: unknown) {
     return String((e as { stdout?: string }).stdout ?? '');

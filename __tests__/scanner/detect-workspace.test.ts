@@ -23,11 +23,17 @@
  *   6. a JSON-quoted key (`"ANTHROPIC_API_KEY": "..."`) in
  *      `.claude/settings.json` is a credential finding (it was not);
  *   7. `--json --export-csv` stays parseable (the inventory notice used to
- *      land in stdout after the document).
+ *      land in stdout after the document);
+ *   8. an agent evidenced by a project config (`.cursorrules` is Cursor) is
+ *      listed as `installed` and named by the governance finding even when no
+ *      such process runs;
+ *   9. a target that is itself a project keeps its single-directory report
+ *      and names the projects below it; `--workspace` lists them all.
  *
  * HERMETICITY: `detect` shells out to `ps aux`, so a planted `ps` on PATH
- * supplies the agent row. Machine-wide MCP configs are read from the real
- * home directory and are NOT asserted on; only project-local counts are.
+ * supplies the agent row, and it reads machine-wide tool configs under the
+ * home directory, so HOME is an empty planted directory. Everything the
+ * suite asserts on comes from the fixture tree.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
@@ -68,6 +74,9 @@ function run(args: string[], cwd = root): { out: string; err: string; code: numb
         ...process.env,
         NO_COLOR: '1',
         OPENA2A_TELEMETRY: 'off',
+        // An empty HOME: machine-wide agents and MCP servers are read from the
+        // home directory, and this suite measures the fixture tree alone.
+        HOME: fakeBin,
         PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -182,6 +191,28 @@ describe('detect from a workspace root', () => {
     expect(out).toMatch(/Verify: sed -n '4p' hr-onboarding-assistant\/\.cursorrules/);
     expect(out).toContain('SOUL.md:4');
     expect(out).toContain('Fix: hackmyagent secure deploy-runbook-agent');
+  });
+
+  it('lists an agent evidenced by a project config even when no such process runs', () => {
+    // Only Aider is planted as a process. The HR project carries `.cursorrules`,
+    // so Cursor is an agent of that project — installed, not running — and the
+    // governance finding names it. Before 0.33.0 the agent list came from
+    // processes alone and closing the tool made the finding vanish.
+    const hr = path.join(root, 'hr-onboarding-assistant');
+    const { out, code } = run([], hr);
+    expect(code).toBe(1);
+    expect(out).toContain('AI Agents (');
+    expect(out).toMatch(/Cursor\s+installed\s+ungoverned/);
+    expect(out).toMatch(/AI agents? without governance/);
+    expect(out).toContain('Cursor (installed: .cursorrules)');
+
+    const doc = JSON.parse(run(['--json', hr]).out);
+    const cursor = doc.agents.find((a: { name: string }) => a.name === 'Cursor');
+    expect(cursor).toMatchObject({ state: 'installed', source: '.cursorrules', governanceStatus: 'no governance' });
+    expect(cursor).not.toHaveProperty('pid');
+    const aider = doc.agents.find((a: { name: string }) => a.name === 'Aider');
+    expect(aider).toMatchObject({ state: 'running', source: 'process', pid: 4242 });
+    expect(doc.summary.governanceScore).toBe(JSON.parse(run(['--json', '--depth', '0', hr]).out).summary.governanceScore);
   });
 
   it('reports the JSON-quoted key in .claude/settings.json as a credential', () => {
