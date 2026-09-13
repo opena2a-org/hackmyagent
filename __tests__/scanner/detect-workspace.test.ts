@@ -190,7 +190,13 @@ describe('detect from a workspace root', () => {
     expect(out).toMatch(/\.cursorrules:4/);
     expect(out).toMatch(/Verify: sed -n '4p' hr-onboarding-assistant\/\.cursorrules/);
     expect(out).toContain('SOUL.md:4');
+    expect(out).toMatch(/Verify: sed -n '4p' support-triage-agent\/SOUL\.md/);
     expect(out).toContain('Fix: hackmyagent secure deploy-runbook-agent');
+
+    // The header's agent count is the same union the AI Agents section lists.
+    const section = out.match(/AI Agents \((\d+)\)/);
+    expect(section).toBeTruthy();
+    expect(out).toMatch(new RegExp(`\\b${section![1]} agents? · `));
   });
 
   it('lists an agent evidenced by a project config even when no such process runs', () => {
@@ -263,12 +269,20 @@ describe('detect from a workspace root', () => {
     const rows = readFileSync(csv, 'utf8').trim().split('\n');
     expect(rows[0]).toBe('Hostname,Username,Scan Directory,Scan Timestamp,Asset Type,Name,Source,Transport,Capabilities,Risk');
     const dirs = new Set(rows.slice(1).map((r) => r.split(',')[2]));
-    for (const p of PROJECTS.filter((x) => x !== 'release-notes-agent')) {
+    // Every project, including the one identified only by its governance
+    // document and capability policy (release-notes-agent has no AI config
+    // and no MCP server).
+    for (const p of PROJECTS) {
       expect([...dirs].some((d) => d.endsWith(p)), `no CSV row for ${p}`).toBe(true);
     }
     const shell = rows.find((r) => r.includes('MCP Server,shell,'));
     expect(shell).toBeTruthy();
     expect(shell!.split(',')[2].endsWith('deploy-runbook-agent')).toBe(true);
+    const gov = rows.filter((r) => r.includes(',Governance File,SOUL.md,Governance document,'));
+    expect(gov.map((r) => r.split(',')[2]).some((d) => d.endsWith('release-notes-agent'))).toBe(true);
+    const subverted = gov.find((r) => r.split(',')[2].endsWith('support-triage-agent'));
+    expect(subverted, 'no governance row for support-triage-agent').toBeTruthy();
+    expect(subverted!.endsWith(',high')).toBe(true);
   });
 
   it('keeps --json parseable when --export-csv is also given', () => {

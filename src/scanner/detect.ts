@@ -1272,9 +1272,14 @@ function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
 function configVerifyCommand(scanDirectory: string, config: AiConfigFile | undefined): string | undefined {
   if (!config?.evidence) return undefined;
   if (config.evidence.line === undefined) return undefined;
-  const quotedPath = citationPath(pathForCitation(path.join(scanDirectory, config.file)));
+  return lineVerifyCommand(scanDirectory, config.file, config.evidence.line);
+}
+
+/** `sed -n '<line>p' <file>` for any finding that cites a `file:line`. */
+function lineVerifyCommand(scanDirectory: string, file: string, line: number): string | undefined {
+  const quotedPath = citationPath(pathForCitation(path.join(scanDirectory, file)));
   if (!quotedPath) return undefined;
-  return `sed -n '${config.evidence.line}p' ${quotedPath}`;
+  return `sed -n '${line}p' ${quotedPath}`;
 }
 
 /** `running`, or `installed: <config>` naming the evidence. */
@@ -1374,6 +1379,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
         + 'requests or concealing its reasoning. A document like this scores as governance while '
         + 'removing it, so adding more controls does not help; the sentences have to go.',
       remediation: `hackmyagent scan-soul ${target}`,
+      verify: soul.file ? lineVerifyCommand(result.scanDirectory, soul.file, first[0].line) : undefined,
     });
   }
 
@@ -1581,6 +1587,30 @@ function csvConfigRows(deviceCols: string, configs: readonly AiConfigFile[]): st
     [deviceCols, 'AI Config', csvEscape(config.file), csvEscape(config.tool), '', csvEscape(config.details), config.risk].join(','));
 }
 
+/**
+ * The governance document is an asset too: a project identified only by its
+ * `SOUL.md` used to have no CSV row at all, so the inventory could not say
+ * why the project was listed. The risk column carries the project's worst
+ * governance finding (a subverted control is high, missing controls medium).
+ */
+function csvGovernanceRows(deviceCols: string, result: Omit<DetectResult, 'findings'> & { findings: readonly Finding[] }): string[] {
+  const file = result.identity.governanceFile;
+  if (!file) return [];
+  // Worst governance finding of the project, so the row agrees with the report.
+  const gov = result.findings.filter((f) => f.category === 'governance');
+  const risk: RiskLevel = gov.length === 0 ? 'low'
+    : gov.reduce((worst, f) => (RISK_ORDER[f.severity] < RISK_ORDER[worst] ? f.severity : worst), 'low' as RiskLevel);
+  return [[
+    deviceCols,
+    'Governance File',
+    csvEscape(file),
+    'Governance document',
+    '',
+    csvEscape(`governance score ${result.summary.governanceScore}/100`),
+    risk,
+  ].join(',')];
+}
+
 function generateAssetCsv(result: DetectResult): string {
   const deviceCols = csvDeviceCols(result.scanDirectory, result.scanTimestamp);
   const rows = [
@@ -1588,6 +1618,7 @@ function generateAssetCsv(result: DetectResult): string {
     ...csvAgentRows(deviceCols, result.agents),
     ...csvMcpRows(deviceCols, result.mcpServers),
     ...csvConfigRows(deviceCols, result.aiConfigs),
+    ...csvGovernanceRows(deviceCols, result),
   ];
   return rows.join('\n') + '\n';
 }
@@ -1613,6 +1644,7 @@ function generateWorkspaceCsv(ws: WorkspaceDetectResult): string {
       ...csvAgentRows(cols, project.agents.filter((a) => !machineAgentNames.has(a.name))),
       ...csvMcpRows(cols, project.mcpServers.filter(isProjectMcp)),
       ...csvConfigRows(cols, project.aiConfigs),
+      ...csvGovernanceRows(cols, project),
     );
   }
   return rows.join('\n') + '\n';
@@ -1709,13 +1741,18 @@ function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoo
   const { summary } = ws;
   const n = ws.projects.length;
   const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+  // The union over the machine and every project, one entry per tool: a
+  // running or machine-installed agent appears in every project, a
+  // project-installed one (its `.cursorrules`) only where its config is.
+  // The header and the AI Agents section count the same set.
+  const allAgents = mergeAgents(ws.agents, ...ws.projects.map((p) => p.agents));
 
   // ── Header ────────────────────────────────────────────────────────
   const rootBase = escapePathForDisplay(path.basename(rawRoot) || rawRoot);
   const metaParts = [
     'shadow ai audit',
     `${os.hostname()}`,
-    summary.totalAgents > 0 ? plural(summary.totalAgents, 'agent') : null,
+    allAgents.length > 0 ? plural(allAgents.length, 'agent') : null,
     summary.mcpServers > 0 ? `${plural(summary.mcpServers, 'machine-wide mcp server')}` : null,
     plural(n, 'agent project'),
   ].filter(Boolean);
@@ -1799,10 +1836,6 @@ function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoo
   }
 
   // ── AI Agents ─────────────────────────────────────────────────────
-  // The union over the machine and every project, one row per tool: a
-  // running or machine-installed agent appears in every project, a
-  // project-installed one (its `.cursorrules`) only where its config is.
-  const allAgents = mergeAgents(ws.agents, ...ws.projects.map((p) => p.agents));
   if (allAgents.length > 0) {
     lines.push('');
     lines.push(sectionHeader(`AI Agents (${allAgents.length})`));
