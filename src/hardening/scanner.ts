@@ -49,6 +49,7 @@ import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
+import { findCredentialFormatMatch } from '../types/credential-format';
 import {
   decodeArtifact,
   MAX_DECODE_DEPTH,
@@ -12536,6 +12537,34 @@ dist/
       const lines = content.split('\n').map(line =>
         line.length > MAX_LINE_LENGTH ? line.substring(0, MAX_LINE_LENGTH) : line
       );
+
+      // SKILL-025: a credential VALUE in the skill body.
+      //
+      // SKILL-005 reports a skill that names a credential file (`~/.aws`,
+      // `.env`); nothing here read the body for a credential itself, so a
+      // vendor-shaped key in a SKILL.md scored `benign` while the same value in
+      // `.mcp.json` was CRITICAL (measured 0.32.0 on five vendor shapes). The
+      // detector is the shared credential-format registry, the same one the
+      // config paths use, so the two surfaces agree on what a credential is.
+      // The message carries the location and never the value.
+      const credential = findCredentialFormatMatch(content);
+      if (credential) {
+        const credentialLine = content.slice(0, credential.index).split('\n').length;
+        findings.push({
+          checkId: 'SKILL-025',
+          name: 'Hardcoded Credential in Skill',
+          description: 'Skill file contains a credential value',
+          category: 'skill',
+          severity: 'critical',
+          passed: false,
+          message: `Credential-shaped value at ${relativePath}:${credentialLine} (the value is not repeated here)`,
+          file: relativePath,
+          line: credentialLine,
+          fixable: false,
+          fix: `Move the value out of ${relativePath} into an environment variable the skill references by name, then rotate it: a value that has been in a skill file has been in every context that loaded the skill`,
+          guidance: 'A skill is loaded into the agent context on every run, so a credential in its body reaches the model, the transcript and any log that captures either. Use npx secretless-ai init to keep credentials out of AI tool context.',
+        });
+      }
 
       // SKILL-001: Unsigned Skill
       const hasSignature =

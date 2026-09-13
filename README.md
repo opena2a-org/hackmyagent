@@ -222,13 +222,32 @@ Run `hackmyagent scan-soul --help` for the full exit-code contract.
 ### `detect` (shadow AI audit)
 
 ```bash
-hackmyagent detect                              # audit current directory
-hackmyagent detect /path/to/project             # audit a specific project
+hackmyagent detect                              # every agent project under the current directory
+hackmyagent detect ~/workspace                  # every agent project under a workspace root
+hackmyagent detect /path/to/project             # one project, the full report
+hackmyagent detect --depth 0                    # the target directory only, no walk
 hackmyagent detect --json                       # machine-readable output
-hackmyagent detect --export-csv inventory.csv   # asset inventory for CMDB
+hackmyagent detect --export-csv inventory.csv   # asset inventory for CMDB, one row per asset
 ```
 
-Inventory of AI tools, MCP servers, and governance gaps across your machine. Detects Claude Code, Cursor, Copilot, and similar tools; MCP configurations (project-local and machine-wide); AI config files with credential references or broad permission grants; and SOUL.md files.
+Inventory of AI tools, MCP servers, and governance gaps across your machine. Detects Claude Code, Cursor, Copilot, and similar tools; MCP configurations (project-local and machine-wide, including Claude Desktop and `~/.claude.json`); AI config files with credential references or broad permission grants; and SOUL.md files.
+
+From a directory that holds agent projects below it (a workspace, a home directory) the report opens with one line per project, worst first:
+
+```
+  workspace  shadow ai audit · laptop · 1 agent · 40 machine-wide mcp servers · 5 agent projects
+  4 of 5 agent projects need action (4 critical, 6 high)
+
+  ── Shadow AI agents (5) ────────────────────────────────────
+  project                       identified by  mcp servers     governance   cred      verdict
+  deploy-runbook-agent          Claude Code    3 mcp critical  gov   0/100  cred yes  CRITICAL
+  invoice-reconciliation-agent  Claude Code    3 mcp high      gov   4/100  cred yes  CRITICAL
+  hr-onboarding-assistant       Cursor         3 mcp medium    gov   7/100  cred yes  CRITICAL
+  support-triage-agent          SOUL.md        1 mcp medium    gov   7/100  cred no   HIGH
+  release-notes-agent           SOUL.md        1 mcp medium    gov 100/100  cred no   MEDIUM
+```
+
+A directory is an agent project when it holds an AI tool config (`.claude/settings.json`, `.cursorrules`, `CLAUDE.md`, ...), a project MCP file (`.mcp.json`, `mcp.json`), a governance file or a capability policy. The walk goes four levels down by default, does not enter `node_modules`, build output or hidden directories, and does not follow symbolic links. Each project's critical and high findings follow the table with their `file:line`, `Fix` and `Verify`; `hackmyagent detect <project>` prints the full report for one. The exit code is the worst project's.
 
 ### `trust`, `explain`, `nanomind`
 
