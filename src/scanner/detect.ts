@@ -17,6 +17,7 @@ import { SoulScanner, GOVERNANCE_FILES } from '../soul';
 import type { SoulScanResult } from '../soul';
 import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
 import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
+import { matchVendorPrefix } from '../types/credential-format';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
 import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
@@ -770,21 +771,25 @@ export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
 // `"ANTHROPIC_API_KEY": "<value>"` closes the key name before the colon, and
 // without it a `.claude/settings.json` `env` block holding a live key was
 // reported as low risk while `secure` flagged the same line (measured 0.32.0).
-const CREDENTIAL_IN_CONFIG = /([A-Za-z0-9_-]*(?:api[_-]?key|secret|token|password))["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/i;
+// The key name is captured with a BOUNDED prefix behind a boundary
+// lookbehind: an unbounded `[A-Za-z0-9_-]*` in front of the alternation was
+// quadratic on a long single-line file (146 s on a 300k-character line, and
+// the reader admits 1 MB), which a scanned tree's own `.cursorrules` can hold.
+const CREDENTIAL_IN_CONFIG = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,64}(?:api[_-]?key|secret|token|password))["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/i;
 
 /**
  * Enough of a credential value to recognise it, never enough to use it: the
- * first eight characters (the vendor prefix), an ellipsis, the last three,
- * and the length. The prefixes are not spelled out here on purpose: the
- * credential-vocabulary guard keeps every shape literal in its registry. `matched "API_KEY"` alone read as a false positive on the demo
+ * recognised vendor prefix when the value carries one (a constant, not secret
+ * body), an ellipsis, and the length. Nothing of the body is shown for an
+ * unknown shape, which is the masking invariant `credential-analyzer.ts`
+ * states; the Verify line prints the whole line for anyone who needs it. `matched "API_KEY"` alone read as a false positive on the demo
  * tree (Abdel, 2026-09-13); the fragment is what makes the finding checkable
  * at a glance, and the Verify line prints the whole line for anyone who
  * needs it.
  */
 function credentialFragment(value: string): string {
-  const head = value.slice(0, 8);
-  const tail = value.length > 16 ? value.slice(-3) : '';
-  return `${head}…${tail} (${value.length} chars)`;
+  const head = matchVendorPrefix(value) ?? '';
+  return `${head}… (${value.length} chars)`;
 }
 
 /**
@@ -847,7 +852,7 @@ export function scanAiConfigs(targetDir: string, withheld?: WithheldLink[]): AiC
           details = `${pattern.tool} config contains credential references`;
           // The key name as written, then a masked fragment of the value in
           // the reason slot, so the line reads
-          // `.claude/settings.json:3 — "ANTHROPIC_API_KEY" = <prefix>…<tail> (108 chars)`.
+          // `.claude/settings.json:3 — "ANTHROPIC_API_KEY" = <vendor prefix>… (108 chars)`.
           evidence = {
             line: credential.line,
             token: credential.token,

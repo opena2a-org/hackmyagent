@@ -194,8 +194,9 @@ describe('detect from a workspace root', () => {
 
     // A credential citation names the key and shows a masked fragment of the
     // value with its length, never the value itself.
-    expect(out).toMatch(/CLAUDE\.md:3 — "ANTHROPIC_API_KEY" = sk-ant-a…\w{3} \(\d+ chars\)/);
+    expect(out).toMatch(/CLAUDE\.md:3 — "ANTHROPIC_API_KEY" = sk-ant-api0… \(\d+ chars\)/);
     expect(out).not.toContain(FAKE_ANTHROPIC);
+    expect(out).not.toContain(FAKE_ANTHROPIC.slice(-6));
 
     // Findings inside a project are separated by a blank line.
     expect(out).toMatch(/Fix: [^\n]+\n(?:  │ Verify: [^\n]+\n)?\n  │ (?:CRITICAL|HIGH)/);
@@ -298,6 +299,20 @@ describe('detect from a workspace root', () => {
     const { out, err } = run(['--json', '--export-csv', csv]);
     expect(() => JSON.parse(out)).not.toThrow();
     expect(err).toContain('Asset inventory:');
+  });
+
+  it('reads a config with one very long line in linear time and shows no body of an unknown-shape value', () => {
+    // The key-name capture was quadratic on a class-only run (146 s at 300k
+    // characters); the reader admits 1 MB files from the scanned tree.
+    const long = mkdtempSync(path.join(tmpdir(), 'hma-detect-long-'));
+    const password = 'correct-horse-battery-staple-9';
+    writeFileSync(path.join(long, 'CLAUDE.md'), `# Agent\n\n${'a'.repeat(300_000)}\npassword = ${password}\n`);
+    const started = Date.now();
+    const { out } = run([long]);
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(out).toMatch(/"password" = … \(30 chars\)/);
+    expect(out).not.toContain('battery');
+    rmSync(long, { recursive: true, force: true });
   });
 
   it('rejects a --depth that is not a whole number with exit 2', () => {

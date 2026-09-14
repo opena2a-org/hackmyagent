@@ -48,9 +48,10 @@ it, its MCP server count and worst risk, governance score, whether a config
 carries a credential, and the verdict. Each project's critical and high findings
 follow with their `file:line`, `Fix` and `Verify`, one blank line between
 findings; the machine-wide inventory prints once. A credential citation names
-the key as written and a masked fragment of its value with the length
-(`"ANTHROPIC_API_KEY" = sk-ant-a…w5c (108 chars)`) where 0.32.0 printed
-`matched "API_KEY"`, which read as a false positive. The exit code is the worst project's. `--json` adds
+the key as written, the value's vendor prefix when it has one, and the length
+(`"ANTHROPIC_API_KEY" = sk-ant-api0… (108 chars)`) where 0.32.0 printed
+`matched "API_KEY"`, which read as a false positive. The exit code is the
+worst project's. `--json` adds
 `projects: [...]`, each entry the single-directory result for that project;
 `--export-csv` writes one file with `Scan Directory` set per project, and a
 `Governance File` row for each project that has one, so a directory identified

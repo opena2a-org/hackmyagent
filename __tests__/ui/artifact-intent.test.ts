@@ -47,6 +47,9 @@ const MALICIOUS_FIXTURE = join(CORPUS, 'malicious', 'permissive-overrides-soul')
 // spawn cases below measure the fallback, not the reconciliation, so they run
 // only where the weights are (the same rule the corpus check applies).
 const classifierLoads = new TMENeuralClassifier().load();
+if (!classifierLoads) {
+  console.warn('artifact-intent: NanoMind weights not found; the three spawn cases are skipped on this machine');
+}
 
 function canRun(fixture: string): boolean {
   return existsSync(CLI) && existsSync(fixture) && classifierLoads;
