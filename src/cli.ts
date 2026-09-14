@@ -562,7 +562,14 @@ Examples:
   $ ${CLI_PREFIX} detect                         Shadow AI audit (agents, MCPs, governance)
   $ ${CLI_PREFIX} scan-soul                      Governance compliance scan
   $ ${CLI_PREFIX} scan example.com               External infrastructure scan`)
-  .option('--no-color', 'Disable colored output (also respects NO_COLOR env)');
+  .option('--no-color', 'Disable colored output (also respects NO_COLOR env)')
+  // Program options are recognised only before the subcommand name (#741).
+  // In Commander's default mode the program's `-v, --version` matched first
+  // anywhere on the line, so `secure -v <dir>` printed the version and exited
+  // 0 without scanning, while `secure --help` documented `-v, --verbose`.
+  // The one program option, `--no-color`, keeps working after the subcommand
+  // name because main() lifts it out of the argv Commander parses.
+  .enablePositionalOptions();
 // Version line is set inside main() so it can include the live telemetry status.
 // Tracking hooks (preAction / postAction) are also wired there.
 
@@ -592,12 +599,8 @@ Telemetry:
   or set contribute.enabled to false in ~/.opena2a/config.json. '${CLI_PREFIX} telemetry off' covers usage telemetry only.
 `);
 
-program.hook('preAction', (thisCommand) => {
-    const opts = thisCommand.opts();
-    if (opts.color === false) {
-      colors = { green: '', brightGreen: '', yellow: '', red: '', brightRed: '', cyan: '', blue: '', magenta: '', dim: '', bold: '', white: '', underline: '', reset: '' };
-    }
-  });
+// `--no-color` is applied in main() before parsing, in any argv position; the
+// option above stays registered so it is documented in --help.
 
 // Risk level colors and symbols
 const RISK_DISPLAY: Record<RiskLevel, { symbol: string; color: () => string }> = {
@@ -11699,7 +11702,7 @@ Examples:
   .option('--delay <ms>', 'Delay between requests in milliseconds', '500')
   .option('--json', 'Output as JSON')
   .option('-o, --output <file>', 'Write output to file')
-  .option('--verbose', 'Show detailed output for each page')
+  .option('-v, --verbose', 'Show detailed output for each page')
   .action(async (url: string, options: {
     category?: string;
     tier?: string;
@@ -14566,6 +14569,15 @@ async function checkNpmPackage(
     process.argv = process.argv.filter(a => a !== '--ci');
   }
 
+  // Global --no-color: with positional options (#741) a program option after
+  // the subcommand name would be rejected by that subcommand, so the flag is
+  // applied here and lifted out of what Commander parses. process.argv itself
+  // is left intact: scanner/detect.ts reads `--no-color` from it directly.
+  const argvForParse = process.argv.filter(a => a !== '--no-color');
+  if (argvForParse.length !== process.argv.length) {
+    colors = { green: '', brightGreen: '', yellow: '', red: '', brightRed: '', cyan: '', blue: '', magenta: '', dim: '', bold: '', white: '', underline: '', reset: '' };
+  }
+
   // Tier-1 anonymous usage telemetry — default ON; opt-out via
   // OPENA2A_TELEMETRY=off or `hackmyagent telemetry off`. See README §Telemetry.
   // Disclosure surfaces: README, --version line, telemetry subcommand,
@@ -14581,12 +14593,28 @@ async function checkNpmPackage(
   // telemetry disclosure goes to stderr — `hackmyagent --version` stays a
   // clean, single, parseable line while the privacy disclosure still prints.
   const vparts = versionLineParts({ tool: 'hackmyagent', version: VERSION, telemetry: tele.status() });
-  program.option('-v, --version', 'Output the version number');
-  program.on('option:version', () => {
+  const printVersionAndExit = (): never => {
     process.stdout.write(vparts.stdout + '\n');
     if (vparts.stderr) process.stderr.write(vparts.stderr + '\n');
     process.exit(0); // exit-no-event(pre-action/L002): runs before any command action arms telemetry
-  });
+  };
+  program.option('-v, --version', 'Output the version number');
+  program.on('option:version', printVersionAndExit);
+  // Commander takes one short flag per option, so `-V` is its own option.
+  program.option('-V', 'Same as --version');
+  program.on('option:V', printVersionAndExit);
+
+  // `--version` / `-V` anywhere on the line (#741). With positional options a
+  // program option after the subcommand name reaches the subcommand instead,
+  // where `secure --version` was rejected with a suggestion of `--version-id`.
+  // Exact tokens only (never `--version-id`), and only before a `--`
+  // separator. `-v` is deliberately not lifted: after a subcommand name it is
+  // that subcommand's `--verbose`.
+  const separator = argvForParse.indexOf('--');
+  const optionTokens = argvForParse.slice(2, separator === -1 ? undefined : separator);
+  if (optionTokens.some(a => a === '--version' || a === '-V')) {
+    printVersionAndExit();
+  }
 
   // Telemetry tracking — records command start time, fires on postAction.
   // The 'telemetry' subcommand itself is excluded to avoid self-referential
@@ -14704,7 +14732,7 @@ async function checkNpmPackage(
   }
 
   try {
-    await program.parseAsync(process.argv);
+    await program.parseAsync(argvForParse);
   } catch (err) {
     // Fire an error event for the in-flight subcommand, then re-throw so
     // commander's existing exit-code propagation runs.
