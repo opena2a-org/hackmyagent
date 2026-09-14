@@ -8846,20 +8846,27 @@ dist/
     const findings: SecurityFindingDraft[] = [];
 
     // DEP-001: Check for package-lock.json
-    // #458: a lock file is a MUST-exist artifact, so its absence is the
+    // The SUBJECT is the package manifest: a tree with no package.json
+    // declares no dependencies to lock, so it reads not-applicable exactly
+    // as DEP-002/DEP-003 do (#636). A manifest without a lock file is the
     // finding (an absent-mitigation advisory whose `file` names the path the
-    // fix creates), never a not-applicable record. Content reads rather than
-    // `fs.access` so an unreadable candidate reaches the coverage ledger;
-    // the loop stops at the first lock file it can read.
+    // fix creates). Content reads rather than `fs.access` so an unreadable
+    // candidate reaches the coverage ledger; the loop stops at the first
+    // lock file it can read.
+    const pkgReadDep001 = await readCheckSubject(path.join(targetDir, 'package.json'));
     const lockFileProbes: SubjectRead[] = [];
-    for (const lockFile of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']) {
-      const probe = await readCheckSubject(path.join(targetDir, lockFile));
-      lockFileProbes.push(probe);
-      if (probe.state === 'read') break;
+    if (pkgReadDep001.state === 'read') {
+      for (const lockFile of ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']) {
+        const probe = await readCheckSubject(path.join(targetDir, lockFile));
+        lockFileProbes.push(probe);
+        if (probe.state === 'read') break;
+      }
     }
     const hasLockFile = lockFileProbes.some((probe) => probe.state === 'read');
 
-    if (hasLockFile || lockFileProbes.every((probe) => probe.state === 'absent')) {
+    if (pkgReadDep001.state === 'absent') {
+      findings.push(notApplicableRecord({ checkId: 'DEP-001', name: 'Dependency Lock File', description: 'No dependency lock file found', category: 'dependencies' }, 'package.json', 'No package.json in the scanned tree, so there is no dependency manifest to inspect.'));
+    } else if (pkgReadDep001.state === 'read' && (hasLockFile || lockFileProbes.every((probe) => probe.state === 'absent'))) {
       const dep001: SecurityFindingDraft = {
         checkId: 'DEP-001',
         name: 'Dependency Lock File',

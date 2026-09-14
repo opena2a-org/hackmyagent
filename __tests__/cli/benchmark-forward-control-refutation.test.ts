@@ -15,6 +15,12 @@
  * dropping their failing records on these non-MCP-typed fixtures — 2.3, 4.1
  * and 5.2 became measured. wild: 50% (5/10) -> 33% (4/12); wildLock:
  * `Passing 92% (11/12)` exit 0 -> `Needs Improvement 71% (10/14)` exit 1.
+ *
+ * DEP-001 taking the package manifest as its subject moved the wild and
+ * empty figures once more: neither tree has a package.json, so the four
+ * dependency controls (6.1-6.4) read not-applicable instead of failed.
+ * wild: 33% (4/12) -> 50% (4/8), 8 failed -> 4, SARIF 8 -> 4 results;
+ * empty: 3/4/19/0 at 43 -> 3/0/19/4 at 100. wildLock is unchanged.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -78,12 +84,13 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
   // With file attribution 2.3, 4.1 and 5.2 are measured and fail on the
   // config's real gaps. The #639 story these cells pin is unchanged: the
   // wildcard grant fails 2.1 and the tree is never Certified.
-  it('RED-ON-BASE text: [-] 2.1, the category shows 1/3, compliance 33% (4/12)', () => {
+  it('RED-ON-BASE text: [-] 2.1, the category shows 1/3, compliance 50% (4/8)', () => {
     const r = run(wild, ['--verbose']);
     expect(r.stdout).toMatch(/\[-\] 2\.1: Explicit Capability Grants/);
     expect(r.stdout).toMatch(/SEM-MCP-004: MCP server "fs" has allowedTools: \["\*"\]/);
     expect(r.stdout).toMatch(/Capability & Authorization: 1\/3 \(33%\)/);
-    expect(r.stdout).toMatch(/Compliance: 33% \(4\/12 verified controls\)/);
+    expect(r.stdout).toMatch(/Compliance: 50% \(4\/8 verified controls\)/);
+    expect(r.stdout).toMatch(/Not applicable: 4 controls/);
     expect(r.stdout).toMatch(/Unverified: 14 controls/);
     expect(r.status).toBe(1);
   });
@@ -94,16 +101,17 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
     expect(c.status).toBe('failed');
     expect(c.findings[0]).toMatch(/^SEM-MCP-004: /);
     expect(c.notApplicableSubjects).toBeUndefined();
-    expect(body.failedControls).toBe(8);
+    expect(body.failedControls).toBe(4);
+    expect(body.notApplicableControls).toBe(4);
     expect(body.unverifiedControls).toBe(14);
-    expect(body.l1Compliance).toBe(33);
+    expect(body.l1Compliance).toBe(50);
   });
 
   it('RED-ON-BASE sarif: an OASB-1/2.1 result is emitted', () => {
     const body = json(run(wild, ['--format', 'sarif']).stdout);
     const ids = body.runs[0].results.map((x: any) => x.ruleId);
     expect(ids).toContain('OASB-1/2.1');
-    expect(ids).toHaveLength(8);
+    expect(ids).toHaveLength(4);
   });
 
   it('RED-ON-BASE with a lockfile: never Certified, and --fail-below 100 exits 1', () => {
@@ -120,11 +128,13 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
     expect(gated.status).toBe(1);
   });
 
-  it('PIN: an empty directory is unmoved — 2.1 unverified, 3/4/19/0, compliance 43', () => {
+  it('PIN: an empty directory is unmoved — 2.1 unverified, 3/0/19/4, compliance 100', () => {
     const body = json(run(empty, ['--format', 'json']).stdout);
     const c = body.categories.flatMap((x: any) => x.controls).find((x: any) => x.controlId === '2.1');
     expect(c.status).toBe('unverified');
-    expect([body.passedControls, body.failedControls, body.unverifiedControls, body.notApplicableControls]).toEqual([3, 4, 19, 0]);
-    expect(body.compliance).toBe(43);
+    // Was 3/4/19/0 and 43 while DEP-001 failed on a tree with no package
+    // manifest; those four controls (6.1-6.4) now read not-applicable.
+    expect([body.passedControls, body.failedControls, body.unverifiedControls, body.notApplicableControls]).toEqual([3, 0, 19, 4]);
+    expect(body.compliance).toBe(100);
   });
 });
