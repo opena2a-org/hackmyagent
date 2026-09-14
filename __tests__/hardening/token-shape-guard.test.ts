@@ -41,6 +41,26 @@ describe('token-shape guard (HMA-16)', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('HMA-16.AC1 a nested checkout (a directory with its own .git) is not this repository', () => {
+    // A git worktree inside the tree carries a `.git` gitfile; a nested clone
+    // carries a `.git` directory. Neither's lines are this repository's.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hma16-nested-'));
+    try {
+      for (const [dir, gitShape] of [['wt', 'file'], ['clone', 'dir']] as const) {
+        fs.mkdirSync(path.join(tmp, dir), { recursive: true });
+        if (gitShape === 'file') fs.writeFileSync(path.join(tmp, dir, '.git'), 'gitdir: /elsewhere\n');
+        else fs.mkdirSync(path.join(tmp, dir, '.git'));
+        fs.writeFileSync(path.join(tmp, dir, 'notes.txt'), `token: ${assembledPlantValue()}\n`);
+      }
+      // The same line at the root IS this repository's, so the walk still runs.
+      fs.writeFileSync(path.join(tmp, 'notes.txt'), `token: ${assembledPlantValue()}\n`);
+      const result = scanRepository(tmp, EMPTY_REGISTRY);
+      expect(result.matchedLineCount).toBe(1);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('HMA-16.AC1 a marker word exempts nothing: only a registry entry does', () => {
     // The repository push gate's marker allowlist would suppress a line
     // carrying FAKE or PLACEHOLDER. This guard must not: plant a line carrying both markers
