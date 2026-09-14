@@ -53,7 +53,7 @@ export type {
 } from './lifecycle';
 
 // External scanner module
-export { ExternalScanner } from './scanner';
+export { ExternalScanner, DEFAULT_PORTS, parseTarget, resolvePorts } from './scanner';
 export type {
   ExternalScanResult,
   ExternalFinding,

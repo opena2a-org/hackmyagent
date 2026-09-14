@@ -66,6 +66,43 @@ gate files touched"), and over every no-approval input the conclusion
 vocabulary is exactly `action_required` or `failure` — never `success`, and
 never `neutral`, which required checks treat as passing.
 
+### `scan <host>` tells a live host apart from an unreachable one, and finishes
+
+`hackmyagent scan https://opena2a.org` reported a site that answers on 443 as
+`Target unreachable`, score -1/100, in 34 ms; `hackmyagent scan opena2a.org`
+ended with `Scan timed out after 4000ms` (advertised-command audit,
+2026-09-13). Two defects. The raw target string was handed to `socket.connect`
+as the DNS name, so a URL failed on every port before a packet left the
+machine. And the scan's global budget was ports x timeout, which covered the
+port probes and not the seventeen sequential HTTP requests that followed on
+each open port, so any host that opened both default ports outran it.
+
+The target is parsed first (`parseTarget`: a URL scans its hostname, and the
+port it names when it names one; `-p` still wins). Each TCP connect now keeps
+its outcome (`open`, `closed`, `filtered`, `unresolved`, `error`), the HTTP
+probe categories run side by side with an end-to-end bound per request, and
+the budget counts every phase. The result carries `hostReachable` and
+`portStates`, the text report prints a `Host:` line, and the no-open-port case
+says which of three states it is in: the name did not resolve
+(`SCAN-UNREACHABLE`), nothing answered on the scanned ports nor on 443/80
+(`SCAN-UNREACHABLE`), or the host answered and no scanned port was open
+(`SCAN-NO-OPEN-PORTS`, new, score N/A like its sibling). A refused connection
+counts as an answer: the host is there, the port is not.
+
+### `red-team --json` no longer echoes the credentials it read
+
+`hackmyagent red-team ./.mcp.json --json` placed the config's first long line
+into `target.declaredPurpose` verbatim; for a typical MCP config that is the
+`postgresql://user:password@host/db` connection string, password included, and
+the same text reached `capabilities`, `modalStatements`, the surface map and
+every generated payload (advertised-command audit, 2026-09-13). The reader
+now redacts the whole artifact at the report boundary before any extraction,
+the order NanoMind's `extractDeclaredPurpose` already uses, plus one rule the
+boundary did not carry: userinfo in a URL of any scheme becomes
+`scheme://[REDACTED_URL_CREDENTIAL]@host`, the host kept because the surface
+map is about it. The profile records `redaction: { status, shapes }` so a
+consumer can tell that content was cut.
+
 ### The MCP checks read every root config spelling, so renaming mcp.json no longer raises the rating
 
 The deterministic MCP checks (`MCP-001` to `MCP-010`, `NET-001`, `NET-002`,

@@ -6,10 +6,14 @@
 import * as net from 'net';
 import * as http from 'http';
 import * as https from 'https';
-import type { ExternalScanResult, ExternalFinding, ScannerOptions, FindingSeverity } from './types';
+import type { ExternalScanResult, ExternalFinding, ScannerOptions, FindingSeverity, PortState } from './types';
 
 // Default ports to scan
-const DEFAULT_PORTS = [80, 443];
+export const DEFAULT_PORTS = [80, 443];
+
+// The longest chain of sequential HTTP probes one port receives (CONFIG_PATHS);
+// the other categories run beside it, so this bounds the probe phase.
+const MAX_PROBE_CHAIN = 6;
 
 // Config file paths to check
 const CONFIG_PATHS = [
@@ -80,13 +84,70 @@ function validateTarget(target: string): void {
   }
 }
 
+export interface ParsedTarget {
+  /** The name handed to DNS and to `socket.connect` -- never the raw URL. */
+  hostname: string;
+  /** The port the URL named, when it named one; `-p` still overrides it. */
+  urlPort?: number;
+  /** The scheme the URL named; a bare host has none. */
+  scheme?: 'http' | 'https';
+}
+
+/**
+ * Split the target the user typed into what the network layer needs.
+ *
+ * 0.33.0 handed the raw string to `socket.connect`, so `scan https://host`
+ * asked DNS for the name "https://host", failed on every port inside the
+ * millisecond and reported a live site as unreachable (advertised-command
+ * audit 2026-09-13). A URL is parsed; a bare `host` or `host:port` is split.
+ */
+export function parseTarget(target: string): ParsedTarget {
+  validateTarget(target);
+  if (target.includes('://')) {
+    let url: URL;
+    try {
+      url = new URL(target);
+    } catch {
+      throw new Error(`Cannot parse "${target}" as a URL. Give a hostname, an IP address, or an http(s) URL.`);
+    }
+    return {
+      hostname: url.hostname.replace(/^\[|\]$/g, ''),
+      urlPort: url.port ? parseInt(url.port, 10) : undefined,
+      scheme: url.protocol === 'https:' ? 'https' : 'http',
+    };
+  }
+  if (net.isIPv6(target)) return { hostname: target };
+  const hostPort = target.match(/^\[?([^\]/]+?)\]?(?::(\d{1,5}))?$/);
+  if (!hostPort) {
+    throw new Error(`Cannot parse "${target}" as a target. Give a hostname, an IP address, or an http(s) URL.`);
+  }
+  return {
+    hostname: hostPort[1],
+    urlPort: hostPort[2] ? parseInt(hostPort[2], 10) : undefined,
+  };
+}
+
+/** The ports a scan will probe for this target and `-p` value. */
+export function resolvePorts(target: string, customPorts?: number[]): number[] {
+  if (customPorts && customPorts.length > 0) return customPorts;
+  const { urlPort } = parseTarget(target);
+  return urlPort ? [urlPort] : DEFAULT_PORTS;
+}
+
+// Ports a host is asked on when every scanned port stayed silent, so that
+// "filtered" and "offline" are not the same answer. A refusal counts as an
+// answer: the host is there, the port is not.
+const REACHABILITY_PORTS = [443, 80];
+
+function describeStates(states: Record<number, PortState>): string {
+  return Object.entries(states).map(([port, state]) => `${port} ${state}`).join(', ');
+}
+
 export class ExternalScanner {
   async scan(target: string, options?: ScannerOptions): Promise<ExternalScanResult> {
-    // Validate protocol (block file://, gopher://, etc.)
-    validateTarget(target);
-
-    // Extract hostname for private IP warning
-    const hostname = target.replace(/^https?:\/\//, '').split(/[:/]/)[0];
+    // Validate protocol (block file://, gopher://, etc.) and split the target.
+    const parsed = parseTarget(target);
+    const { hostname } = parsed;
     if (isPrivateOrReserved(hostname)) {
       // Log warning but allow -- scanning local services is a core use case for security testing
       console.warn(`[HMA] Warning: scanning private/reserved address "${hostname}". Ensure you have authorization.`);
@@ -94,51 +155,105 @@ export class ExternalScanner {
 
     const startTime = Date.now();
     const timeout = options?.timeout ?? 2000;
-    const ports = options?.ports ?? DEFAULT_PORTS;
+    const ports = resolvePorts(target, options?.ports);
     const skipPortScan = options?.skipPortScan ?? false;
 
-    // Global scan timeout: per-port timeout * port count, capped at 60s
-    const globalTimeout = Math.min(timeout * ports.length, 60_000);
+    // Global scan budget. Every phase below is bounded by `timeout` and runs
+    // its members concurrently: the port probes (one round), the reachability
+    // re-check (one round), and the HTTP probes (at most MAX_PROBE_CHAIN
+    // sequential requests per port, categories side by side). 0.33.0 budgeted
+    // ports x timeout and then ran 17 sequential probes per open port against
+    // it, so a host that answered on both default ports "timed out".
+    const globalTimeout = Math.min(timeout * (MAX_PROBE_CHAIN + 4), 60_000);
 
     // Race the scan against a global timeout
     const scanWork = async (): Promise<ExternalScanResult> => {
       // Port scan
       let openPorts: number[] = [];
+      let portStates: Record<number, PortState> | undefined;
+      let hostReachable: boolean | undefined;
+      let unreachableReason: 'unresolved' | 'silent' | undefined;
       if (!skipPortScan) {
-        openPorts = await this.scanPorts(target, ports, timeout);
+        portStates = await this.scanPorts(hostname, ports, timeout);
+        openPorts = ports.filter((p) => portStates![p] === 'open').sort((a, b) => a - b);
+        const states = Object.values(portStates);
+        if (states.includes('open') || states.includes('closed')) {
+          hostReachable = true;
+        } else if (states.includes('unresolved')) {
+          hostReachable = false;
+          unreachableReason = 'unresolved';
+        } else {
+          // Everything scanned stayed silent. Ask the two ports a public host
+          // most often answers on before calling it offline.
+          const extra = REACHABILITY_PORTS.filter((p) => !ports.includes(p));
+          const answered = extra.length > 0
+            ? Object.values(await this.scanPorts(hostname, extra, timeout)).some((s) => s === 'open' || s === 'closed')
+            : false;
+          hostReachable = answered;
+          if (!answered) unreachableReason = 'silent';
+        }
       }
 
-      // Run security checks on open ports
-      const findings: ExternalFinding[] = [];
-
+      // Run security checks on open ports, ports side by side
       const insecure = options?.insecure === true;
-      for (const port of openPorts) {
-        const portFindings = await this.checkPort(target, port, timeout, insecure);
-        findings.push(...portFindings);
-      }
+      const perPort = await Promise.all(
+        openPorts.map((port) => this.checkPort(hostname, port, timeout, insecure, parsed.scheme))
+      );
+      const findings: ExternalFinding[] = perPort.flat();
 
-      // If no ports were reachable, score reflects that nothing was tested
+      // If no port was open, nothing was tested and the score is not applicable.
+      // Say WHICH of the three states the host is in: it never answered, its
+      // name never resolved, or it answered without an open port among those
+      // scanned. 0.33.0 folded all three into "Target unreachable".
       if (openPorts.length === 0 && !skipPortScan) {
         const duration = Date.now() - startTime;
+        const scanned = ports.join(', ');
+        const finding: ExternalFinding = hostReachable
+          ? {
+              id: generateId(),
+              checkId: 'SCAN-NO-OPEN-PORTS',
+              severity: 'low' as FindingSeverity,
+              title: 'Target reachable, no open ports among those scanned',
+              description: `${hostname} answered, but none of ports ${scanned} accepted a connection. Nothing was tested on it, so the score is not applicable.`,
+              port: 0,
+              evidence: `Port states: ${describeStates(portStates!)}`,
+              impact: 'No exposure was measured on the scanned ports; a service on another port is untested',
+              fix: 'Scan the ports the service listens on, e.g. -p 3000,8080.',
+            }
+          : unreachableReason === 'unresolved'
+            ? {
+                id: generateId(),
+                checkId: 'SCAN-UNREACHABLE',
+                severity: 'medium' as FindingSeverity,
+                title: 'Target unreachable',
+                description: `${hostname} did not resolve. Score is not applicable — nothing was tested.`,
+                port: 0,
+                evidence: `DNS lookup failed for ${hostname}`,
+                impact: 'Cannot assess security posture of an unreachable target',
+                fix: 'Check the spelling of the hostname, or scan the IP address directly.',
+              }
+            : {
+                id: generateId(),
+                checkId: 'SCAN-UNREACHABLE',
+                severity: 'medium' as FindingSeverity,
+                title: 'Target unreachable',
+                description: `Nothing answered on ports ${scanned} of ${hostname} within ${timeout}ms each${REACHABILITY_PORTS.some((p) => !ports.includes(p)) ? ', nor on 443 or 80' : ''}. The host may be offline or filtering connections. Score is not applicable — nothing was tested.`,
+                port: 0,
+                evidence: `Port states: ${describeStates(portStates!)}`,
+                impact: 'Cannot assess security posture of an unreachable target',
+                fix: 'Verify the host is running and accessible from this network. Try -p with the ports the service listens on, or a longer -t timeout.',
+              };
         return {
           id: generateId(),
           target,
           score: -1,
           grade: 'N/A',
-          findings: [{
-            id: generateId(),
-            checkId: 'SCAN-UNREACHABLE',
-            severity: 'medium' as FindingSeverity,
-            title: 'Target unreachable',
-            description: `No open ports detected on ${target}. The target may be offline, blocking connections, or the ports are filtered. Score is not applicable — nothing was tested.`,
-            port: 0,
-            evidence: 'Port scan returned 0 open ports',
-            impact: 'Cannot assess security posture of an unreachable target',
-            fix: 'Verify the target is running and accessible. Try specifying ports explicitly with -p (e.g., -p 80,443).',
-          }],
+          findings: [finding],
           duration,
           timestamp: new Date(),
           openPorts: [],
+          hostReachable,
+          portStates,
         };
       }
 
@@ -164,54 +279,72 @@ export class ExternalScanner {
         duration,
         timestamp: new Date(),
         openPorts,
+        ...(hostReachable === undefined ? {} : { hostReachable }),
+        ...(portStates === undefined ? {} : { portStates }),
       };
     };
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Scan timed out after ${globalTimeout}ms (${ports.length} ports x ${timeout}ms each). Try fewer ports (-p 80,443) or increase -t timeout.`)), globalTimeout)
-    );
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Scan timed out after ${globalTimeout}ms (${ports.length} ports, ${timeout}ms per connection). Try fewer ports (-p 80,443) or a longer -t timeout.`)), globalTimeout);
+    });
 
-    return Promise.race([scanWork(), timeoutPromise]);
+    try {
+      return await Promise.race([scanWork(), timeoutPromise]);
+    } finally {
+      // The timer must not keep the process alive after the scan has answered.
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async scanPorts(
-    target: string,
+    host: string,
     ports: number[],
     timeout: number
-  ): Promise<number[]> {
-    const openPorts: number[] = [];
-
+  ): Promise<Record<number, PortState>> {
+    const states: Record<number, PortState> = {};
     await Promise.all(
       ports.map(async (port) => {
-        const isOpen = await this.isPortOpen(target, port, timeout);
-        if (isOpen) {
-          openPorts.push(port);
-        }
+        states[port] = await this.probePort(host, port, timeout);
       })
     );
-
-    return openPorts.sort((a, b) => a - b);
+    return states;
   }
 
-  private isPortOpen(host: string, port: number, timeout: number): Promise<boolean> {
+  /**
+   * One TCP connect, and WHY it ended. 0.33.0 collapsed timeout, refusal and
+   * a failed DNS lookup into `false`, which is how a name that never resolved
+   * and a host that never answered read the same as a closed port.
+   */
+  private probePort(host: string, port: number, timeout: number): Promise<PortState> {
     return new Promise((resolve) => {
       const socket = new net.Socket();
+      let settled = false;
+      const finish = (state: PortState) => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        resolve(state);
+      };
 
       socket.setTimeout(timeout);
-
-      socket.on('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-
-      socket.on('timeout', () => {
-        socket.destroy();
-        resolve(false);
-      });
-
-      socket.on('error', () => {
-        socket.destroy();
-        resolve(false);
+      socket.on('connect', () => finish('open'));
+      socket.on('timeout', () => finish('filtered'));
+      socket.on('error', (err: NodeJS.ErrnoException) => {
+        switch (err.code) {
+          case 'ENOTFOUND':
+          case 'EAI_AGAIN':
+          case 'EAI_NONAME':
+          case 'EAI_FAIL':
+            return finish('unresolved');
+          case 'ECONNREFUSED':
+          case 'ECONNRESET':
+            return finish('closed');
+          case 'ETIMEDOUT':
+            return finish('filtered');
+          default:
+            return finish('error');
+        }
       });
 
       socket.connect(port, host);
@@ -219,20 +352,35 @@ export class ExternalScanner {
   }
 
   private async checkPort(
-    target: string,
+    hostname: string,
     port: number,
     timeout: number,
-    insecure = false
+    insecure = false,
+    scheme?: 'http' | 'https'
   ): Promise<ExternalFinding[]> {
-    const findings: ExternalFinding[] = [];
-    const useHttps = port === 443;
-    const baseUrl = `http${useHttps ? 's' : ''}://${target}:${port}`;
+    // 443 is TLS; a URL target that named its scheme and port is believed.
+    const useHttps = port === 443 || (scheme === 'https' && port !== 80);
+    const host = net.isIPv6(hostname) ? `[${hostname}]` : hostname;
+    const baseUrl = `http${useHttps ? 's' : ''}://${host}:${port}`;
 
-    // Check MCP SSE endpoints
+    // The five probe categories run side by side; each is a short sequential
+    // chain (the longest is CONFIG_PATHS, MAX_PROBE_CHAIN). 0.33.0 ran all
+    // seventeen requests one after another, which is what outran the budget.
+    const [sse, tools, configs, claudeMd, apiKeys] = await Promise.all([
+      this.probeMcpSse(baseUrl, port, timeout, insecure),
+      this.probeMcpTools(baseUrl, port, timeout, insecure),
+      this.probeConfigFiles(baseUrl, port, timeout, insecure),
+      this.probeClaudeMd(baseUrl, port, timeout, insecure),
+      this.probeRootForApiKeys(baseUrl, port, timeout, insecure),
+    ]);
+    return [...sse, ...tools, ...configs, ...claudeMd, ...apiKeys];
+  }
+
+  private async probeMcpSse(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
     for (const path of MCP_SSE_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.contentType?.includes('text/event-stream')) {
-        findings.push({
+        return [{
           id: generateId(),
           checkId: 'MCP-SSE',
           severity: 'critical',
@@ -243,16 +391,17 @@ export class ExternalScanner {
           evidence: `Content-Type: ${result.contentType}`,
           impact: 'Attackers can connect to the MCP server and potentially execute commands',
           fix: 'Restrict access with authentication or firewall rules',
-        });
-        break;
+        }];
       }
     }
+    return [];
+  }
 
-    // Check MCP tools endpoints
+  private async probeMcpTools(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
     for (const path of MCP_TOOLS_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.status === 200 && result.body?.includes('tools')) {
-        findings.push({
+        return [{
           id: generateId(),
           checkId: 'MCP-TOOLS',
           severity: 'critical',
@@ -263,12 +412,14 @@ export class ExternalScanner {
           evidence: `Found tools listing at ${path}`,
           impact: 'Attackers can enumerate available MCP tools and capabilities',
           fix: 'Restrict access with authentication or remove from public access',
-        });
-        break;
+        }];
       }
     }
+    return [];
+  }
 
-    // Check config files
+  private async probeConfigFiles(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
+    const findings: ExternalFinding[] = [];
     for (const path of CONFIG_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.status === 200 && result.body) {
@@ -292,12 +443,14 @@ export class ExternalScanner {
         }
       }
     }
+    return findings;
+  }
 
-    // Check CLAUDE.md
+  private async probeClaudeMd(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
     for (const path of CLAUDE_MD_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
       if (result && result.status === 200 && result.body) {
-        findings.push({
+        return [{
           id: generateId(),
           checkId: 'CLAUDE-MD-EXPOSED',
           severity: 'high',
@@ -308,17 +461,18 @@ export class ExternalScanner {
           evidence: `Found CLAUDE.md at ${path}`,
           impact: 'System instructions reveal agent behavior, capabilities, and potential weaknesses',
           fix: 'Remove file from public access or configure web server to deny access',
-        });
-        break;
+        }];
       }
     }
+    return [];
+  }
 
-    // Check root path for API keys in responses
+  private async probeRootForApiKeys(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
     const rootResult = await this.httpProbe(baseUrl + '/', timeout, insecure);
     if (rootResult && rootResult.body) {
       for (const { name, pattern } of API_KEY_PATTERNS) {
         if (pattern.test(rootResult.body)) {
-          findings.push({
+          return [{
             id: generateId(),
             checkId: 'API-KEY-EXPOSED',
             severity: 'critical',
@@ -329,13 +483,11 @@ export class ExternalScanner {
             evidence: `Found ${name} API key pattern in response`,
             impact: 'API keys can be used to access services, incur costs, or steal data',
             fix: 'Remove API keys from responses and rotate compromised keys',
-          });
-          break;
+          }];
         }
       }
     }
-
-    return findings;
+    return [];
   }
 
   private httpProbe(
@@ -346,6 +498,14 @@ export class ExternalScanner {
     return new Promise((resolve) => {
       const isHttps = url.startsWith('https://');
       const client = isHttps ? https : http;
+      let settled = false;
+      let deadline: NodeJS.Timeout | undefined;
+      const finish = (value: { status: number; contentType?: string; body?: string } | null) => {
+        if (settled) return;
+        settled = true;
+        if (deadline) clearTimeout(deadline);
+        resolve(value);
+      };
 
       const req = client.get(
         url,
@@ -359,30 +519,42 @@ export class ExternalScanner {
         },
         (res) => {
           let body = '';
+          const answer = () => finish({
+            status: res.statusCode ?? 0,
+            contentType: res.headers['content-type'],
+            body: body.substring(0, 10000),
+          });
           res.on('data', (chunk) => {
             body += chunk;
-            // Limit body size
+            // Limit body size. Answer with what was read BEFORE destroying the
+            // stream: a destroyed response emits neither 'end' nor 'error', so
+            // the probe used to sit out its whole deadline on any page over
+            // the cap -- six of those per port is the 12 s a live site took.
             if (body.length > 10000) {
+              answer();
               res.destroy();
             }
           });
-          res.on('end', () => {
-            resolve({
-              status: res.statusCode ?? 0,
-              contentType: res.headers['content-type'],
-              body: body.substring(0, 10000),
-            });
-          });
-          res.on('error', () => resolve(null));
+          res.on('end', answer);
+          res.on('error', () => finish(null));
+          res.on('close', () => finish(null));
         }
       );
 
+      // `timeout` above is an IDLE timeout: a server that accepts the socket
+      // and keeps it open without a byte never trips it. Bound the request
+      // end to end as well, so one held connection cannot eat the scan.
+      deadline = setTimeout(() => {
+        req.destroy();
+        finish(null);
+      }, timeout);
+
       req.on('timeout', () => {
         req.destroy();
-        resolve(null);
+        finish(null);
       });
 
-      req.on('error', () => resolve(null));
+      req.on('error', () => finish(null));
     });
   }
 }

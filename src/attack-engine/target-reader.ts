@@ -16,15 +16,51 @@
  */
 
 import type { SemanticTargetProfile, VulnerabilitySurfaceEntry, AttackCategory } from './types.js';
+import { redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth.js';
+
+/**
+ * Userinfo in a URL of ANY scheme: `scheme://user:password@host`. The report
+ * boundary's own connection-string rule is scheme-anchored (postgres, mysql,
+ * mongodb, redis) and does not match `postgresql://` or an `https://` URL
+ * carrying a password, which is the shape 0.33.0 echoed from an MCP config
+ * into `declaredPurpose` (advertised-command audit 2026-09-13). The host is
+ * kept: it is what the surface map is about; the credential is not.
+ */
+const URL_USERINFO_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)([^\s/@'"]+)@/gi;
+const URL_USERINFO_SHAPE = 'url-credential';
+
+/**
+ * Redact the artifact at the REPORT boundary before anything is extracted
+ * from it, and say whether that changed anything.
+ *
+ * Whole content first, then extraction -- the order NanoMind's
+ * `extractDeclaredPurpose` settled on (HMA-38): a line selected first and
+ * redacted second can be a fragment too short for any rule to match. This
+ * reader treats the artifact as flat text, so every field it returns
+ * (`declaredPurpose`, `capabilities`, `modalStatements`, the surface map) and
+ * every payload built from them is downstream of this one call.
+ */
+export function redactTargetArtifact(content: string): { text: string; redaction: NonNullable<SemanticTargetProfile['redaction']> } {
+  const report = redactSecretsForReportReporting(content);
+  const text = report.text.replace(URL_USERINFO_PATTERN, `$1[REDACTED_URL_CREDENTIAL]@`);
+  const shapes: string[] = text === report.text ? [...report.shapes] : [...report.shapes, URL_USERINFO_SHAPE].sort();
+  return {
+    text,
+    redaction: { status: text === content ? 'clean' : 'applied', shapes },
+  };
+}
 
 /**
  * Read a target artifact and extract its semantic vulnerability surface.
  */
 export function readTarget(
-  content: string,
+  rawContent: string,
   artifactType: SemanticTargetProfile['artifactType'],
   name: string = 'unknown',
 ): SemanticTargetProfile {
+  // Nothing below reads the raw artifact. See `redactTargetArtifact`.
+  const { text: redactedContent, redaction } = redactTargetArtifact(rawContent);
+  const content = redactedContent;
   const text = content.toLowerCase();
 
   // Extract declared purpose (first meaningful paragraph or description)
@@ -56,6 +92,7 @@ export function readTarget(
     governanceMentions,
     dataAccessPatterns,
     vulnerabilitySurface,
+    redaction,
   };
 }
 
