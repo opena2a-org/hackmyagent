@@ -179,6 +179,12 @@ function walk(dir: string, out: string[]): void {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue;
+      // A subdirectory carrying its own `.git` (a worktree's gitfile or a
+      // nested clone) is another checkout, not this repository: its lines
+      // belong to whatever branch it has checked out, and it is ignored by
+      // git here. Measured 2026-09-14: a peer session's `.worktrees/lane-f`
+      // put 10 of its fixture lines into this guard's verdict on the laptop.
+      if (existsSync(join(full, '.git'))) continue;
       walk(full, out);
       continue;
     }
