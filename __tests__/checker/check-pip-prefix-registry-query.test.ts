@@ -77,7 +77,10 @@ describe('PyPI Registry-query end-to-end (smoke, local-only)', () => {
       const res = spawnSync(
         'node',
         [CLI, 'check', 'pip:anthropic', '--no-scan', '--json', '--ci'],
-        { encoding: 'utf8', timeout: 10_000 },
+        // 30 s like the sibling Registry smokes: a cold runner plus a live
+        // Registry round-trip overran 10 s and killed the child (exit null),
+        // which read as a failure on main (run 34797613495, 2026-09-14).
+        { encoding: 'utf8', timeout: 30_000 },
       );
 
       // --no-scan + Registry hit = exit 0 (mirrors the npm path).
