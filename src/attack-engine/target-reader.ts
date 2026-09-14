@@ -42,12 +42,18 @@ import { redactSecretsForReportReporting } from '../nanomind-core/security/defen
  */
 const LOCAL_RULES: ReadonlyArray<{ shape?: string; pattern: RegExp; replacement: string }> = [
   // `scheme://user:PLACEHOLDER@host`, any scheme; the password may carry `/` or `@`.
-  { shape: 'url-credential', pattern: /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s'"@/:]{0,256}(?::[^\s'"]{0,256})?)@/gi, replacement: '$1[REDACTED_URL_CREDENTIAL]@' },
+  // A bare port (`host:8080/`) is not a password, so a later `@` on the line (a mail address)
+  // does not turn the real host into userinfo.
+  { shape: 'url-credential', pattern: /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s'"@/:]{0,256}(?::(?!\d{1,5}(?:[/?#\s]|$))[^\s'"]{0,256})?)@/gi, replacement: '$1[REDACTED_URL_CREDENTIAL]@' },
   // A quoted value assigned to a credential-named key, JSON spelling included.
   { pattern: /((?:password|passwd|pwd|pass|secret|token|key|credential|auth)[a-z0-9_-]{0,64}["']?\s*[:=]\s*["'])([^"'\s]{8,})(["'])/gi, replacement: '$1[REDACTED]$3' },
   // HTTP auth header values.
   { pattern: /(\b(?:bearer|basic)\s+)([A-Za-z0-9._~+/=-]{16,})/gi, replacement: '$1[REDACTED_AUTH_TOKEN]' },
-  // `Password=...;` in a key=value DSN. `(?!\[)` skips a marker already placed.
+  // An unquoted value after a credential-named key: `export DB_PASSWORD=...`, `PGPASSWORD=... psql`,
+  // YAML `password: ...`, a header line `X-Api-Key: ...`, `CLIENT_SECRET=...`. No leading `\b`: the
+  // name is usually prefixed (`PG`, `DB_`, `X-Api-`). `(?!\[)` skips a marker already placed.
+  { pattern: /((?:password|passwd|passphrase|pwd|secret|token|key|credential)[a-z0-9_-]{0,64}\s*[=:]\s*)(?!\[)([^;\s'"]{8,})/gi, replacement: '$1[REDACTED]' },
+  // `Password=...;` in a key=value DSN, any length.
   { pattern: /(\b(?:password|passwd|pwd)\s*=\s*)(?!\[)([^;\s'"]+)/gi, replacement: '$1[REDACTED]' },
 ];
 

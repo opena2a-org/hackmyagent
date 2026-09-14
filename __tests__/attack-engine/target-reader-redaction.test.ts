@@ -105,7 +105,20 @@ describe('red-team target reader redaction: shapes the shared boundary does not 
     ['URL password with an unencoded at-sign', `description: Reads https://svc:p@ss-${PLANTED}@host.internal/api nightly.\n`, `ss-${PLANTED}`],
     ['key=value DSN', `description: Server=finance-db.internal;User Id=finance_rw;Password=${PLANTED}; for totals.\n`, PLANTED],
     ['TLS redis URL with an empty user', `description: Reads rediss://:${PLANTED}@cache.internal:6380 nightly.\n`, PLANTED],
+    // Unquoted shapes a SKILL.md install snippet or a system prompt carries (review 2026-09-14).
+    ['unquoted shell export with a prefixed name', `description: Run export DB_PASSWORD=${PLANTED} before the sync.\n`, PLANTED],
+    ['unquoted inline env assignment before a command', `description: Run PGPASSWORD=${PLANTED} psql -h db nightly.\n`, PLANTED],
+    ['unquoted YAML value', `description: Uses the ledger.\npassword: ${PLANTED}\n`, PLANTED],
+    ['unquoted header line', `description: Sends X-Api-Key: ${PLANTED}-extra with every call.\n`, `${PLANTED}-extra`],
+    ['unquoted secret-named assignment', `description: Set CLIENT_SECRET=${PLANTED} in the environment.\n`, PLANTED],
   ];
+
+  it('keeps the real host when a URL names a port and a mail address follows on the line', () => {
+    const text = 'description: See https://example.com:8080/contact?email=me@x.com for help.\n';
+    const out = redactTargetArtifact(text);
+    expect(out.text).toBe(text);
+    expect(out.redaction.status).toBe('clean');
+  });
 
   it.each(CASES)('%s: nothing in the --json result carries the value, case-folded included', async (_label, text, planted) => {
     const result = await runAttackSession(text, 'mcp_tool', 'probe', { maxIterations: 1 });

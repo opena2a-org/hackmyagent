@@ -112,10 +112,13 @@ now redacts the whole artifact at the report boundary before any extraction,
 the order NanoMind's `extractDeclaredPurpose` already uses, plus one rule the
 boundary did not carry: userinfo in a URL of any scheme becomes
 `scheme://[REDACTED_URL_CREDENTIAL]@host`, the host kept because the surface
-map is about it. Three more carriers the shared boundary does not catch on an
-MCP config are masked in the same place: a quoted value under a
-credential-named key in JSON spelling (`"PGPASSWORD": "..."`), an
-`Authorization: Bearer ...` header value, and a `Password=...;` DSN field.
+map is about it. Four more carriers the shared boundary does not catch on an
+MCP config, a SKILL.md or a system prompt are masked in the same place: a
+quoted value under a credential-named key in JSON spelling
+(`"PGPASSWORD": "..."`), an unquoted value after such a key
+(`export DB_PASSWORD=...`, YAML `password: ...`, a `X-Api-Key: ...` header
+line), an `Authorization: Bearer ...` header value, and a `Password=...;`
+DSN field.
 Every rule is bounded, so a large artifact cannot make the reader hang. The
 profile records `redaction: { status, shapes }` so a consumer can tell that
 content was cut, and the JSON now goes through the shared stdout chokepoint,
