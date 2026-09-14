@@ -6124,14 +6124,23 @@ export class HardeningScanner {
         // Present but unparseable: no findings from this file, as before.
         continue;
       }
+      // A document that parses to something other than an object (`null`,
+      // a number, a string) has no servers to evaluate; treat it like an
+      // unparseable file rather than throwing on `config.servers`.
+      if (!config || typeof config !== 'object' || Array.isArray(config)) {
+        continue;
+      }
 
       // Check for dangerous filesystem access
       let hasRootAccess = false;
       let hasUnrestrictedShell = false;
       let mcp001Fixed = false;
 
-      if (config.servers) {
+      if (config.servers && typeof config.servers === 'object') {
         for (const [name, server] of Object.entries(config.servers as Record<string, { command?: string; args?: string[] }>)) {
+          // A server entry that is not an object (`null`, a string) carries
+          // no command or args to inspect.
+          if (!server || typeof server !== 'object') continue;
           // Check for root filesystem access
           if (server.args) {
             const rootIndex = server.args.findIndex((arg: string) => arg === '/');
@@ -7269,6 +7278,7 @@ dist/
       let boundToAllInterfaces = false;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.args?.some((arg: string) => arg.includes('0.0.0.0'))) {
             boundToAllInterfaces = true;
             break;
@@ -7305,6 +7315,7 @@ dist/
       let hasInsecureRemote = false;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { url?: string }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.url && server.url.startsWith('http://')) {
             hasInsecureRemote = true;
             break;
@@ -7368,6 +7379,7 @@ dist/
 
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { env?: Record<string, string> }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.env) {
             for (const [key, value] of Object.entries(server.env)) {
               // Check if value is a hardcoded secret (not a reference).
@@ -7423,6 +7435,7 @@ dist/
       let hasDefaultCreds = false;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.args) {
             const argsStr = server.args.join(' ').toLowerCase();
             for (const pwd of defaultPasswords) {
@@ -7456,6 +7469,7 @@ dist/
       let hasWildcardTools = false;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.allowedTools?.includes('*')) {
             hasWildcardTools = true;
             break;
@@ -9464,6 +9478,7 @@ dist/
       let allLocalhostBound = true;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[]; url?: string }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.url && !server.url.includes('localhost') && !server.url.includes('127.0.0.1')) {
             // Remote server is fine if using HTTPS
             continue;
@@ -9519,6 +9534,7 @@ dist/
       // MCP-010 reads every root config: logging in any of them counts.
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.args?.some((arg: string) => arg.includes('log') || arg.includes('verbose'))) {
             hasLogging = true;
             break;
@@ -11322,6 +11338,7 @@ dist/
       let hasToolWhitelist = false;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.allowedTools && server.allowedTools.length > 0) {
             hasToolWhitelist = true;
             break;
@@ -11347,6 +11364,7 @@ dist/
       let hasResourceConstraints = false;
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { maxTokens?: number; timeout?: number }>)) {
+          if (!server || typeof server !== 'object') continue;
           if (server.maxTokens || server.timeout) {
             hasResourceConstraints = true;
             break;

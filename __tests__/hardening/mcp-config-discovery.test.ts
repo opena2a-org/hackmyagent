@@ -203,4 +203,15 @@ describe('root MCP config discovery (#637)', () => {
     const failed = (out.allFindings as Record_[]).filter((f) => f.passed === false && /^(MCP-003|CRED-001)$/.test(f.checkId));
     expect(failed.map((f) => `${f.checkId} ${f.file}`)).toEqual([]);
   }, SCAN_TIMEOUT);
+  it('a document that is not an object, or a server entry that is not, does not abort the scan', () => {
+    // JSON.parse succeeds on all three; before the guard, `config.servers`
+    // and `server.args` threw inside coverage.run and the whole secure run
+    // aborted. Each is a live file with nothing to evaluate: the scan
+    // completes and scores.
+    for (const body of ['null', '"x"', JSON.stringify({ servers: { a: null } })]) {
+      const out = scan(tree({ '.mcp.json': body }), []);
+      expect(typeof out.score, body).toBe('number');
+    }
+  }, SCAN_TIMEOUT * 3);
+
 });
