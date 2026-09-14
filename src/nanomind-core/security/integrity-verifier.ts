@@ -63,7 +63,9 @@ export interface TamperEvent {
 const NANOMIND_DIR = join(homedir(), '.nanomind');
 const MODELS_DIR = join(NANOMIND_DIR, 'models');
 const EVENT_CHAIN_PATH = join(NANOMIND_DIR, 'integrity-events.jsonl');
-const MANIFEST_FILENAME = '.integrity-manifest.json';
+// No leading dot: the release artifact review (scripts/release-artifact-review.mjs)
+// refuses any dotfile entry in the published tarball, and this file ships in it.
+const MANIFEST_FILENAME = 'integrity-manifest.json';
 const GENESIS_PREV_HASH = '0'.repeat(64);
 
 // ============================================================================
@@ -103,9 +105,9 @@ export function hmacVerify(data: string, key: string, expectedSig: string): bool
 
 /**
  * Load the integrity manifest. The build script writes it to
- * `<packageRoot>/dist/.integrity-manifest.json` (so it ships inside the
+ * `<packageRoot>/dist/integrity-manifest.json` (so it ships inside the
  * `dist/` tree that gets published). Look there first, then fall back to
- * `<packageRoot>/.integrity-manifest.json` for any consumer that places
+ * `<packageRoot>/integrity-manifest.json` for any consumer that places
  * the manifest at the package root.
  *
  * Returns null when:

@@ -34,7 +34,7 @@ function setupFakePackage(numFiles: number, version = '0.0.0'): { root: string; 
     writeFileSync(join(distDir, name), `module.exports = ${i};\n`);
   }
   const manifest = generateManifest(root);
-  writeFileSync(join(distDir, '.integrity-manifest.json'), JSON.stringify(manifest));
+  writeFileSync(join(distDir, 'integrity-manifest.json'), JSON.stringify(manifest));
   return { root, manifest };
 }
 

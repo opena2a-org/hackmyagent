@@ -301,7 +301,7 @@ describe('HMA-39.AC2 the session leaves the world as it found it', () => {
       );
       const manifest = generateManifest(scratch);
       if (manifest) {
-        fs.writeFileSync(path.join(scratch, 'dist', '.integrity-manifest.json'), JSON.stringify(manifest));
+        fs.writeFileSync(path.join(scratch, 'dist', 'integrity-manifest.json'), JSON.stringify(manifest));
       }
 
       const home = fs.mkdtempSync(path.join(scratch, 'home-'));

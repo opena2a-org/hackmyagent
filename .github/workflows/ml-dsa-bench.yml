@@ -37,6 +37,15 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Refuse tracked package-manager config
+        # A tracked .npmrc (or yarn/pnpm/direnv equivalent) redirects or hooks
+        # the install that follows it. Fails when the grep prints anything.
+        run: |
+          if git ls-files | grep -E '(^|/)(\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|\.envrc)$'; then
+            echo "::error::A tracked package-manager config file is in the tree; it can redirect or hook the install below. Remove it."
+            exit 1
+          fi
+
       - run: npm ci
 
       - name: Run ML-DSA-44 benchmark

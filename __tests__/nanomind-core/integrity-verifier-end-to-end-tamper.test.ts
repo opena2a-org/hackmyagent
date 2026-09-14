@@ -52,10 +52,23 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
 
   const builtArtifactsExist =
     existsSync(join(SRC_DIST, 'cli.js')) &&
-    existsSync(join(SRC_DIST, '.integrity-manifest.json'));
+    existsSync(join(SRC_DIST, 'integrity-manifest.json'));
 
+  // Not `skipIf` — this THROWS in every environment (BD12, BD16; HMA-18
+  // forbids a test that reads CI or GITHUB_ACTIONS). `npm run build` precedes
+  // `npm test` in test-matrix, in the release build job and in the laptop
+  // release test, so an absent artifact is a build/test de-sync — e.g. a
+  // manifest filename change that this suite's own existence check silently
+  // keys on — and a skip would hide exactly that.
   beforeAll(() => {
-    if (!builtArtifactsExist) return;
+    if (!builtArtifactsExist) {
+      throw new Error(
+        'dist/cli.js or dist/integrity-manifest.json is missing. This suite '
+        + 'needs the built tree: run `npm run build` first. The workflows build '
+        + 'before they test, so on a runner this is a build/test de-sync, and '
+        + 'skipping would silently drop the tamper gate (BD12).',
+      );
+    }
     tmpRoot = mkdtempSync(join(tmpdir(), 'hma-e2e-tamper-'));
     // Copy dist/ into tmp (preserves the relative structure verifyAll expects)
     cpSync(SRC_DIST, join(tmpRoot, 'dist'), { recursive: true });
@@ -70,7 +83,7 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
       symlinkSync(SRC_NODE_MODULES, join(tmpRoot, 'node_modules'));
     }
     tmpCli = join(tmpRoot, 'dist', 'cli.js');
-    tmpManifest = join(tmpRoot, 'dist', '.integrity-manifest.json');
+    tmpManifest = join(tmpRoot, 'dist', 'integrity-manifest.json');
     originalCli = readFileSync(tmpCli);
     originalManifest = readFileSync(tmpManifest);
   });
@@ -81,7 +94,7 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
     }
   });
 
-  it.skipIf(!builtArtifactsExist)(
+  it(
     'tampering cli.js causes node dist/cli.js --version to exit 3 with INTEGRITY CHECK FAILED on stderr',
     () => {
       try {
@@ -111,7 +124,7 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
     60000,
   );
 
-  it.skipIf(!builtArtifactsExist)(
+  it(
     'replacing the manifest with a symlink writes INTEGRITY MANIFEST REJECTED to stderr',
     () => {
       // Symlink-only attack (no binary tamper). The verifier rejects the
