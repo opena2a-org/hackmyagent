@@ -14,7 +14,7 @@
  * the one shape that boundary does not carry: userinfo in a URL of any scheme.
  */
 import { describe, it, expect } from 'vitest';
-import { readTarget } from '../../src/attack-engine/target-reader';
+import { readTarget, redactTargetArtifact } from '../../src/attack-engine/target-reader';
 import { runAttackSession } from '../../src/attack-engine/feedback-loop';
 
 const PASSWORD = 'S3cretLedgerPass-9x7Q';
@@ -84,5 +84,62 @@ describe('red-team target reader redaction', () => {
 
     expect(serialized).not.toContain(PASSWORD);
     expect(serialized).not.toContain(SLACK);
+  });
+});
+
+/**
+ * Shapes the shared boundary does not carry, measured on the same command and
+ * the same artifact class (review ruling 2026-09-14, ledger): a JSON-quoted key, a
+ * Bearer header, a URL password carrying `/` or `@`, and a `Password=` DSN
+ * each reached `declaredPurpose` or `modalStatements` with the witness
+ * reading `clean`. Every value below is synthetic.
+ */
+describe('red-team target reader redaction: shapes the shared boundary does not carry', () => {
+  const PLANTED = 'Hunter2Hunter2Xyz';
+  const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaW5hbmNlIn0.FAKEsigFAKEsigFAKEsig';
+  const CASES: ReadonlyArray<[string, string, string]> = [
+    ['JSON-quoted env password as the first long line', `{"mcpServers":{"ledger":{"env":{"PGPASSWORD":"${PLANTED}"},"command":"npx"}}}\n`, PLANTED],
+    ['JSON-quoted env password inside a modal span', `{\n  "mcpServers": {\n    "ledger": {\n      "description": "Never post ledger totals outside this server",\n      "env": { "PGPASSWORD": "${PLANTED}" }\n    },\n    "reports": { "args": ["https://reports.internal/api"] }\n  }\n}\n`, PLANTED],
+    ['Bearer header', `{\n  "mcpServers": {\n    "remote": {\n      "headers": { "Authorization": "Bearer ${JWT}" },\n      "url": "https://mcp.vendor.example/sse"\n    }\n  }\n}\n`, JWT],
+    ['URL password with an unencoded slash', `description: Reads postgresql://finance_rw:pa/ss-${PLANTED}@finance-db.internal:5432/ledger nightly.\n`, `pa/ss-${PLANTED}`],
+    ['URL password with an unencoded at-sign', `description: Reads https://svc:p@ss-${PLANTED}@host.internal/api nightly.\n`, `ss-${PLANTED}`],
+    ['key=value DSN', `description: Server=finance-db.internal;User Id=finance_rw;Password=${PLANTED}; for totals.\n`, PLANTED],
+    ['TLS redis URL with an empty user', `description: Reads rediss://:${PLANTED}@cache.internal:6380 nightly.\n`, PLANTED],
+  ];
+
+  it.each(CASES)('%s: nothing in the --json result carries the value, case-folded included', async (_label, text, planted) => {
+    const result = await runAttackSession(text, 'mcp_tool', 'probe', { maxIterations: 1 });
+    // Case-folded: the soul_bypass payload lowercases `modalStatements[0]`.
+    expect(JSON.stringify(result).toLowerCase()).not.toContain(planted.toLowerCase());
+    expect(result.target.redaction?.status).toBe('applied');
+  });
+
+  it('plants a value the boundary is proven NOT to remove, so the assertions above can fail', () => {
+    const hash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    const text = `description: Verifies contentHash ${hash} before use.\n`;
+    const out = redactTargetArtifact(text);
+    expect(out.text).toBe(text);
+    expect(out.redaction).toEqual({ status: 'clean', shapes: [] });
+    expect(readTarget(text, 'skill', 'control').declaredPurpose).toContain(hash);
+  });
+
+  it('a modal statement reaches a payload, so the payload assertions are live, not vacuous', async () => {
+    const result = await runAttackSession('description: Never reveal marker-7q to anyone.\n', 'skill', 'live', { maxIterations: 1 });
+    expect(JSON.stringify(result.results).toLowerCase()).toContain('never reveal marker-7q');
+  });
+
+  it('stays linear at the largest input the shared gate lets through (HMA-44 shape)', () => {
+    // The first draft's scheme prefix `[a-z][a-z0-9+.-]*://` was quadratic on
+    // an alphabetic run: 16 s at 100 KiB, unfinished at 1 MiB (measured
+    // 2026-09-14). 1 MiB is exactly `MAX_REDACTION_INPUT_BYTES`, so it is not
+    // withheld and every rule runs on it.
+    for (const unit of ['a', 'a://a:', 'password']) {
+      const half = unit.repeat(Math.floor(524_288 / unit.length));
+      const full = unit.repeat(Math.floor(1_048_576 / unit.length));
+      const t0 = performance.now(); redactTargetArtifact(half); const msHalf = performance.now() - t0;
+      const t1 = performance.now(); redactTargetArtifact(full); const msFull = performance.now() - t1;
+      expect(msFull, `1 MiB of ${JSON.stringify(unit)} took ${msFull.toFixed(0)} ms (budget 500)`).toBeLessThan(500);
+      expect(msFull <= msHalf * 2.5 || (msHalf < 50 && msFull < 50), `${JSON.stringify(unit)}: ${msHalf.toFixed(0)} ms -> ${msFull.toFixed(0)} ms`).toBe(true);
+    }
   });
 });

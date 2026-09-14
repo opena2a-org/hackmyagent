@@ -19,15 +19,37 @@ import type { SemanticTargetProfile, VulnerabilitySurfaceEntry, AttackCategory }
 import { redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth.js';
 
 /**
- * Userinfo in a URL of ANY scheme: `scheme://user:password@host`. The report
- * boundary's own connection-string rule is scheme-anchored (postgres, mysql,
- * mongodb, redis) and does not match `postgresql://` or an `https://` URL
- * carrying a password, which is the shape 0.33.0 echoed from an MCP config
- * into `declaredPurpose` (advertised-command audit 2026-09-13). The host is
- * kept: it is what the surface map is about; the credential is not.
+ * Local rules on top of the shared report boundary, applied AFTER it.
+ *
+ * The reader's output feeds only the surface map and the payload text, never
+ * a scanner verdict, so this boundary is deliberately WIDER than the shared
+ * one: over-redaction here costs a mangled surface string, under-redaction
+ * echoes a credential into `--json` (advertised-command audit 2026-09-13,
+ * measured on 0.33.0). Measured gaps of the shared boundary on an MCP config:
+ * userinfo in a URL of any scheme (the shared `connection-string` rule is
+ * anchored to four schemes and misses `postgresql://`), a JSON-quoted key
+ * (`"PGPASSWORD": "..."` -- the shared name-gated rule needs `password:` with
+ * no closing quote before the colon), an `Authorization: Bearer ...` header,
+ * and a `Password=...;` DSN.
+ *
+ * Only the URL rule names a shape, because it resolves one from the VALUE.
+ * The other three fire on a NAME or a POSITION and, per C9, contribute no
+ * shape id: `status: 'applied'` with no shape is the honest record for them.
+ *
+ * Every quantifier that has to backtrack to find a trailing anchor is bounded
+ * (`{0,31}` on the scheme, `{0,256}`, `{0,64}`); the shared boundary's 1 MiB gate runs
+ * first, so the worst case here is linear in that bound times the input.
  */
-const URL_USERINFO_PATTERN = /([a-z][a-z0-9+.-]*:\/\/)([^\s/@'"]+)@/gi;
-const URL_USERINFO_SHAPE = 'url-credential';
+const LOCAL_RULES: ReadonlyArray<{ shape?: string; pattern: RegExp; replacement: string }> = [
+  // `scheme://user:pass@host`, any scheme; the password may carry `/` or `@`.
+  { shape: 'url-credential', pattern: /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s'"@/:]{0,256}(?::[^\s'"]{0,256})?)@/gi, replacement: '$1[REDACTED_URL_CREDENTIAL]@' },
+  // A quoted value assigned to a credential-named key, JSON spelling included.
+  { pattern: /((?:password|passwd|pwd|pass|secret|token|key|credential|auth)[a-z0-9_-]{0,64}["']?\s*[:=]\s*["'])([^"'\s]{8,})(["'])/gi, replacement: '$1[REDACTED]$3' },
+  // HTTP auth header values.
+  { pattern: /(\b(?:bearer|basic)\s+)([A-Za-z0-9._~+/=-]{16,})/gi, replacement: '$1[REDACTED_AUTH_TOKEN]' },
+  // `Password=...;` in a key=value DSN. `(?!\[)` skips a marker already placed.
+  { pattern: /(\b(?:password|passwd|pwd)\s*=\s*)(?!\[)([^;\s'"]+)/gi, replacement: '$1[REDACTED]' },
+];
 
 /**
  * Redact the artifact at the REPORT boundary before anything is extracted
@@ -42,11 +64,16 @@ const URL_USERINFO_SHAPE = 'url-credential';
  */
 export function redactTargetArtifact(content: string): { text: string; redaction: NonNullable<SemanticTargetProfile['redaction']> } {
   const report = redactSecretsForReportReporting(content);
-  const text = report.text.replace(URL_USERINFO_PATTERN, `$1[REDACTED_URL_CREDENTIAL]@`);
-  const shapes: string[] = text === report.text ? [...report.shapes] : [...report.shapes, URL_USERINFO_SHAPE].sort();
+  let text = report.text;
+  const shapes = new Set<string>(report.shapes);
+  for (const rule of LOCAL_RULES) {
+    const before = text;
+    text = text.replace(rule.pattern, rule.replacement);
+    if (text !== before && rule.shape) shapes.add(rule.shape);
+  }
   return {
     text,
-    redaction: { status: text === content ? 'clean' : 'applied', shapes },
+    redaction: { status: text === content ? 'clean' : 'applied', shapes: [...shapes].sort() },
   };
 }
 

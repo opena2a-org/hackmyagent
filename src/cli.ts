@@ -11528,7 +11528,7 @@ program
     });
 
     if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
+      writeJsonStdout(result);
     } else {
       // Every value below is escaped before it reaches a console.log, even
       // though each currently comes from a fixed vocabulary rather than from the
