@@ -38,6 +38,7 @@ beforeAll(assertDistFreshIfPresent);
 
 let root: string;
 let empty: string;
+let manifestOnly: string;
 
 let home: string;
 
@@ -75,6 +76,13 @@ beforeAll(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-'));
   empty = path.join(root, 'empty');
   fs.mkdirSync(empty);
+  // A package manifest with no lock file: the one L1 failure (DEP-001 on
+  // controls 6.1-6.4) that an empty tree used to carry before DEP-001 read
+  // its manifest as the subject. The cells that need a measured L1 failure
+  // next to the null L3 rung run here; the empty tree has none to offer.
+  manifestOnly = path.join(root, 'manifest-only');
+  fs.mkdirSync(manifestOnly);
+  fs.writeFileSync(path.join(manifestOnly, 'package.json'), '{"name":"manifest458","version":"1.0.0","dependencies":{}}\n');
   // An MCP-shaped tree: types as `mcp`, so 7.4 (Agent-to-Agent, L2) gets a
   // result while the category has no L1 control at all.
   mcpTree = path.join(root, 'mcp tree'); // the space is deliberate: cited commands must quote it
@@ -171,12 +179,14 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE text (T2): default depth -l L3 is Not Passing with the null scope in the same string, exit 1', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
     // Since #458 steps 1-2 an absent Dockerfile is a MEASURED L2 failure —
     // SANDBOX-001's ruled advisory shape (`passed: false`, `file` = the path
-    // the fix creates) — so L2 leaves the null scope on an empty tree and only
-    // L3 remains unmeasured. The property under test is unchanged: the null
-    // scope travels in the rating string, never alone.
+    // the fix creates) — so L2 leaves the null scope on this tree and only
+    // L3 remains unmeasured. The manifest-only tree supplies the L1 failure
+    // (DEP-001) that keeps the rating Not Passing; an empty tree reads
+    // DEP-001 as not-applicable and rates Passing. The property under test is
+    // unchanged: the null scope travels in the rating string, never alone.
     expect(res.out).toContain('Rating: Not Passing (L3 not assessed)');
     expect(res.out).toContain('Compliance by level: L1=');
     expect(res.out).toContain('L2=0% L3=not assessed');
@@ -388,11 +398,13 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE json: an L1 failure still reads Not Passing at -l L3 when L3 is unmeasured (null rungs are skipped, not failed)', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
+    // The manifest-only tree carries the L1 failure (DEP-001: a manifest
+    // with no lock file); an empty tree has no manifest and no L1 failure.
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(typeof body.l1Compliance).toBe('number');
     expect(body.l1Compliance).toBeLessThan(70);
-    // L2 is measured on an empty tree since #458 steps 1-2 (SANDBOX-001's
+    // L2 is measured on this tree since #458 steps 1-2 (SANDBOX-001's
     // advisory record fails 9.4 Sandboxing): 0, a number, not null. L3 is the
     // null rung this cell is about.
     expect(body.l2Compliance).toBe(0);
@@ -410,7 +422,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('PIN: a measured level below threshold still fails as before (-l L1 at default depth is Not Passing, exit 1, numeric l1Compliance)', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--format', 'json']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(typeof body.l1Compliance).toBe('number');
     expect(typeof body.compliance).toBe('number');
@@ -436,7 +448,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('PIN: --fail-below over a measured compliance still applies', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--fail-below', '80']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--fail-below', '80']);
     expect(res.stderr).toContain('below threshold 80%');
     expect(res.stderr).not.toContain('not evaluated');
     expect(res.status).toBe(1);
@@ -487,8 +499,11 @@ describe('#458 step 3: a control whose every check reports its subject absent is
     // 9.4: SANDBOX-001 measured FAIL (the ruled absent-mitigation advisory)
     // + SANDBOX-002 not-applicable -> stays failed. [PIN either side]
     expect(byId['9.4']).toBe('failed');
-    // Every NA record on this tree shares its control with a measured record.
-    expect(body.notApplicableControls).toBe(0);
+    // 6.1-6.4: every check reads package.json as its subject (DEP-001 since
+    // it stopped treating the lock file as a must-exist artifact), so on a
+    // tree with no manifest the four controls are not-applicable, not failed.
+    expect(byId['6.1']).toBe('not-applicable');
+    expect(body.notApplicableControls).toBe(4);
     // NA came out of `failed`, never out of `unverified`.
     expect(body.unverifiedControls).toBe(38);
   });
@@ -515,11 +530,11 @@ describe('#458 step 3: a control whose every check reports its subject absent is
   });
 
   it('PIN: the step-0 null contract and the #636 re-pins hold across step 3', () => {
-    const text = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
+    const text = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
     expect(text.out).toContain('Rating: Not Passing (L3 not assessed)');
     expect(text.out).toContain('L2=0% L3=not assessed');
     expect(text.status).toBe(1);
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(body.l2Compliance).toBe(0);
     expect(body.l3Compliance).toBeNull();
