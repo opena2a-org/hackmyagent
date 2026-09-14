@@ -191,6 +191,20 @@ describe('HMA-40.AC1: release.yml holds the build → review → publish → ver
   });
 });
 
+describe('HMA-40.AC5: every action release.yml runs is pinned to a commit, never a mutable tag', () => {
+  it('HMA-40.AC5 each uses: names a 40-hex commit SHA (the version rides as a trailing comment)', () => {
+    let seen = 0;
+    for (const [jobName, job] of Object.entries(jobs)) {
+      for (const s of stepsOf(job)) {
+        if (!s.uses) continue;
+        seen += 1;
+        expect(s.uses, `${jobName}: ${s.uses} — a tag can be retargeted; the jobs holding id-token: write and contents: write would then run whatever it points at, as us`).toMatch(/^[^@]+@[0-9a-f]{40}$/);
+      }
+    }
+    expect(seen, 'release.yml runs no actions at all — the shape moved').toBeGreaterThan(0);
+  });
+});
+
 describe('HMA-40.AC4: every npm ci is preceded by the package-manager-config guard', () => {
   const workflowFiles = fs.readdirSync(WORKFLOW_DIR).filter((f) => /\.ya?ml$/.test(f));
 

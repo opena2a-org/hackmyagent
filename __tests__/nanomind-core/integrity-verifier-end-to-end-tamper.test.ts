@@ -54,25 +54,20 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
     existsSync(join(SRC_DIST, 'cli.js')) &&
     existsSync(join(SRC_DIST, 'integrity-manifest.json'));
 
-  // Not `skipIf` under CI — this THROWS there (BD12; same stance as
-  // ast-boundary-line-recovery.test.ts). test-matrix and the release build
-  // job both run `npm run build` before `npm test`, so the only way these
-  // artifacts are absent in CI is a build/test de-sync — e.g. a manifest
-  // filename change that this suite's own existence check silently keys on —
-  // and a skip would hide exactly that. Local runs keep the skip.
-  const inCI = Boolean(process.env.CI || process.env.GITHUB_ACTIONS);
-  const skipWhenUnbuilt = !builtArtifactsExist && !inCI;
-
+  // Not `skipIf` — this THROWS in every environment (BD12, BD16; HMA-18
+  // forbids a test that reads CI or GITHUB_ACTIONS). `npm run build` precedes
+  // `npm test` in test-matrix, in the release build job and in the laptop
+  // release test, so an absent artifact is a build/test de-sync — e.g. a
+  // manifest filename change that this suite's own existence check silently
+  // keys on — and a skip would hide exactly that.
   beforeAll(() => {
     if (!builtArtifactsExist) {
-      if (inCI) {
-        throw new Error(
-          'dist/cli.js or dist/integrity-manifest.json is missing under CI. '
-          + 'The workflow builds before it tests, so this is a build/test '
-          + 'de-sync, and skipping would silently drop the tamper gate (BD12).',
-        );
-      }
-      return;
+      throw new Error(
+        'dist/cli.js or dist/integrity-manifest.json is missing. This suite '
+        + 'needs the built tree: run `npm run build` first. The workflows build '
+        + 'before they test, so on a runner this is a build/test de-sync, and '
+        + 'skipping would silently drop the tamper gate (BD12).',
+      );
     }
     tmpRoot = mkdtempSync(join(tmpdir(), 'hma-e2e-tamper-'));
     // Copy dist/ into tmp (preserves the relative structure verifyAll expects)
@@ -99,7 +94,7 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
     }
   });
 
-  it.skipIf(skipWhenUnbuilt)(
+  it(
     'tampering cli.js causes node dist/cli.js --version to exit 3 with INTEGRITY CHECK FAILED on stderr',
     () => {
       try {
@@ -129,7 +124,7 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
     60000,
   );
 
-  it.skipIf(skipWhenUnbuilt)(
+  it(
     'replacing the manifest with a symlink writes INTEGRITY MANIFEST REJECTED to stderr',
     () => {
       // Symlink-only attack (no binary tamper). The verifier rejects the
