@@ -92,7 +92,8 @@ describe('#458 — absent subjects on an mcp tree (the pin)', () => {
   const NA_CELLS: Array<[string, string]> = [
     ['PROMPT-001', 'CLAUDE.md'],
     ['SANDBOX-002', 'Dockerfile'],
-    ['TOOL-001', 'mcp.json'],
+    // #637 — the subject is the SET of root spellings the check reads.
+    ['TOOL-001', 'mcp.json or .mcp.json'],
     // The non-census sites converted in the same unit: each reads ONE subject
     // through readCheckSubject / readCheckDir, so the same three-way contract
     // holds. The subject strings are the emitter literals.
@@ -285,7 +286,7 @@ describe.skipIf(runsAsRoot)('#458 — an unreadable subject emits nothing; the u
     // into each other.
     const records = byId(result.allFindings, 'TOOL-001');
     expect(records).toHaveLength(1);
-    expect(records[0].notApplicable?.subject).toBe('mcp.json');
+    expect(records[0].notApplicable?.subject).toBe('mcp.json or .mcp.json');
   });
 
   it('SCAN-UNREAD-001 names both obstructed subjects', () => {
