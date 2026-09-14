@@ -33,12 +33,19 @@ const CHANGELOG = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf-8');
 const SCANNER = readFileSync(join(REPO_ROOT, 'src', 'hardening', 'scanner.ts'), 'utf-8');
 const PKG = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string };
 
-/** The Unreleased section, up to the first dated release heading. */
-function unreleasedSection(): string {
+/**
+ * The text that records the change: `[Unreleased]` together with the newest
+ * dated release. Pinning `[Unreleased]` alone made the record disappear at the
+ * release cut; reading only the newest dated section would fail on the first
+ * unrelated entry added after it.
+ */
+function recordingSection(): string {
   const start = CHANGELOG.indexOf('## [Unreleased]');
   expect(start, 'the changelog has no [Unreleased] section').toBeGreaterThanOrEqual(0);
   const next = CHANGELOG.indexOf('\n## [', start + 1);
-  return next < 0 ? CHANGELOG.slice(start) : CHANGELOG.slice(start, next);
+  if (next < 0) return CHANGELOG.slice(start);
+  const after = CHANGELOG.indexOf('\n## [', next + 1);
+  return after < 0 ? CHANGELOG.slice(start) : CHANGELOG.slice(start, after);
 }
 
 /** Every `### Known issues` block in `text`, body only. */
@@ -81,15 +88,19 @@ describe('HMA-01.AC6: no third carry, no widened corroborator, no publish', () =
     }
   });
 
-  it('HMA-01.AC6 the Unreleased section records the carried P1s as fixed', () => {
+  it('HMA-01.AC6 the recording section records the carried P1s as fixed', () => {
     // The other direction: a suite that only forbids a Known issues entry
     // passes on a release that says nothing about them at all.
-    const unreleased = unreleasedSection();
+    const section = recordingSection();
     for (const issue of ['#368', '#477', '#478']) {
-      expect(unreleased, `the Unreleased section does not name ${issue}`).toContain(issue);
+      expect(section, `the recording section does not name ${issue}`).toContain(issue);
     }
-    expect(knownIssueBlocks(unreleased), 'the Unreleased section carries a Known issues block')
-      .toHaveLength(0);
+    // A later release may carry other issues; it must not carry these again.
+    for (const block of knownIssueBlocks(section)) {
+      for (const issue of ['#368', '#477', '#478']) {
+        expect(block, `the recording section carries ${issue} as a known issue again`).not.toContain(issue);
+      }
+    }
   });
 
   it('HMA-01.AC6 the #475 execution-sink corroborator regexes are byte-identical', () => {

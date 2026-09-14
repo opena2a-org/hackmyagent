@@ -48,6 +48,13 @@ export default defineConfig({
     // hook at exactly 60000ms in the run after testTimeout alone was raised).
     testTimeout: 180_000,
     hookTimeout: 180_000,
+    // Worker count from the environment when set. The default is one worker
+    // per core; on a 16 GB machine that also carries a container VM the
+    // workers exhaust memory and the runner is killed mid-suite with no test
+    // named, which is how a green tree failed the git pre-push hook twice on
+    // 2026-09-14. `VITEST_MAX_WORKERS=3 npm test` fits; CI and a roomy
+    // machine leave it unset and keep the default.
+    ...(process.env.VITEST_MAX_WORKERS ? { maxWorkers: Number(process.env.VITEST_MAX_WORKERS) } : {}),
     // The OPENA2A_CORPUS_DETERMINISTIC default that used to sit here as
     // `env: { ... }` now lives in vitest.setup.ts, which sets it only when it is
     // unset. That conditional form is the reason it moved: a deliberate

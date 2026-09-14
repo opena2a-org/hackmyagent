@@ -63,7 +63,10 @@ function detect(arg: string): string {
     return execFileSync(process.execPath, [BUILT_CLI, 'detect', arg, '--ci'], {
       encoding: 'utf8',
       timeout: 180_000,
-      env: { ...process.env, NO_COLOR: '1', PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}` },
+      // HOME is the planted, empty one: `detect` also reads machine-wide tool
+      // configs under the home directory for installed agents and MCP servers,
+      // and this suite measures the fixture, not the developer's laptop.
+      env: { ...process.env, NO_COLOR: '1', HOME: fakeBin, PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}` },
     });
   } catch (e: unknown) {
     return String((e as { stdout?: string }).stdout ?? '');
@@ -112,16 +115,21 @@ afterAll(() => {
 });
 
 describe('#368 detect never emits a whole-file Verify', () => {
-  it('the fixture reaches the emitter: the permission finding is raised', () => {
+  it('the fixture reaches the emitter: the config finding is raised', () => {
     // Non-vacuity floor for the assertion below. If this config stops being
     // flagged, "no cat" becomes true for the wrong reason and the pin rots
     // silently — which is exactly how the branch survived four review rounds.
+    //
+    // Since 0.33.0 the JSON-quoted key in the `env` block is recognised as a
+    // credential, and a credential outranks the grant on the same file, so the
+    // finding this fixture raises is the credential one. Both go through the
+    // same emitter (`configVerifyCommand`), which is what the suite pins.
     const out = detect(target);
     expect(out.length, 'no output captured').toBeGreaterThan(0);
     expect(
       out,
-      'the AI-config permission finding no longer fires, so this suite proves nothing',
-    ).toMatch(/AI config files grant broad permissions/);
+      'no AI-config finding fires on the fixture, so this suite proves nothing',
+    ).toMatch(/AI config files (grant broad permissions|contain credential references)/);
   });
 
   it('emits no Verify that prints an entire file', () => {

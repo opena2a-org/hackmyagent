@@ -274,6 +274,8 @@ const TAXONOMY_MAP: Record<string, string> = {
   'SKILL-022': 'SKILL-EXFIL',
   'SKILL-023': 'SKILL-FRONTMATTER',
   'SKILL-024': 'SKILL-EXFIL',
+  // A credential value in a skill body: the same class CRED-001 reports for config files.
+  'SKILL-025': 'RETROACTIVE-PRIV',
 
   // Authentication, session, and access control
   'AUTH-001': 'RETROACTIVE-PRIV',

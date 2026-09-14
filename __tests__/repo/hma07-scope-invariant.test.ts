@@ -73,7 +73,7 @@ const REGISTERED_LONG_FLAGS = [
   '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--at',
   '--atx', '--audit', '--aws-account-id', '--aws-region', '--batch', '--benchmark',
   '--broker-socket', '--broker-token', '--category', '--check-id', '--ci', '--ci-publish',
-  '--contribute', '--deep', '--delay', '--directory', '--dry-run', '--explain',
+  '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',
   '--header', '--ignore', '--intensity', '--iterations', '--json', '--level',
@@ -85,6 +85,9 @@ const REGISTERED_LONG_FLAGS = [
   '--static-only', '--status', '--stop-on-success', '--surface', '--system-prompt',
   '--target-type', '--tier', '--timeout', '--tool', '--type', '--verbose',
   '--version', '--version-id', '--with-aim',
+  // `detect --depth` / `detect --workspace` (0.33.0): the walk is on by default; these bound
+  // it and force the list on a target that is itself a project. Not a `secure` flag.
+  '--workspace',
 ];
 
 function sha256(bytes: Buffer | string): string {

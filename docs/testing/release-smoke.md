@@ -38,8 +38,11 @@ checkout is stale; it never means "skip it":
 git -C ~/.opena2a/corpus rev-parse --short HEAD   # record this in the release notes
 OPENA2A_CORPUS_PATH=$HOME/.opena2a/corpus npm run release-smoke:corpus
 # Expected: 12 passed, 0 failed, 2 skipped (a2a/* and npm/* surfaces are not in the corpus yet)
-# Baseline recorded 2026-09-01 against corpus c899830 (opena2a-corpus#11); a different
-# corpus HEAD needs the counts re-recorded here.
+# Baseline re-recorded 2026-09-13 against corpus 8ef8168 (branch band/exfil-skill-hma-29-skill-025,
+# recentres exfil-skill's hma band on measured 29) for 0.33.0 (goldens re-baked:
+# skill/malicious/exfil-skill for SKILL-025, repo/malicious/kitchen-sink for the
+# AST-MANIP-001 / credential-gating changes that landed on main after the 2026-08-20 bake);
+# a different corpus HEAD needs the counts re-recorded here.
 ```
 
 Do not set `OPENA2A_CORPUS_UPDATE_GOLDEN=1` on a release branch to make this pass: a golden
@@ -161,8 +164,8 @@ coverage.
 |---|---|---|
 | Known-bad tree | `"$BAD"` (§0.5) | 69/100, ≥ 1 CRITICAL credential finding, exit 1 |
 | Local repo (clean) | `../ai-trust` or `../secretless` | 60–90 |
-| Empty dir | `"$CLEAN"` (§0.5) | ~95–98 (`.gitignore` LOW only) |
-| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 96/100 |
+| Empty dir | `"$CLEAN"` (§0.5) | 93 (`.gitignore` LOW + `DEP-001` MEDIUM: since #636 a missing lock file is an absent-mitigation advisory with a `file`, so it is no longer filtered out as file-less; measured 0.33.0) |
+| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 93/100 (was 96 before #636 made `DEP-001` visible; measured 0.33.0) |
 | Standalone SOUL.md | `node dist/cli.js scan-soul test/` | see note below |
 | npm package | `node dist/cli.js check express` | ≥ 95 |
 | PyPI package | `node dist/cli.js check pip:requests` | ~90 |

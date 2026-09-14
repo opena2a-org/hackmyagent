@@ -4,6 +4,121 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-13
+
+Everything below this heading down to the 0.32.0 entry landed on main after
+0.32.0 and ships here. Corpus goldens for `skill/malicious/exfil-skill` and
+`repo/malicious/kitchen-sink` were re-baked for this release (see
+`docs/testing/release-smoke.md` for the causes).
+
+### Known issues
+
+- `secure` reports `DEP-001` "No lock file found" (MEDIUM) on a tree that has
+  no package manifest at all, so an empty directory or a non-Node agent scores
+  93 where 0.32.0 scored 98. The finding existed in 0.32.0 and was hidden by
+  the file-less filter; #636 gave it a `file`. Tracked to read not-applicable
+  without a `package.json` in the next release.
+- `secure --ci -b oasb-1` reports `5.1: No Hardcoded Credentials` as passed on
+  a tree whose `.claude/settings.json` holds a plaintext key, while `secure`
+  and `detect` on the same tree flag it. Present in 0.32.0. Target 0.34.0
+  ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
+- `check <local dir> --offline` prints a score (`96/100`, `Usable with caveats`)
+  and exits 0 while noting that the static checks were not run, so a local
+  directory holding a plaintext key gets a passing verdict. Present in 0.32.0.
+  Target 0.34.0 ([#740](https://github.com/opena2a-org/hackmyagent/issues/740)).
+- `-v` on `secure`, `scan-soul` and `check` prints the version and exits 0
+  without scanning, while each subcommand's `--help` documents `-v, --verbose`.
+  Present in 0.32.0. Target 0.34.0
+  ([#741](https://github.com/opena2a-org/hackmyagent/issues/741)).
+
+### `detect` lists the agent projects under a workspace root
+
+`hackmyagent detect` read the target directory alone. From a folder holding
+five agent repos it reported zero project agents, while the same command inside
+any one of them reported a shell MCP server, a key in `.cursorrules`, or a
+governance document that subverts its own control. The command's description
+("find unmanaged AI agents and MCP servers") is per machine, not per repo.
+
+`detect` now walks the target (default four levels, `--depth <levels>`,
+`--depth 0` for the old behaviour), treats a directory holding any AI config,
+project MCP file, governance file or capability policy as an agent project, and
+runs the existing per-directory scan on each. The report opens with
+"Shadow AI agents (N)": one line per project, worst first, with what identified
+it, its MCP server count and worst risk, governance score, whether a config
+carries a credential, and the verdict. Each project's critical and high findings
+follow with their `file:line`, `Fix` and `Verify`, one blank line between
+findings; the machine-wide inventory prints once. A credential citation names
+the key as written, the value's vendor prefix when it has one, and the length
+(`"ANTHROPIC_API_KEY" = sk-ant-api0… (108 chars)`) where 0.32.0 printed
+`matched "API_KEY"`, which read as a false positive. The exit code is the
+worst project's. `--json` adds
+`projects: [...]`, each entry the single-directory result for that project;
+`--export-csv` writes one file with `Scan Directory` set per project, and a
+`Governance File` row for each project that has one, so a directory identified
+only by its `SOUL.md` still appears in the inventory.
+
+A target that is itself an agent project renders exactly as before: a repo's
+governance fixtures and docs copies are not its shadow agents. The projects
+below it are named under Next Steps and in the JSON's additive `nestedProjects`
+key, and `--workspace` lists them all with the target included as `.`. A target
+that holds no agent project also renders as before. `node_modules`, build output
+and hidden directories are not entered, symbolic links are not followed, and the
+walk stops at 20,000 directories.
+
+There is no workspace-level governance score. Governance is a measurement of one
+document; a minimum over five of them would be a third number that means nothing.
+
+Citations now use the path relative to the current directory when the project
+sits below it (`hackmyagent secure deploy-runbook-agent`), the absolute path
+otherwise.
+
+### `detect` lists agents from installed evidence, not only running processes
+
+The agent list came from `ps` alone, so the "AI agents without governance"
+finding vanished the moment the developer closed the tool, and a project whose
+`.cursorrules` was present on a machine without Cursor listed no Cursor at all.
+Each agent now carries `state` (`running` or `installed`) and `source`
+(`process`, or the config that evidences it): a project AI config
+(`.cursorrules` is Cursor, `CLAUDE.md` and `.claude/settings.json` are Claude
+Code, ...) or a machine-wide tool config (`~/.cursor/mcp.json`,
+`~/.claude.json`, Claude Desktop's config, ...). A running entry outranks an
+installed one for the same tool. The governance finding fires for installed
+agents too and names the evidence; the "Running AI Agents" section is now
+"AI Agents" with a running/installed column; CSV agent rows carry
+`Installed: <config>` as their source. `pid` is present only for a running
+agent.
+
+### `detect` reports a JSON-quoted credential key
+
+`"ANTHROPIC_API_KEY": "sk-ant-..."` in `.claude/settings.json` was not a
+credential finding: the closing quote sits between the key name and the colon,
+and the pattern allowed no quote there. `secure` reported the same line. The
+pattern now accepts an optional closing quote before the separator.
+
+### `detect` reads Claude Desktop's config and `~/.claude.json`
+
+Machine-wide MCP discovery adds `~/Library/Application Support/Claude/claude_desktop_config.json`
+(macOS), `~/.config/Claude/claude_desktop_config.json` (Linux),
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows) and the `mcpServers`
+block of `~/.claude.json`. On a laptop with 20 servers in each of the two
+Claude configs `detect` reported 0 machine-wide servers.
+
+### `--json --export-csv` stays parseable
+
+The "Asset inventory: <file>" notice was written to stdout after the JSON
+document, so the combination produced output no parser accepts. On the JSON
+channel the notice goes to stderr.
+
+### `secure` reports a credential value inside a skill body (SKILL-025)
+
+Five vendor-shaped tokens placed in `.claude/skills/<name>/SKILL.md` were each
+reported benign with no credential finding, while the same shapes in `.mcp.json`
+were CRITICAL. `SKILL-005` looks for credential file references (`~/.aws`,
+`.env`); no skill check read the body for a credential itself. `SKILL-025` runs
+the shared credential-format registry over each skill body and reports a
+CRITICAL finding with the file and line. The value is never repeated in the
+report.
+
 ### `check <npm-name> --no-scan` no longer scans when the Registry query fails
 
 `--no-scan` asks for the Registry's answer and nothing else. On the npm path a
