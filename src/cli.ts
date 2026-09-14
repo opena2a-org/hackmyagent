@@ -253,21 +253,32 @@ function notFoundCoverage(target: string, ecosystem: string) {
 }
 
 /**
- * The verdict for a downloaded remote target — npm, PyPI, GitHub, raw URL.
+ * The verdict for a tree the scanner read — a downloaded remote target (npm,
+ * PyPI, GitHub, raw URL) or a local directory (#740).
  *
- * #416 — these four paths derived a risk band from severity counts alone and
+ * #416 — the remote paths derived a risk band from severity counts alone and
  * emitted no coverage on `--json`, so a consumer could not tell a package
  * whose files were read and found clean from a download that produced an
  * empty tree. `filesExamined` is counted by the scanner's coverage ledger
  * during the run, so zero here means the scan read nothing and the band is
  * withheld rather than reported as `low`.
  */
-function remoteCheckVerdict(
-  result: { coverage?: { filesExamined: number; unreadableInputs?: ReadFailureRecord } },
-  counts: { critical: number; high: number },
+function scanResultVerdict(
+  result: { coverage?: { filesExamined: number; unreadableInputs?: ReadFailureRecord; executions?: unknown[] } },
+  counts: { critical: number; high: number; issues?: number },
   displayTarget: string,
+  /** The nothing-to-examine sentence, when the arm words it itself (#740, the local arm). */
+  nothingToExamineDetail?: string,
+  /**
+   * The local arm: an existing, readable directory the scanner walked and ran
+   * its checks over is measured even when it read no file, the reading
+   * `secure` gives the same tree (ruled 2026-09-15). A record with no
+   * executions stays nothing-to-examine; an unread input stays unmeasured.
+   */
+  localTarget = false,
 ): CheckVerdict {
   const filesExamined = result.coverage?.filesExamined ?? 0;
+  const executed = result.coverage?.executions?.length ?? 0;
   // #508 — the scanner's ledger already records the inputs it discovered and
   // could not read; this derivation used to define the denominator as the
   // numerator (`fullCoverage`), so an unreadable member of a package left
@@ -276,6 +287,7 @@ function remoteCheckVerdict(
   // rather than as "nothing to examine".
   const record = result.coverage?.unreadableInputs ?? { count: 0, codes: {}, directories: 0 };
   const allUnread = filesExamined === 0 && record.count > 0;
+  const measuredAbsence = localTarget && filesExamined === 0 && record.count === 0 && executed > 0;
   const target = escapeForDisplay(displayTarget);
   return deriveCheckVerdict(
     counts,
@@ -283,7 +295,8 @@ function remoteCheckVerdict(
     allUnread ? 'target-unreadable' : 'nothing-to-examine',
     allUnread
       ? `Every file discovered in ${target} could not be read (${escapeForDisplay(Object.keys(record.codes).join(', '))}), so no risk level can be reported for it.`
-      : `No file was read from ${target}, so no risk level can be reported for it.`,
+      : nothingToExamineDetail ?? `No file was read from ${target}, so no risk level can be reported for it.`,
+    measuredAbsence,
   );
 }
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
@@ -303,7 +316,6 @@ import {
   type CheckVerdict,
   type ReadFailureRecord,
 } from './check/verdict';
-import { quickScanCoverage } from './check/quick-scan-coverage';
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
 import { FIX_LINES } from './hardening/fix-lines';
 import {
@@ -312,12 +324,9 @@ import {
   CHECK_METHOD_PREFIXES,
   categoryForPrefix,
   UNREACHABLE_PREFIXES,
-  CoverageLedger,
-  withActiveLedger,
   type CategoryCoverage,
 } from './hardening/coverage-ledger';
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft, WithheldLinkRecord } from './hardening/security-check';
-import { isScopeChannel } from './hardening/security-check';
 import { readStaysInsideTree } from './hardening/contain';
 import { mergeWithheldLinks, retargetInstruction, withheldLinkLines, withheldLinkRecords } from './hardening/withheld-links';
 
@@ -613,9 +622,9 @@ const RESET = () => colors.reset;
 
 program
   .command('check')
-  .description(`Check if a package, repo, or skill is safe
+  .description(`Check whether a package, repo, skill or local directory is safe before you use it
 
-Downloads + scans (${CHECK_COUNT} checks + NanoMind) by default, with trust context from the OpenA2A registry.
+Remote targets are downloaded and scanned (${CHECK_COUNT} checks + NanoMind) with trust context from the OpenA2A registry. A local path runs the same checks secure runs and reports the same score, without changing anything; to fix what it finds, run ${CLI_PREFIX} secure <dir> --fix.
 
 Accepts:
   • npm package: ${CLI_PREFIX} check express
@@ -633,8 +642,9 @@ Exit codes:
   0  measured completely, and the risk is low or medium
   1  measured, and the risk is high or critical
   2  not measured, or not completely measured. The target does not exist
-     or could not be fetched; or an input inside it was discovered and
-     could not be read. In the second case what DID run is still reported,
+     or could not be fetched; --no-scan was given with a local path, which
+     has no registry record to query; or an input inside it was discovered
+     and could not be read. In the last case what DID run is still reported,
      and the risk level is an upper bound rather than a measurement of the
      target — the run names each unread input and the errno.
 
@@ -648,7 +658,7 @@ Examples:
   .argument('<target>', 'npm package, PyPI package (pip: or pypi: prefix), local path, GitHub repo, or skill identifier')
   .option('-v, --verbose', 'Show detailed verification info (check IDs, categories)')
   .option('--json', 'Output as JSON (for scripting/CI)')
-  .option('--no-scan', 'Registry only, skip local scan (fast mode for CI)')
+  .option('--no-scan', 'Registry only, skip the download and scan (fast mode for CI on npm, PyPI, GitHub, skill and URL targets; refused on a local path, exit 2)')
   .option('--no-registry', 'Local scan only, skip registry lookup (offline mode)')
   .option('--offline', 'Alias for --no-registry')
   .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
@@ -707,7 +717,7 @@ Examples:
 
       // Detect local file/directory paths - run NanoMind scan instead of registry lookup
       const { statSync, accessSync, constants: fsConstants } = await import('node:fs');
-      const { resolve, dirname, isAbsolute, relative, basename } = await import('node:path');
+      const { resolve, isAbsolute } = await import('node:path');
       const resolved = resolve(skill);
       let resolvedStat: ReturnType<typeof statSync> | undefined;
       let statError: NodeJS.ErrnoException | undefined;
@@ -789,136 +799,127 @@ Examples:
       }
 
       if (isLocalPath && resolvedStat) {
-        // Local path: run NanoMind semantic analysis directly. This is a
-        // *narrowed* matrix (semantic only, no static-check suite) — we
-        // relabel the score "Quick scan" and direct the user to `secure`
-        // for a full audit. Applies to both `check skill:<path>` /
-        // `check mcp:<path>` (post-prefix-strip) and bare `check <path>`,
-        // which share this same orchestrator. Closes #136.
-        const targetDir = resolvedStat.isFile() ? dirname(resolved) : resolved;
+        // Local path: the scan `secure` runs — the static suite with the
+        // semantic pass inside its coverage window — scored the same way.
+        //
+        // #740 — this arm used to run the semantic matrix alone and label the
+        // result "Quick scan" (#136). On a tree whose `.claude/settings.json`
+        // held a plaintext key that printed `96/100` at exit 0 with the note
+        // `318 static not run (quick scan)`: a verdict on a directory the user
+        // pointed at, produced without the checks that read the credential.
+        // A local directory target gets the checks that read it; `--help`
+        // promises "363 checks + NanoMind" for every target, and the remote
+        // arms already keep that promise on the tree they download. Applies
+        // to `check skill:<path>` / `check mcp:<path>` (post-prefix-strip)
+        // and bare `check <path>`, which share this arm.
+        // `--no-scan` skips the download and scan and reads the Registry
+        // instead, and a local path has no Registry record to query: honoring
+        // the flag would report nothing, and ignoring it ran the full suite
+        // under a flag that says not to (#740). Refused on both channels,
+        // before anything is read, and settled as unmeasured: exit 2, no
+        // band, no score. The band word and separator are the exit-2
+        // renderer's; the cited command carries the CLI prefix and is quoted
+        // so it parses when pasted.
+        if (options.scan === false) {
+          const notice = `--no-scan skips the scan, and a local path has no registry record to query instead. Run ${CLI_PREFIX} check ${citationTarget(skill)} without --no-scan.`;
+          const verdict = unmeasured('scan-skipped', notice);
+          await settleCheckVerdict(verdict);
+          console.error(unmeasuredBanner(verdict));
+          if (options.json) {
+            writeJsonStdout({
+              hackmyagentVersion: VERSION,
+              target: skill,
+              type: 'local-path',
+              error: notice,
+              coverage: coverageJson(verdict),
+            });
+          }
+          return;
+        }
+
+        // A lone file is scanned in isolation, as `secure <file>` scans it:
+        // the verdict on the named file cannot carry a sibling's findings.
+        // Scanning the parent directory reported every sibling of the file
+        // the user named (#740). A directory is scanned in place.
+        const isolated = resolvedStat.isFile() ? await isolateSingleFileTarget(resolved) : undefined;
+        const targetDir = isolated ? isolated.targetDir : resolved;
 
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        // #508 — the semantic readers route through the ambient coverage
-        // ledger, and on this arm none was active: a read that failed with
-        // EACCES was dropped on the floor, and the file left BOTH sides of the
-        // coverage fraction (`examined 1 / total 1` over a tree with an
-        // unreadable input). This is the same window `scanner.scan()` opens
-        // around its own checks — the first and only one on this command.
-        const ledger = new CoverageLedger(targetDir);
-        const nmResult = await withActiveLedger(ledger, () =>
-          orchestrateNanoMind(targetDir, [], { silent: !!options.json, nanomind: resolveNanomindFlag(options) }),
-        );
-        const unreadRecord = ledger.unreadableInputs;
-        const unreadPaths = ledger.unreadablePaths();
+        const scanner = new HardeningScanner();
+        let nmResult: NanoMindRun | undefined;
+        const result = await scanner.scan({
+          targetDir,
+          autoFix: false,
+          cliName: RAW_CLI_PREFIX,
+          // #508 — the SCAN-UNREAD-001 remedy re-runs THIS command.
+          unreadRemedyCommand: 'check',
+          // #499 — the semantic pass runs inside the scan's coverage window,
+          // so its read failures travel the same channels a static check's
+          // do, ahead of the SCAN-UNREAD-001 generation and the `.hmaignore`
+          // scope filter, settled once.
+          semanticPass: async ({ findings: existingFindings, projectType }) => {
+            nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
+              silent: !!options.json,
+              nanomind: resolveNanomindFlag(options),
+              projectType,
+              findingVisible: (f) => scanner.findingAppliesTo(f, projectType),
+            });
+            return { findings: nmResult.mergedFindings };
+          },
+        });
+        // `scanInner` invokes the hook unconditionally and does not swallow
+        // its throw, so reaching here means it ran.
+        if (!nmResult) throw new Error('internal: the semantic pass did not run');
+        // A single-file target withheld before the scan joins the scan's own
+        // withheld links, so every channel below discloses it the same way.
+        if (isolated?.withheld) {
+          result.withheldLinks = mergeWithheldLinks(result.withheldLinks, [isolated.withheld]);
+        }
+        await refilterAfterSemanticMerge(scanner, result, targetDir);
+        // #450 — the suppressed penalties stay in the score, exactly as on
+        // `secure`: a check-ID suppression narrows the list, not the band.
+        scanner.applyScore(result, [
+          ...result.findings.filter((f: any) => countsAgainstScore(f)),
+          ...expandSuppressed(result.suppressed),
+        ] as any);
 
-        // Apply .hmaignore filtering through the scanner's ONE parser and ONE
-        // matcher (whole paths, `<path>:<CHECK>` narrowings, `!CHECK`
-        // patterns — case-insensitive ids, `*` anywhere), so `check` and
-        // `secure` read a committed file identically.
-        const { loadHmaIgnore: loadIgnore, matchHmaIgnore: matchIgnore, buildHmaIgnoreDisclosure: buildIgnoreDisclosure, buildUnreadInputFinding, unsearchableAncestorSync } = await import('./hardening/scanner.js');
-        const skillIgnoreRules = await loadIgnore(targetDir);
-        // #450 — one of the hand-rolled copies of the suppression rule. The
-        // findings still LEAVE the reported set, exactly as before; what changes
-        // is that a check-ID suppression no longer takes its penalty out of the
-        // risk band and the exit code with it. A path rule does, because that is
-        // a scope statement — see `scanner.ts` for why the two differ.
-        const skillFindings = nmResult.mergedFindings;
-        // #508 — one SCAN-UNREAD-001 per unread input, through the same
-        // errno->remedy builder `secure` uses; `command: 'check'` names the
-        // re-run verb on this arm. Emitted through the redaction boundary
-        // HERE: this arm publishes `details` raw on --json, so a finding
-        // that never crossed `emitFindings` is refused by the provenance
-        // guard at the channel.
-        for (const u of unreadPaths) {
-          skillFindings.push(...emitFindings([buildUnreadInputFinding(
-            { ...u, rel: relative(targetDir, u.path) || basename(u.path) },
-            { cliName: RAW_CLI_PREFIX, targetDir, command: 'check' },
-          )]));
-        }
-        const skillSuppressedRaw: any[] = [];
-        const skillOutOfScopeRaw: any[] = [];
-        const skillAttribution = new Map<any, number>();
-        if (skillIgnoreRules.rules.length > 0) {
-          for (const f of skillFindings as any[]) {
-            // `matchHmaIgnore` holds the tier order (whole-path, then
-            // `<path>:<CHECK>`, then `!<CHECK>`) and the SCAN-UNREAD-001
-            // carve-out `secure` applies: a coverage statement is not a
-            // finding about a path's contents, so a path-shaped rule cannot
-            // scope it away — this arm's exit code was settled from the same
-            // record, so scoping the finding out would print "not in the exit
-            // code" about the very input holding the exit at 2. An explicit
-            // `!SCAN-UNREAD-001` check rule still suppresses it onto the
-            // Suppressed line, with the penalty, exactly as on `secure`.
-            const m = matchIgnore(f, skillIgnoreRules);
-            if (!m) continue;
-            const marked = { ...f, suppressed: true, suppressedBy: m.channel };
-            if (m.line !== undefined) skillAttribution.set(marked, m.line);
-            // The scope/presentational partition routes through
-            // `isScopeChannel`, never a channel literal: a scope channel
-            // leaves the risk band and the exit code, a presentational one
-            // narrows only the list.
-            if (isScopeChannel(m.channel)) skillOutOfScopeRaw.push(marked);
-            else skillSuppressedRaw.push(marked);
-          }
-        }
-        const skillSuppressed = summarizeSuppressed(skillSuppressedRaw);
-        const skillOutOfScope = summarizeSuppressed(skillOutOfScopeRaw);
-        // Per-rule match counts, over the same findings and through the same
-        // `countsAgainstScore` gate as the two Row summaries above, so
-        // Σ matched per (checkId, channel) equals the Row count.
-        const skillMatchedByLine = new Map<number, number>();
-        for (const f of [...skillSuppressedRaw, ...skillOutOfScopeRaw] as any[]) {
-          if (!countsAgainstScore(f)) continue;
-          const line = skillAttribution.get(f);
-          if (line !== undefined) skillMatchedByLine.set(line, (skillMatchedByLine.get(line) ?? 0) + 1);
-        }
-        // Present iff the target carries a `.hmaignore` (even one with no
-        // rules), absent otherwise — same key and presence rule as `secure`.
-        const skillHmaignore = buildIgnoreDisclosure(skillIgnoreRules, skillMatchedByLine);
-        const withheld = new Set<string>([
-          ...skillSuppressedRaw.map((f) => `${f.checkId}\u0000${f.file ?? ''}`),
-          ...skillOutOfScopeRaw.map((f) => `${f.checkId}\u0000${f.file ?? ''}`),
-        ]);
-
-        const issues = skillFindings.filter(
-          (f: any) => !f.passed && !withheld.has(`${f.checkId}\u0000${f.file ?? ''}`),
-        );
         // The gate counts the reported findings PLUS the suppressed penalties.
         // Without the second half, `check` on a repo carrying its own
         // `.hmaignore` reported `100/100 · low · exit 0` over five criticals.
-        const gated = [...issues, ...expandSuppressed(skillSuppressed)];
+        const gated = gateSet(result).filter((f: any) => countsAgainstScore(f));
         const critical = gated.filter((f: any) => f.severity === 'critical');
         const high = gated.filter((f: any) => f.severity === 'high');
+        const issues = result.findings.filter((f: any) => !f.passed);
 
         // #373 — one derivation, above the channel branch. `risk` and the exit
         // code come out of the same call, so no renderer can report one and
-        // exit the other.
-        //
-        // The `coverage` argument is what makes the band honest as well as
-        // consistent: `compiledArtifacts` is counted from the run, so a quick
-        // scan that compiled nothing reports "not measured" instead of the
-        // `low` band that zero findings over zero artifacts used to produce.
-        //
-        // #508 — the denominator comes from the run's own record: what was
-        // compiled PLUS what was discovered and could not be read. A run that
-        // read some inputs and not others keeps its band (an upper bound over
-        // what it read) and exits 2; a run whose every attempted input was
-        // unread says so instead of "nothing to examine".
-        const allUnread = nmResult.compiledArtifacts === 0 && unreadRecord.count > 0;
-        const verdict = deriveCheckVerdict(
+        // exit the other. #508 — over the scanner's own record: files read
+        // PLUS discovered-and-not-read. A run that read some inputs and not
+        // others keeps its band (an upper bound over what it read) and exits
+        // 2; a run whose every attempted input was unread says so.
+        const verdict = scanResultVerdict(
+          result,
           { critical: critical.length, high: high.length, issues: gated.length },
-          recordedCoverage(nmResult.compiledArtifacts, 'artifact', unreadRecord),
-          allUnread ? 'target-unreadable' : 'nothing-to-examine',
-          allUnread
-            ? `${escapePathForDisplay(resolved)} holds ${unreadRecord.count} input${unreadRecord.count === 1 ? '' : 's'} this scan attempted and could not read (${escapeForDisplay(Object.keys(unreadRecord.codes).join(', '))}), and nothing it could, so no risk level can be reported.`
-            : `${escapePathForDisplay(resolved)} holds no artifact this scan can read, so no risk level can be reported.`,
+          resolved,
+          // Worded to read after the renderer's band word and separator.
+          `no file was read from ${escapePathForDisplay(resolved)}, so no risk level can be reported for it.`,
+          // An existing, readable directory the scanner walked is measured
+          // even when it read no file, as `secure` reads the same tree.
+          true,
         );
         await settleCheckVerdict(verdict);
+        // The paths behind `coverage.unreadableInputs`, for the header below.
+        const unreadPaths = scanner.lastUnreadInputs;
 
         if (options.json) {
           writeJsonStdout({
             path: resolved,
             type: 'local-scan',
+            projectType: result.projectType,
+            score: result.score,
+            rawScore: result.rawScore,
+            scoreClamped: result.scoreClamped,
+            maxScore: result.maxScore,
             nanomindUsed: nmResult.nanomindUsed,
             compiledArtifacts: nmResult.compiledArtifacts,
             // #450 — the GATED count, so it agrees with `critical`, `high` and
@@ -929,99 +930,92 @@ Examples:
             high: high.length,
             risk: verdict.measured ? verdict.risk : null,
             measured: verdict.measured,
-            // #388 — the machine channel discloses the same reduced scope the
-            // text channel does, on the key `secure --json` already uses.
-            // #416 — plus the measurement the verdict was derived from, so a
-            // consumer can tell "clean" from "never looked" without prose.
-            //
-            // `coverageJson` is spread FIRST so `measured`/`examined`/`unit`
-            // sit at the same depth here as on every other path. Nesting them
-            // under a `measurement` sub-key made this the one payload where
-            // `.coverage.measured` was undefined — three shapes for one
-            // documented contract.
-            coverage: {
-              ...quickScanCoverage({
-                compiledArtifacts: nmResult.compiledArtifacts,
-                compileSetTruncated: nmResult.compileSetTruncated,
-                observedCheckIds: gated.map((f: any) => f.checkId),
-                staticCheckCount: CHECK_COUNTS.static,
-                fullAuditTarget: skill,
-              }),
-              ...coverageJson(verdict),
-              // #456 — the same field `secure --json` carries. Without it a
-              // consumer told that absence cannot mean full coverage gets
-              // permanent absence on this path, which is the one contradiction
-              // the parity comment on the text path was written to rule out.
-              semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
-            },
+            // The same `coverage` object `secure --json` carries (#388, #416,
+            // #456): executed checks, the settled fraction and the category
+            // rollup, so a consumer reads one shape for one scan. `measured`,
+            // `examined` and `unit` sit at the same depth as on every other
+            // `check` path; an unmeasured run keeps its `reason` and `detail`.
+            coverage: fullScanCoverageJson(result, nmResult, coverageJson(verdict)) ?? coverageJson(verdict),
             // #450 — `details` lists only what the caller asked to see, so a
             // suppressed credential finding does not ship a second copy of its
             // evidence (#370). `findings`, `critical`, `high` and `risk` above
             // count the suppressed penalties; the two summaries say so.
             details: issues,
-            ...(skillSuppressed.length > 0 ? { suppressed: skillSuppressed } : {}),
-            ...(skillOutOfScope.length > 0 ? { outOfScope: skillOutOfScope } : {}),
+            ...(result.suppressed?.length ? { suppressed: result.suppressed } : {}),
+            ...(result.outOfScope?.length ? { outOfScope: result.outOfScope } : {}),
             // Presence keyed on the FILE, not on the rules: an empty or
             // all-error `.hmaignore` still discloses itself and its errors.
-            ...(skillHmaignore ? { hmaignore: skillHmaignore } : {}),
+            ...(result.hmaignore ? { hmaignore: result.hmaignore } : {}),
           });
           return;
         }
 
         if (!verdict.measured) {
           console.error(unmeasuredBanner(verdict));
+          // Reached when every discovered input was unread (an existing,
+          // readable, empty directory is measured). The same shape as the
+          // not-found arm above: a runnable check on the path, then where
+          // to point the command instead (#740).
+          const verify = commandNaming(skill, cited => `  Verify: ls -la ${cited}`);
+          if (verify) console.error(verify);
+          console.error('  Point check at the directory that holds the project files (package.json, .claude/, mcp.json, SOUL.md).');
           return;
         }
 
+        const unreadRecord = result.coverage?.unreadableInputs ?? { count: 0, codes: {}, directories: 0 };
         displayUnifiedCheck({
           name: resolved,
           sourceLabel: 'local',
-          // #286 — `targetDir` is the directory the findings' paths resolve
-          // against (the file's parent when the target is a lone file), which
+          projectType: result.projectType,
+          // #286 — the directory the findings' paths resolve against, which
           // is what makes the rendered Verify commands runnable from any cwd.
-          scanRoot: targetDir,
-          nanomindScan: {
+          // For a lone file that is the root its isolated copy joins back to,
+          // not the temp dir the scan ran in.
+          scanRoot: isolated ? isolated.citationRoot : targetDir,
+          // #450 — the two narrowings, carried so the report can name them.
+          outOfScope: result.outOfScope,
+          suppressed: result.suppressed,
+          hmaignore: result.hmaignore,
+          localScan: {
+            score: result.score,
+            rawScore: result.rawScore,
+            scoreClamped: result.scoreClamped,
+            maxScore: result.maxScore,
+            findings: result.findings,
+            // Measured coverage for this run, so the Observations block
+            // derives its Checks and Categories lines from what executed.
+            coverage: result.coverage,
+          },
+          // The semantic findings are already merged into `result.findings`;
+          // this carries the compile count, the analyzer-family depth and the
+          // unread inputs the header names. Absent when the semantic layer
+          // compiled nothing and nothing was unread, as on `secure`.
+          nanomindScan: nmResult.compiledArtifacts > 0 || unreadRecord.count > 0 ? {
             compiledArtifacts: nmResult.compiledArtifacts,
+            compileSetTruncated: nmResult.compileSetTruncated,
             // #508 — what the run discovered and could not read, so the header
             // carries the denominator and the paths are named under it.
+            // #588 — `obstructedBy` names the directory this user cannot ENTER
+            // when that, not the lost path's own mode, is why it was lost;
+            // the scanner resolved it with the same probe the remedy uses.
             unreadInputs: {
               count: unreadRecord.count,
               directories: unreadRecord.directories,
-              // #588 — the header's Verify must name the directory this user
-              // cannot ENTER when that, not the lost path's own mode, is why
-              // the path was lost: `ls -l a/b` under a `chmod 600 a` fails
-              // with the same EACCES the scan hit. Same probe, same answer as
-              // the finding's remedy; a permission denial only.
-              paths: unreadPaths.map((u) => ({
-                ...u,
-                obstructedBy: u.code === 'EACCES' || u.code === 'EPERM'
-                  ? unsearchableAncestorSync(u.path, targetDir)
-                  : undefined,
-              })),
+              paths: unreadPaths.map((u) => ({ path: u.path, code: u.code, kind: u.kind, obstructedBy: u.obstructedBy })),
             },
             // #456 — `check` discloses the analyzer-family shortfall on the
-            // same terms as `secure`. Two paths rendering the same compile
-            // count must not disagree about how much of the suite read it.
+            // same terms as `secure`.
             semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
-            // Emitted at the bag boundary so the bag's `SecurityFinding[]`
-            // type is earned, not cast. Runtime no-op on this path — every
-            // element already crossed the boundary inside `mergeFindings`
-            // with the empty static set, and applied is absorbing — but the
-            // type witness this restores is what lets the re-map downstream
-            // use `reemitFinding` without a launder. Roadmap item (11)
-            // rejected an emit near here when the value became `as any[]`
-            // one line later; that premise is what this change removes.
-            findings: emitFindings(issues),
-          },
+            findings: [],
+          } : undefined,
           artifactSummaries: nmResult.artifactSummaries,
-          suppressed: skillSuppressed.length > 0 ? skillSuppressed : undefined,
-          outOfScope: skillOutOfScope.length > 0 ? skillOutOfScope : undefined,
-          hmaignore: skillHmaignore,
           verbose: !!options.verbose,
           usedAnalm: resolveNanomindFlag(options),
-          analystFindings: nmResult.analystFindings,
+          analystFindings: nmResult.analystFindings?.length ? nmResult.analystFindings : undefined,
           analystZeroState: nmResult.analystZeroState,
-          quickScan: { fullAuditTarget: skill },
+          analystEscalations: nmResult.analystEscalations?.length ? nmResult.analystEscalations : undefined,
+          withheldLinks: result.withheldLinks,
+          nextStepsTarget: skill,
         });
 
         // Exit code already settled above. This path used `process.exit(1)`
@@ -3240,6 +3234,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     hasMcpFindings: hasMcpIssues,
     hasCodeVulns,
     isCleanScan: totalFindings === 0 && (!!localScan || !!nanomindScan),
+    // #740 — "local" is a fact about the arm that produced the findings, not
+    // about the spelling of the target as typed. Left to the renderer's
+    // prefix test, `check fx/keydir` (bare-relative) lost the
+    // `secure <path> --fix` line that `./fx/keydir` and the absolute path
+    // printed. Undefined for the registry-only displays, which keep the test.
+    isLocalTarget: !opts.remote && (!!localScan || !!nanomindScan) ? true : undefined,
     usedAnalm,
     // When nextStepsTarget is set the caller is already running a full directory scan — suppress the redundant hint
     suppressFullScanHint: !!opts.nextStepsTarget,
@@ -4985,7 +4985,6 @@ Examples:
       }
 
       // Single-FILE target handling.
-      const _fs = require('node:fs');
       // Without following a link out of its own directory: an out-of-tree
       // link is a single-file target that the copy below withholds.
       const _target = statTargetWithoutFollowingOut(originalTarget);
@@ -5013,74 +5012,22 @@ Examples:
       // (governance / lifecycle / credential / mcp / skill) enumerates via
       // readdir / path.join(targetDir, x), which no-ops on a file path — so
       // `secure SOUL.md` (or any lone artifact) under-scanned and returned a
-      // false-clean verdict (audit follow-up to #220). Copy the lone file into
-      // an isolated temp dir and scan THAT, so it is analyzed as if it were the
-      // sole file in a project. Findings carry the basename, so paths stay
-      // correct; displayDir shows the user's original path. The temp dir is
-      // removed on process exit (covers the command's process.exit() paths).
-      //
-      // The copy IS the read, and the temp dir becomes the scan root, so this
-      // sits outside the scanner's namespace guard and confines at its own
-      // site. The root is the real location of the argument's lexical parent:
-      // a repo's own instructions can tell the operator to name a path inside
-      // a clone, and naming `./agent-config.json` is not consent to read
-      // whatever `agent-config.json -> ~/.aws/credentials` points at. A link
-      // that leaves that directory is not copied; the scan runs over the
-      // empty temp dir and the disclosure names the link and where to point
-      // the scan instead.
+      // false-clean verdict (audit follow-up to #220): a lone file is copied
+      // into an isolated temp dir and THAT is scanned. `displayDir` shows the
+      // user's original path.
       let singleFileWithheld: WithheldLinkRecord | undefined;
-      // HMA-30: true when the copy is nested under the parent's name (see below).
-      let _singleFileNested = false;
-      if (_isFileTarget) {
-        const _os = require('node:os');
-        const _path = require('node:path');
-        const _tmp = _fs.mkdtempSync(_path.join(_os.tmpdir(), 'hma-secure-file-'));
-        // HMA-30 — the copy lands at <tmp>/<parentBasename>/<basename> when the
-        // parent's name is what a discovery predicate reads, and at
-        // <tmp>/<basename> otherwise. Flattening everything discarded the one
-        // path component the credential predicates read: `secure
-        // ~/.aws/credentials` copied to `<tmp>/credentials`, where neither the
-        // `/.aws/credentials` suffix nor the config-directory rule can fire.
-        // Nesting everything moved basename-matched files (CLAUDE.md, .env,
-        // SKILL.md) out of the scan root, where the root-only probes
-        // (CLAUDE-001, GIT-003, PERM-001) stopped seeing them. So: nest only
-        // when the parent changes a predicate's answer.
-        const _parentBase = _path.basename(_path.dirname(originalTarget));
-        const _base = _path.basename(originalTarget);
-        const { singleFileNeedsParent } = await import('./hardening/scanner.js');
-        _singleFileNested = singleFileNeedsParent(_parentBase, _base);
-        const _copyDir = _singleFileNested ? _path.join(_tmp, _parentBase) : _tmp;
-        const stays = readStaysInsideTree(originalTarget, _path.dirname(originalTarget));
-        if (stays.ok) {
-          _fs.mkdirSync(_copyDir, { recursive: true });
-          _fs.copyFileSync(originalTarget, _path.join(_copyDir, _base));
-        } else {
-          singleFileWithheld = {
-            rel: _singleFileNested ? _path.join(_parentBase, _base) : _base,
-            resolved: stays.resolved,
-            call: 'copyFileSync',
-            retarget: retargetInstruction(stays.resolved, RAW_CLI_PREFIX),
-          };
-        }
-        process.on('exit', () => {
-          try { _fs.rmSync(_tmp, { recursive: true, force: true }); } catch { /* best effort */ }
-        });
-        targetDir = _tmp;
-      }
-
       // #286 — the directory a finding's `file` actually resolves against, for
       // building runnable `Verify:` commands. NOT `displayDir` for a lone-file
-      // target: that target is copied into a temp dir and its findings carry
-      // `<parentBasename>/<basename>` when the copy is nested (HMA-30), so the
-      // root that joins back to the user's real path is then the parent's
-      // PARENT — one `dirname` would double the parent
-      // (`<dir>/.aws/.aws/credentials`). A flat copy carries `<basename>` and
-      // joins against the parent, as before.
-      const citationRoot = _isFileTarget
-        ? (_singleFileNested
-            ? require('node:path').dirname(require('node:path').dirname(originalTarget))
-            : require('node:path').dirname(originalTarget))
-        : displayDir;
+      // target; `isolateSingleFileTarget` says why and computes it.
+      let citationRoot = displayDir;
+      if (_isFileTarget) {
+        // The isolation is shared with `check <file>` (#740); see the helper
+        // for the copy, the confinement and the HMA-30 nesting rule.
+        const isolated = await isolateSingleFileTarget(originalTarget);
+        singleFileWithheld = isolated.withheld;
+        targetDir = isolated.targetDir;
+        citationRoot = isolated.citationRoot;
+      }
 
       // Parse ignore list
       const ignoreList = options.ignore
@@ -5294,63 +5241,9 @@ Examples:
       if (!nmResult) throw new Error('internal: the semantic pass did not run');
 
       {
-        // Re-apply all filters after NanoMind merge (merge uses allFindings which is unfiltered)
-        // #499 — re-filter from `result.allFindings`, NOT from
-        // `nmResult.mergedFindings`. The semantic pass now runs inside the scan
-        // and therefore BEFORE `SCAN-UNREAD-001` is generated, so
-        // `mergedFindings` is the merge of the static set as it stood at that
-        // moment and carries no unread-input findings. Re-deriving the whole
-        // report from it would delete them, taking #438's per-path disclosure
-        // with them and leaving exit 2 with nothing named — the precise failure
-        // the scanner's own comment at the generation site warns against.
-        // `allFindings` is the merged set with those findings pushed on top.
-        const postMerge = result.allFindings || result.findings || [];
-        const refiltered = await scanner.reapplyIgnoreFilters(postMerge, targetDir, result.projectType || 'library');
-        // #450 — the semantic layer produces findings the scan pass never saw,
-        // so this call can narrow scope where `scanInner` did not. Take the
-        // wider of the two records rather than the later one, or a narrowing
-        // disclosed by the static pass disappears from the report the moment the
-        // semantic pass runs.
-        if (scanner.lastOutOfScope.length > (result.outOfScope?.length ?? 0)) {
-          result.outOfScope = scanner.lastOutOfScope;
-        }
-        // REPLACED, not merged. `nmResult.mergedFindings` is rebuilt from
-        // `allFindings`, which still holds every finding `scanInner` suppressed,
-        // so this pass re-derives the whole suppression set from the post-merge
-        // array. Accumulating instead counted each suppressed finding twice and
-        // printed `CONFIG-004 (critical x2)` for a single occurrence.
-        result.suppressed = scanner.lastSuppressed.length > 0 ? scanner.lastSuppressed : undefined;
-        // The disclosure's `matched` counts are recounted by the same call
-        // over the same post-merge array as the two Row records above, so the
-        // Σ-matched cross-check holds on what `--json` finally carries.
-        // Presence rule unchanged: `lastHmaIgnore` is undefined exactly when
-        // the target has no `.hmaignore`.
-        result.hmaignore = scanner.lastHmaIgnore;
-        if (result.allFindings) {
-          // No cast. `reapplyIgnoreFilters` is generic over the finding type and
-          // only marks and filters, so `refiltered` is still branded and assigns
-          // directly. A cast here would have compiled just as quietly while
-          // laundering the boundary guarantee at the one point downstream of it
-          // that rebuilds both channels.
-          result.allFindings = refiltered;
-        }
-        if (result.findings) {
-          // Re-apply the same gates as the original filter:
-          // 1. Failed OR fixed  2. Has file path  3. Applies to project type
-          //
-          // The `f.fixed` half is not optional. This filter claimed to mirror
-          // the scanner's, but the scanner keeps fixed findings
-          // (`if (!f.fixed && f.passed) return false`) while this dropped
-          // every one of them. That silently deleted any finding a check
-          // reported as `passed: <check>Fixed` — including one the
-          // verification pass had just proved did NOT land — before
-          // `countsAgainstScore` ran a few lines below, so the score was
-          // recomputed from a list the unverified fix had been removed from.
-          const projectType = result.projectType || 'library';
-          result.findings = refiltered.filter((f) =>
-            scanner.isReportableFinding(f, projectType)
-          );
-        }
+        // Re-apply all filters after NanoMind merge. Shared with `check`'s
+        // local-directory arm (#740), which runs this same scan.
+        await refilterAfterSemanticMerge(scanner, result, targetDir);
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
         //
         // #450 — the findings still leave, and their penalties do not. This
@@ -5922,58 +5815,9 @@ Examples:
         // unenforceable by any automated gate. The rollup is emitted
         // alongside the raw records so a consumer gets the same category
         // states the CLI renders without reimplementing them.
-        const jsonCoverage = result.coverage
-          ? {
-              ...result.coverage,
-              // The settled record's coverage sub-keys (#464): one predicate —
-              // `jq '.coverage.measured'` — across `check`, `secure` and every
-              // wire; `total` = examined + discovered-but-unread.
-              measured: settled.coverage.measured,
-              examined: settled.coverage.examined,
-              total: settled.coverage.total,
-              unit: settled.coverage.unit,
-              categories: summarizeCoverage(
-                result.coverage.executions,
-                nmResult.compileSetTruncated
-                  ? [
-                      ...result.coverage.truncations,
-                      {
-                        layer: 'semantic',
-                        cap: nmResult.compiledArtifacts,
-                        prefixes: [...SEMANTIC_PREFIXES],
-                        reason:
-                          `semantic pass capped at ${nmResult.compiledArtifacts} files — source beyond the cap was not compiled`,
-                      },
-                    ]
-                  : result.coverage.truncations,
-                {
-                  // Same predicate the rendered block uses, so the text and
-                  // the JSON cannot disagree about which categories a finding
-                  // proves were examined.
-                  observedCheckIds: result.findings
-                    .filter(f => countsAgainstScore(f))
-                    .map(f => f.checkId)
-                    .filter(Boolean),
-                  filesReadByCategory: result.coverage.filesReadByCategory,
-                },
-              ),
-              // Checks whose implementation exists but has no caller, so they
-              // are counted in the advertised suite and can never fire.
-              unreachableCheckPrefixes: [...UNREACHABLE_PREFIXES],
-              semanticCompileSetTruncated: nmResult.compileSetTruncated === true,
-              // #456 — the analyzer-family shortfall, so a CI consumer can gate
-              // on semantic depth instead of inferring it from a compile count.
-              // Always emitted, including when every artifact reached all seven
-              // families: a field that appears only on a shortfall cannot be
-              // distinguished from a missing field, and a consumer treating
-              // absence as full coverage would be right by accident rather than
-              // by measurement. `artifactsCompiled: 0` is the honest reading when
-              // the semantic layer did not run at all (`--static-only`), which is
-              // the same payload an empty tree produces — in both cases no
-              // artifact was examined by anything.
-              semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
-            }
-          : undefined;
+        // Shared with `check`'s local-directory arm (#740), so both commands
+        // disclose the same scan on the same keys.
+        const jsonCoverage = fullScanCoverageJson(result, nmResult, settled.coverage);
 
         // #450 — `result.suppressed` and `result.outOfScope` ride along via the
         // spread. `findings` and `allFindings` carry only what the caller asked
@@ -13186,6 +13030,210 @@ function isAiToolingFile(filePath: string): boolean {
  * with nothing in the source to notice. Naming `ScanResult` keeps the element
  * type branded through both the read and the write.
  */
+type NanoMindRun = Awaited<ReturnType<typeof import('./nanomind-core/orchestrate.js').orchestrateNanoMind>>;
+
+/**
+ * Re-apply the scope and suppression filters after the semantic merge, and
+ * record what they narrowed. Runs on `secure` and on `check`'s local
+ * directory arm (#740), which runs the same scan through the same hook.
+ *
+ * #499 — re-filter from `result.allFindings`, NOT from
+ * `nmResult.mergedFindings`. The semantic pass runs inside the scan and
+ * therefore BEFORE `SCAN-UNREAD-001` is generated, so `mergedFindings` is the
+ * merge of the static set as it stood at that moment and carries no
+ * unread-input findings. Re-deriving the whole report from it would delete
+ * them, taking #438's per-path disclosure with them and leaving exit 2 with
+ * nothing named — the precise failure the scanner's own comment at the
+ * generation site warns against. `allFindings` is the merged set with those
+ * findings pushed on top.
+ */
+async function refilterAfterSemanticMerge(
+  scanner: HardeningScanner,
+  result: ScanResult,
+  targetDir: string,
+): Promise<void> {
+  const postMerge = result.allFindings || result.findings || [];
+  const refiltered = await scanner.reapplyIgnoreFilters(postMerge, targetDir, result.projectType || 'library');
+  // #450 — the semantic layer produces findings the scan pass never saw,
+  // so this call can narrow scope where `scanInner` did not. Take the
+  // wider of the two records rather than the later one, or a narrowing
+  // disclosed by the static pass disappears from the report the moment the
+  // semantic pass runs.
+  if (scanner.lastOutOfScope.length > (result.outOfScope?.length ?? 0)) {
+    result.outOfScope = scanner.lastOutOfScope;
+  }
+  // REPLACED, not merged. `nmResult.mergedFindings` is rebuilt from
+  // `allFindings`, which still holds every finding `scanInner` suppressed,
+  // so this pass re-derives the whole suppression set from the post-merge
+  // array. Accumulating instead counted each suppressed finding twice and
+  // printed `CONFIG-004 (critical x2)` for a single occurrence.
+  result.suppressed = scanner.lastSuppressed.length > 0 ? scanner.lastSuppressed : undefined;
+  // The disclosure's `matched` counts are recounted by the same call
+  // over the same post-merge array as the two Row records above, so the
+  // Σ-matched cross-check holds on what `--json` finally carries.
+  // Presence rule unchanged: `lastHmaIgnore` is undefined exactly when
+  // the target has no `.hmaignore`.
+  result.hmaignore = scanner.lastHmaIgnore;
+  if (result.allFindings) {
+    // No cast. `reapplyIgnoreFilters` is generic over the finding type and
+    // only marks and filters, so `refiltered` is still branded and assigns
+    // directly. A cast here would have compiled just as quietly while
+    // laundering the boundary guarantee at the one point downstream of it
+    // that rebuilds both channels.
+    result.allFindings = refiltered;
+  }
+  if (result.findings) {
+    // Re-apply the same gates as the original filter:
+    // 1. Failed OR fixed  2. Has file path  3. Applies to project type
+    //
+    // The `f.fixed` half is not optional. This filter claimed to mirror
+    // the scanner's, but the scanner keeps fixed findings
+    // (`if (!f.fixed && f.passed) return false`) while this dropped
+    // every one of them. That silently deleted any finding a check
+    // reported as `passed: <check>Fixed` — including one the
+    // verification pass had just proved did NOT land — before
+    // `countsAgainstScore` ran a few lines below, so the score was
+    // recomputed from a list the unverified fix had been removed from.
+    const projectType = result.projectType || 'library';
+    result.findings = refiltered.filter((f) =>
+      scanner.isReportableFinding(f, projectType)
+    );
+  }
+}
+
+/**
+ * Isolate a lone file target for scanning. Shared by `secure <file>` and
+ * `check <file>` (#740).
+ *
+ * `secure SOUL.md` (or any lone artifact) under-scanned and returned a
+ * false-clean verdict (audit follow-up to #220). The lone file is copied into
+ * an isolated temp dir and THAT is scanned, so it is analyzed as if it were
+ * the sole file in a project — and so the verdict on the named file cannot
+ * carry the findings of a sibling the user did not name. Findings carry the
+ * basename, so paths stay correct; the caller shows the user's original path.
+ * The temp dir is removed on process exit (covers the command's
+ * process.exit() paths).
+ *
+ * The copy IS the read, and the temp dir becomes the scan root, so this sits
+ * outside the scanner's namespace guard and confines at its own site. The
+ * root is the real location of the argument's lexical parent: a repo's own
+ * instructions can tell the operator to name a path inside a clone, and
+ * naming `./agent-config.json` is not consent to read whatever
+ * `agent-config.json -> ~/.aws/credentials` points at. A link that leaves
+ * that directory is not copied; the scan runs over the empty temp dir and the
+ * disclosure names the link and where to point the scan instead.
+ *
+ * HMA-30 — the copy lands at <tmp>/<parentBasename>/<basename> when the
+ * parent's name is what a discovery predicate reads, and at <tmp>/<basename>
+ * otherwise. Flattening everything discarded the one path component the
+ * credential predicates read: `secure ~/.aws/credentials` copied to
+ * `<tmp>/credentials`, where neither the `/.aws/credentials` suffix nor the
+ * config-directory rule can fire. Nesting everything moved basename-matched
+ * files (CLAUDE.md, .env, SKILL.md) out of the scan root, where the root-only
+ * probes (CLAUDE-001, GIT-003, PERM-001) stopped seeing them. So: nest only
+ * when the parent changes a predicate's answer.
+ *
+ * `citationRoot` (#286) is the directory a finding's `file` resolves against
+ * for runnable `Verify:` commands. Findings carry
+ * `<parentBasename>/<basename>` when the copy is nested, so the root that
+ * joins back to the user's real path is then the parent's PARENT — one
+ * `dirname` would double the parent (`<dir>/.aws/.aws/credentials`). A flat
+ * copy carries `<basename>` and joins against the parent.
+ */
+async function isolateSingleFileTarget(originalTarget: string): Promise<{
+  targetDir: string;
+  nested: boolean;
+  withheld?: WithheldLinkRecord;
+  citationRoot: string;
+}> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const osMod = require('node:os') as typeof import('node:os');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'hma-secure-file-'));
+  const parent = pathMod.dirname(originalTarget);
+  const parentBase = pathMod.basename(parent);
+  const base = pathMod.basename(originalTarget);
+  const { singleFileNeedsParent } = await import('./hardening/scanner.js');
+  const nested = singleFileNeedsParent(parentBase, base);
+  const copyDir = nested ? pathMod.join(tmp, parentBase) : tmp;
+  const stays = readStaysInsideTree(originalTarget, parent);
+  let withheld: WithheldLinkRecord | undefined;
+  if (stays.ok) {
+    fsMod.mkdirSync(copyDir, { recursive: true });
+    fsMod.copyFileSync(originalTarget, pathMod.join(copyDir, base));
+  } else {
+    withheld = {
+      rel: nested ? pathMod.join(parentBase, base) : base,
+      resolved: stays.resolved,
+      call: 'copyFileSync',
+      retarget: retargetInstruction(stays.resolved, RAW_CLI_PREFIX),
+    };
+  }
+  process.on('exit', () => {
+    try { fsMod.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+  return { targetDir: tmp, nested, withheld, citationRoot: nested ? pathMod.dirname(parent) : parent };
+}
+
+/**
+ * The `coverage` object a full scan emits on `--json`, on `secure` and on
+ * `check <dir>` (#740): the scanner's measured record, the settled fraction
+ * (#464: one predicate — `jq '.coverage.measured'` — across both commands and
+ * every wire; `total` = examined + discovered-but-unread), and the
+ * per-category rollup. Undefined when the scan kept no record.
+ */
+function fullScanCoverageJson(
+  result: ScanResult,
+  nmResult: Pick<NanoMindRun, 'compileSetTruncated' | 'compiledArtifacts' | 'semanticFamilyCoverage'>,
+  settled: { measured: boolean; examined: number; total: number; unit: string },
+) {
+  if (!result.coverage) return undefined;
+  return {
+    ...result.coverage,
+    ...settled,
+    categories: summarizeCoverage(
+      result.coverage.executions,
+      nmResult.compileSetTruncated
+        ? [
+            ...result.coverage.truncations,
+            {
+              layer: 'semantic',
+              cap: nmResult.compiledArtifacts,
+              prefixes: [...SEMANTIC_PREFIXES],
+              reason:
+                `semantic pass capped at ${nmResult.compiledArtifacts} files — source beyond the cap was not compiled`,
+            },
+          ]
+        : result.coverage.truncations,
+      {
+        // Same predicate the rendered block uses, so the text and
+        // the JSON cannot disagree about which categories a finding
+        // proves were examined.
+        observedCheckIds: result.findings
+          .filter(f => countsAgainstScore(f))
+          .map(f => f.checkId)
+          .filter(Boolean),
+        filesReadByCategory: result.coverage.filesReadByCategory,
+      },
+    ),
+    // Checks whose implementation exists but has no caller, so they
+    // are counted in the advertised suite and can never fire.
+    unreachableCheckPrefixes: [...UNREACHABLE_PREFIXES],
+    semanticCompileSetTruncated: nmResult.compileSetTruncated === true,
+    // #456 — the analyzer-family shortfall, so a CI consumer can gate
+    // on semantic depth instead of inferring it from a compile count.
+    // Always emitted, including when every artifact reached all seven
+    // families: a field that appears only on a shortfall cannot be
+    // distinguished from a missing field, and a consumer treating
+    // absence as full coverage would be right by accident rather than
+    // by measurement. `artifactsCompiled: 0` is the honest reading when
+    // the semantic layer did not run at all (`--static-only`), which is
+    // the same payload an empty tree produces — in both cases no
+    // artifact was examined by anything.
+    semanticFamilyCoverage: nmResult.semanticFamilyCoverage,
+  };
+}
+
 function filterLocalOnlyFindings(
   result: Pick<ScanResult, 'findings' | 'score' | 'maxScore'>,
   scanner: HardeningScanner,
@@ -13547,7 +13595,7 @@ async function checkGitHubRepo(
 
     // #373 — settle before the channel branch, not after the renderer.
     // #416 — over the files the clone actually had read.
-    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, displayName);
+    const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, displayName);
     await settleCheckVerdict(verdict);
 
     if (options.json) {
@@ -13906,7 +13954,7 @@ async function checkPyPiPackage(
 
     // #373 — settle before the channel branch, not after the renderer.
     // #416 — over the files the download actually had read.
-    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, name);
+    const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, name);
     await settleCheckVerdict(verdict);
 
     if (options.json) {
@@ -14167,7 +14215,7 @@ async function checkRawUrl(
 
     // #373 — settle before the channel branch, not after the renderer.
     // #416 — over the files the fetch actually had read.
-    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, displayName);
+    const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, displayName);
     await settleCheckVerdict(verdict);
 
     if (options.json) {
@@ -14400,7 +14448,7 @@ async function checkNpmPackage(
 
     // #373 — settle before the channel branch, not after the renderer.
     // #416 — over the files the download actually had read.
-    const verdict = remoteCheckVerdict(result, { critical: critical.length, high: high.length }, name);
+    const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, name);
     await settleCheckVerdict(verdict);
 
     if (options.json) {

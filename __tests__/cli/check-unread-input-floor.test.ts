@@ -160,8 +160,9 @@ describe('#508 check settles a floor over a tree it could not fully read', () =>
     // #508 wiring — the per-path finding renders on the text channel too.
     expect(out).toContain('Input Discovered But Not Read');
     // The band is still printed: withholding it would hand one file the
-    // power to blank the assessment.
-    expect(out).toMatch(/Quick scan/);
+    // power to blank the assessment. #740 — on the same meter `secure` uses,
+    // because the same scan produced it.
+    expect(out).toMatch(/Security\s+━/);
   });
 
   it('a found credential beside the unread file still exits 1: it outranks the unread input', () => {

@@ -48,6 +48,9 @@ function canRunSpawn(): boolean {
 // protection while still firing SEM-CRED-001 + GIT-003.
 const FIXTURE_ENV = 'DATABASE_URL=postgres://user:FAKEpassword@localhost:5432/db\n';
 
+// The renderer path this block tests has no caller after #740: `check <dir>`
+// runs the static suite, so no arm builds a quick-scan disclosure. Kept as the
+// #200 contract record until the dead renderer path is removed (tracked).
 describe('quick-scan scope disclosure (deterministic — #200 contract gate)', () => {
   const disclosure = quickScanScopeDisclosure({
     staticCount: 310,
@@ -138,15 +141,17 @@ describe('check vs secure direction agreement on a local dir (spawn, local-only)
     expect(stdout).not.toMatch(/all clear/i);
   });
 
-  it.runIf(canRunSpawn())('check discloses the scope it did not cover', () => {
+  it.runIf(canRunSpawn())('check names the finding secure names', () => {
     const res = spawnSync('node', [CLI, 'check', fixture, '--ci'], {
       encoding: 'utf8',
       timeout: 120_000,
     });
 
     const stdout = res.stdout || '';
-    // Names the skipped category and hands over the command that covers it.
+    // #740 — `check <dir>` runs the credential check itself, so the category
+    // is named as a finding, not as a gap handed to `secure`. The
+    // `secure <dir>` follow-up this test used to expect was the quick-scan
+    // relabel's, and no longer prints.
     expect(stdout).toMatch(/credential/i);
-    expect(stdout).toContain(`secure ${fixture}`);
   });
 });
