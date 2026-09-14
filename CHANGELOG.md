@@ -96,13 +96,18 @@ CRITICAL on a marketing page); it now requires a JSON listing with a `tools`
 member. `CLAUDE-MD-EXPOSED` fired on any 200 at /CLAUDE.md, which a
 single-page app's HTML fallback satisfies; an HTML body no longer counts.
 
-### `red-team --json` no longer echoes the credentials it read
+### `red-team` no longer echoes the credentials it read, in either output mode
 
 `hackmyagent red-team ./.mcp.json --json` placed the config's first long line
 into `target.declaredPurpose` verbatim; for a typical MCP config that is the
 `postgresql://user:password@host/db` connection string, password included, and
-the same text reached `capabilities`, `modalStatements`, the surface map and
-every generated payload (advertised-command audit, 2026-09-13). The reader
+depending on the artifact the same text reached `capabilities`,
+`modalStatements`, the surface map and the generated payloads
+(advertised-command audit, 2026-09-13). The text output carried less of it:
+through 0.25.2 the vulnerability block embedded the declared purpose in a
+payload description, and from 0.26.0 each `Stated rule:` surface line printed
+the first 80 characters of an artifact sentence, credential included when one
+sat inside them. The reader
 now redacts the whole artifact at the report boundary before any extraction,
 the order NanoMind's `extractDeclaredPurpose` already uses, plus one rule the
 boundary did not carry: userinfo in a URL of any scheme becomes
@@ -116,6 +121,19 @@ profile records `redaction: { status, shapes }` so a consumer can tell that
 content was cut, and the JSON now goes through the shared stdout chokepoint,
 so it carries `hackmyagentVersion`: output without that key came from a
 version that echoed.
+
+### Security
+
+`red-team` in 0.11.14 through 0.33.0, every published version with the command,
+copied text from the scanned artifact into its output unredacted: with `--json`,
+`target.declaredPurpose`, `target.capabilities`, `target.modalStatements`,
+`target.vulnerabilitySurface[].surface` and `results[].payloadInput`; in text
+mode, the vulnerability block through 0.25.2 and the `Stated rule:` surface
+lines from 0.26.0. Fixed here: the artifact is redacted before extraction, and
+`red-team --json` carries a top-level `hackmyagentVersion`; output without that
+key came from an affected version. If output from an artifact holding a
+credential left your machine, rotate the credential. `red-team` never uploads
+its output; it travelled only where you moved it.
 
 ### The MCP checks read every root config spelling, so renaming mcp.json no longer raises the rating
 
