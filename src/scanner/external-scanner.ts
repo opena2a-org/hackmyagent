@@ -117,7 +117,10 @@ export function parseTarget(target: string): ParsedTarget {
     };
   }
   if (net.isIPv6(target)) return { hostname: target };
-  const hostPort = target.match(/^\[?([^\]/]+?)\]?(?::(\d{1,5}))?$/);
+  // A schemeless `host/path` scans the host, as 0.33.0 did; the path is not
+  // part of what a port scan can use.
+  const hostOnly = target.split(/[/?#]/)[0];
+  const hostPort = hostOnly.match(/^\[?([^\]/]+?)\]?(?::(\d{1,5}))?$/);
   if (!hostPort) {
     throw new Error(`Cannot parse "${target}" as a target. Give a hostname, an IP address, or an http(s) URL.`);
   }

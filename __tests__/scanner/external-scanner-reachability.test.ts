@@ -57,6 +57,16 @@ describe('ExternalScanner reachability', () => {
     expect(result.findings.map((f) => f.checkId)).not.toContain('SCAN-UNREACHABLE');
   });
 
+  it('a schemeless host with a path scans the host, as before', async () => {
+    const { server, port } = await listen((_req, res) => { res.writeHead(200); res.end('ok'); });
+    servers.push(server);
+
+    const result = await scanner.scan(`127.0.0.1:${port}/status`, { timeout: 1000 });
+
+    expect(result.openPorts).toEqual([port]);
+    expect(result.hostReachable).toBe(true);
+  });
+
   it('a URL target without a port keeps the default port list, on the parsed hostname', async () => {
     const { server, port } = await listen((_req, res) => { res.writeHead(200); res.end('ok'); });
     servers.push(server);
