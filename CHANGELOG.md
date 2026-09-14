@@ -89,6 +89,13 @@ says which of three states it is in: the name did not resolve
 (`SCAN-NO-OPEN-PORTS`, new, score N/A like its sibling). A refused connection
 counts as an answer: the host is there, the port is not.
 
+Two probes that the stall had been hiding are tightened in the same change:
+`MCP-TOOLS` fired on any 200 whose body contained the word "tools", so a site
+with an HTML /tools page was reported as exposing an MCP tools endpoint (a
+CRITICAL on a marketing page); it now requires a JSON listing with a `tools`
+member. `CLAUDE-MD-EXPOSED` fired on any 200 at /CLAUDE.md, which a
+single-page app's HTML fallback satisfies; an HTML body no longer counts.
+
 ### `red-team --json` no longer echoes the credentials it read
 
 `hackmyagent red-team ./.mcp.json --json` placed the config's first long line

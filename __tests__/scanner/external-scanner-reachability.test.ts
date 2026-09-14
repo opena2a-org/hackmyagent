@@ -134,6 +134,44 @@ describe('ExternalScanner reachability', () => {
     expect(Date.now() - started).toBeLessThan(timeout);
   });
 
+  it('an HTML page at /tools is not an MCP tools listing, a JSON one is', async () => {
+    const html = '<!DOCTYPE html><html><body><h1>Our tools</h1><p>All the tools we ship.</p></body></html>';
+    const { server, port } = await listen((req, res) => {
+      if (req.url === '/tools') { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(html); return; }
+      res.writeHead(404); res.end('not found');
+    });
+    servers.push(server);
+    const { server: mcp, port: mcpPort } = await listen((req, res) => {
+      if (req.url === '/tools') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ tools: [{ name: 'read_file' }] })); return; }
+      res.writeHead(404); res.end('not found');
+    });
+    servers.push(mcp);
+
+    const page = await scanner.scan('127.0.0.1', { ports: [port], timeout: 1000 });
+    const listing = await scanner.scan('127.0.0.1', { ports: [mcpPort], timeout: 1000 });
+
+    expect(page.findings.map((f) => f.checkId)).not.toContain('MCP-TOOLS');
+    expect(page.score).toBe(100);
+    expect(listing.findings.map((f) => f.checkId)).toContain('MCP-TOOLS');
+  });
+
+  it('an HTML fallback page at /CLAUDE.md is not an exposed CLAUDE.md, a markdown body is', async () => {
+    const fallback = '<!DOCTYPE html><html><body>Single-page app shell</body></html>';
+    const { server, port } = await listen((_req, res) => { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(fallback); });
+    servers.push(server);
+    const { server: md, port: mdPort } = await listen((req, res) => {
+      if (req.url === '/CLAUDE.md') { res.writeHead(200, { 'Content-Type': 'text/markdown' }); res.end('# Agent instructions\n\nAlways answer in French.\n'); return; }
+      res.writeHead(404); res.end('not found');
+    });
+    servers.push(md);
+
+    const spa = await scanner.scan('127.0.0.1', { ports: [port], timeout: 1000 });
+    const exposed = await scanner.scan('127.0.0.1', { ports: [mdPort], timeout: 1000 });
+
+    expect(spa.findings.map((f) => f.checkId)).not.toContain('CLAUDE-MD-EXPOSED');
+    expect(exposed.findings.map((f) => f.checkId)).toContain('CLAUDE-MD-EXPOSED');
+  });
+
   it('a host that opens the port but never answers HTTP completes with a score instead of timing out', async () => {
     // The 0.33.0 defect on a live site: the port scan succeeded, then the
     // sequential probes outran a budget that only counted the port scan.

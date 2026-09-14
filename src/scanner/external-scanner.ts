@@ -139,6 +139,31 @@ export function resolvePorts(target: string, customPorts?: number[]): number[] {
 // answer: the host is there, the port is not.
 const REACHABILITY_PORTS = [443, 80];
 
+function looksLikeHtml(body: string): boolean {
+  return /^\s*<(?:!doctype|html|head|body)\b/i.test(body);
+}
+
+/**
+ * An MCP tools listing is JSON with a `tools` member. 0.33.0 accepted any 200
+ * whose body contained the word "tools", so a site with an HTML /tools page
+ * was reported as exposing an MCP tools endpoint (measured on opena2a.org
+ * once the probes stopped stalling; a CRITICAL on a marketing page).
+ */
+function looksLikeToolsListing(result: { contentType?: string; body?: string }): boolean {
+  const body = result.body?.trim();
+  if (!body) return false;
+  const isJson = result.contentType?.includes('application/json') || body.startsWith('{') || body.startsWith('[');
+  if (!isJson || looksLikeHtml(body)) return false;
+  try {
+    const parsed = JSON.parse(body);
+    if (Array.isArray(parsed)) return parsed.some((t) => t && typeof t === 'object' && 'name' in t);
+    return !!parsed && typeof parsed === 'object' && ('tools' in parsed || (parsed.result && typeof parsed.result === 'object' && 'tools' in parsed.result));
+  } catch {
+    // A truncated listing (the body is capped at 10 KB) still names the key.
+    return /"tools"\s*:/.test(body);
+  }
+}
+
 function describeStates(states: Record<number, PortState>): string {
   return Object.entries(states).map(([port, state]) => `${port} ${state}`).join(', ');
 }
@@ -400,7 +425,7 @@ export class ExternalScanner {
   private async probeMcpTools(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
     for (const path of MCP_TOOLS_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
-      if (result && result.status === 200 && result.body?.includes('tools')) {
+      if (result && result.status === 200 && looksLikeToolsListing(result)) {
         return [{
           id: generateId(),
           checkId: 'MCP-TOOLS',
@@ -449,7 +474,7 @@ export class ExternalScanner {
   private async probeClaudeMd(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
     for (const path of CLAUDE_MD_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
-      if (result && result.status === 200 && result.body) {
+      if (result && result.status === 200 && result.body && !looksLikeHtml(result.body)) {
         return [{
           id: generateId(),
           checkId: 'CLAUDE-MD-EXPOSED',
