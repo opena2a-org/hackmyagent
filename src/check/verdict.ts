@@ -153,7 +153,9 @@ export type UnmeasuredReason =
   /** The target exists and is unreadable — permissions, or an unreadable root. */
   | 'target-unreadable'
   /** The target was reachable and readable and held nothing to examine. */
-  | 'nothing-to-examine';
+  | 'nothing-to-examine'
+  /** No scan was run: the command was told not to scan and had nothing else to ask. */
+  | 'scan-skipped';
 
 export interface MeasuredVerdict {
   readonly measured: true;
@@ -287,8 +289,15 @@ export function deriveCheckVerdict(
    */
   emptyReason: UnmeasuredReason = 'nothing-to-examine',
   emptyDetail?: string,
+  /**
+   * A caller that walked an existing, readable target, ran its checks over it
+   * and found nothing to read reports a MEASURED absence (a local directory
+   * under `check`, the reading `secure` gives the same tree). Off by default:
+   * a downloaded tree with zero files means the fetch produced nothing.
+   */
+  measuredWhenEmpty = false,
 ): CheckVerdict {
-  if (coverage.examined <= 0) {
+  if (coverage.examined <= 0 && !measuredWhenEmpty) {
     return unmeasured(
       emptyReason,
       emptyDetail
