@@ -83,7 +83,13 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   'src/attack/payloads/memory-weaponization.ts': 1,
   'src/attack/scanner.ts': 1,
   'src/benchmarks/oasb-1.ts': 2,
-  'src/cli.ts': 4,
+  // 4 -> 1 when the explain command's static explanations — prose naming
+  // the sk-proj/sk-ant/AKIA key shapes users ask about — moved verbatim
+  // into src/explain-registry.ts. The three literals moved WITH the
+  // text, not multiplied: this entry shrinks by exactly what the new entry
+  // below carries, and the frozen total is unchanged.
+  'src/cli.ts': 1,
+  'src/explain-registry.ts': 3,
   'src/hardening/coverage-ledger.ts': 2,
   'src/hardening/nemoclaw-scanner.ts': 1,
   // 95 -> 96 when v0.32.0 merged into main. The 96th is NOT code: #533 added a
@@ -98,7 +104,15 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   'src/nanomind-core/compiler/semantic-compiler.ts': 32,
   'src/nanomind-core/compiler/source-code-preprocessor.ts': 3,
   'src/nanomind-core/ingestion/artifact-parser.ts': 6,
-  'src/nanomind-core/security/defense-in-depth.ts': 27,
+  // 27 -> 28 in HMA-34. The counter is blind to what a literal is FOR, and the
+  // fail-closed `pem-private-key` rule states its own invariant with a negative
+  // lookahead — the body may not cross another armor header — so the ruled
+  // pattern spells the `-----BEGIN` guard token twice, once in the header and
+  // once inside the lookahead that stops the body at the next armor header.
+  // No new vocabulary was added: it
+  // is the same token the rule already carried, now load-bearing twice. Nothing
+  // else in the file moved.
+  'src/nanomind-core/security/defense-in-depth.ts': 28,
   'src/narrative/build-narrative.ts': 26,
   'src/plugins/credvault.ts': 10,
   'src/plugins/signcrypt.ts': 1,
@@ -108,7 +122,8 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   'src/semantic/structural/mcp-config.ts': 6,
 };
 
-const FROZEN_TOTAL = 302;
+// 302 -> 303 in HMA-34, the single +1 from `defense-in-depth.ts` above.
+const FROZEN_TOTAL = 303;
 
 function guardLiterals(): string[] {
   return [...CREDENTIAL_SHAPES.flatMap(s => [...s.guards]), ...UNOWNED_SHAPE_LITERALS];

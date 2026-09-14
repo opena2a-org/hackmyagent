@@ -24,7 +24,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { parseArtifact } from '../ingestion/artifact-parser.js';
 import { sanitizeForNanoMind } from '../ingestion/input-sanitizer.js';
-import { redactSecretsForReport } from '../security/defense-in-depth.js';
+import { redactSecretsForReportReporting } from '../security/defense-in-depth.js';
 import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import { buildAnalysisView } from './source-code-preprocessor.js';
@@ -45,6 +45,7 @@ import type {
   Constraint,
   ConstraintDomain,
   DataAccessPattern,
+  DeclaredPurposeRedaction,
   DeterministicFinding,
   RiskSurface,
   IntentClass,
@@ -87,6 +88,13 @@ interface CachedCompilation {
   deterministicFindings: DeterministicFinding[];
   verdictAdjustments: VerdictAdjustment[];
   refusedAdjustments: VerdictAdjustment[];
+  /**
+   * Whether the credential scan refused this content for size. Cached with the
+   * rest of the compilation for the same reason the floor is: the refusal is a
+   * property of the COMPILATION, and a cache hit is the one path on which it
+   * would otherwise go unreported.
+   */
+  credentialScanRefused: boolean;
 }
 
 export class SemanticCompiler {
@@ -134,7 +142,9 @@ export class SemanticCompiler {
         ast: cached.ast,
         durationMs: Date.now() - startMs,
         nanomindUsed: false,
-        warnings: ['Served from cache'],
+        warnings: cached.credentialScanRefused
+          ? ['Served from cache', credentialScanRefusedWarning(cached.ast.artifactSize)]
+          : ['Served from cache'],
         deterministicFindings: cached.deterministicFindings,
         verdictAdjustments: cached.verdictAdjustments,
         refusedAdjustments: cached.refusedAdjustments,
@@ -179,7 +189,14 @@ export class SemanticCompiler {
     // also redacts any long quoted value assigned to a key/token/secret
     // identifier, which destroys ordinary prose and measurably changed what
     // the scanner reported.
-    const declaredPurpose = extractDeclaredPurpose(content, parsed.frontmatter);
+    //
+    // The extractor also reports whether that redaction CHANGED anything
+    // (HMA-38): the redacted value itself is inert under any later redaction
+    // pass, so `declaredPurposeRedaction` is the only witness downstream
+    // finding construction has that content was removed — see
+    // `DeclaredPurposeRedaction` in `../types.ts`.
+    const { text: declaredPurpose, redaction: declaredPurposeRedaction } =
+      extractDeclaredPurpose(content, parsed.frontmatter);
 
     // Step 5: NanoMind inference (intent + inferred capabilities)
     // Step 4b: THE DETERMINISTIC LAYER, and it runs FIRST.
@@ -201,9 +218,43 @@ export class SemanticCompiler {
     // signal the compiler has — so it is run HERE and its hits are reused
     // below rather than rescanned. Running it after the verdict would have left
     // a hardcoded key out of the floor the verdict is measured against.
-    const canonicalHits = parsed.type === 'source_code' ? scanCanonicalCredentialFormats(content) : [];
+    //
+    // The scan can also REFUSE: its patterns carry unbounded lower-bound
+    // quantifiers that throw `RangeError` rather than merely running slowly on a
+    // multi-megabyte same-alphabet run, so it declines content over
+    // `MAX_CREDENTIAL_SCAN_BYTES` instead of handing it to them. That refusal is
+    // reported below, never swallowed — an artifact nobody read is not an
+    // artifact with no credentials in it.
+    //
+    // The scan runs for EVERY artifact type, not just source_code (HMA-27).
+    // While it was type-gated, a non-source artifact's only route to a
+    // CRED-HARVEST signal was prose — `mapRiskSurfaces` requires a credential
+    // noun AND a harvesting verb — so a `config.toml` whose only credential
+    // content was a canonical VALUE (`sk-ant-api…`, or a name-gated
+    // `secret_access_key = "<40 hex>"`) produced zero findings from every
+    // layer. Detection is decided by the value shapes alone: the same
+    // canonical + name-gated lists the source path uses, with their own
+    // placeholder / regex-context / low-entropy filters, so the 40-hex
+    // residual class (git SHAs, base64-ish i18n strings) stays out — those
+    // are matched by neither list. The scan also refuses oversize content
+    // from its own predicate, so the refusal below is raised identically for
+    // every type: without it, a 6 MB SOUL.md came back `benign` with zero
+    // findings — the C1 shape — while the byte-identical .py was loudly
+    // refused.
+    const canonicalScan = scanCanonicalCredentialFormats(content);
+    const canonicalHits = canonicalScan.hits;
+    if (canonicalScan.refusedForSize) {
+      warnings.push(credentialScanRefusedWarning(parsed.size));
+    }
     const deterministicSurfaces = [
       ...deterministicRiskSurfaces(analysisContent, declaredCapabilities, parsed.type),
+      // The refusal enters the DETERMINISTIC list, not just `warnings`, because
+      // that list is what `applyDeterministicFloor` reads: an entry here lifts
+      // the artifact off `benign` and refuses any downgrade proposed over it. A
+      // warnings-only refusal would still return `intentClassification: 'benign'`
+      // with zero findings, which is the shape a credential-bearing file stamped
+      // clean has.
+      ...(canonicalScan.refusedForSize ? [credentialScanRefusedSurface(parsed.size)] : []),
       ...canonicalHits.map(hit => ({
         surface: `Hardcoded ${hit.label}`,
         attackClass: 'CRED-HARVEST',
@@ -311,6 +362,7 @@ export class SemanticCompiler {
       artifactPath: path,
       artifactSize: parsed.size,
       declaredPurpose,
+      declaredPurposeRedaction,
       declaredCapabilities,
       declaredConstraints,
       declaredDataAccess,
@@ -339,6 +391,7 @@ export class SemanticCompiler {
       deterministicFindings,
       verdictAdjustments: floored.applied,
       refusedAdjustments: floored.refused,
+      credentialScanRefused: canonicalScan.refusedForSize,
     });
 
     return {
@@ -510,7 +563,15 @@ export class SemanticCompiler {
 // Extraction Functions
 // ============================================================================
 
-function extractDeclaredPurpose(content: string, frontmatter?: Record<string, unknown>): string {
+/** `extractDeclaredPurpose`'s result: the purpose plus the redaction
+ * provenance the AST carries so downstream finding construction can forward
+ * it (see `DeclaredPurposeRedaction` in `../types.ts`). */
+interface ExtractedPurpose {
+  text: string;
+  redaction: DeclaredPurposeRedaction;
+}
+
+function extractDeclaredPurpose(content: string, frontmatter?: Record<string, unknown>): ExtractedPurpose {
   // Redaction happens on BOTH return paths below, and BEFORE the 200-char
   // slice. Order matters: slicing first can cut a secret that straddles the
   // boundary down to a fragment shorter than a pattern's minimum length, so
@@ -519,14 +580,33 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
   // secret in a field the rest of this file treats as already clean.
 
   // From YAML frontmatter
-  if (frontmatter?.description) return redactSecretsForReport(String(frontmatter.description));
+  if (frontmatter?.description) {
+    const raw = String(frontmatter.description);
+    const { text, shapes } = redactSecretsForReportReporting(raw);
+    return { text, redaction: { status: text === raw ? 'clean' : 'applied', shapes } };
+  }
+
+  // The WHOLE content is redacted before it is split into candidate lines
+  // (HMA-38). Splitting first and redacting the selected line was a measured
+  // leak: a multi-line armored key's header is skipped by the '-' rule below,
+  // which leaves a bare base64 body line as the first candidate — and every
+  // redaction rule is anchored to a vendor prefix, a name, an armor header or
+  // a scheme, so a header-less body line matches none of them and returned
+  // verbatim. For an Ed25519 PKCS#8 key that single line is the entire seed.
+  // Redacting first lets the multi-line key rule see header AND footer, so
+  // the whole block collapses to its marker before any line is selected.
+  const { text: redactedContent, shapes } = redactSecretsForReportReporting(content);
+  const redaction: DeclaredPurposeRedaction = {
+    status: redactedContent === content ? 'clean' : 'applied',
+    shapes,
+  };
 
   // From first paragraph. Skip comment lines (line comments, block
   // comment bodies, shebangs) so that a doc comment saying "this is a
   // fixture" or "for testing" does not get mistaken for the artifact's
   // declared purpose — which would then incorrectly classify the file as
   // a test/doc context and suppress credential findings.
-  const lines = content.split('\n').filter(l => l.trim().length > 0);
+  const lines = redactedContent.split('\n').filter(l => l.trim().length > 0);
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (
@@ -542,10 +622,10 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
       continue;
     }
     if (line.length > 20) {
-      return redactSecretsForReport(line).slice(0, 200);
+      return { text: line.slice(0, 200), redaction };
     }
   }
-  return 'Unknown purpose';
+  return { text: 'Unknown purpose', redaction };
 }
 
 /**
@@ -1503,6 +1583,16 @@ export function analyzeCredentialKeywordContext(
  * (real API key / PEM block / etc.) outside obvious test-fixture markers.
  */
 function hasCanonicalCredentialFormat(content: string): boolean {
+  // The same throw class as `scanCanonicalCredentialFormats`, on the same
+  // regexes — and this is the entry point `compile()` reaches for every
+  // NON-source_code artifact (`extractDataAccessPatterns` returns early only
+  // for source_code), so without this gate a 6 MB SOUL.md threw where a 6 MB
+  // .py file was refused. `false` is the only honest boolean here: no canonical
+  // format was CONFIRMED. The loud per-artifact refusal is not this function's
+  // job — `compile()` raises it from the same predicate, for every type.
+  if (exceedsCredentialScanBytes(content)) {
+    return false;
+  }
   for (const { regex } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
     const match = regex.exec(content);
@@ -1543,6 +1633,20 @@ interface CanonicalCredentialHit {
 }
 
 /**
+ * What one run of the credential scan produced.
+ *
+ * `refusedForSize` is why this is a record rather than a bare array: an empty
+ * `hits` means "no credential in this content" on the ordinary path and "this
+ * content was never read" on the refusal path, and a caller that cannot tell the
+ * two apart will report the second as the first.
+ */
+interface CanonicalCredentialScan {
+  hits: CanonicalCredentialHit[];
+  /** True when the content exceeded `MAX_CREDENTIAL_SCAN_BYTES` and NOTHING ran. */
+  refusedForSize: boolean;
+}
+
+/**
  * Canonical credential-format patterns we trust enough to flag even when
  * the surrounding context is source code. Each pattern targets a real-world
  * secret format with low false-positive rate on arbitrary text.
@@ -1570,6 +1674,92 @@ const LEFT_ANCHOR = '(?<![A-Za-z0-9])';
 
 /** Build an anchored, global pattern from a bare vendor shape. */
 const vendor = (shape: string) => new RegExp(LEFT_ANCHOR + shape, 'g');
+
+/**
+ * Hard upper bound, in bytes, on the content the credential patterns below are
+ * allowed to see.
+ *
+ * Several of those patterns carry an UNBOUNDED lower-bound quantifier over a
+ * single character class — `{20,}` (Anthropic, OpenAI project), `{48,}` (OpenAI
+ * legacy), `{10,}` (Slack), `{24,}` (Stripe), and the name-gated `{40,}`. On an
+ * unbroken same-alphabet run those are not merely slow: `regex.exec` THROWS
+ * `RangeError: Maximum call stack size exceeded` once V8's backtrack stack runs
+ * out, measured at 5.5 MB for `sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`. The throw
+ * takes down the whole scan and, before this bound existed, escaped
+ * `SemanticCompiler.compile()` to the caller.
+ *
+ * The bound lives HERE rather than only at the call sites because the call sites
+ * do not all have one. `scanner-bridge.ts` filters oversized files out before
+ * they reach the compiler, but `src/soul/scanner.ts` and
+ * `src/narrative/wire-publish.ts` read a file and call `compile()` with no size
+ * check at all, and the `./nanomind-core` package export hands `SemanticCompiler`
+ * to third parties with no reason to know about either.
+ *
+ * The patterns have TWO entry points reachable from `compile()`, and the gate
+ * stands in front of both: `scanCanonicalCredentialFormats` (the source_code
+ * scan below) and `hasCanonicalCredentialFormat` (which
+ * `analyzeCredentialKeywordContext` runs for every OTHER artifact type — the
+ * types `src/soul/scanner.ts` and `src/narrative/wire-publish.ts` actually
+ * compile). r1 gated only the first, so a 6 MB SOUL.md still threw out of the
+ * second; `compile()` only "no longer throws" because both are covered.
+ *
+ * Deliberately NOT `config.maxArtifactSize`: that is a consumer knob, and a
+ * consumer raising it must not be able to re-arm a `RangeError` inside the
+ * scanner. The VALUE matches `MAX_FILE_SIZE` in `scanner-bridge.ts` so the
+ * library path and the CLI path refuse the same inputs.
+ *
+ * Capping the quantifiers instead was rejected: a cap relocates the blind spot to
+ * the first credential longer than the cap rather than removing it, and a real
+ * `sk-ant-api03-…` key is longer than any width that would help here.
+ */
+const MAX_CREDENTIAL_SCAN_BYTES = 1_048_576;
+
+/**
+ * The one predicate every gate on the credential patterns consults. Bytes, not
+ * code units, to match the units the cap is stated in — and one spelling of the
+ * comparison, so the scan gate, the boolean-probe gate, and the refusal that
+ * `compile()` reports for non-source_code artifacts cannot disagree about
+ * which inputs are over the line.
+ */
+function exceedsCredentialScanBytes(content: string): boolean {
+  return Buffer.byteLength(content, 'utf-8') > MAX_CREDENTIAL_SCAN_BYTES;
+}
+
+/**
+ * The named refusal for content the credential scan declined to read.
+ *
+ * One spelling, shared by the fresh-compile path, the cache-hit path, and the
+ * risk surface, so a consumer matching on it sees the same string every time.
+ */
+function credentialScanRefusedWarning(size: number): string {
+  return `Credential scan skipped: artifact is ${size} bytes, over the `
+    + `${MAX_CREDENTIAL_SCAN_BYTES}-byte credential-scan limit. `
+    + 'No credential pattern was evaluated against this content.';
+}
+
+/**
+ * The refusal as a deterministic risk surface.
+ *
+ * It carries no `offset`: nothing was matched, and the surface is about the whole
+ * artifact rather than a place in it.
+ */
+function credentialScanRefusedSurface(size: number): RiskSurface {
+  return {
+    surface: 'Credential scan not performed (artifact over size limit)',
+    // The class of the scan that did NOT run, so this lands in the same bucket a
+    // consumer already inspects for credential risk — which is exactly where
+    // someone has to look when told the credential check was skipped.
+    attackClass: 'CRED-HARVEST',
+    // Not an accusation; the bytes were never read. Held at the `high` rung
+    // (>= 0.5) rather than the noise floor because the only other reading of an
+    // empty credential result is "no credentials here", and that is a claim this
+    // compiler is not entitled to make about content it declined to scan.
+    confidence: 0.5,
+    evidence: credentialScanRefusedWarning(size),
+    mitigation: `Scan this artifact in segments under ${MAX_CREDENTIAL_SCAN_BYTES} bytes, `
+      + 'or exclude it deliberately. An unscanned artifact is not a clean one.',
+  };
+}
 
 const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
@@ -1610,9 +1800,17 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   // a hyphenated GitLab runner slug and a drawn-blank GitLab token placeholder —
   // GitLab's own docs placeholder — while introducing a QUADRATIC scan on
   // attacker-supplied file content (measured 0ms -> 651ms at 60 KB,
-  // 1ms -> 40s at 480 KB, against a 10 MB file cap). A denial of service in a
-  // security scanner is worse than the false negative it was closing, and
-  // GitLab detection was never part of the defect this release fixes.
+  // 1ms -> 40s at 480 KB, against the 1 MiB cap that actually governs this
+  // path: `MAX_CREDENTIAL_SCAN_BYTES` above, matching `MAX_FILE_SIZE =
+  // 1_048_576` in `src/nanomind-core/scanner-bridge.ts`). This note used to say
+  // "a 10 MB file cap", which is `MAX_FILE_SIZE` in `src/hardening/scanner.ts`
+  // — a different component that never feeds this scan. The margin it implied
+  // was 10x too generous, and anyone who had trusted it and raised the real cap
+  // toward 10 MB would have armed the `RangeError` on the CLI path too.
+  //
+  // A denial of service in a security scanner is worse than the false negative
+  // it was closing, and GitLab detection was never part of the defect this
+  // release fixes.
   //
   // The static credential lists in `scanner.ts` still carry `glpat-`, so
   // `protect` and `--fix` are unaffected. Re-adding it here needs a bounded
@@ -1631,7 +1829,7 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
  * flood of false positives (any 40-char base64 blob, hash, or random id would
  * hit). They are only flagged when the assignment TARGET names the credential.
  *
- * AWS secret access key is the canonical case: a 40-char `[A-Za-z0-9/+]` value.
+ * AWS secret access key is the canonical case: a 40+-char `[A-Za-z0-9/+]` value.
  * We require `aws … secret|private …` within a short window before the value
  * (the standard gitleaks approach), so `awsSecretAccessKey = "<40>"` and
  * `AWS_SECRET_ACCESS_KEY=<40>` fire, but a bare 40-char blob, a git SHA, or a
@@ -1645,7 +1843,7 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
 const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   {
     label: 'AWS secret access key',
-    // Two name anchors, both ending in `key`, then assignment + 40-char value:
+    // Two name anchors, both ending in `key`, then assignment + 40+-char value:
     //   (a) `aws … secret|private … key` — `AWS_SECRET_ACCESS_KEY`, `awsSecretKey`
     //   (b) `secret[_ ]access[_ ]key` — the AWS-specific full phrase, distinctive
     //       enough WITHOUT a nearby `aws` token, so it also catches the very
@@ -1654,7 +1852,20 @@ const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = 
     // The `key` token rejects `aws secretsmanager arn:` / `aws secret etag =`
     // + 40-char-id false positives; JSON `"awsSecretAccessKey":"<40>"` is
     // handled by the `["'\s]*[:=]+` operator class.
-    regex: /(?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])/gi,
+    //
+    // `{40,}` is a LOWER bound, not `{40}`: the canonical AWS width is the
+    // minimum a real secret can have, and this shape previously pinned the
+    // body to exactly `{40}` and then forbade a same-alphabet continuation
+    // with `(?![A-Za-z0-9/+])` — the `{40}` consumed forty characters and the
+    // lookahead rejected the forty-first, so any 41+ character secret matched
+    // NOTHING. The greedy `{40,}` consumes the whole same-alphabet run, which
+    // preserves the lookahead's boundary semantics (it can only succeed at
+    // the end of the run) without capping the width. The redaction mirror in
+    // `security/defense-in-depth.ts` already used `{40,}`.
+    // `name-gated-credential-width.test.ts` (HMA-17.AC5) structurally rejects
+    // any re-introduction of a fixed-width body paired with a same-alphabet
+    // lookahead in this list.
+    regex: /(?:aws.{0,16}?(?:secret|private).{0,16}?key|secret[_\s.-]?access[_\s.-]?key)["'\s]*[:=]+>?\s*["']?([A-Za-z0-9/+]{40,})(?![A-Za-z0-9/+])/gi,
   },
 ];
 
@@ -1678,7 +1889,17 @@ const NAME_GATED_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = 
  * and then filtered", which is the distinction that matters here.
  */
 export function scanCanonicalCredentialFormatsForTest(content: string): CanonicalCredentialHit[] {
-  return scanCanonicalCredentialFormats(content);
+  return scanCanonicalCredentialFormats(content).hits;
+}
+
+/**
+ * Test-only accessor for the size gate in front of the credential patterns.
+ * Exported so `credential-scan-size-gate.test.ts` can assert the bound the
+ * compiler actually applies rather than restating the number, which is how a
+ * guard test and the code it guards drift apart.
+ */
+export function maxCredentialScanBytesForTest(): number {
+  return MAX_CREDENTIAL_SCAN_BYTES;
 }
 
 /**
@@ -1704,8 +1925,39 @@ export function canonicalCredentialLabelsForTest(): string[] {
   ];
 }
 
-function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit[] {
+/**
+ * Test-only accessor for the name-gated pattern list. Exported so
+ * `__tests__/nanomind-core/name-gated-credential-width.test.ts` can assert a
+ * STRUCTURAL invariant over every entry — no fixed-width `{N}` body paired
+ * with a trailing lookahead over the same alphabet, the shape that made any
+ * 41+ character AWS secret invisible — instead of hand-sweeping the list.
+ */
+export function nameGatedCredentialPatternsForTest(): Array<{ label: string; regex: RegExp }> {
+  return NAME_GATED_CREDENTIAL_PATTERNS;
+}
+
+/**
+ * Test-only accessor for the canonical pattern list, the twin of the name-gated
+ * one above. Exported so `credential-scan-size-gate.test.ts` can assert the
+ * quantifier shapes over the LIVE regexes: the size gate must not have been paid
+ * for by narrowing a `{20,}` into a `{20}` or a `{20,256}`, and a test that
+ * restated the patterns instead of reading them could not tell.
+ */
+export function canonicalCredentialPatternsForTest(): Array<{ label: string; regex: RegExp }> {
+  return CANONICAL_CREDENTIAL_PATTERNS;
+}
+
+function scanCanonicalCredentialFormats(content: string): CanonicalCredentialScan {
   const hits: CanonicalCredentialHit[] = [];
+
+  // The size gate, in front of EVERY pattern in both lists — see
+  // `MAX_CREDENTIAL_SCAN_BYTES`. Returning early is the only safe move: the
+  // failure mode past this size is a thrown `RangeError`, not a slow match, so
+  // there is no partial result to salvage and no per-pattern recovery worth
+  // attempting.
+  if (exceedsCredentialScanBytes(content)) {
+    return { hits, refusedForSize: true };
+  }
 
   // Markers that, when embedded directly in the key bytes themselves,
   // indicate the value is a placeholder rather than a real credential.
@@ -1806,7 +2058,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialHit
       });
     }
   }
-  return hits;
+  return { hits, refusedForSize: false };
 }
 
 function extractDependencies(content: string): string[] {
@@ -1881,7 +2133,7 @@ export function detectContextualBenignSignals(text: string): number {
  * Without this check, governance docs that mention attack patterns defensively
  * get flagged as malicious.
  */
-function isGovernanceContent(text: string): boolean {
+export function isGovernanceContent(text: string): boolean {
   // Include "will never" / "will not" as valid constraint phrases — SOULs that list
   // prohibited actions using "will never" or "will not" are governance documents
   // even if they don't use "must never" or "shall not" phrasing.
@@ -1896,6 +2148,299 @@ function isGovernanceContent(text: string): boolean {
 
   // 3+ constraint phrases, governance section headers, or 2+ credential-protection signals
   return constraintCount >= 3 || sectionHeaders || credProtectionSignals >= 2;
+}
+
+// ============================================================================
+// The CRED-HARVEST prose rule: the signal is a CLAUSE, never the file
+// ============================================================================
+
+/**
+ * THE DEFECT THIS REPLACES. The rule used to be two whole-file regexes ANDed:
+ *
+ *   /password|credential|api[_-]?key|secret|token/i.test(text) &&
+ *   /ask|request|share|provide/i.test(text)
+ *
+ * Neither operand knew where the other matched. A document earned a CRITICAL
+ * for containing a credential word ANYWHERE and a verb substring ANYWHERE —
+ * hundreds of lines apart, in unrelated sections, in different sentences about
+ * different things. The measured witness shape: a skill doc whose only
+ * credential noun was `token` inside "per-token attribution graphs" and whose
+ * only verb witnesses were `provide` inside "provider" and `request` inside
+ * "requested". Three ordinary sentences, no directive anywhere, one CRITICAL.
+ *
+ * The evidence was as coarse as the gate. It was `credKeywordMatch` — the FIRST
+ * credential noun in the file, a bare dictionary word — which `resolveFindingLine`
+ * correctly refuses to turn into a citation (`GENERIC_TRIGGER_VOCABULARY`,
+ * types/finding-location.ts). So every row this rule produced was a CRITICAL
+ * with no line and no `Verify:`.
+ *
+ * WHAT REPLACES IT. A credential noun and a request verb must occur in ONE
+ * CLAUSE, with the verb GOVERNING the noun and no negator ahead of the verb in
+ * that clause. The clause is also the evidence, which is what gives every
+ * resulting AST-CRED-001 row a line: a clause span is a long verbatim excerpt,
+ * so it clears the length floor and is not a bare vocabulary word.
+ *
+ * This narrows the rule in one direction only. Nothing that fails the clause
+ * test could have been a located finding before — it had no line to lose.
+ */
+
+/**
+ * Credential nouns.
+ *
+ * The vocabulary is the old predicate's, with ONE widening: the separator class
+ * in `api[_-]?key` also admits a space, so the English spelling "API key" is
+ * recognised alongside `api_key` / `api-key` / `apikey`. The old regex matched
+ * the three machine spellings and missed the one a directive actually uses —
+ * "Ask the user for their API key" carried no credential noun at all, and the
+ * whole-file rule only ever fired on such a document by borrowing a `token` or
+ * `secret` from somewhere else in the file. Under a clause-scoped rule that
+ * borrowing is gone, so the noun has to be spelled correctly here or the
+ * directive is missed outright.
+ */
+const CRED_HARVEST_NOUN = /password|credential|api[_\-\s]?key|secret|token/gi;
+
+/**
+ * The credential-noun class above, as a fresh `g`-flagged RegExp for a caller
+ * outside this module. The AST-CRED-003 value route reads the bytes that
+ * follow a credential noun, and it must agree with this rule on what a
+ * credential noun is: two spellings of the list is how they drift. A fresh
+ * instance each call, because a shared `g` regex carries `lastIndex`.
+ */
+export function credHarvestNounPattern(): RegExp {
+  return new RegExp(CRED_HARVEST_NOUN.source, 'gi');
+}
+
+/**
+ * Request / collect / forward verbs, as LEMMAS.
+ *
+ * `ask|request|share|provide` are the four the old regex carried;
+ * `include|send|paste|reveal|disclose|return` are the six the measured malicious
+ * literals additionally turn on ("should be included", "paste it into the
+ * report"). Widening the vocabulary is safe here precisely BECAUSE the window
+ * closed: a verb now has to sit in the same clause as the noun it governs.
+ */
+const CRED_HARVEST_VERB_LEMMAS = [
+  'ask',
+  'request',
+  'share',
+  'provide',
+  'include',
+  'send',
+  'paste',
+  'reveal',
+  'disclose',
+  'return',
+] as const;
+
+/** Past forms the `-ed`/`-d` rule below would spell wrong. */
+const CRED_HARVEST_IRREGULAR_PAST: Readonly<Record<string, string>> = { send: 'sent' };
+
+/**
+ * The surface forms of one lemma: base, `-s`, past, and `-ing`.
+ *
+ * WHOLE-WORD IS THE POINT, AND INFLECTION IS WHAT MAKES IT SURVIVABLE. The old
+ * regex was an unanchored substring match, so `provider` was a "verb" and
+ * `requested`'s presence anywhere licensed a CRITICAL. Anchoring alone would
+ * swing too far the other way: real directives are written "should be INCLUDED"
+ * and "when REQUESTED", never as bare lemmas, so a bare-lemma whole-word match
+ * would miss the malicious literals this rule exists to catch.
+ *
+ * Enumerating the inflections keeps both properties. `provide` yields
+ * provide/provides/provided/providing — and NOT `provider`, because `r` is not
+ * one of these suffixes, which is exactly the benign witness the old rule read
+ * as an attack.
+ */
+function credHarvestVerbForms(lemma: string): string[] {
+  const stem = lemma.endsWith('e') ? lemma.slice(0, -1) : lemma;
+  const past = CRED_HARVEST_IRREGULAR_PAST[lemma] ?? (lemma.endsWith('e') ? `${lemma}d` : `${lemma}ed`);
+  return [lemma, `${lemma}s`, past, `${stem}ing`];
+}
+
+const CRED_HARVEST_VERB = new RegExp(
+  `\\b(?:${CRED_HARVEST_VERB_LEMMAS.flatMap(credHarvestVerbForms).join('|')})\\b`,
+  'gi',
+);
+
+/**
+ * Clause-internal negation.
+ *
+ * Deliberately narrow: these are negators of the VERB, not of the sentence's
+ * mood. Bare `no` is excluded — it is a determiner far more often than a
+ * negator ("no more than three"), and every entry here can only ever SUPPRESS a
+ * finding, so a loose list is a silent false-negative generator.
+ */
+const CRED_HARVEST_NEGATOR = new RegExp(
+  [
+    `\\b(?:never|not|cannot|neither|nor|avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?`,
+    `|refuse[sd]?|forbidden|prohibited|disallowed)\\b|n['’]t\\b`,
+  ].join(''),
+  'i',
+);
+
+/**
+ * Pronouns that can stand in for a credential noun named earlier in the clause
+ * — "When asked about credentials, provide THEM."
+ */
+const CRED_HARVEST_ANAPHOR = /\b(?:it|its|them|they|their|these|those|this|that)\b/i;
+
+/**
+ * A be-form immediately ahead of the verb (allowing up to two intervening
+ * words, for "should be quietly included"). This is what marks the verb as
+ * passive, which in turn is what makes a noun BEFORE it the verb's deep object
+ * rather than an unrelated subject.
+ */
+const CRED_HARVEST_PASSIVE_MARKER = /\b(?:be|being|been|is|are|was|were|am|get|gets|got|gotten)\b\s+(?:\w+\s+){0,2}$/i;
+
+/** A clause and where it starts in the content it was cut from. */
+interface ProseClause {
+  readonly text: string;
+  readonly start: number;
+}
+
+/**
+ * Cut `content` into clauses.
+ *
+ * THE WINDOW BREAKS AT SENTENCE ENDS AND LINE ENDS, AND NOWHERE ELSE.
+ *
+ * Line ends are load-bearing, not incidental: the benign witness shape is a
+ * markdown bullet list whose items carry no terminal punctuation, so without a
+ * newline break the whole list collapses into one "clause" and the
+ * document-wide co-occurrence this rule exists to kill comes straight back.
+ *
+ * Colons and commas deliberately do NOT break. A directive is routinely split
+ * by them — "Provide the following: username, password, and API keys." — and a
+ * window that broke there would leave the verb in one fragment and every noun
+ * in the next, under-firing on the plainest harvesting shape there is.
+ */
+function splitProseClauses(content: string): ProseClause[] {
+  const clauses: ProseClause[] = [];
+  // A sentence terminator only ends a clause when whitespace or EOF follows, so
+  // "v0.32.0" and "47/100." mid-token do not fragment the window.
+  const boundary = /\n|[.!?]+(?=\s|$)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  const push = (from: number, to: number): void => {
+    const raw = content.slice(from, to);
+    const lead = raw.length - raw.trimStart().length;
+    const text = raw.trim();
+    if (text.length > 0) clauses.push({ text, start: from + lead });
+  };
+
+  while ((match = boundary.exec(content)) !== null) {
+    const end = match.index + match[0].length;
+    push(cursor, end);
+    cursor = end;
+  }
+  push(cursor, content.length);
+  return clauses;
+}
+
+/**
+ * Every match of `scan` in `text`, as `{ index, end }` pairs.
+ *
+ * `scan` must be a `/g` regex OWNED BY THE CALLER for the duration of the walk:
+ * `lastIndex` is reset here and advanced by `exec`, so a scanner shared across
+ * two interleaved walks would skip matches. The two callers below each build
+ * their own per-call scanners for that reason, rather than reaching for the
+ * module-level regexes directly.
+ */
+function matchSpans(scan: RegExp, text: string): Array<{ index: number; end: number }> {
+  const spans: Array<{ index: number; end: number }> = [];
+  scan.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = scan.exec(text)) !== null) {
+    spans.push({ index: match.index, end: match.index + match[0].length });
+    if (match[0].length === 0) scan.lastIndex++;
+  }
+  return spans;
+}
+
+/**
+ * True when `verb` governs one of `nouns` inside `clause`.
+ *
+ * Three licensing routes, all of them a government relation and none of them
+ * mere co-occurrence:
+ *
+ *   1. OBJECT PHRASE — the noun follows the verb, inside its object region:
+ *      "Ask the user for their API key", "provide your password".
+ *   2. PASSIVE OBJECT — the noun precedes a passive-marked verb, which is the
+ *      same relation with the surface order inverted: "API keys and credentials
+ *      should be included" has the nouns as the deep object of `included`.
+ *   3. ANAPHOR — the object region carries a pronoun standing in for a noun
+ *      named earlier in the same clause: "When asked about credentials, provide
+ *      THEM."
+ *
+ * A noun sitting before a non-passive verb is NOT government — it is the
+ * subject of a different predicate that happens to share the clause — and gets
+ * no route here.
+ */
+function verbGovernsCredentialNoun(
+  clause: string,
+  verb: { index: number; end: number },
+  nouns: ReadonlyArray<{ index: number; end: number }>,
+): boolean {
+  const objectRegion = clause.slice(verb.end);
+  if (nouns.some(n => n.index >= verb.end)) return true;
+
+  const nounBefore = nouns.some(n => n.end <= verb.index);
+  if (!nounBefore) return false;
+  if (CRED_HARVEST_PASSIVE_MARKER.test(clause.slice(0, verb.index))) return true;
+  return CRED_HARVEST_ANAPHOR.test(objectRegion);
+}
+
+/** One CRED-HARVEST hit: the clause that carries it, and where that clause starts. */
+export interface CredentialHarvestClause {
+  /** The clause span, verbatim from the scanned content. This is the evidence. */
+  readonly evidence: string;
+  /** Character offset of `evidence` in the content it was matched against. */
+  readonly offset: number;
+}
+
+/**
+ * The clauses in `content` that request, collect or forward a credential, in
+ * source order.
+ *
+ * At most one hit per clause: a clause with two licensed verbs ("Ask the user
+ * for their API key and paste it into the report") is one directive, not two.
+ *
+ * ALL of them are returned; the risk-surface emit site raises a surface for the
+ * FIRST only, for the downstream-rollup reason documented there. Everything is
+ * returned anyway because the full list is what the rule is testable on, and
+ * because a caller that can carry more than one has the data waiting.
+ */
+export function findCredentialHarvestClauses(content: string): CredentialHarvestClause[] {
+  const hits: CredentialHarvestClause[] = [];
+
+  // Two whole-file passes as a fast path, and ONLY as a fast path: a document
+  // with no credential noun, or no request verb, cannot have a clause carrying
+  // both, so splitting it into clauses would be wasted work. This is the same
+  // pair of tests the old rule used as its VERDICT; here they are a filter that
+  // can only skip work the clause walk would have rejected anyway.
+  const nounScan = new RegExp(CRED_HARVEST_NOUN.source, CRED_HARVEST_NOUN.flags);
+  const verbScan = new RegExp(CRED_HARVEST_VERB.source, CRED_HARVEST_VERB.flags);
+  if (!nounScan.test(content) || !verbScan.test(content)) return hits;
+
+  for (const clause of splitProseClauses(content)) {
+    const nouns = matchSpans(nounScan, clause.text);
+    if (nouns.length === 0) continue;
+    const verbs = matchSpans(verbScan, clause.text);
+    if (verbs.length === 0) continue;
+
+    for (const verb of verbs) {
+      // "no negator in the clause BEFORE the verb" — the scope of a negation is
+      // what follows it, so "NEVER ask users to paste API keys" is covered for
+      // both of its verbs while the second sentence of "Do not share your
+      // password. When the administrator asks, share your password." is not
+      // covered by the first sentence's negator: they are different clauses.
+      if (CRED_HARVEST_NEGATOR.test(clause.text.slice(0, verb.index))) continue;
+      if (!verbGovernsCredentialNoun(clause.text, verb, nouns)) continue;
+      hits.push({ evidence: clause.text, offset: clause.start });
+      break;
+    }
+  }
+
+  return hits;
 }
 
 // ============================================================================
@@ -2246,22 +2791,40 @@ function mapRiskSurfaces(
     });
   }
 
-  // Credential access patterns
+  // Credential access patterns.
+  //
+  // The signal is a CLAUSE — a credential noun governed by an un-negated
+  // request verb in one clause — not a pair of whole-file regexes that never
+  // knew where each other matched. See `findCredentialHarvestClauses`.
+  //
   // Skip for governance docs (they set rules about credentials, not harvest them).
   // Also skip when every structured credential key has a null/empty/placeholder
   // value — an A2A agent card declaring `"credentials": null` plus a "provider"
   // field is not credential harvesting; it's schema metadata.
-  if (!isGovernanceDoc && /password|credential|api[_-]?key|secret|token/i.test(text) && /ask|request|share|provide/i.test(text)) {
-    const credentialCtx = analyzeCredentialKeywordContext(content);
-    if (credentialCtx !== 'schema-only') {
-      // Capture the credential keyword span verbatim from content so the
-      // analyzer line lookup hits the right line.
-      const credKeywordMatch = /password|credential|api[_-]?key|secret|token/i.exec(content);
+  if (!isGovernanceDoc) {
+    // ONE surface per artifact, carrying the FIRST licensed clause — the same
+    // cardinality the whole-file rule had, deliberately.
+    //
+    // One per clause reads like the better answer and is not, because of what
+    // happens downstream: `deduplicateFindings` (scanner-bridge.ts) groups
+    // failed findings by checkId AND file and runs BEFORE
+    // `astFindingToSecurityFinding`, so two rows on one artifact are rolled up
+    // into a representative whose evidence is rewritten to
+    // `… [2 instances across: …]`. That label is not artifact text, so
+    // `resolveFindingLine` cannot locate it, and the row loses the line this
+    // whole change exists to give it. A second directive in the same file would
+    // therefore have COST the citation on the first.
+    const [harvestClause] = findCredentialHarvestClauses(content);
+    if (harvestClause && analyzeCredentialKeywordContext(content) !== 'schema-only') {
       surfaces.push({
         surface: 'Credential harvesting',
         attackClass: 'CRED-HARVEST',
         confidence: 0.7,
-        evidence: credKeywordMatch?.[0] ?? 'Requests credentials from users or systems',
+        // The clause, verbatim from the content this pass read. Unlike the bare
+        // dictionary word it replaces, this clears `MIN_VERBATIM_TRIGGER_LENGTH`
+        // and is not in `GENERIC_TRIGGER_VOCABULARY`, so `resolveFindingLine`
+        // can locate it and the AST-CRED-001 row built from it carries a line.
+        evidence: harvestClause.evidence,
       });
     }
   }

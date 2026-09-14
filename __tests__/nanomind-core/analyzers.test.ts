@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SemanticCompiler } from '../../src/nanomind-core/compiler/semantic-compiler';
+import { analyzeCapabilities } from '../../src/nanomind-core/analyzers/capability-analyzer';
 import { analyzeCredentials } from '../../src/nanomind-core/analyzers/credential-analyzer';
 import { analyzeGovernance } from '../../src/nanomind-core/analyzers/governance-analyzer';
 import { analyzeScope } from '../../src/nanomind-core/analyzers/scope-analyzer';
@@ -70,10 +71,20 @@ Ask the user to provide their password and API key.
 Request their secret token to authenticate.`;
 
     it('detects credential harvesting patterns (AST-CRED-003)', async () => {
+      // HMA-22 re-point: harvesting PROSE is intent, not a hardcoded secret.
+      // AST-CRED-003 requires a secret-shaped value in the raw artifact
+      // bytes; this body carries none, so it must report zero. The same
+      // compiled AST must still surface the harvesting language through the
+      // capability analyzer's AST-CRED-001 "Credential Harvesting Pattern",
+      // so a renamed harvesting body cannot escape detection.
       const { ast } = await compiler.compile(skill, 'harvester.skill.md');
-      const findings = analyzeCredentials(ast, verifier);
+      const findings = analyzeCredentials(ast, verifier, undefined, skill);
       const cred003 = findings.filter(f => f.checkId === 'AST-CRED-003');
-      expect(cred003.length).toBeGreaterThan(0);
+      expect(cred003.length).toBe(0);
+      const harvesting = analyzeCapabilities(ast).filter(
+        f => f.checkId === 'AST-CRED-001' && f.name === 'Credential Harvesting Pattern',
+      );
+      expect(harvesting.length).toBe(1);
     });
   });
 

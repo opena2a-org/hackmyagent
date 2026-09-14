@@ -1,0 +1,6 @@
+# Release pin for the deploy job.
+
+[release]
+channel = "stable"
+commit = "513b3aa5f05f7764bd9b037f9744b0270c2c64f3"
+built_at = "2026-08-30T12:00:00Z"

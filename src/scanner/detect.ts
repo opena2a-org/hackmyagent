@@ -13,13 +13,18 @@ import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { SoulScanner } from '../soul';
+import { SoulScanner, GOVERNANCE_FILES } from '../soul';
 import type { SoulScanResult } from '../soul';
 import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
 import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
+import { matchVendorPrefix } from '../types/credential-format';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
 import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
+import { readStaysInsideTree } from '../hardening/contain';
+import { withheldLinkRecords, withheldLinkLines } from '../hardening/withheld-links';
+import type { WithheldLink } from '../hardening/coverage-ledger';
+import { CLI_PREFIX } from '../cli-prefix';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,13 +36,40 @@ export interface DetectOptions {
   format?: string;
   verbose?: boolean;
   exportCsv?: string;
+  /**
+   * How many directory levels below `targetDir` are searched for agent
+   * projects. `0` scans the target alone, which is the 0.32.0 behaviour.
+   * Default `DEFAULT_PROJECT_DEPTH`.
+   */
+  depth?: number;
+  /**
+   * List every agent project under the target even when the target is one
+   * itself. Without it a target that is a project renders its own report and
+   * names the projects below it; the default at a workspace root or a home
+   * directory is the list.
+   */
+  workspace?: boolean;
 }
 
 export type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
 
 export interface DetectedAgent {
   name: string;
-  pid: number;
+  /** Present for a running agent only. */
+  pid?: number;
+  /**
+   * `running`: a process on this machine matched `AGENT_PATTERNS`.
+   * `installed`: no process, but a config the tool owns is present — a
+   * project AI config (`.cursorrules`, `CLAUDE.md`, ...) or a machine-wide
+   * MCP config (`~/.cursor/mcp.json`, ...). An agent that is not running
+   * at scan time still has its rules, its servers and its credentials in the
+   * tree, and the governance question applies to it the same way; deriving
+   * the list from processes alone made the ungoverned finding disappear
+   * whenever the developer had closed the tool.
+   */
+  state: 'running' | 'installed';
+  /** `process` for a running agent; the config path that evidences an installed one. */
+  source: string;
   category: 'ai-assistant' | 'local-llm' | 'ai-plugin';
   identityStatus: 'identified' | 'no identity';
   governanceStatus: 'governed' | 'no governance';
@@ -156,6 +188,53 @@ export interface DetectResult {
   findings: Finding[];
 }
 
+/**
+ * The result of a `detect` run over a directory that holds agent projects
+ * below it: a workspace root, a developer's home directory.
+ *
+ * There is no workspace-level governance score. Governance is a measurement
+ * of one document, and a minimum or an average over five of them would be a
+ * third number that means nothing (#291). Each entry in `projects` is the
+ * full single-directory result for that project, byte-for-byte what
+ * `detect <dir>` reports there, so the per-project numbers are the same on
+ * both surfaces.
+ */
+export interface WorkspaceDetectResult {
+  scanTimestamp: string;
+  scanDirectory: string;
+  summary: {
+    projects: number;
+    /** Projects with at least one critical or high finding. */
+    projectsNeedingAction: number;
+    totalAgents: number;
+    localLlms: number;
+    /** Machine-wide MCP servers; each project's own are in `projects[].mcpServers`. */
+    mcpServers: number;
+    projectMcpServers: number;
+    aiConfigs: number;
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+  };
+  /**
+   * The machine inventory as scanned. Governance is a property of a project,
+   * so the per-project copies in `projects[].agents` carry the status; the
+   * entries here are the raw process rows.
+   */
+  agents: DetectedAgent[];
+  /** Machine-wide servers only. */
+  mcpServers: DetectedMcpServer[];
+  /** Worst first: by critical, high, medium, low counts, then governance score. */
+  projects: DetectResult[];
+  /** True when the target itself is one of `projects` (listed as `.`). */
+  rootIsProject: boolean;
+}
+
+function isProjectMcp(server: Pick<DetectedMcpServer, 'source'>): boolean {
+  return server.source.includes('(project)');
+}
+
 // ---------------------------------------------------------------------------
 // ANSI color helpers (respects NO_COLOR / --no-color)
 // ---------------------------------------------------------------------------
@@ -265,11 +344,18 @@ const AGENT_PATTERNS: { name: string; category: DetectedAgent['category']; patte
 // MCP config locations (home-relative)
 // ---------------------------------------------------------------------------
 
-const MCP_CONFIG_LOCATIONS = [
-  { path: '.claude/mcp_servers.json',                                       label: 'Claude Code (global)' },
-  { path: '.cursor/mcp.json',                                                label: 'Cursor (global)' },
-  { path: '.config/windsurf/mcp.json',                                       label: 'Windsurf (global)' },
-  { path: '.vscode/globalStorage/saoudrizwan.claude-dev/mcp_servers.json',   label: 'Cline (global)' },
+const MCP_CONFIG_LOCATIONS: { path: string; label: string; tool: string; rootIsServerMap?: boolean }[] = [
+  { path: '.claude/mcp_servers.json',                                       label: 'Claude Code (global)', tool: 'Claude Code' },
+  // Claude Code's user-scope servers live under `mcpServers` in `~/.claude.json`,
+  // a file whose other top-level keys are settings and per-project state.
+  // `rootIsServerMap: false` keeps the fallback that treats the whole document
+  // as a server map from listing those keys as servers.
+  { path: '.claude.json',                                                    label: 'Claude Code (user)', tool: 'Claude Code', rootIsServerMap: false },
+  { path: 'Library/Application Support/Claude/claude_desktop_config.json',   label: 'Claude Desktop', tool: 'Claude Desktop' },
+  { path: '.config/Claude/claude_desktop_config.json',                       label: 'Claude Desktop', tool: 'Claude Desktop' },
+  { path: '.cursor/mcp.json',                                                label: 'Cursor (global)', tool: 'Cursor' },
+  { path: '.config/windsurf/mcp.json',                                       label: 'Windsurf (global)', tool: 'Windsurf' },
+  { path: '.vscode/globalStorage/saoudrizwan.claude-dev/mcp_servers.json',   label: 'Cline (global)', tool: 'Cline' },
 ];
 
 const PROJECT_MCP_FILES = ['mcp.json', '.mcp.json', '.mcp/config.json'];
@@ -293,6 +379,102 @@ const AI_CONFIG_PATTERNS: { files: string[]; tool: string }[] = [
   { files: ['langchain.config.js', 'langchain.config.ts'],                         tool: 'LangChain' },
   { files: ['.env.ai', 'ai.config.json', 'ai.config.yml'],                        tool: 'AI Framework' },
 ];
+
+// ---------------------------------------------------------------------------
+// Agent project discovery
+// ---------------------------------------------------------------------------
+
+/** Levels below the target that `detect` searches for agent projects. */
+export const DEFAULT_PROJECT_DEPTH = 4;
+
+/**
+ * Directories the walk never enters. Build output and dependency trees hold
+ * copies of other people's config files, and none of them is an agent this
+ * machine's owner set up. Hidden directories are skipped as a class: every
+ * config the per-project scan reads (`.claude/`, `.cursor/`, `.opena2a/`, …)
+ * is read relative to the project that owns it, so the walk has no reason to
+ * descend into one.
+ */
+const WALK_SKIP_DIRS = new Set([
+  'node_modules', 'dist', 'build', 'out', 'target', 'vendor', 'coverage',
+  '__pycache__', 'venv', 'site-packages', 'bower_components', 'tmp',
+]);
+
+/** A ceiling on directories visited, so a walk over a home directory ends. */
+const WALK_MAX_DIRS = 20_000;
+
+/**
+ * The files whose presence makes a directory an agent project: anything the
+ * per-project scan would read. One list, derived from the three tables the
+ * scans use, so a new config name cannot be scanned in one place and missed
+ * by discovery.
+ */
+function projectMarkerFiles(): string[] {
+  return [
+    ...AI_CONFIG_PATTERNS.flatMap((p) => p.files),
+    ...PROJECT_MCP_FILES,
+    ...GOVERNANCE_FILES,
+    path.join('.opena2a', 'SOUL.md'),
+    path.join('.opena2a', 'policy.yml'),
+    path.join('.opena2a', 'policy.yaml'),
+    path.join('.opena2a', 'policy.json'),
+    'opena2a.policy.yml',
+    'opena2a.policy.yaml',
+  ];
+}
+
+/**
+ * Whether `dir` holds at least one file the per-project scan reads.
+ *
+ * `lstatSync`, not `statSync`: discovery must not be the one probe that
+ * follows a link out of the tree (HMA-33 counts every such read). A marker
+ * that is a link counts as present by name; whether it may be read is the
+ * per-project scan's decision, which withholds and discloses it.
+ */
+export function isAgentProject(dir: string): boolean {
+  for (const marker of projectMarkerFiles()) {
+    try {
+      const st = fs.lstatSync(path.join(dir, marker));
+      if (st.isFile() || st.isSymbolicLink()) return true;
+    } catch { /* absent */ }
+  }
+  return false;
+}
+
+/**
+ * Every agent project at or below `root`, `maxDepth` levels down, in path
+ * order. `root` itself is a candidate at depth 0. Symbolic links are not
+ * followed, and a directory that is a project is still descended into: a
+ * monorepo's packages carry their own configs.
+ */
+export function discoverAgentProjects(root: string, maxDepth: number = DEFAULT_PROJECT_DEPTH): string[] {
+  const found: string[] = [];
+  const queue: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }];
+  let visited = 0;
+
+  while (queue.length > 0 && visited < WALK_MAX_DIRS) {
+    const { dir, depth } = queue.shift()!;
+    visited++;
+    if (isAgentProject(dir)) found.push(dir);
+    if (depth >= maxDepth) continue;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue; // unreadable: nothing below it is measured, and nothing is claimed
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      // `isDirectory()` is false for a symlink, so linked trees are not followed.
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.') || WALK_SKIP_DIRS.has(entry.name)) continue;
+      queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+    }
+  }
+
+  return found;
+}
 
 // ---------------------------------------------------------------------------
 // MCP capability inference
@@ -399,6 +581,8 @@ export function scanProcesses(psOutput?: string): DetectedAgent[] {
       agents.push({
         name: agent.name,
         pid,
+        state: 'running',
+        source: 'process',
         category: agent.category,
         identityStatus: 'no identity',
         governanceStatus: 'no governance',
@@ -411,17 +595,90 @@ export function scanProcesses(psOutput?: string): DetectedAgent[] {
   return agents;
 }
 
+function installedAgent(name: string, source: string, category: DetectedAgent['category'] = 'ai-assistant'): DetectedAgent {
+  return {
+    name,
+    state: 'installed',
+    source,
+    category,
+    identityStatus: 'no identity',
+    governanceStatus: 'no governance',
+    risk: category === 'local-llm' ? 'medium' : 'high',
+  };
+}
+
+/**
+ * Agents evidenced by a machine-wide tool config, whether or not the tool is
+ * running. One entry per tool name; the first config found is the source.
+ */
+export function scanInstalledAgents(): DetectedAgent[] {
+  const home = os.homedir();
+  const agents: DetectedAgent[] = [];
+  const seen = new Set<string>();
+  const candidates: { file: string; tool: string; label: string }[] = [
+    ...MCP_CONFIG_LOCATIONS.map((loc) => ({ file: path.join(home, loc.path), tool: loc.tool, label: `~/${loc.path}` })),
+    { file: path.join(home, '.claude', '.mcp.json'), tool: 'Claude Code', label: '~/.claude/.mcp.json' },
+  ];
+  if (process.env.APPDATA) {
+    candidates.push({
+      file: path.join(process.env.APPDATA, 'Claude', 'claude_desktop_config.json'),
+      tool: 'Claude Desktop',
+      label: '%APPDATA%/Claude/claude_desktop_config.json',
+    });
+  }
+  for (const c of candidates) {
+    if (seen.has(c.tool)) continue;
+    try {
+      if (!fs.statSync(c.file).isFile()) continue;
+    } catch { continue; }
+    agents.push(installedAgent(c.tool, c.label));
+    seen.add(c.tool);
+  }
+  return agents;
+}
+
+/** Agents evidenced by a project's own AI config files. */
+function agentsFromConfigs(configs: readonly AiConfigFile[]): DetectedAgent[] {
+  const agents: DetectedAgent[] = [];
+  const seen = new Set<string>();
+  for (const cfg of configs) {
+    if (seen.has(cfg.tool)) continue;
+    const category: DetectedAgent['category'] =
+      cfg.tool === 'LangChain' || cfg.tool === 'AI Framework' ? 'ai-plugin' : 'ai-assistant';
+    agents.push(installedAgent(cfg.tool, cfg.file, category));
+    seen.add(cfg.tool);
+  }
+  return agents;
+}
+
+/**
+ * One row per agent name. A running entry outranks an installed one for the
+ * same tool, and among installed entries the first source wins.
+ */
+export function mergeAgents(...lists: readonly (readonly DetectedAgent[])[]): DetectedAgent[] {
+  const byName = new Map<string, DetectedAgent>();
+  for (const list of lists) {
+    for (const agent of list) {
+      const existing = byName.get(agent.name);
+      if (!existing || (existing.state === 'installed' && agent.state === 'running')) {
+        byName.set(agent.name, { ...agent });
+      }
+    }
+  }
+  return [...byName.values()];
+}
+
 // ---------------------------------------------------------------------------
 // MCP config parsing
 // ---------------------------------------------------------------------------
 
-export function parseMcpConfig(filePath: string, label: string): DetectedMcpServer[] {
+export function parseMcpConfig(filePath: string, label: string, rootIsServerMap = true): DetectedMcpServer[] {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     const config = JSON.parse(content);
     const servers: DetectedMcpServer[] = [];
 
-    const serversObj = config.mcpServers ?? config.servers ?? config;
+    const serversObj = config.mcpServers ?? config.servers ?? (rootIsServerMap ? config : undefined);
     if (typeof serversObj !== 'object' || serversObj === null || Array.isArray(serversObj)) return [];
 
     for (const [name, entry] of Object.entries(serversObj)) {
@@ -449,13 +706,22 @@ export function parseMcpConfig(filePath: string, label: string): DetectedMcpServ
 // MCP server scanning
 // ---------------------------------------------------------------------------
 
-export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
+/**
+ * MCP servers configured for the tools on this machine, independent of any
+ * project. Read once per run: a workspace with fifty agent projects has one
+ * set of machine-wide servers, not fifty.
+ */
+export function scanGlobalMcpServers(): DetectedMcpServer[] {
   const home = os.homedir();
   const servers: DetectedMcpServer[] = [];
 
   // Global tool configs (home-relative)
   for (const loc of MCP_CONFIG_LOCATIONS) {
-    servers.push(...parseMcpConfig(path.join(home, loc.path), loc.label));
+    servers.push(...parseMcpConfig(path.join(home, loc.path), loc.label, loc.rootIsServerMap ?? true));
+  }
+  // Claude Desktop on Windows keeps its config under %APPDATA%, not the home directory.
+  if (process.env.APPDATA) {
+    servers.push(...parseMcpConfig(path.join(process.env.APPDATA, 'Claude', 'claude_desktop_config.json'), 'Claude Desktop'));
   }
 
   // Claude Code project-level .mcp.json
@@ -473,12 +739,20 @@ export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
     }
   } catch { /* directory may not exist */ }
 
-  // Project-local MCP files
+  return servers;
+}
+
+/** MCP servers declared by the project at `targetDir` itself. */
+export function scanProjectMcpServers(targetDir: string): DetectedMcpServer[] {
+  const servers: DetectedMcpServer[] = [];
   for (const filename of PROJECT_MCP_FILES) {
     servers.push(...parseMcpConfig(path.join(targetDir, filename), `${filename} (project)`));
   }
-
   return servers;
+}
+
+export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
+  return [...scanGlobalMcpServers(), ...scanProjectMcpServers(targetDir)];
 }
 
 // ---------------------------------------------------------------------------
@@ -493,7 +767,30 @@ export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
  * risk levels are established by two named rules rather than by two anonymous
  * literals in a branch.
  */
-const CREDENTIAL_IN_CONFIG = /(api[_-]?key|secret|token|password)\s*[:=]\s*["']?[a-zA-Z0-9_-]{20,}/i;
+// The optional quote between the key and the separator is the JSON shape:
+// `"ANTHROPIC_API_KEY": "<value>"` closes the key name before the colon, and
+// without it a `.claude/settings.json` `env` block holding a live key was
+// reported as low risk while `secure` flagged the same line (measured 0.32.0).
+// The key name is captured with a BOUNDED prefix behind a boundary
+// lookbehind: an unbounded `[A-Za-z0-9_-]*` in front of the alternation was
+// quadratic on a long single-line file (146 s on a 300k-character line, and
+// the reader admits 1 MB), which a scanned tree's own `.cursorrules` can hold.
+const CREDENTIAL_IN_CONFIG = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,64}(?:api[_-]?key|secret|token|password))["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/i;
+
+/**
+ * Enough of a credential value to recognise it, never enough to use it: the
+ * recognised vendor prefix when the value carries one (a constant, not secret
+ * body), an ellipsis, and the length. Nothing of the body is shown for an
+ * unknown shape, which is the masking invariant `credential-analyzer.ts`
+ * states; the Verify line prints the whole line for anyone who needs it. `matched "API_KEY"` alone read as a false positive on the demo
+ * tree (Abdel, 2026-09-13); the fragment is what makes the finding checkable
+ * at a glance, and the Verify line prints the whole line for anyone who
+ * needs it.
+ */
+function credentialFragment(value: string): string {
+  const head = matchVendorPrefix(value) ?? '';
+  return `${head}… (${value.length} chars)`;
+}
 
 /**
  * The first line matching `pattern`, reported as the KEY that matched rather
@@ -504,21 +801,32 @@ const CREDENTIAL_IN_CONFIG = /(api[_-]?key|secret|token|password)\s*[:=]\s*["']?
  * carries the location and the key name and stops there — `text` is left unset
  * and the renderer has nothing to quote.
  */
-function firstMatchLine(content: string, pattern: RegExp): { line: number; token: string } | undefined {
+function firstMatchLine(content: string, pattern: RegExp): { line: number; token: string; value?: string } | undefined {
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const m = pattern.exec(lines[i]);
-    if (m) return { line: i + 1, token: m[1] ?? m[0] };
+    if (m) return { line: i + 1, token: m[1] ?? m[0], value: m[2] };
   }
   return undefined;
 }
 
-export function scanAiConfigs(targetDir: string): AiConfigFile[] {
+export function scanAiConfigs(targetDir: string, withheld?: WithheldLink[]): AiConfigFile[] {
   const configs: AiConfigFile[] = [];
 
   for (const pattern of AI_CONFIG_PATTERNS) {
     for (const file of pattern.files) {
       const fullPath = path.join(targetDir, file);
+      // Three of these names (`.cursorrules`, `CLAUDE.md`,
+      // `.github/copilot-instructions.md`) are governance files. `statSync`
+      // and `readFileSync` below both follow links, so a name that is a link
+      // resolving outside the scanned tree is withheld before either runs —
+      // recorded for disclosure, skipped like an absent file. An unresolvable
+      // path passes and fails the `statSync` below with its own errno.
+      const stays = readStaysInsideTree(fullPath, targetDir);
+      if (!stays.ok) {
+        withheld?.push({ rel: file, resolved: stays.resolved, call: 'statSync' });
+        continue;
+      }
       let stats: ReturnType<typeof fs.statSync> | undefined;
       try { stats = fs.statSync(fullPath); } catch { continue; }
       if (!stats) continue;
@@ -542,7 +850,14 @@ export function scanAiConfigs(targetDir: string): AiConfigFile[] {
         if (credential) {
           risk = 'critical';
           details = `${pattern.tool} config contains credential references`;
-          evidence = credential;
+          // The key name as written, then a masked fragment of the value in
+          // the reason slot, so the line reads
+          // `.claude/settings.json:3 — "ANTHROPIC_API_KEY" = <vendor prefix>… (108 chars)`.
+          evidence = {
+            line: credential.line,
+            token: credential.token,
+            reason: credential.value ? `= ${credentialFragment(credential.value)}` : undefined,
+          };
         } else if (grant) {
           risk = 'high';
           details = `${pattern.tool} config grants broad permissions`;
@@ -686,14 +1001,24 @@ function reconciledGovernanceScore(
  * house `<dir>` placeholder rather than a command naming bytes the reader cannot
  * see.
  */
-function citationTarget(scanDirectory: string): string {
+/**
+ * `p` as the reader should paste it from where they ran the command: `.` for
+ * the cwd, a bare relative path for anything below it, absolute otherwise. A
+ * workspace report cites five projects per screen, and each absolute path
+ * cost a wrapped line on a 100-column terminal for no gain in correctness —
+ * the relative form runs from the same cwd `.` assumes.
+ */
+function pathForCitation(p: string): string {
   try {
-    return path.resolve(scanDirectory) === path.resolve(process.cwd())
-      ? '.'
-      : safeCitationTarget(scanDirectory);
-  } catch {
-    return safeCitationTarget(scanDirectory);
-  }
+    const rel = path.relative(process.cwd(), path.resolve(p));
+    if (rel === '') return '.';
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) return rel;
+  } catch { /* fall through to the absolute form */ }
+  return p;
+}
+
+function citationTarget(scanDirectory: string): string {
+  return safeCitationTarget(pathForCitation(scanDirectory));
 }
 
 /**
@@ -974,9 +1299,19 @@ function configEvidenceDetail(configs: readonly AiConfigFile[]): string {
 function configVerifyCommand(scanDirectory: string, config: AiConfigFile | undefined): string | undefined {
   if (!config?.evidence) return undefined;
   if (config.evidence.line === undefined) return undefined;
-  const quotedPath = citationPath(path.join(scanDirectory, config.file));
+  return lineVerifyCommand(scanDirectory, config.file, config.evidence.line);
+}
+
+/** `sed -n '<line>p' <file>` for any finding that cites a `file:line`. */
+function lineVerifyCommand(scanDirectory: string, file: string, line: number): string | undefined {
+  const quotedPath = citationPath(pathForCitation(path.join(scanDirectory, file)));
   if (!quotedPath) return undefined;
-  return `sed -n '${config.evidence.line}p' ${quotedPath}`;
+  return `sed -n '${line}p' ${quotedPath}`;
+}
+
+/** `running`, or `installed: <config>` naming the evidence. */
+function agentStateLabel(agent: DetectedAgent): string {
+  return agent.state === 'running' ? 'running' : `installed: ${escapePathForDisplay(agent.source)}`;
 }
 
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
@@ -1027,12 +1362,12 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
     if (soul.profileMismatch) reasons.push(`${soul.file} declares a narrower profile than its content`);
     if (soul.markerInvalid) reasons.push(`${soul.file} carries an unrecognized profile marker`);
 
-    const detail = ungoverned.map((a) => a.name).join(', ')
+    const detail = ungoverned.map((a) => `${a.name} (${agentStateLabel(a)})`).join(', ')
       + (reasons.length > 0 ? ` — ${reasons.join('; ')}` : '');
     findings.push({
       severity: 'high',
       category: 'governance',
-      title: `${ungoverned.length} AI agent${ungoverned.length !== 1 ? 's' : ''} running without governance`,
+      title: `${ungoverned.length} AI agent${ungoverned.length !== 1 ? 's' : ''} without governance`,
       detail,
       whyItMatters:
         'These agents can take actions in your project but have no rules defining what they '
@@ -1071,6 +1406,7 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
         + 'requests or concealing its reasoning. A document like this scores as governance while '
         + 'removing it, so adding more controls does not help; the sentences have to go.',
       remediation: `hackmyagent scan-soul ${target}`,
+      verify: soul.file ? lineVerifyCommand(result.scanDirectory, soul.file, first[0].line) : undefined,
     });
   }
 
@@ -1239,22 +1575,29 @@ function csvEscape(value: string): string {
   return value;
 }
 
-function generateAssetCsv(result: DetectResult): string {
-  const rows: string[] = [];
-  const hostname = os.hostname();
-  const username = os.userInfo().username;
-  const scanTime = result.scanTimestamp;
-  const scanDir = result.scanDirectory;
+const CSV_HEADER = 'Hostname,Username,Scan Directory,Scan Timestamp,Asset Type,Name,Source,Transport,Capabilities,Risk';
 
-  rows.push('Hostname,Username,Scan Directory,Scan Timestamp,Asset Type,Name,Source,Transport,Capabilities,Risk');
-  const deviceCols = [csvEscape(hostname), csvEscape(username), csvEscape(scanDir), scanTime].join(',');
+function csvDeviceCols(scanDir: string, scanTime: string): string {
+  return [csvEscape(os.hostname()), csvEscape(os.userInfo().username), csvEscape(scanDir), scanTime].join(',');
+}
 
-  for (const agent of result.agents) {
-    rows.push([deviceCols, 'AI Agent', csvEscape(agent.name), 'Running process', '', agent.category, agent.risk].join(','));
-  }
-  for (const server of result.mcpServers) {
+function csvAgentRows(deviceCols: string, agents: readonly DetectedAgent[]): string[] {
+  return agents.map((agent) =>
+    [
+      deviceCols,
+      'AI Agent',
+      csvEscape(agent.name),
+      agent.state === 'running' ? 'Running process' : csvEscape(`Installed: ${agent.source}`),
+      '',
+      agent.category,
+      agent.risk,
+    ].join(','));
+}
+
+function csvMcpRows(deviceCols: string, servers: readonly DetectedMcpServer[]): string[] {
+  return servers.map((server) => {
     const caps = server.capabilities.filter((cap) => cap !== 'unknown');
-    rows.push([
+    return [
       deviceCols,
       'MCP Server',
       csvEscape(server.name),
@@ -1262,12 +1605,75 @@ function generateAssetCsv(result: DetectResult): string {
       server.transport,
       csvEscape(caps.map(capabilityDescription).join('; ')),
       server.risk,
-    ].join(','));
-  }
-  for (const config of result.aiConfigs) {
-    rows.push([deviceCols, 'AI Config', csvEscape(config.file), csvEscape(config.tool), '', csvEscape(config.details), config.risk].join(','));
-  }
+    ].join(',');
+  });
+}
 
+function csvConfigRows(deviceCols: string, configs: readonly AiConfigFile[]): string[] {
+  return configs.map((config) =>
+    [deviceCols, 'AI Config', csvEscape(config.file), csvEscape(config.tool), '', csvEscape(config.details), config.risk].join(','));
+}
+
+/**
+ * The governance document is an asset too: a project identified only by its
+ * `SOUL.md` used to have no CSV row at all, so the inventory could not say
+ * why the project was listed. The risk column carries the project's worst
+ * governance finding (a subverted control is high, missing controls medium).
+ */
+function csvGovernanceRows(deviceCols: string, result: Omit<DetectResult, 'findings'> & { findings: readonly Finding[] }): string[] {
+  const file = result.identity.governanceFile;
+  if (!file) return [];
+  // Worst governance finding of the project, so the row agrees with the report.
+  const gov = result.findings.filter((f) => f.category === 'governance');
+  const risk: RiskLevel = gov.length === 0 ? 'low'
+    : gov.reduce((worst, f) => (RISK_ORDER[f.severity] < RISK_ORDER[worst] ? f.severity : worst), 'low' as RiskLevel);
+  return [[
+    deviceCols,
+    'Governance File',
+    csvEscape(file),
+    'Governance document',
+    '',
+    csvEscape(`governance score ${result.summary.governanceScore}/100`),
+    risk,
+  ].join(',')];
+}
+
+function generateAssetCsv(result: DetectResult): string {
+  const deviceCols = csvDeviceCols(result.scanDirectory, result.scanTimestamp);
+  const rows = [
+    CSV_HEADER,
+    ...csvAgentRows(deviceCols, result.agents),
+    ...csvMcpRows(deviceCols, result.mcpServers),
+    ...csvConfigRows(deviceCols, result.aiConfigs),
+    ...csvGovernanceRows(deviceCols, result),
+  ];
+  return rows.join('\n') + '\n';
+}
+
+/**
+ * One inventory for the whole workspace. Machine-wide assets (running agents,
+ * machine-level MCP servers) carry the root as `Scan Directory` and appear
+ * once; each project's own MCP servers and AI configs carry that project's
+ * directory, so a CMDB import can attribute every row to the repo it came from.
+ */
+function generateWorkspaceCsv(ws: WorkspaceDetectResult): string {
+  const machineCols = csvDeviceCols(ws.scanDirectory, ws.scanTimestamp);
+  const rows = [
+    CSV_HEADER,
+    ...csvAgentRows(machineCols, ws.agents),
+    ...csvMcpRows(machineCols, ws.mcpServers),
+  ];
+  const machineAgentNames = new Set(ws.agents.map((a) => a.name));
+  for (const project of ws.projects) {
+    const cols = csvDeviceCols(project.scanDirectory, ws.scanTimestamp);
+    rows.push(
+      // Agents this project's own configs evidence; the machine-level ones are above.
+      ...csvAgentRows(cols, project.agents.filter((a) => !machineAgentNames.has(a.name))),
+      ...csvMcpRows(cols, project.mcpServers.filter(isProjectMcp)),
+      ...csvConfigRows(cols, project.aiConfigs),
+      ...csvGovernanceRows(cols, project),
+    );
+  }
   return rows.join('\n') + '\n';
 }
 
@@ -1275,7 +1681,261 @@ function generateAssetCsv(result: DetectResult): string {
 // Text formatting
 // ---------------------------------------------------------------------------
 
-function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string): string {
+/** The machine-wide half of the MCP Servers section, shared by both renderers. */
+function machineMcpLines(globalMcp: readonly DetectedMcpServer[], verbose: boolean): string[] {
+  const lines: string[] = [];
+  if (verbose) {
+    lines.push(`  ${c.bold}Machine-wide${R} ${c.dim}(${globalMcp.length})${R}`);
+    const maxName = Math.min(28, Math.max(...globalMcp.map((s) => s.name.length)));
+    for (const server of globalMcp) {
+      const nameCol = server.name.padEnd(maxName + 2);
+      const realCaps = server.capabilities.filter((cap) => cap !== 'unknown');
+      const capsStr = realCaps.length > 0
+        ? dim(` — ${realCaps.map((cap) => capabilityDescription(cap).toLowerCase()).join(', ')}`)
+        : '';
+      lines.push(`    ${nameCol}${capsStr}`);
+    }
+  } else {
+    const sensitiveCaps = globalMcp.filter((s) =>
+      s.capabilities.some((cap) => ['shell-access', 'database', 'payments', 'cloud-services'].includes(cap))
+    );
+    let globalLine = `  ${c.dim}Machine-wide (${globalMcp.length})${R}`;
+    if (sensitiveCaps.length > 0) {
+      // The count is of configured entries; the names are deduplicated because
+      // the same server is routinely declared in two tools' configs.
+      const names = [...new Set(sensitiveCaps.map((s) => s.name))].join(', ');
+      globalLine += dim(` — ${sensitiveCaps.length} with sensitive access: ${names}`);
+    }
+    lines.push(globalLine);
+    lines.push(`    ${c.dim}(run with --verbose to see full list)${R}`);
+  }
+  return lines;
+}
+
+const RISK_ORDER: Record<RiskLevel, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+function severityCounts(findings: readonly Finding[]): Record<RiskLevel, number> {
+  const counts: Record<RiskLevel, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of findings) counts[f.severity]++;
+  return counts;
+}
+
+/** Worst project first; ties broken by governance score, then by path. */
+function compareProjectsWorstFirst(a: DetectResult, b: DetectResult): number {
+  const ca = severityCounts(a.findings);
+  const cb = severityCounts(b.findings);
+  for (const level of ['critical', 'high', 'medium', 'low'] as const) {
+    if (ca[level] !== cb[level]) return cb[level] - ca[level];
+  }
+  if (a.summary.governanceScore !== b.summary.governanceScore) {
+    return a.summary.governanceScore - b.summary.governanceScore;
+  }
+  return a.scanDirectory.localeCompare(b.scanDirectory);
+}
+
+/** Pad or truncate a plain (uncoloured) cell to `width`. */
+function cell(text: string, width: number): string {
+  if (text.length > width) return `${text.slice(0, Math.max(0, width - 1))}…`;
+  return text.padEnd(width);
+}
+
+/** What made this directory an agent project, for the table's second column. */
+function identifiedBy(project: DetectResult): string {
+  const tools = [...new Set(project.aiConfigs.map((cfg) => cfg.tool))];
+  if (tools.length > 0) return tools.join(', ');
+  if (project.identity.governanceFile) return project.identity.governanceFile;
+  const mcp = project.mcpServers.find(isProjectMcp);
+  if (mcp) return mcp.source.replace(' (project)', '');
+  if (project.identity.capabilityPolicies > 0) return 'capability policy';
+  return '-';
+}
+
+function projectVerdict(counts: Record<RiskLevel, number>): { label: string; paint: (s: string) => string } {
+  if (counts.critical > 0) return { label: 'CRITICAL', paint: brightRed };
+  if (counts.high > 0) return { label: 'HIGH', paint: red };
+  if (counts.medium > 0) return { label: 'MEDIUM', paint: yellow };
+  if (counts.low > 0) return { label: 'LOW', paint: dim };
+  return { label: 'OK', paint: green };
+}
+
+/**
+ * The workspace report: one line per agent project, worst first, the
+ * critical and high findings of each with their `file:line`, `Fix` and
+ * `Verify`, then the machine-wide inventory once.
+ */
+function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoot: string): string {
+  const lines: string[] = [];
+  const { summary } = ws;
+  const n = ws.projects.length;
+  const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+  // The union over the machine and every project, one entry per tool: a
+  // running or machine-installed agent appears in every project, a
+  // project-installed one (its `.cursorrules`) only where its config is.
+  // The header and the AI Agents section count the same set.
+  const allAgents = mergeAgents(ws.agents, ...ws.projects.map((p) => p.agents));
+
+  // ── Header ────────────────────────────────────────────────────────
+  const rootBase = escapePathForDisplay(path.basename(rawRoot) || rawRoot);
+  const metaParts = [
+    'shadow ai audit',
+    `${os.hostname()}`,
+    allAgents.length > 0 ? plural(allAgents.length, 'agent') : null,
+    summary.mcpServers > 0 ? `${plural(summary.mcpServers, 'machine-wide mcp server')}` : null,
+    plural(n, 'agent project'),
+  ].filter(Boolean);
+  lines.push('');
+  lines.push(`  ${c.bold}${c.white}${rootBase}${R}  ${c.dim}${metaParts.join(' · ')}${R}`);
+
+  // ── Verdict ───────────────────────────────────────────────────────
+  const issues = summary.critical + summary.high + summary.medium + summary.low;
+  if (summary.projectsNeedingAction > 0) {
+    const parts: string[] = [];
+    if (summary.critical > 0) parts.push(`${summary.critical} critical`);
+    if (summary.high > 0) parts.push(`${summary.high} high`);
+    const paint = summary.critical > 0 ? c.brightRed : c.red;
+    lines.push(`  ${paint}${c.bold}${summary.projectsNeedingAction} of ${plural(n, 'agent project')} need action (${parts.join(', ')})${R}`);
+  } else if (issues > 0) {
+    lines.push(`  ${c.yellow}${c.bold}${plural(issues, 'issue')} across ${plural(n, 'agent project')}, none high or critical${R}`);
+  } else {
+    lines.push(`  ${c.green}${c.bold}No findings in ${plural(n, 'agent project')}${R}`);
+  }
+
+  // ── Shadow AI agents ──────────────────────────────────────────────
+  type Row = { project: DetectResult; rel: string; by: string; mcp: string; gov: string; cred: string; counts: Record<RiskLevel, number> };
+  const rows: Row[] = ws.projects.map((project) => {
+    const rel = path.relative(ws.scanDirectory, project.scanDirectory) || '.';
+    const projectMcp = project.mcpServers.filter(isProjectMcp);
+    const worst = projectMcp.length > 0
+      ? projectMcp.reduce((w, s) => (RISK_ORDER[s.risk] < RISK_ORDER[w] ? s.risk : w), 'low' as RiskLevel)
+      : undefined;
+    return {
+      project,
+      rel: escapePathForDisplay(rel),
+      by: identifiedBy(project),
+      mcp: `${projectMcp.length} mcp${worst ? ` ${worst}` : ''}`,
+      gov: `gov ${String(project.summary.governanceScore).padStart(3)}/100`,
+      cred: project.aiConfigs.some((cfg) => cfg.risk === 'critical') ? 'cred yes' : 'cred no',
+      counts: severityCounts(project.findings),
+    };
+  });
+  const wProject = Math.min(34, Math.max(7, ...rows.map((r) => r.rel.length)));
+  const wBy = Math.min(18, Math.max(13, ...rows.map((r) => r.by.length)));
+  const wMcp = Math.max(11, ...rows.map((r) => r.mcp.length));
+  const wGov = Math.max(10, ...rows.map((r) => r.gov.length));
+  const wCred = 8;
+
+  lines.push('');
+  lines.push(sectionHeader(`Shadow AI agents (${n})`));
+  lines.push(`  ${dim(`${cell('project', wProject)}  ${cell('identified by', wBy)}  ${cell('mcp servers', wMcp)}  ${cell('governance', wGov)}  ${cell('cred', wCred)}  verdict`)}`);
+  for (const r of rows) {
+    const verdict = projectVerdict(r.counts);
+    const credCell = r.cred === 'cred yes' ? yellow(cell(r.cred, wCred)) : cell(r.cred, wCred);
+    lines.push(`  ${cell(r.rel, wProject)}  ${cell(r.by, wBy)}  ${cell(r.mcp, wMcp)}  ${cell(r.gov, wGov)}  ${credCell}  ${verdict.paint(verdict.label)}`);
+  }
+
+  // ── Findings per project ──────────────────────────────────────────
+  for (const r of rows) {
+    const { project, counts } = r;
+    const target = citationTarget(project.scanDirectory);
+    const shown = verbose
+      ? project.findings
+      : project.findings.filter((f) => f.severity === 'critical' || f.severity === 'high');
+    const hidden = project.findings.length - shown.length;
+    const countParts: string[] = [];
+    if (counts.critical > 0) countParts.push(`${c.brightRed}${counts.critical} critical${R}`);
+    if (counts.high > 0) countParts.push(`${c.red}${counts.high} high${R}`);
+    if (counts.medium > 0) countParts.push(`${c.yellow}${counts.medium} medium${R}`);
+    if (counts.low > 0) countParts.push(`${c.dim}${counts.low} low${R}`);
+
+    lines.push('');
+    lines.push(`  ${c.bold}${c.white}${r.rel}${R}  ${countParts.length > 0 ? countParts.join(dim(' · ')) : dim('no findings')}`);
+    shown.forEach((f, i) => {
+      const pipe = riskColor(f.severity)('│');
+      // One blank line between findings: each is a title, a citation, a Fix
+      // and a Verify, and run together they read as one block (Abdel,
+      // 2026-09-13, on the demo tree).
+      if (i > 0) lines.push('');
+      lines.push(`  ${pipe} ${sevBadge(f.severity)}  ${c.bold}${f.title}${R}`);
+      if (f.detail) lines.push(`  ${pipe} ${c.dim}${f.detail}${R}`);
+      if (verbose && f.whyItMatters) lines.push(`  ${pipe} ${f.whyItMatters}`);
+      if (f.remediation) lines.push(`  ${pipe} ${c.cyan}Fix:${R} ${cyan(f.remediation)}`);
+      if (f.verify) lines.push(`  ${pipe} ${c.dim}Verify:${R} ${dim(f.verify)}`);
+    });
+    if (hidden > 0) {
+      lines.push('');
+      lines.push(`  ${dim(`+ ${hidden} more — ${CLI_PREFIX} detect ${target} for the full report`)}`);
+    }
+  }
+
+  // ── AI Agents ─────────────────────────────────────────────────────
+  if (allAgents.length > 0) {
+    lines.push('');
+    lines.push(sectionHeader(`AI Agents (${allAgents.length})`));
+    for (const agent of allAgents) {
+      const appearsIn = ws.projects.filter((p) => p.agents.some((pa) => pa.name === agent.name));
+      const governedIn = appearsIn.filter((p) =>
+        p.agents.some((pa) => pa.name === agent.name && pa.governanceStatus === 'governed')).length;
+      const m = appearsIn.length;
+      const govStr = governedIn === m
+        ? green(`governed in all ${plural(m, 'project')}`)
+        : yellow(`governed in ${governedIn} of ${plural(m, 'project')}`);
+      const stateCol = agent.state === 'running' ? 'running    ' : dim('installed  ');
+      const tail = agent.state === 'running'
+        ? (verbose ? dim(` (PID ${agent.pid})`) : '')
+        : dim(` (${escapePathForDisplay(agent.source)})`);
+      lines.push(`  ${agent.name.padEnd(22)}${stateCol}${govStr}${tail}`);
+    }
+  }
+
+  // ── MCP Servers, machine-wide ─────────────────────────────────────
+  if (ws.mcpServers.length > 0) {
+    lines.push('');
+    lines.push(sectionHeader(`MCP Servers, machine-wide (${ws.mcpServers.length})`));
+    lines.push(...machineMcpLines(ws.mcpServers, verbose));
+  }
+
+  // ── Next Steps ────────────────────────────────────────────────────
+  const worst = ws.projects[0];
+  const worstTarget = citationTarget(worst.scanDirectory);
+  const steps: { label: string; cmd: string; desc: string }[] = [];
+  if (worst.findings.length > 0) {
+    steps.push({ label: 'Worst project:', cmd: `${CLI_PREFIX} detect ${worstTarget}`, desc: 'full report for one project' });
+    steps.push({ label: 'Full scan:',     cmd: `${CLI_PREFIX} secure ${worstTarget}`, desc: 'deep security scan with findings' });
+  }
+  const rootTarget = citationTarget(rawRoot);
+  // Spelled out per case so every command is a literal template over quoted
+  // operands, which is what the #273 source gate checks for.
+  let inventoryCmd: string;
+  if (rootTarget === '.') {
+    inventoryCmd = ws.rootIsProject
+      ? `${CLI_PREFIX} detect --workspace --export-csv inventory.csv`
+      : `${CLI_PREFIX} detect --export-csv inventory.csv`;
+  } else {
+    inventoryCmd = ws.rootIsProject
+      ? `${CLI_PREFIX} detect --workspace ${rootTarget} --export-csv inventory.csv`
+      : `${CLI_PREFIX} detect ${rootTarget} --export-csv inventory.csv`;
+  }
+  steps.push({ label: 'Inventory:', cmd: inventoryCmd, desc: 'one row per asset across every project' });
+  steps.push({ label: 'All commands:', cmd: `${CLI_PREFIX} --help`, desc: 'full command reference' });
+
+  lines.push('');
+  lines.push(sectionHeader('Next Steps'));
+  const maxLabel = Math.max(...steps.map((s) => s.label.length));
+  const maxCmd = Math.max(...steps.map((s) => s.cmd.length));
+  for (const s of steps) {
+    lines.push(`  ${s.label.padEnd(maxLabel + 2)} ${cyan(s.cmd).padEnd(maxCmd + cyan('').length + 2)}  ${dim(s.desc)}`);
+  }
+
+  lines.push('');
+  return lines.join('\n');
+}
+
+function formatText(
+  result: DetectResult,
+  verbose: boolean,
+  rawTargetDir: string,
+  nestedProjects: readonly string[] = [],
+): string {
   const lines: string[] = [];
   const { summary } = result;
   // #339 — `targetDir` is a path out of the scanned tree and every Next Step
@@ -1425,17 +2085,22 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
     }
   }
 
-  // ── Running AI Agents ─────────────────────────────────────────────
-  const assistants = result.agents.filter((a) => a.category === 'ai-assistant');
-  const llms = result.agents.filter((a) => a.category === 'local-llm');
-  if (assistants.length + llms.length > 0) {
+  // ── AI Agents ─────────────────────────────────────────────────────
+  // Running first, then installed; within each, assistants before local LLMs.
+  const agentOrder = (a: DetectedAgent) =>
+    (a.state === 'running' ? 0 : 10) + (a.category === 'ai-assistant' ? 0 : a.category === 'local-llm' ? 1 : 2);
+  const agentRows = [...result.agents].sort((a, b) => agentOrder(a) - agentOrder(b));
+  if (agentRows.length > 0) {
     lines.push('');
-    lines.push(sectionHeader(`Running AI Agents (${assistants.length + llms.length})`));
-    for (const agent of [...assistants, ...llms]) {
+    lines.push(sectionHeader(`AI Agents (${agentRows.length})`));
+    for (const agent of agentRows) {
       const nameCol = agent.name.padEnd(22);
       const isGoverned = agent.governanceStatus === 'governed';
+      const stateCol = agent.state === 'running' ? 'running    ' : dim('installed  ');
       const govStr = isGoverned ? green('governed') : yellow('ungoverned');
-      const pidStr = verbose ? dim(` (PID ${agent.pid})`) : '';
+      const pidStr = agent.state === 'running'
+        ? (verbose ? dim(` (PID ${agent.pid})`) : '')
+        : dim(` (${escapePathForDisplay(agent.source)})`);
       // #303 — the same citation the ungoverned finding carries, chosen the
       // same way, so the row and the finding cannot disagree. `harden-soul`
       // adds control text; against a document whose problem is a sentence
@@ -1444,7 +2109,7 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
       // of the predicate. An inline copy is what drifted.
       const govFix = governanceRemediation(result.findings, citationTarget(result.scanDirectory));
       const fixHint = !isGoverned ? `  ${dim('→')}  ${cyan(govFix)}` : '';
-      lines.push(`  ${nameCol}${govStr}${pidStr}${fixHint}`);
+      lines.push(`  ${nameCol}${stateCol}${govStr}${pidStr}${fixHint}`);
     }
   }
 
@@ -1481,29 +2146,7 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
     }
 
     if (globalMcp.length > 0) {
-      if (verbose) {
-        lines.push(`  ${c.bold}Machine-wide${R} ${c.dim}(${globalMcp.length})${R}`);
-        const maxName = Math.min(28, Math.max(...globalMcp.map((s) => s.name.length)));
-        for (const server of globalMcp) {
-          const nameCol = server.name.padEnd(maxName + 2);
-          const realCaps = server.capabilities.filter((cap) => cap !== 'unknown');
-          const capsStr = realCaps.length > 0
-            ? dim(` — ${realCaps.map((cap) => capabilityDescription(cap).toLowerCase()).join(', ')}`)
-            : '';
-          lines.push(`    ${nameCol}${capsStr}`);
-        }
-      } else {
-        const sensitiveCaps = globalMcp.filter((s) =>
-          s.capabilities.some((cap) => ['shell-access', 'database', 'payments', 'cloud-services'].includes(cap))
-        );
-        let globalLine = `  ${c.dim}Machine-wide (${globalMcp.length})${R}`;
-        if (sensitiveCaps.length > 0) {
-          const names = sensitiveCaps.map((s) => s.name).join(', ');
-          globalLine += dim(` — ${sensitiveCaps.length} with sensitive access: ${names}`);
-        }
-        lines.push(globalLine);
-        lines.push(`    ${c.dim}(run with --verbose to see full list)${R}`);
-      }
+      lines.push(...machineMcpLines(globalMcp, verbose));
     }
   }
 
@@ -1595,6 +2238,18 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
     }
   }
 
+  // Agent projects below a target that is itself one: named, not listed, so
+  // this report stays the report of one project. The command that lists them
+  // is one flag away.
+  if (nestedProjects.length > 0) {
+    const n = nestedProjects.length;
+    steps.push({
+      label: 'Projects below:',
+      cmd: targetDir === '.' ? 'hackmyagent detect --workspace' : `hackmyagent detect --workspace ${targetDir}`,
+      desc: `${n} agent project${n === 1 ? '' : 's'} under this directory, listed worst first`,
+    });
+  }
+
   // Always show --help for discoverability
   steps.push({ label: 'All commands:', cmd: 'hackmyagent --help', desc: 'full command reference' });
 
@@ -1612,33 +2267,33 @@ function formatText(result: DetectResult, verbose: boolean, rawTargetDir: string
   return lines.join('\n');
 }
 
-// ---------------------------------------------------------------------------
-// Main entry point
-// ---------------------------------------------------------------------------
+/** The machine inventory, scanned once per run and shared by every project. */
+interface MachineScan {
+  agents: DetectedAgent[];
+  /** Machine-wide MCP servers only. */
+  mcpServers: DetectedMcpServer[];
+}
 
-export async function detect(options: DetectOptions): Promise<number> {
-  const dir = path.resolve(options.targetDir ?? process.cwd());
+interface ProjectScan {
+  result: DetectResult;
+  withheldLinks: ReturnType<typeof withheldLinkRecords>;
+}
 
-  try {
-    fs.accessSync(dir, fs.constants.R_OK);
-  } catch {
-    // Unreadable target: nothing was examined, so this is 2 and not 1. Exit 1
-    // here would tell a CI consumer `detect` found a high-severity issue in a
-    // directory it could not open. This is the only path that reaches the
-    // unmeasured arm.
-    process.stderr.write(
-      `${unmeasuredBanner(unmeasured(
-        'target-unreadable',
-        `${escapePathForDisplay(dir)} could not be read, so nothing was scanned.`,
-      ))}\n`,
-    );
-    return EXIT_UNMEASURED;
-  }
-
-  const agents     = scanProcesses();
-  const mcpServers = scanMcpServers(dir);
+/**
+ * The single-directory measurement: project-local MCP servers, AI configs,
+ * identity, the governance document, findings, and the reconciled score.
+ * `machine` is copied per project because governance status is a property
+ * of the project the agent is judged against, not of the process.
+ */
+async function scanProject(dir: string, machine: MachineScan): Promise<ProjectScan> {
+  const mcpServers = [...machine.mcpServers, ...scanProjectMcpServers(dir)];
   const identity   = scanIdentity(dir);
-  const aiConfigs  = scanAiConfigs(dir);
+  const aiConfigWithheld: WithheldLink[] = [];
+  const aiConfigs  = scanAiConfigs(dir, aiConfigWithheld);
+  // Running processes and machine-wide configs, then this project's own
+  // configs: the tool that owns `.cursorrules` is an agent of this project
+  // whether or not it is open right now.
+  const agents     = mergeAgents(machine.agents, agentsFromConfigs(aiConfigs));
 
   identity.totalAgents = agents.length;
 
@@ -1648,6 +2303,16 @@ export async function detect(options: DetectOptions): Promise<number> {
   // Which document that measurement came from, so no consumer has to infer
   // it from `soulFiles` and get it wrong for the other eight names (#303).
   identity.governanceFile = soul.file;
+
+  // Links inside the tree that resolve outside it and were not read, from
+  // both read paths that meet governance-named files here (`scanAiConfigs`
+  // and the soul scan). Deduped by name: `CLAUDE.md` is on both lists. A
+  // policy skip that is announced, never a finding — same channel `secure`
+  // uses, same wording.
+  const withheldLinks = withheldLinkRecords(
+    [...aiConfigWithheld, ...(soul.withheldLinks ?? [])],
+    CLI_PREFIX,
+  );
 
   // Apply governance status from the conformance result.
   //
@@ -1728,6 +2393,160 @@ export async function detect(options: DetectOptions): Promise<number> {
   result.summary.governanceClamped = governanceClamped;
   result.summary.recoverablePoints = deductions;
 
+  return { result, withheldLinks };
+}
+
+/**
+ * `detect` over a directory that holds agent projects below it.
+ *
+ * Each project gets the same scan `detect <dir>` runs there; the workspace
+ * report lists them worst first and the exit code is the worst project's.
+ */
+async function detectWorkspace(
+  root: string,
+  projectDirs: readonly string[],
+  machine: MachineScan,
+  options: DetectOptions,
+): Promise<number> {
+  const scans: ProjectScan[] = [];
+  for (const projectDir of projectDirs) scans.push(await scanProject(projectDir, machine));
+  scans.sort((a, b) => compareProjectsWorstFirst(a.result, b.result));
+  const projects = scans.map((s) => s.result);
+
+  const totals: Record<RiskLevel, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const p of projects) {
+    const counts = severityCounts(p.findings);
+    for (const level of ['critical', 'high', 'medium', 'low'] as const) totals[level] += counts[level];
+  }
+
+  const ws: WorkspaceDetectResult = {
+    scanTimestamp: new Date().toISOString(),
+    scanDirectory: root,
+    summary: {
+      projects: projects.length,
+      projectsNeedingAction: projects.filter((p) => p.findings.some((f) => f.severity === 'critical' || f.severity === 'high')).length,
+      totalAgents: machine.agents.length,
+      localLlms: machine.agents.filter((a) => a.category === 'local-llm').length,
+      mcpServers: machine.mcpServers.length,
+      projectMcpServers: projects.reduce((sum, p) => sum + p.mcpServers.filter(isProjectMcp).length, 0),
+      aiConfigs: projects.reduce((sum, p) => sum + p.aiConfigs.length, 0),
+      ...totals,
+    },
+    agents: machine.agents,
+    mcpServers: machine.mcpServers,
+    projects,
+    rootIsProject: projectDirs.includes(root),
+  };
+
+  // Same coverage unit and derivation as the single-directory path, over the
+  // totals across projects, so the exit code is the worst project's.
+  const surfaces = [
+    { name: 'processes', examined: !didProcessScanFail() },
+    { name: 'mcp servers', examined: true },
+    { name: 'identity', examined: true },
+    { name: 'ai configs', examined: true },
+    { name: 'governance', examined: true },
+  ];
+  const examinedSurfaces = surfaces.filter((s) => s.examined).length;
+  const unread = surfaces.filter((s) => !s.examined).map((s) => s.name);
+  const verdict = deriveCheckVerdict(
+    { critical: totals.critical, high: totals.high, issues: totals.critical + totals.high + totals.medium + totals.low },
+    { examined: examinedSurfaces, total: surfaces.length, unit: 'surface' },
+  );
+  if (unread.length > 0 && options.format !== 'json') {
+    process.stderr.write(
+      `Not examined: ${unread.join(', ')}. This report does not cover ${unread.length === 1 ? 'it' : 'them'}.\n`,
+    );
+  }
+
+  if (options.format === 'json') {
+    process.stdout.write(JSON.stringify({
+      ...ws,
+      projects: scans.map((s) => ({
+        ...s.result,
+        ...(s.withheldLinks.length > 0 ? { withheldLinks: s.withheldLinks } : {}),
+      })),
+      coverage: coverageJson(verdict),
+    }, null, 2) + '\n');
+  } else {
+    process.stdout.write(formatWorkspaceText(ws, options.verbose ?? false, root) + '\n');
+    for (const s of scans) {
+      for (const line of withheldLinkLines(s.withheldLinks)) process.stdout.write(`${line}\n`);
+    }
+    if (!verdict.measured) process.stderr.write(`${unmeasuredBanner(verdict)}\n`);
+  }
+
+  if (options.exportCsv) {
+    fs.writeFileSync(options.exportCsv, generateWorkspaceCsv(ws), 'utf-8');
+    exportNotice(options);
+  }
+
+  return verdict.exitCode;
+}
+
+/**
+ * Where the "Asset inventory: <file>" line goes. On the JSON channel it went
+ * to stdout after the document and made `--json --export-csv` unparseable;
+ * a notice about a side file is not part of the result.
+ */
+function exportNotice(options: DetectOptions): void {
+  const line = `Asset inventory: ${escapePathForDisplay(options.exportCsv ?? '')}\n`;
+  if (options.format === 'json') process.stderr.write(line);
+  else process.stdout.write(line);
+}
+
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
+
+export async function detect(options: DetectOptions): Promise<number> {
+  const dir = path.resolve(options.targetDir ?? process.cwd());
+
+  try {
+    fs.accessSync(dir, fs.constants.R_OK);
+  } catch {
+    // Unreadable target: nothing was examined, so this is 2 and not 1. Exit 1
+    // here would tell a CI consumer `detect` found a high-severity issue in a
+    // directory it could not open. This is the only path that reaches the
+    // unmeasured arm.
+    process.stderr.write(
+      `${unmeasuredBanner(unmeasured(
+        'target-unreadable',
+        `${escapePathForDisplay(dir)} could not be read, so nothing was scanned.`,
+      ))}\n`,
+    );
+    return EXIT_UNMEASURED;
+  }
+
+  const depth = options.depth ?? DEFAULT_PROJECT_DEPTH;
+  if (!Number.isInteger(depth) || depth < 0) {
+    // A usage error scans nothing, so it is 2 like an unreadable target, not
+    // a 1 that would read as a finding.
+    process.stderr.write('--depth takes a whole number of directory levels, 0 or more.\n');
+    return EXIT_UNMEASURED;
+  }
+
+  const machine: MachineScan = {
+    agents: mergeAgents(scanProcesses(), scanInstalledAgents()),
+    mcpServers: scanGlobalMcpServers(),
+  };
+
+  // Which report. A target that is NOT itself an agent project and holds some
+  // (a workspace root, a home directory) gets the list. A target that IS one
+  // renders its own report exactly as it did before the walk existed — the
+  // governance fixtures and docs copies inside a repo are not the repo's
+  // shadow agents — and names the projects below it so the reader can ask for
+  // them with `--workspace`, which lists everything including the target.
+  const projectDirs = discoverAgentProjects(dir, depth);
+  const rootIsProject = projectDirs.includes(dir);
+  const nested = projectDirs.filter((d) => d !== dir);
+  const workspaceView = options.workspace ? projectDirs.length > 0 : (!rootIsProject && nested.length > 0);
+  if (workspaceView) {
+    return detectWorkspace(dir, projectDirs, machine, options);
+  }
+
+  const { result, withheldLinks } = await scanProject(dir, machine);
+
   // #390 — `detect` printed `1 high-severity issue found` and returned 0, so
   // no CI job could ever fail on a shadow-AI finding. The exit code comes from
   // the same derivation `check` uses, over the same severity counts the
@@ -1784,16 +2603,28 @@ export async function detect(options: DetectOptions): Promise<number> {
   if (options.format === 'json') {
     // The machine channel carries the measurement the exit code was derived
     // from, so a consumer never has to infer it from the finding count.
-    process.stdout.write(JSON.stringify({ ...result, coverage: coverageJson(verdict) }, null, 2) + '\n');
+    // `withheldLinks` only when a link was withheld: the key is additive and
+    // a linkless tree's document is byte-identical to before.
+    process.stdout.write(JSON.stringify({
+      ...result,
+      coverage: coverageJson(verdict),
+      ...(withheldLinks.length > 0 ? { withheldLinks } : {}),
+      // Additive: the agent projects below a target that is itself one. The
+      // reader asks for their reports with `--workspace`.
+      ...(nested.length > 0 ? { nestedProjects: nested } : {}),
+    }, null, 2) + '\n');
   } else {
-    process.stdout.write(formatText(result, options.verbose ?? false, dir) + '\n');
+    process.stdout.write(formatText(result, options.verbose ?? false, dir, nested) + '\n');
+    for (const line of withheldLinkLines(withheldLinks)) {
+      process.stdout.write(`${line}\n`);
+    }
     if (!verdict.measured) process.stderr.write(`${unmeasuredBanner(verdict)}\n`);
   }
 
   if (options.exportCsv) {
     const csv = generateAssetCsv(result);
     fs.writeFileSync(options.exportCsv, csv, 'utf-8');
-    process.stdout.write(`Asset inventory: ${options.exportCsv}\n`);
+    exportNotice(options);
   }
 
   return verdict.exitCode;

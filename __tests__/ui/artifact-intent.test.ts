@@ -20,6 +20,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { TMENeuralClassifier } from '../../src/nanomind-core/inference/tme-neural';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -40,9 +41,18 @@ const CORPUS = join(homedir(), '.opena2a', 'corpus', 'soul');
 const BENIGN_FIXTURE = join(CORPUS, 'benign', 'hardened-soul');
 const MALICIOUS_FIXTURE = join(CORPUS, 'malicious', 'permissive-overrides-soul');
 
+// The classifier's weights are not in the package: `TMENeuralClassifier`
+// loads `~/.opena2a/nanomind/models/nanomind-tme.bin` or a sibling training
+// checkout and answers `benign` at 0.5 when neither exists. Without them the
+// spawn cases below measure the fallback, not the reconciliation, so they run
+// only where the weights are (the same rule the corpus check applies).
+const classifierLoads = new TMENeuralClassifier().load();
+if (!classifierLoads) {
+  console.warn('artifact-intent: NanoMind weights not found; the three spawn cases are skipped on this machine');
+}
+
 function canRun(fixture: string): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
-  return existsSync(CLI) && existsSync(fixture);
+  return existsSync(CLI) && existsSync(fixture) && classifierLoads;
 }
 
 function artifact(path: string, intent: ArtifactIntent) {

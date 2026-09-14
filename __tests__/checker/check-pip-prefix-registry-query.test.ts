@@ -19,7 +19,8 @@
 //
 // 2. Spawned smoke test: invokes the built dist/cli.js against a
 //    Registry-known PyPI package, asserts the JSON output reports
-//    found:true. Local-only; skipped on CI runners.
+//    found:true. Needs network and a built dist, both of which release.yml
+//    provides before it runs the suite.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -36,7 +37,6 @@ const CLI_TS = join(REPO_ROOT, 'src', 'cli.ts');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 
 function canRunSpawn(): boolean {
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') return false;
   return existsSync(CLI);
 }
 
@@ -57,11 +57,12 @@ describe('PyPI Registry-query key (lock-in: closes pip-prefix bug)', () => {
 
     // Forbidden: prefixed queries. These would route to a Registry key
     // that doesn't exist (Registry stores PyPI under bare names).
-    expect(body, 'queryRegistry call must not use pip:${name} (Registry stores PyPI under bare name)').not.toMatch(/queryRegistry\(\s*`pip:\$\{/);
-    expect(body, 'queryRegistry call must not use pypi:${name} either').not.toMatch(/queryRegistry\(\s*`pypi:\$\{/);
+    expect(body, 'queryRegistry call must not use pip:${name} (Registry stores PyPI under bare name)').not.toMatch(/queryRegistry(?:Result)?\(\s*`pip:\$\{/);
+    expect(body, 'queryRegistry call must not use pypi:${name} either').not.toMatch(/queryRegistry(?:Result)?\(\s*`pypi:\$\{/);
 
-    // Required: at least one queryRegistry call passing bare `name`.
-    expect(body, 'checkPyPiPackage must call queryRegistry(name) with the bare package name').toMatch(/queryRegistry\(\s*name\s*\)/);
+    // Required: at least one queryRegistry / queryRegistryResult call passing bare `name`
+    // (the --no-scan paths read the three-case result since the 2026-09-11 parity-gate fix; the KEY is what this pins).
+    expect(body, 'checkPyPiPackage must call queryRegistry(name) with the bare package name').toMatch(/queryRegistry(?:Result)?\(\s*name\s*\)/);
   });
 });
 

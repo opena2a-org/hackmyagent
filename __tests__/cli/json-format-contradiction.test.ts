@@ -1,5 +1,5 @@
 /**
- * #605 — `--json` is the deprecated alias of `--format json`; given together
+ * #605 — `--json` is shorthand for `--format json`; given together
  * with a DIFFERENT format the two contradict, and the contradiction used to
  * resolve silently in --json's favor: `secure --ci --json --format sarif`
  * printed the json report at exit 0 with nothing to say the requested
@@ -43,13 +43,13 @@ describe('#605 --json contradicting --format refuses, pre-scan', { timeout: 300_
   it('RED-ON-BASE: secure --json --format sarif refuses at exit 1, naming the alias, with no report on stdout', () => {
     const r = run(['secure', dir(), '--json', '--format', 'sarif', '--no-machine-posture']);
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/deprecated alias.*sarif.*Drop one/s);
+    expect(r.stderr).toMatch(/shorthand for --format json and contradicts .*sarif.*Drop one/s);
     expect(r.stdout).not.toContain('{');
   });
 
   it('secure --json --format json is the redundant agreement and still runs', () => {
     const r = run(['secure', dir(), '--json', '--format', 'json', '--no-machine-posture']);
-    expect(r.stderr).not.toMatch(/deprecated alias|contradicts/);
+    expect(r.stderr).not.toMatch(/contradicts/);
     // An empty temp dir settles unmeasured; the point is the run HAPPENED
     // and produced the json document the flags agree on.
     expect(() => JSON.parse(r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1))).not.toThrow();
@@ -57,7 +57,7 @@ describe('#605 --json contradicting --format refuses, pre-scan', { timeout: 300_
 
   it("bare --json is untouched — Commander's 'text' default is not an explicit --format", () => {
     const r = run(['secure', dir(), '--json', '--no-machine-posture']);
-    expect(r.stderr).not.toMatch(/deprecated alias|contradicts/);
+    expect(r.stderr).not.toMatch(/contradicts/);
     expect(() => JSON.parse(r.stdout.slice(r.stdout.indexOf('{'), r.stdout.lastIndexOf('}') + 1))).not.toThrow();
   });
 
@@ -66,7 +66,7 @@ describe('#605 --json contradicting --format refuses, pre-scan', { timeout: 300_
     // contacted — the cell completes fast on a port nothing listens on.
     const r = run(['attack', 'http://127.0.0.1:9', '--json', '--format', 'sarif']);
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/deprecated alias.*sarif.*Drop one/s);
+    expect(r.stderr).toMatch(/shorthand for --format json and contradicts .*sarif.*Drop one/s);
   });
 
   it("RED-ON-BASE: attack --format '' reaches the invalid-format refusal instead of falling to text", () => {

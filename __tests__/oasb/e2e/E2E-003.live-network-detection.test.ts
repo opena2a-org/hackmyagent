@@ -15,13 +15,6 @@ import * as os from 'os';
 import { ArpWrapper } from '../../../src/oasb/harness/arp-wrapper';
 
 function hasNetworkTool(): boolean {
-  // ss polling on GitHub Actions ubuntu-latest runners doesn't reliably
-  // surface localhost TCP connections within the 15s event window —
-  // possibly runner-specific sandboxing or namespace isolation. Skip
-  // E2E-003 on CI; local dev still exercises the real monitor.
-  if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') {
-    return false;
-  }
   try {
     if (os.platform() === 'darwin') {
       execSync('which lsof', { encoding: 'utf-8', timeout: 2000 });

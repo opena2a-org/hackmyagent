@@ -18,7 +18,7 @@
 
 import { citationTarget } from '../ui/shell-quote.js';
 import type { SecurityAST, ArtifactType, Capability, Constraint } from './types.js';
-import type { ASTFinding } from './analyzers/capability-analyzer.js';
+import { purposeRedactionProvenance, type ASTFinding } from './analyzers/capability-analyzer.js';
 import { FIX_LINES } from '../hardening/fix-lines.js';
 
 // ============================================================================
@@ -45,6 +45,15 @@ export function enrichFindings(
 
     return {
       ...f,
+      // Fix and guidance generation read `ast.declaredPurpose` across many
+      // branches (CRED-EXPOSURE, SKILL-EXFIL, PERSISTENCE, SOUL-MISSING,
+      // SEMANTIC-MISMATCH, ...). When the purpose's construction removed
+      // content, forward that provenance on EVERY enriched finding rather
+      // than tracking which branch interpolated it: the over-approximation
+      // is in the safe direction (emitFinding's 'applied' is absorbing and
+      // never downgrades), while a missed branch would report 'clean' over
+      // a removal — the failure this stamp exists to prevent (HMA-38).
+      ...purposeRedactionProvenance(ast),
       fix: contextualFix.fix,
       ...(contextualFix.fixLines ? { [FIX_LINES]: contextualFix.fixLines } : {}),
       guidance: contextualGuidance,

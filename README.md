@@ -27,7 +27,7 @@ npx hackmyagent secure
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 47 files
-  Checks      311 static · 12 semantic (NanoMind AST) · 0 skipped
+  Checks      318 static · 12 semantic (NanoMind AST) · 0 skipped
   Categories  credentials (3 critical) · MCP (2 high) · 18 others clear
   Verdict     Not safe to ship. Fix 3 critical issues before using this in production.
 
@@ -45,7 +45,7 @@ No config files. No flags required. Exit code 1 if any critical or high finding 
 
 ## What it finds
 
-- **311 static checks across 70 categories** (324 checks across 75 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
+- **318 static checks across 73 categories** (363 checks across 88 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
 - **29 NanoMind semantic checks.** Every artifact (skill, MCP config, SOUL.md, system prompt) compiles into an Abstract Security Tree. The seven AST analyzers run against the tree: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`. Pattern matching misses undeclared capabilities, constraint weakness, scope mismatches, and scanner-evasion attempts. AST queries catch them. (This 29 is the fixed catalog of semantic checks. The `Checks` line in scan output — e.g. `12 semantic (NanoMind AST)` above — reports the number of artifacts compiled in that particular run, not this catalog size.)
 - **164 adversarial payloads across 16 categories.** Prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP and A2A exploitation, memory weaponisation, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement integrity.
 - **20-probe behavioural simulation** under `--deep`. Observes what a skill actually does, not only what it declares.
@@ -96,7 +96,7 @@ npm view hackmyagent dist.attestations --json
 
 | Surface | Command | What gets scanned |
 |---|---|---|
-| Your own project | `hackmyagent secure` | 311 static checks + NanoMind on current directory |
+| Your own project | `hackmyagent secure` | 318 static checks + NanoMind on current directory |
 | A local directory | `hackmyagent check ./my-agent/` | tree + auto-detected artifacts |
 | An npm package | `hackmyagent check express` | downloads tarball, scans before you install |
 | A PyPI package | `hackmyagent check pip:requests` | downloads sdist, scans before you install |
@@ -222,13 +222,34 @@ Run `hackmyagent scan-soul --help` for the full exit-code contract.
 ### `detect` (shadow AI audit)
 
 ```bash
-hackmyagent detect                              # audit current directory
-hackmyagent detect /path/to/project             # audit a specific project
+hackmyagent detect                              # every agent project under the current directory
+hackmyagent detect ~/workspace                  # every agent project under a workspace root
+hackmyagent detect /path/to/project             # one project, the full report
+hackmyagent detect --depth 0                    # the target directory only, no walk
 hackmyagent detect --json                       # machine-readable output
-hackmyagent detect --export-csv inventory.csv   # asset inventory for CMDB
+hackmyagent detect --export-csv inventory.csv   # asset inventory for CMDB, one row per asset
 ```
 
-Inventory of AI tools, MCP servers, and governance gaps across your machine. Detects Claude Code, Cursor, Copilot, and similar tools; MCP configurations (project-local and machine-wide); AI config files with credential references or broad permission grants; and SOUL.md files.
+Inventory of AI tools, MCP servers, and governance gaps across your machine. Detects Claude Code, Cursor, Copilot, and similar tools, both running (a process) and installed (a project config such as `.cursorrules` or a machine-wide config such as `~/.cursor/mcp.json`); MCP configurations (project-local and machine-wide, including Claude Desktop and `~/.claude.json`); AI config files with credential references or broad permission grants; and SOUL.md files. The governance finding applies to installed agents too: a tool that is closed right now still has its rules, servers and credentials in the tree.
+
+From a directory that holds agent projects below it (a workspace, a home directory) the report opens with one line per project, worst first:
+
+```
+  workspace  shadow ai audit · laptop · 1 agent · 40 machine-wide mcp servers · 5 agent projects
+  4 of 5 agent projects need action (4 critical, 6 high)
+
+  ── Shadow AI agents (5) ────────────────────────────────────
+  project                       identified by  mcp servers     governance   cred      verdict
+  deploy-runbook-agent          Claude Code    3 mcp critical  gov   0/100  cred yes  CRITICAL
+  invoice-reconciliation-agent  Claude Code    3 mcp high      gov   4/100  cred yes  CRITICAL
+  hr-onboarding-assistant       Cursor         3 mcp medium    gov   7/100  cred yes  CRITICAL
+  support-triage-agent          SOUL.md        1 mcp medium    gov   7/100  cred no   HIGH
+  release-notes-agent           SOUL.md        1 mcp medium    gov 100/100  cred no   MEDIUM
+```
+
+A directory is an agent project when it holds an AI tool config (`.claude/settings.json`, `.cursorrules`, `CLAUDE.md`, ...), a project MCP file (`.mcp.json`, `mcp.json`), a governance file or a capability policy. The walk goes four levels down by default, does not enter `node_modules`, build output or hidden directories, and does not follow symbolic links. Each project's critical and high findings follow the table with their `file:line`, `Fix` and `Verify`; `hackmyagent detect <project>` prints the full report for one. The exit code is the worst project's.
+
+A target that is itself an agent project (a repo with its own `CLAUDE.md`) keeps its single-project report; the projects below it are named under Next Steps and in the JSON's `nestedProjects`, and `hackmyagent detect --workspace` lists them all, the target included.
 
 ### `trust`, `explain`, `nanomind`
 
@@ -333,8 +354,8 @@ OpenAI API, MCP and A2A traffic. It is driven from `opena2a runtime`
 `secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output. It also
 turns contribution off for that run, so a build server never shares scan results on the
 strength of an opt-in recorded earlier on the same machine. Most scanning commands take
-`--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `harden-soul`,
-`red-team`, `wild`, `detect`, `trust`.
+`--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `harden-soul`, `red-team`, `wild`, `detect`, `trust`.
+`secure` and `attack` also take `-f, --format <format>`; on those two commands `--json` is shorthand for `--format json`.
 
 `--json` never changes the exit code: a command that exits 1 on findings exits 1 in both
 channels. `--ci` mostly doesn't either — it selects how a run reports, not what it
@@ -371,6 +392,23 @@ threshold in your pipeline config is auditable, a missing finding is not.
 Excluding a **path** (`test-fixtures/` in `.hmaignore`) is a scope statement:
 those paths leave the score and the exit code, as if you had not scanned them.
 Always disclosed on a `Scope` line and as `outOfScope` in `--json`.
+
+Excluding **one check on one path** (`danger.py:NEMO-009 # canary fixture` in
+`.hmaignore`) is the narrow form of the path rule, with the same scope
+semantics: that one finding leaves the score and the exit code while every
+other check still runs on the path. The trailing `# <reason>` is required on
+this form. Any rule may carry `expires:<YYYY-MM-DD>` at the end of the line;
+the rule is active through the named day (UTC), and from the next day the
+line is reported as an error and its findings return to the report.
+
+Every rule and its match count are disclosed under `hmaignore` in `--json`.
+A line the parser cannot apply (a glob in a path rule, a missing reason, a
+bad or lapsed `expires:` date) is never a silent no-op: it prints as a
+`.hmaignore:<line>` error by default, appears in `hmaignore.errors`, and the
+line is not applied. Errors never change the exit code: an inert line hides
+nothing, so everything it would have covered is already in the score and the
+exit code. To gate CI on a clean ignore file, test the `--json` document instead:
+`hackmyagent secure --ci --json . | jq -e '.hmaignore.errors | length == 0'`.
 
 ## Exit codes
 

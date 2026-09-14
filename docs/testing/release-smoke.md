@@ -28,6 +28,26 @@ npx vitest run __tests__/nanomind-core/benign-fp-regression.test.ts
 # Expected: 10 tests pass, FPR = 0/10 = 0%
 ```
 
+Then the corpus gate — BLOCKING. It runs the built CLI over every fixture in the
+opena2a-corpus checkout and compares scores against the manifest bands and the
+rendered output against `golden/hma/`. A red result here means either the scoring
+moved (re-bake the goldens in the same PR that moved it and say why) or the corpus
+checkout is stale; it never means "skip it":
+
+```bash
+git -C ~/.opena2a/corpus rev-parse --short HEAD   # record this in the release notes
+OPENA2A_CORPUS_PATH=$HOME/.opena2a/corpus npm run release-smoke:corpus
+# Expected: 12 passed, 0 failed, 2 skipped (a2a/* and npm/* surfaces are not in the corpus yet)
+# Baseline re-recorded 2026-09-13 against corpus 8ef8168 (branch band/exfil-skill-hma-29-skill-025,
+# recentres exfil-skill's hma band on measured 29) for 0.33.0 (goldens re-baked:
+# skill/malicious/exfil-skill for SKILL-025, repo/malicious/kitchen-sink for the
+# AST-MANIP-001 / credential-gating changes that landed on main after the 2026-08-20 bake);
+# a different corpus HEAD needs the counts re-recorded here.
+```
+
+Do not set `OPENA2A_CORPUS_UPDATE_GOLDEN=1` on a release branch to make this pass: a golden
+moves only in the PR that moved the score, with the cause named in the commit.
+
 Fail the release if:
 - Any test is red
 - Any benign oracle fixture (b01–b10) triggers a HIGH or CRITICAL finding
@@ -144,8 +164,8 @@ coverage.
 |---|---|---|
 | Known-bad tree | `"$BAD"` (§0.5) | 69/100, ≥ 1 CRITICAL credential finding, exit 1 |
 | Local repo (clean) | `../ai-trust` or `../secretless` | 60–90 |
-| Empty dir | `"$CLEAN"` (§0.5) | ~95–98 (`.gitignore` LOW only) |
-| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 96/100 |
+| Empty dir | `"$CLEAN"` (§0.5) | 93 (`.gitignore` LOW + `DEP-001` MEDIUM: since #636 a missing lock file is an absent-mitigation advisory with a `file`, so it is no longer filtered out as file-less; measured 0.33.0) |
+| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 93/100 (was 96 before #636 made `DEP-001` visible; measured 0.33.0) |
 | Standalone SOUL.md | `node dist/cli.js scan-soul test/` | see note below |
 | npm package | `node dist/cli.js check express` | ≥ 95 |
 | PyPI package | `node dist/cli.js check pip:requests` | ~90 |

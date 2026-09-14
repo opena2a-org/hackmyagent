@@ -145,26 +145,22 @@ describe('NEMO-009 FP regression (nanomind#26 finding 1)', () => {
     expect(isMatchInsideStringLiteral(line, idx)).toBe(false);
   });
 
-  // ----- Tracked limitation: regex literal / contraction with apostrophe -----
-  // A regex literal whose body contains an apostrophe (`/don't/`)
-  // toggles unclosed single-quote state in the walker. A real
-  // eval(payload) call later on the same line is mis-suppressed. The
-  // second-pass adversarial review (2026-05-24) showed that the
-  // mitigation "if quote is unclosed at end of line, treat as
-  // regex/contraction" introduces a far more common FP class on
-  // multi-line strings (line-continuation `\` at end, formatter-split
-  // template fragments) and was withdrawn.
+  // ----- Regex literal / contraction with an apostrophe -----
+  // A regex literal whose body contains an apostrophe (`/don't/`) used
+  // to toggle unclosed single-quote state in the walker, so a real
+  // eval(payload) call later on the same line was mis-suppressed. The
+  // predicate now lexes regex literals (HMA-31), which is why the first
+  // test below dropped its `.skip`: the forward-facing assertion the
+  // third-pass review (2026-05-25) left as documentation is green.
   //
-  // The third-pass review (2026-05-25) flagged that asserting the
-  // CURRENT-broken behavior (`expect(broken).toBe(true)`) locks the
-  // bug in place: a future regression that suppresses even MORE
-  // legitimate eval calls would still pass these tests. The tests
-  // below are marked `it.skip` with a forward-facing assertion
-  // (`expect(...).toBe(false)`). When a structural-parser refactor
-  // fixes the underlying limitation, removing the `.skip` flips the
-  // tests green and provides regression coverage from that point on.
-  // Until then they are documentation, not assertions.
-  it.skip('SHOULD return false for eval( after a regex literal with apostrophe (tracked limitation)', () => {
+  // The contraction case stays skipped: `isn't` is an identifier
+  // followed by a genuinely unterminated quote, which the lexer reads
+  // as an unclosed string — distinguishing a contraction from a real
+  // unterminated string needs more than a line of context, and the
+  // second-pass review (2026-05-24) already withdrew the "unclosed
+  // quote at EOL means contraction" heuristic for FPing on multi-line
+  // strings.
+  it('returns false for eval( after a regex literal with apostrophe (HMA-31)', () => {
     const line = `const r = /don't/; eval(payload);`;
     const idx = line.indexOf('eval(');
     expect(isMatchInsideStringLiteral(line, idx)).toBe(false);

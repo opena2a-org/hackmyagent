@@ -48,7 +48,10 @@ function run(args: string[], env: NodeJS.ProcessEnv = {}) {
       ...env,
     },
   });
-  return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
+  // `stdout` is the machine channel: every JSON parse reads it alone, so a
+  // load-induced stderr byte cannot corrupt the body (HMA-28). The merged
+  // `out` stays for text assertions that want the message on either channel.
+  return { status: res.status, stdout: res.stdout ?? '', out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
 
 /**
@@ -354,8 +357,8 @@ describe('#417 check says a missing target is missing', () => {
     // affirmative claim, sourced from a synthesized registry record, about a
     // path that does not exist.
     const missing = path.join(fixtures, 'no-such-thing');
-    const { out } = run(['check', missing, '--json']);
-    const payload = JSON.parse(out.slice(out.indexOf('{')));
+    const { stdout } = run(['check', missing, '--json']);
+    const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
     expect(payload.coverage.measured).toBe(false);
     expect(payload.coverage.reason).toBe('target-not-found');
     expect(payload).not.toHaveProperty('revocation');
@@ -372,9 +375,9 @@ describe('#417 check says a missing target is missing', () => {
     // 200 and every one produced a measured verdict, so this is the ordinary
     // case and not a hand-picked one.
     const real = path.join(__dirname, '..', '..', 'src', 'check');
-    const { status, out } = run(['check', real, '--json']);
+    const { status, stdout } = run(['check', real, '--json']);
     expect(status).not.toBe(EXIT_UNMEASURED);
-    const payload = JSON.parse(out.slice(out.indexOf('{')));
+    const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
     expect(payload.measured).toBe(true);
     expect(payload.coverage.measured).toBe(true);
     expect(payload.coverage.examined).toBeGreaterThan(0);
@@ -392,8 +395,8 @@ describe('#417 check says a missing target is missing', () => {
       ['unknown npm package', ['zzz-nope-abc123-xyz-hma']],
     ];
     for (const [label, args] of targets) {
-      const { out } = run(['check', ...args, '--json']);
-      const payload = JSON.parse(out.slice(out.indexOf('{')));
+      const { stdout } = run(['check', ...args, '--json']);
+      const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
       expect(payload.coverage, `${label}: no coverage key`).toBeDefined();
       expect(typeof payload.coverage.measured, `${label}: coverage.measured is not a boolean`).toBe('boolean');
       expect(typeof payload.coverage.examined, `${label}: coverage.examined is not a number`).toBe('number');
@@ -411,9 +414,9 @@ describe('#417 check says a missing target is missing', () => {
     // the safety property behind #396 and #414, where an extension the reader
     // did not enumerate (`.mjs`) made real credentials invisible: a coverage
     // gap must surface as "not measured", never as "clean".
-    const { status, out } = run(['check', fixtures, '--json']);
+    const { status, stdout } = run(['check', fixtures, '--json']);
     expect(status).toBe(EXIT_UNMEASURED);
-    const payload = JSON.parse(out.slice(out.indexOf('{')));
+    const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
     expect(payload.measured).toBe(false);
     expect(payload.risk).toBeNull();
     expect(payload.compiledArtifacts).toBe(0);
@@ -523,7 +526,8 @@ describe('#390 scan-soul exits on what it reports', () => {
     // controls, so conformance is above `none` whatever the score turns out
     // to be. Pin both, so a score drift cannot quietly turn this green for
     // the wrong reason.
-    const body = JSON.parse(run(['scan-soul', dir, '--json']).out.slice(run(['scan-soul', dir, '--json']).out.indexOf('{')));
+    const soulJson = run(['scan-soul', dir, '--json']).stdout;
+    const body = JSON.parse(soulJson.slice(soulJson.indexOf('{')));
     expect(body.criticalMissing, 'fixture must satisfy every critical control').toEqual([]);
     expect(body.conformance).not.toBe('none');
     expect(body.score, 'and it must still be a LOW score, or it is not testing partiality').toBeLessThan(60);
@@ -691,7 +695,7 @@ describe('#390 detect exits on what it reports', () => {
     const text = run(['detect', dir, '--ci']);
     const json = run(['detect', dir, '--ci', '--json']);
     expect(json.status).toBe(text.status);
-    const payload = JSON.parse(json.out.slice(json.out.indexOf('{')));
+    const payload = JSON.parse(json.stdout.slice(json.stdout.indexOf('{')));
     expect(payload.coverage.measured).toBe(true);
   });
 });

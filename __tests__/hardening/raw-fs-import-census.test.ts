@@ -39,10 +39,10 @@ const ALLOWLIST: Record<string, string> = {
   'hardening/contain.ts': 'realpath/lstat identity checks on paths about to be acted on; the site-level confinement helper',
   'hardening/scanner.ts': 'raw fsSync: accessSync on ancestors (lexically outside the root), realpathSync.native identity, readFileSync in readArtifactForCitation confined by readStaysInsideTree',
   'nanomind-core/scanner-bridge.ts': 'two raw readFileSync sites (policy probe, citation re-read), each confined by readStaysInsideTree; discovery goes through tracked-fs',
-  'cli.ts': 'single-file copy confined by readStaysInsideTree with root = the argument\'s own directory; target stat is lstat-first; the --deep text-mode simulation walk (findSkills) is lstat-first and skips links resolving outside the target; remaining raw reads are HMA\'s own files, --output writes, and the scan-soul/harden-soul/detect governance paths tracked as a follow-up',
+  'cli.ts': 'single-file copy confined by readStaysInsideTree with root = the argument\'s own directory; target stat is lstat-first; the --deep text-mode simulation walk (findSkills) is lstat-first and skips links resolving outside the target; the secure --fix governance pre-hash is confined by readStaysInsideTree against the scan target (the scan-soul/harden-soul/detect governance reads are confined at their own sites — see the soul/scanner.ts and scanner/detect.ts rows); remaining raw reads are HMA\'s own files and --output writes',
   'semantic/structural/git-context.ts': 'link metadata only (lstat/readlink/realpath), deliberately resolves to classify; reads no content',
   'mcp/roots.ts': 'resolves the granted roots and the requested directory against them; the entry-path confinement',
-  'soul/scanner.ts': 'governance --fix path (hardenSoul), write side, contained by #270 resolveInsideTree; read side is a target-joined basename on the fix path, tracked as a fix-path census follow-up',
+  'soul/scanner.ts': 'governance --fix path (hardenSoul), write side, contained by #270 resolveInsideTree; read side (findGovernanceFile routing plus the scanSoul and hardenSoul reads) confined by readStaysInsideTree against the scanned tree root, resolved-first so a file target never stats through an out-of-tree link',
   'nanomind-core/security/integrity-verifier.ts': 'reads HMA\'s own dist manifest, never a target path',
   'nanomind-core/inference/tme-classifier.ts': 'HMA\'s own model cache under the home directory, never a target path',
   'nanomind-core/inference/tme-neural.ts': 'HMA\'s own model files, never a target path',
@@ -69,7 +69,7 @@ const ALLOWLIST: Record<string, string> = {
   'plugins/skillguard.ts': 'plugin; not reached by secure',
   'registry/publish.ts': 'publish arm reads package.json of the target to name it; runs after the scan, contents not scanned',
   'narrative/wire-publish.ts': '--publish arm: reads SKILL.md / package.json of the target and POSTs the narrative; both reads confined by readStaysInsideTree',
-  'scanner/detect.ts': 'detect command; not reached by secure',
+  'scanner/detect.ts': 'detect command; not reached by secure, and its governance-named reads (scanAiConfigs stat + read of .cursorrules / CLAUDE.md / copilot-instructions, and scanSoul via the soul scanner) are confined by readStaysInsideTree against the scanned tree',
   'skills/builder.ts': 'skill builder; not reached by secure',
 };
 

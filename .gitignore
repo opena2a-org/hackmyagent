@@ -42,3 +42,6 @@ coverage/
 # Cache
 .cache/
 .eslintcache
+
+# Runtime cache the scanner writes into the working directory
+.hackmyagent-cache/

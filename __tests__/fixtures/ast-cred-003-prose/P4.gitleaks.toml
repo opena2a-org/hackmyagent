@@ -1,0 +1,164 @@
+# Gitleaks configuration for OpenA2A Registry
+
+title = "OpenA2A Registry Secret Detection Rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "pem-private-key"
+description = "PEM-encoded private key"
+regex = '''-----BEGIN\s*(RSA|EC|OPENSSH|DSA|ED25519|ENCRYPTED)?\s*PRIVATE KEY-----'''
+tags = ["crypto", "key"]
+
+[[rules]]
+id = "jwt-token"
+description = "JSON Web Token"
+regex = '''eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+tags = ["jwt", "token"]
+
+[[rules]]
+id = "jwt-secret-assignment"
+description = "Hardcoded JWT secret in source"
+regex = '''(?i)(jwt[_-]?secret|signing[_-]?key)\s*[:=]\s*["'][^"']{8,}["']'''
+tags = ["jwt", "secret"]
+
+[[rules]]
+id = "database-password"
+description = "Database connection with password"
+# `postgres` cannot match inside `postgresql` here, because `://` must follow the
+# alternation immediately. So this rule was blind to `postgresql://` -- the scheme
+# this repo actually uses everywhere it embeds a connection string. The optional
+# `ql` group is that fix.
+#
+# The scheme alternation is non-capturing so that the password is the FIRST
+# capture group. gitleaks takes the first capture group as the secret when a
+# rule sets no `secretGroup` (measured on 8.30.1, the version security.yml
+# pins; an explicit `secretGroup = 1` changes nothing on that version, so it
+# is not written here as if it did). The first draft of this fix captured the
+# scheme instead, and `--redact` replaced the scheme and printed the password
+# into the CI log. The "Prove the database-password rule redacts the password"
+# step in security.yml scans one fake connection string per scheme and fails
+# if a capture group ever lands before the password again. This comment
+# carries no example connection string on purpose: this file is allowlisted
+# below, so the repo's own scans could never flag a credential-shaped string
+# that lands here -- nothing would catch it.
+#
+# Scheme list extended (roadmap gitleaks-docs-allowlist-gap, "Also measured"):
+# the adversarial round named `pgsql://`, `mariadb://`, `mssql://`,
+# `mongodb+srv://`, `redis://` and `amqp://` as shapes BOTH the old and the new
+# rule missed. They are added here rather than in a follow-up because the tree
+# contains zero occurrences of any of them (grepped over the working tree), so
+# widening the alternation cannot light up the current tree -- the extension is
+# free of scan regression by construction, which is exactly the condition that
+# made it safe to fold into this change. `mongodb(?:\+srv)?` keeps the longer
+# branch first: `?` is greedy, so `mongodb+srv://` matches before the bare
+# `mongodb` branch can consume the scheme and then fail on `://`.
+#
+# The remaining measured gaps are deliberately NOT closed here, because each one
+# changes what the rule matches rather than which schemes it recognises, and none
+# could be measured against a real scan in this change: passwords under 8 chars,
+# empty user (`://:pw@`), the `?password=` query form, and `PGPASSWORD=value`.
+# They stay in the roadmap unit.
+#
+# Every scheme named here must also appear in the "Prove the database-password
+# rule redacts the password" step in security.yml: that step loops over an
+# explicit list, it does not derive one from this regex, so a scheme added here
+# and not there is a scheme nothing ever proves redacts.
+regex = '''(?i)(?:postgres(?:ql)?|pgsql|mysql|mariadb|mssql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:([^@\s]{8,})@'''
+tags = ["database", "credential"]
+
+[[rules]]
+id = "api-key-generic"
+description = "Generic API key assignment"
+regex = '''(?i)(api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*["'][A-Za-z0-9_\-]{20,}["']'''
+tags = ["api", "key"]
+
+[allowlist]
+description = "Global allowlist"
+# `docs/` IS GONE FROM THIS LIST ON PURPOSE. Do not add it back.
+#
+# `^(\./)?docs/.*$` is why `docs/infrastructure.md` could carry cleartext
+# `registryadmin` passwords from 2026-02-04 without a single scan -- PR, push or
+# weekly -- ever firing on them: the allowlist was added for documentation
+# EXAMPLES and it swallowed the real values sitting beside them. A path
+# allowlist cannot tell those two apart, so the four known placeholders are now
+# suppressed one by one, by fingerprint, in `.gitleaksignore`. That file
+# suppresses four findings; this line suppressed a whole subtree, and the next
+# real value to land in docs/ now fires. See the roadmap unit
+# gitleaks-docs-allowlist-gap.
+#
+# `test/` is anchored to the repo root with `^`; the unanchored entries below
+# are not. The distinction is deliberate. gitleaks matches these with Go's
+# `MatchString`, which SEARCHES rather than requiring a full match, so a bare
+# `test/.*$` would still hit `internal/foo/test/bar` -- dropping the `(.*/)?`
+# prefix is necessary but not sufficient, and `^` is what actually anchors it.
+# Before this, a real credential in ANY directory named `test/` anywhere in the
+# tree was invisible to all three scans in security.yml, which undercut the
+# "full-tree" scheduled scan it was supposed to be the backstop for. The repo
+# has no `test/` at all (`tests/` does not match either pattern, anchored or
+# not), so the anchoring removes nothing from today's coverage -- it only closes
+# the nested case.
+#
+# The `(\./)?` is NOT the old prefix creeping back: it matches a leading `./`
+# and nothing else, so `test/x` and `./test/x` are both the ROOT test/ while
+# `internal/test/x` still is not. It is there because the scans in security.yml
+# pass `--source .`, and whether that yields `test/x` or `./test/x` is a
+# gitleaks implementation detail this repo should not be betting on. The same
+# uncertainty is why `.gitleaksignore` carries each fingerprint in both path
+# forms.
+#
+# The entries left unanchored are ones whose whole point is to match at any
+# depth: Go puts a `testdata/` beside each package, and `fixtures/` and
+# `examples/` follow the same per-package convention.
+#
+# WHAT EACH REMAINING ENTRY HIDES, measured on this tree (REG-03.AC3). Four of
+# the six path entries hide NOTHING today -- no `testdata/`, `test/`,
+# `fixtures/` or `examples/` directory exists anywhere in the repo -- so they are
+# forward-looking conventions, not active suppression, and each is kept with the
+# justification on its own line. `migrations/` is the one that actively hides
+# content, and it is the one decided explicitly below.
+paths = [
+  # Go test files: fixtures and fake credentials live here by design, and the
+  # tree has ~200 of them. Hides every `*_test.go` in the repo.
+  '''(.*/)?_test\.go$''',
+  # Go's per-package fixture directory. Hides nothing today: no `testdata/`
+  # directory exists in this tree. Kept because Go tooling creates them by
+  # convention beside any package, at any depth.
+  '''(.*/)?testdata/.*$''',
+  # Root-level test tree. Hides nothing today: there is no `test/` directory
+  # (`tests/integration/` does not match this pattern, anchored or not).
+  '''^(\./)?test/.*$''',
+  # Per-package fixture directories. Hides nothing today: no `fixtures/`
+  # directory exists in this tree.
+  '''(.*/)?fixtures/.*$''',
+  # Per-package sample code. Hides nothing today: no `examples/` directory
+  # exists in this tree.
+  '''(.*/)?examples/.*$''',
+  # DECIDED EXPLICITLY, NOT LEFT BY DEFAULT (REG-03.AC3). This is the one entry
+  # that hides real content: 238 files total — 220 under `migrations/` plus the
+  # 18 tracked `supabase/migrations/*.sql` — tracked files reach every checkout
+  # despite the `.gitignore:65` `supabase/` entry, and this pattern matches
+  # them too. It is KEPT because those files are full of
+  # credential-SHAPED literals that are not credentials -- `hmac_key_hash` and
+  # `contributor_token` columns seeded with 64-char SHA-256 digests across
+  # 205/214/215/248 and others -- in exactly the `<key-ish name> = '<high
+  # entropy value>'` shape gitleaks' default `generic-api-key` rule reports.
+  # Removing this line would redden the weekly scan with dozens of findings,
+  # which the no-scan-regression condition on this change forbids, and
+  # fingerprinting them the way docs/ was fingerprinted is not viable: they are
+  # numerous, and a new seed migration would add more on every merge.
+  #
+  # The residual risk is stated rather than hidden: a real seeded value in a
+  # migration -- the roadmap's own worked example of where one would land --
+  # stays invisible to all three scans. Closing that needs a narrower rule (or a
+  # per-column allowlist) than this task's scope, and is left to its own unit.
+  '''(.*/)?migrations/.*$''',
+  # This file. It quotes rule regexes, which are credential-shaped by
+  # construction; see the database-password rule's note on why it carries no
+  # example connection string.
+  '''\.gitleaks\.toml$''',
+  # Module checksum database: base64 hashes, all of them high-entropy, none of
+  # them secret.
+  '''go\.sum$''',
+]

@@ -15,7 +15,8 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 import { execFile } from 'child_process';
-import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType } from './security-check';
+import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure } from './security-check';
+import { isScopeChannel } from './security-check';
 import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
@@ -48,6 +49,7 @@ import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
+import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import {
   decodeArtifact,
   MAX_DECODE_DEPTH,
@@ -60,6 +62,7 @@ import {
   type CategoryCoverage,
   type CheckExecution,
   type CoverageTruncation,
+  type WithheldLink,
   countsAsUnread,
   noteListFailure,
 } from './coverage-ledger';
@@ -1374,6 +1377,15 @@ const SKILL_BUNDLE_MAX_DEPTH = 4;
 const SKILL_BUNDLE_MAX_FILES = 60;
 const SKILL_BUNDLE_MAX_DIRS = 40;
 
+/**
+ * Files one capped layer touches before it stops and discloses: source files
+ * read per extension by the NemoClaw checks, and extensionless files probed
+ * for a shebang below one skill directory. ONE constant on purpose — a fired
+ * cap is reported to the coverage ledger with this value, and a second number
+ * would let a disclosure drift from the bound it describes.
+ */
+const MAX_FILES_PER_LAYER = 200;
+
 // OpenClaw skill security patterns
 const SKILL_REMOTE_FETCH_PATTERNS: RegExp[] = [
   /curl\s+(-[a-zA-Z]+\s+)*https?:\/\//gi,
@@ -1410,7 +1422,17 @@ const SKILL_EXFILTRATION_PATTERNS: RegExp[] = [
   /fetch\s*\([^)]*method:\s*['"]POST/gi,
 ];
 
-const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
+/**
+ * Reverse-shell shapes, treated as sufficient on their own wherever they are
+ * consumed: no ordinary script opens `/dev/tcp` or execs a shell over netcat.
+ *
+ * Exported so its consumers can be tested against the LIST rather than against
+ * a restatement of it. Two call sites read it — the skill Markdown path
+ * (SKILL-008) and `describeSkillBundlePayload` (SKILL-006 over the bundle) —
+ * and a test that pasted the six patterns instead of importing them would go
+ * on passing while the two drifted apart pattern by pattern.
+ */
+export const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
   /nc\s+(-[a-zA-Z]+\s+)*.*-e/gi,
   /bash\s+-i\s+/gi,
   /\/dev\/tcp\//gi,
@@ -1682,100 +1704,406 @@ export function dropPathlessNoiseFloor(
  *    skips past the entire `${...}` region (still inside the backtick)
  *    and keeps walking, so a `//` comment after the closing backtick
  *    is still recognized.
- *  - The helper does NOT attempt to detect regex literals. A real
- *    `/don't/; eval(payload)` line will be mis-suppressed only if the
- *    apostrophe inside the regex toggles open-quote state and the
- *    eval token comes before the regex closes; in practice eval
- *    appearing on the same line as a regex literal containing an
- *    apostrophe is rare enough to leave unhandled rather than ship a
- *    regex-context heuristic that FPs on multi-line strings.
+ *  - Regex literals ARE lexed (HMA-31, shape (a) of the ruling). A `/`
+ *    OPENS a regex literal when the previous significant token is the
+ *    start of the line; one of `(` `,` `=` `:` `[` `!` `&` `|` `?` `;`
+ *    `{` — the ruled opener set, and ONLY that set (HMA-31.AC8) — or
+ *    one of the keywords return, typeof, instanceof, in, of, new,
+ *    delete, void, throw, case, else, do, yield, await. A word after
+ *    `.` is a property name — an identifier, never a keyword — so
+ *    `stats.in / stats.out` is a division (HMA-31.AC7), and a word is
+ *    any run of identifier characters, ASCII or not, so `π / 2` is a
+ *    division too (HMA-31.AC8). A `/` is DIVISION after an identifier,
+ *    a number, a string literal, or `]`. After `)` it opens a regex iff
+ *    the same-line matching `(` is preceded by the KEYWORD if, while,
+ *    for or with — `obj.if(y)` is a method call, so division
+ *    (HMA-31.AC7) — and is division otherwise. When the previous token
+ *    is `}`, a `)` whose matching `(` is not on this line, or any
+ *    punctuator outside the opener set (`+` `-` `*` `<` `>` …), the
+ *    slash is UNDECIDABLE: the rest of the line is lexed BOTH ways and
+ *    a position answers "inside" only if both lexings say so; past
+ *    MAX_UNDECIDABLE_SLASHES such points on one lexing path the walk
+ *    stops branching and the rest of the line fails toward
+ *    corroboration ("not inside"). Inside a regex literal every
+ *    character is literal, backslash escapes are honoured, and a
+ *    `[...]` class is skipped as a unit — a `/` inside it does not
+ *    close the literal. So `/won't/; eval(payload)` is real code, and
+ *    the `eval()` in `{ pattern: /eval\s*\(/, label: 'eval() dynamic
+ *    execution' }` is still inside a string. A match that sits inside a
+ *    regex literal answers true: like a string, it is a mention, not a
+ *    call site.
  *  - Returns false when the match is in real code.
  *
- * Complexity: O(line.length) per call. The outer walker advances `i`
- * monotonically (every branch either does `i++` or `i = j` past a
- * matched region); the inner template-interpolation brace loop is
- * bounded by `j < line.length` and is entered at most once per `${...}`
- * region that the outer walker steps into. MAX_WALK_ITERATIONS is a
- * belt-and-suspenders cap that fires only on inputs already pathological
- * enough to be a different problem.
+ * Complexity: the walk computes an inside/outside mask for the WHOLE line
+ * in one pass and caches it per line (HMA-31.AC10), so asking about every
+ * sink mention on a line — the corroborator's per-match loop — costs one
+ * walk, not one forked walk per mention. Undecidable slashes fork the
+ * walk, bounded by 2^MAX_UNDECIDABLE_SLASHES paths per line, paid once
+ * per line; MAX_WALK_ITERATIONS caps each path as a belt-and-suspenders
+ * bound that fires only on inputs already pathological enough to be a
+ * different problem (past it a path keeps the pre-lexer walker's
+ * conservative default and marks the rest of its line "inside").
  */
 const MAX_WALK_ITERATIONS = 100000;
 
+/**
+ * HMA-31.AC2: how many undecidable slashes on ONE lexing path may fork the
+ * walk before it stops branching and fails toward corroboration.
+ */
+const MAX_UNDECIDABLE_SLASHES = 6;
+
+/** Keywords after which a `/` opens a regex literal. */
+const REGEX_OPENING_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'throw', 'case', 'else', 'do', 'yield', 'await',
+]);
+
+/** A `/` after `)` opens a regex only when the `(` belongs to one of these. */
+const PAREN_KEYWORDS_BEFORE_REGEX = new Set(['if', 'while', 'for', 'with']);
+
+/**
+ * The ruled opener set (HMA-31.AC2): punctuators after which a `/` opens a
+ * regex literal. `(` is listed for fidelity to the ruling although its own
+ * branch handles it (it also records itself for the `)` rule). A punctuator
+ * NOT in this set is undecidable rather than an opener (HMA-31.AC8): an
+ * earlier generalisation "any other operator punctuator opens a regex" read
+ * `i++ / 2` as a regex and suppressed the sink after it.
+ */
+const REGEX_OPENING_PUNCTUATORS = new Set([
+  '(', ',', '=', ':', '[', '!', '&', '|', '?', ';', '{',
+]);
+
+/** What the next `/` in the walk would be. */
+type SlashMeaning = 'regex' | 'division' | 'undecidable';
+
+/**
+ * Every identifier character is a word character (HMA-31.AC8). An earlier
+ * ASCII-only class dropped `π`, `groß` and friends into the punctuator
+ * branch, where the old fallback opened a phantom regex. A lone surrogate
+ * half does not match, so an astral identifier falls to the undecidable
+ * branch — both-ways lexing, not a phantom opener.
+ */
+const WORD_CHAR = /[\p{ID_Continue}$]/u;
+
+/**
+ * The predicate answers for every sink mention on a line, so the walk runs
+ * once per LINE and each call is a mask lookup (HMA-31.AC10). The earlier
+ * shape — one forked walk per mention — let a crafted line (six fork points, then
+ * hundreds of string mentions) multiply 2^6 lexings by the mention count.
+ * A single-entry cache is enough: callers ask about one line's matches
+ * before moving to the next.
+ */
+let insideMaskLine: string | null = null;
+let insideMaskCache: Uint8Array | null = null;
+
 export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
-  let inSingle = false;
-  let inDouble = false;
-  let inBacktick = false;
-  let i = 0;
-  let outerIters = 0;
-  while (i < matchIndex) {
-    if (++outerIters > MAX_WALK_ITERATIONS) {
-      // Pathological input. Conservative default: treat the match as
-      // inside-string so the suppression path fires; over-suppression
-      // is a smaller harm than walker hang on a CI pipeline.
-      return true;
+  if (matchIndex < 0 || matchIndex >= line.length) return false;
+  if (line !== insideMaskLine) {
+    const mask = new Uint8Array(line.length);
+    lexMaskInto(line, 0, 'regex', false, [], 0, 0, mask);
+    insideMaskLine = line;
+    insideMaskCache = mask;
+  }
+  return insideMaskCache![matchIndex] === 1;
+}
+
+/** End (exclusive) of the word token starting at `i`. */
+function scanWordEnd(line: string, i: number): number {
+  let j = i + 1;
+  while (j < line.length && WORD_CHAR.test(line[j])) j++;
+  return j;
+}
+
+/**
+ * End of the regex literal whose opening `/` sits at `i`: the index just
+ * past the closing `/` and its flags, or -1 when the literal does not close
+ * on the line. Backslash escapes are honoured and a `[...]` class is
+ * skipped as a unit — a `/` inside it does not close the literal.
+ */
+function scanRegexLiteralEnd(line: string, i: number): number {
+  let j = i + 1;
+  let closed = false;
+  while (j < line.length) {
+    const cj = line[j];
+    if (cj === '\\') {
+      j += 2;
+      continue;
+    }
+    if (cj === '[') {
+      j++;
+      while (j < line.length) {
+        if (line[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (line[j] === ']') break;
+        j++;
+      }
+      if (j < line.length) j++; // past `]`
+      continue;
+    }
+    if (cj === '/') {
+      closed = true;
+      j++;
+      break;
+    }
+    j++;
+  }
+  if (!closed) return -1;
+  while (j < line.length && WORD_CHAR.test(line[j])) j++; // flags
+  return j;
+}
+
+/**
+ * Slash meaning after a `)`, given the index of its same-line `(` (undefined
+ * when the `(` is not on this line, which is undecidable). Regex iff the `(`
+ * is preceded by if, while, for or with — and that word is the KEYWORD, not
+ * a keyword-spelled method name: `obj.if(y) / 2` is a division (HMA-31.AC7).
+ */
+function slashMeaningAfterCloseParen(line: string, openIndex: number | undefined): SlashMeaning {
+  if (openIndex === undefined) return 'undecidable';
+  let k = openIndex - 1;
+  while (k >= 0 && (line[k] === ' ' || line[k] === '\t')) k--;
+  let w = k;
+  while (w >= 0 && WORD_CHAR.test(line[w])) w--;
+  if (w >= 0 && line[w] === '.') return 'division';
+  return PAREN_KEYWORDS_BEFORE_REGEX.has(line.slice(w + 1, k + 1)) ? 'regex' : 'division';
+}
+
+/**
+ * One lexing of `line` from `start` to the end of the line, writing 1 into
+ * `mask` at every position that sits inside a string literal, comment, or
+ * regex literal. `slashMeaningIn` is what a `/` at `start` would open;
+ * `afterDotIn` is whether the previous significant character is `.` (a word
+ * after it is a property name, HMA-31.AC7); `parenStack` holds the indices
+ * of `(` tokens this lexing has seen (so `)` can find its same-line
+ * partner); `undecidableCount` and `itersIn` are this PATH's budgets — a
+ * fork inherits the spent amount rather than sharing a pool, so branching
+ * alone cannot exhaust the iteration cap.
+ */
+function lexMaskInto(
+  line: string,
+  start: number,
+  slashMeaningIn: SlashMeaning,
+  afterDotIn: boolean,
+  parenStack: number[],
+  undecidableCount: number,
+  itersIn: number,
+  mask: Uint8Array,
+): void {
+  let i = start;
+  let slashMeaning: SlashMeaning = slashMeaningIn;
+  let afterDot = afterDotIn;
+  let iters = itersIn;
+  while (i < line.length) {
+    if (++iters > MAX_WALK_ITERATIONS) {
+      // Pathological input. The pre-lexer walker's conservative default,
+      // kept per path: over-suppression is a smaller harm than a walker
+      // hang on a CI pipeline.
+      mask.fill(1, i);
+      return;
     }
     const c = line[i];
-    if (!inSingle && !inDouble && !inBacktick) {
-      if (c === '/' && line[i + 1] === '/') {
-        return true;
+    if (c === '/') {
+      const next = line[i + 1];
+      // `//` is always a line comment and `/*` always opens a block
+      // comment — an empty regex is spelled `/(?:)/`. Comments are
+      // whitespace to the token stream: they do not change slashMeaning.
+      if (next === '/') {
+        mask.fill(1, i + 1);
+        return;
       }
-      if (c === '/' && line[i + 1] === '*') {
+      if (next === '*') {
         const end = line.indexOf('*/', i + 2);
         if (end === -1) {
-          return true;
+          mask.fill(1, i + 1);
+          return;
         }
-        if (matchIndex < end + 2) {
-          return true;
-        }
+        mask.fill(1, i + 1, end + 2);
+        iters += end + 2 - i;
         i = end + 2;
         continue;
       }
-      if (c === "'") inSingle = true;
-      else if (c === '"') inDouble = true;
-      else if (c === '`') inBacktick = true;
-    } else {
-      if (inBacktick && c === '$' && line[i + 1] === '{') {
-        let depth = 1;
-        let j = i + 2;
-        let innerIters = 0;
-        while (j < line.length && depth > 0) {
-          if (++innerIters > MAX_WALK_ITERATIONS) {
-            // Same defensive default as the outer cap. Outer walker
-            // continues past the `${...}` region by setting i.
-            break;
-          }
-          const cj = line[j];
-          if (cj === '{') depth++;
-          else if (cj === '}') depth--;
-          j++;
+      if (slashMeaning === 'undecidable') {
+        if (undecidableCount >= MAX_UNDECIDABLE_SLASHES) {
+          // Fail toward corroboration: past the budget the rest of the
+          // line answers "not inside", so a line the lexer cannot settle
+          // never suppresses a sink.
+          return;
         }
-        const exprStart = i + 2;
-        const exprEnd = depth === 0 ? j - 1 : line.length;
-        if (matchIndex >= exprStart && matchIndex < exprEnd) {
-          return false;
-        }
-        i = depth === 0 ? j : line.length;
+        // Lex both ways; a position is "inside" only where both lexings
+        // say so — disagreement fails toward corroboration.
+        const regexMask = new Uint8Array(line.length);
+        const divisionMask = new Uint8Array(line.length);
+        lexMaskInto(line, i, 'regex', false, [...parenStack], undecidableCount + 1, iters, regexMask);
+        lexMaskInto(line, i, 'division', false, [...parenStack], undecidableCount + 1, iters, divisionMask);
+        for (let k = i; k < line.length; k++) mask[k] = regexMask[k] & divisionMask[k];
+        return;
+      }
+      if (slashMeaning === 'division') {
+        i++;
+        slashMeaning = 'regex'; // an operand position follows the operator
+        afterDot = false;
         continue;
       }
-      if (c === '\\') {
-        // Backslash escape inside a quote. Skip the next character only
-        // if one exists in the line. A trailing backslash at EOL falls
-        // through to the unchanged `i++` and the outer loop exits
-        // naturally on the next iteration. Bound against `line.length`
-        // (not `matchIndex`) so the helper stays correct if a caller
-        // ever passes `matchIndex >= line.length`.
-        if (i + 1 < line.length) {
-          i += 2;
+      // The slash opens a regex literal.
+      const end = scanRegexLiteralEnd(line, i);
+      if (end === -1) {
+        mask.fill(1, i + 1); // unterminated: the rest sits inside the literal
+        return;
+      }
+      mask.fill(1, i + 1, end); // the literal's body, closing `/` and flags
+      iters += end - i;
+      i = end;
+      slashMeaning = 'division'; // a regex literal is a value
+      afterDot = false;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      // A backslash escape consumes the next character if one exists; a
+      // trailing backslash at end of line consumes only itself.
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) {
+          mask.fill(1, i + 1);
+          return;
+        }
+        const cj = line[j];
+        if (cj === '\\' && j + 1 < line.length) {
+          j += 2;
           continue;
         }
+        if (cj === c) {
+          closed = true;
+          break;
+        }
+        j++;
       }
-      if (inSingle && c === "'") inSingle = false;
-      else if (inDouble && c === '"') inDouble = false;
-      else if (inBacktick && c === '`') inBacktick = false;
+      // The closing quote still counts as inside, as the walker always
+      // answered; an unclosed string owns the rest of the line.
+      if (!closed) {
+        mask.fill(1, i + 1);
+        return;
+      }
+      mask.fill(1, i + 1, j + 1);
+      i = j + 1;
+      slashMeaning = 'division'; // a string literal is a value
+      afterDot = false;
+      continue;
     }
+    if (c === '`') {
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) {
+          mask.fill(1, j);
+          return;
+        }
+        const cj = line[j];
+        if (cj === '\\' && j + 1 < line.length) {
+          mask[j] = 1;
+          mask[j + 1] = 1;
+          j += 2;
+          continue;
+        }
+        if (cj === '$' && line[j + 1] === '{') {
+          // Template interpolation is a re-entry into code state. Scan a
+          // brace-depth counter to the matching `}`; the span between the
+          // braces is real code and stays unmasked.
+          mask[j] = 1;
+          mask[j + 1] = 1;
+          let depth = 1;
+          let k = j + 2;
+          while (k < line.length && depth > 0) {
+            if (++iters > MAX_WALK_ITERATIONS) {
+              mask.fill(1, k);
+              return;
+            }
+            const ck = line[k];
+            if (ck === '{') depth++;
+            else if (ck === '}') depth--;
+            k++;
+          }
+          if (depth === 0) {
+            mask[k - 1] = 1; // the closing `}` of the interpolation
+            j = k;
+          } else {
+            j = line.length;
+          }
+          continue;
+        }
+        mask[j] = 1;
+        if (cj === '`') {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (!closed) return; // interior already masked; `${...}` spans stay code
+      i = j + 1;
+      slashMeaning = 'division'; // a template literal is a value
+      afterDot = false;
+      continue;
+    }
+    if (WORD_CHAR.test(c)) {
+      const j = scanWordEnd(line, i);
+      // After `.` a word is a property name — an identifier, never a
+      // keyword — so it cannot open a regex (HMA-31.AC7).
+      slashMeaning =
+        !afterDot && REGEX_OPENING_KEYWORDS.has(line.slice(i, j)) ? 'regex' : 'division';
+      iters += j - i;
+      i = j;
+      afterDot = false;
+      continue;
+    }
+    if (c === '(') {
+      parenStack.push(i);
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      slashMeaning = slashMeaningAfterCloseParen(line, parenStack.pop());
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      slashMeaning = 'undecidable';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ']') {
+      slashMeaning = 'division';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '.') {
+      // Member access: the word that follows is a property name. A `/`
+      // straight after `.` is not valid JavaScript under either reading;
+      // division keeps it in the fail-toward-corroboration direction.
+      slashMeaning = 'division';
+      afterDot = true;
+      i++;
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\v' || c === '\f') {
+      i++;
+      continue;
+    }
+    // The ruled opener set opens a regex. Any OTHER punctuator (`+` `-`
+    // `*` `<` `>` `~` `^` `%` …) is undecidable rather than an opener
+    // (HMA-31.AC8): `i++ / 2` is a division the earlier fallback mis-read as
+    // a regex, while `a + /re/.source` really does open one — both ways are
+    // lexed and only agreement suppresses.
+    slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
+    afterDot = false;
     i++;
   }
-  return inSingle || inDouble || inBacktick;
 }
 
 /**
@@ -1804,90 +2132,750 @@ export function isMatchInsideStringLiteral(line: string, matchIndex: number): bo
  * template literal spanning lines is read as code on its continuation lines.
  * That direction over-reports rather than under-reports, and it is the same
  * limit the per-line predicate already has, stated rather than silently shared.
- * Regex literals are likewise not lexed — a `/don't/` toggles quote state, as
- * documented on the predicate above.
+ * (`blankTemplateLiteralSpans` below repays that limit's template-literal half
+ * for the NEMO-009 gate, which threads its own carried state the way the sink
+ * walker threads this one.)
+ * Regex literals ARE lexed here, under the predicate's own slash-meaning
+ * rules (HMA-31.AC9): a literal's body is copied through verbatim, so the
+ * `//` in `/^https?:\/\//` does not open a phantom line comment and the `/*`
+ * in `/\/*$/` does not open a phantom block comment — an earlier quote-only
+ * reading of that second literal blanked every following line up to a `*\/`,
+ * which is blanking MORE, not less, and swallowed real sinks. An undecidable
+ * slash is lexed both ways: a character is blanked only when both lexings
+ * call it a comment, and the block-comment state carries out of the line
+ * only when both lexings agree it is open — the same fail-toward-
+ * corroboration direction the predicate rules.
  */
 function blankCommentRegions(line: string, state: { inBlockComment: boolean }): string {
+  const blank = new Uint8Array(line.length);
+  state.inBlockComment = blankMaskInto(
+    line, 0, 'regex', false, [], state.inBlockComment, 0, 0, blank,
+  );
   let out = '';
-  let quote: string | null = null;
-  let i = 0;
-  while (i < line.length) {
-    const c = line[i];
-    if (state.inBlockComment) {
-      if (c === '*' && line[i + 1] === '/') {
-        state.inBlockComment = false;
-        out += '  ';
-        i += 2;
-        continue;
-      }
-      out += ' ';
-      i += 1;
-      continue;
-    }
-    if (quote !== null) {
-      // A backslash consumes the next character if one exists. A trailing
-      // backslash at end of line consumes only itself, same as the predicate.
-      if (c === '\\' && i + 1 < line.length) {
-        out += line.slice(i, i + 2);
-        i += 2;
-        continue;
-      }
-      if (c === quote) quote = null;
-      out += c;
-      i += 1;
-      continue;
-    }
-    if (c === "'" || c === '"' || c === '`') {
-      quote = c;
-      out += c;
-      i += 1;
-      continue;
-    }
-    if (c === '/' && line[i + 1] === '/') {
-      out += ' '.repeat(line.length - i);
-      return out;
-    }
-    if (c === '/' && line[i + 1] === '*') {
-      state.inBlockComment = true;
-      out += '  ';
-      i += 2;
-      continue;
-    }
-    out += c;
-    i += 1;
-  }
+  for (let i = 0; i < line.length; i++) out += blank[i] === 1 ? ' ' : line[i];
   return out;
 }
 
 /**
- * Parsed .hmaignore rules split into path patterns and check ID patterns.
- * Check ID patterns start with `!` and support trailing `*` wildcards.
- * Example: `!SANDBOX-*` suppresses all SANDBOX checks.
+ * One lexing of `line` from `start` for the blanker: writes 1 into `blank`
+ * at every comment character (delimiters included) and returns whether the
+ * line ends inside a block comment. Token walking — words, parens, the
+ * opener set, `.`-prefixed property names — mirrors `lexMaskInto` through
+ * the shared helpers, because which `/` opens a comment is decided by the
+ * same slash meaning that decides which `/` opens a regex.
  */
-export interface HmaIgnoreRules {
-  paths: string[];
-  checkIds: string[];
+function blankMaskInto(
+  line: string,
+  start: number,
+  slashMeaningIn: SlashMeaning,
+  afterDotIn: boolean,
+  parenStack: number[],
+  inBlockIn: boolean,
+  undecidableCount: number,
+  itersIn: number,
+  blank: Uint8Array,
+): boolean {
+  let i = start;
+  let slashMeaning: SlashMeaning = slashMeaningIn;
+  let afterDot = afterDotIn;
+  let inBlock = inBlockIn;
+  let iters = itersIn;
+  while (i < line.length) {
+    if (++iters > MAX_WALK_ITERATIONS) {
+      // Pathological input: stop blanking. The predicate still owns the
+      // string-or-code question for whatever is left unblanked.
+      return inBlock;
+    }
+    if (inBlock) {
+      if (line[i] === '*' && line[i + 1] === '/') {
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        inBlock = false;
+        i += 2;
+        continue; // comments are whitespace: slashMeaning is unchanged
+      }
+      blank[i] = 1;
+      i += 1;
+      continue;
+    }
+    const c = line[i];
+    if (c === '/') {
+      const next = line[i + 1];
+      if (next === '/') {
+        blank.fill(1, i);
+        return false;
+      }
+      if (next === '*') {
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        inBlock = true;
+        i += 2;
+        continue;
+      }
+      if (slashMeaning === 'undecidable') {
+        if (undecidableCount >= MAX_UNDECIDABLE_SLASHES) {
+          // Past the budget: blank nothing further and drop the block
+          // state — kept text over-reports at worst, and the predicate
+          // fails toward corroboration on the same line.
+          return false;
+        }
+        // Lex both ways; blank only what both lexings call a comment, and
+        // carry the block state out only when both agree it is open.
+        const regexBlank = new Uint8Array(line.length);
+        const divisionBlank = new Uint8Array(line.length);
+        const regexEndsInBlock = blankMaskInto(
+          line, i, 'regex', false, [...parenStack], false, undecidableCount + 1, iters, regexBlank,
+        );
+        const divisionEndsInBlock = blankMaskInto(
+          line, i, 'division', false, [...parenStack], false, undecidableCount + 1, iters, divisionBlank,
+        );
+        for (let k = i; k < line.length; k++) blank[k] = regexBlank[k] & divisionBlank[k];
+        return regexEndsInBlock && divisionEndsInBlock;
+      }
+      if (slashMeaning === 'division') {
+        i++;
+        slashMeaning = 'regex';
+        afterDot = false;
+        continue;
+      }
+      // A regex literal is copied through verbatim (HMA-31.AC9): a `//`
+      // or `/*` inside its body is regex text, not a comment opener.
+      const end = scanRegexLiteralEnd(line, i);
+      if (end === -1) return false; // unterminated: keep the text; the predicate owns it
+      iters += end - i;
+      i = end;
+      slashMeaning = 'division';
+      afterDot = false;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) return false;
+        if (line[j] === '\\' && j + 1 < line.length) {
+          j += 2;
+          continue;
+        }
+        if (line[j] === c) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (!closed) return false; // an unclosed quote owns the rest: nothing there is a comment
+      i = j + 1;
+      slashMeaning = 'division';
+      afterDot = false;
+      continue;
+    }
+    if (WORD_CHAR.test(c)) {
+      const j = scanWordEnd(line, i);
+      slashMeaning =
+        !afterDot && REGEX_OPENING_KEYWORDS.has(line.slice(i, j)) ? 'regex' : 'division';
+      iters += j - i;
+      i = j;
+      afterDot = false;
+      continue;
+    }
+    if (c === '(') {
+      parenStack.push(i);
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      slashMeaning = slashMeaningAfterCloseParen(line, parenStack.pop());
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      slashMeaning = 'undecidable';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ']') {
+      slashMeaning = 'division';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '.') {
+      slashMeaning = 'division';
+      afterDot = true;
+      i++;
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\v' || c === '\f') {
+      i++;
+      continue;
+    }
+    slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
+    afterDot = false;
+    i++;
+  }
+  return inBlock;
 }
 
 /**
- * Load .hmaignore patterns from a target directory. Exported so CLI
- * can re-apply ignore filtering after NanoMind merge.
+ * Blank the spans of ONE line that sit inside a MULTI-LINE template literal,
+ * carrying the template state across the line boundary in `state`, and return
+ * a line of the same length with every such character replaced by a space.
+ *
+ * `isMatchInsideStringLiteral` above lexes its line from column 0 in code
+ * state, so a continuation line of a backtick literal spanning lines is read
+ * as code — the limit `blankCommentRegions` states for itself. For NEMO-009
+ * that limit meant a token standing alone on a continuation line (a skill
+ * document held in a template literal, say) was flagged as a live sink. The
+ * NEMO-009 TS/JS gate threads one state object through its line loop and
+ * hands each line through here first — the same shape the AST sink walker
+ * already threads through `blankCommentRegions`.
+ *
+ * SAME LENGTH IN, SAME LENGTH OUT: a match index measured on the returned
+ * line hands straight back to `isMatchInsideStringLiteral`, which keeps
+ * owning the strings, comments and regex literals of the line itself. Only
+ * template-literal spans are blanked here — a line that cannot touch the
+ * carried state comes back verbatim.
+ *
+ * `${...}` interpolation is a re-entry into code state and stays unblanked:
+ * an eval( inside the interpolation executes and must keep firing. The walk
+ * is quote-, comment- and regex-aware through the same slash-meaning rules
+ * the predicate uses — inside the interpolation too, so a `}` sitting in a
+ * quoted string, comment or regex literal there never closes the
+ * interpolation early — and block-comment state is carried across lines for one
+ * reason — a stray backtick in a doc comment (a markdown code fence, say)
+ * must not open a phantom template that swallows the real code after it.
+ * Every end-of-line state the walk cannot settle — an interpolation left
+ * open, an unclosed ordinary quote, the fork budget spent — drops the carry
+ * and reads the next line as code: over-reporting, never under-reporting,
+ * the direction every walker in this file rules.
  */
-export async function loadHmaIgnore(targetDir: string): Promise<HmaIgnoreRules> {
-  const ignorePath = path.join(targetDir, '.hmaignore');
-  try {
-    const content = await fs.readFile(ignorePath, 'utf-8');
-    const lines = content
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line && !line.startsWith('#'));
-    return {
-      paths: lines.filter(l => !l.startsWith('!')),
-      checkIds: lines.filter(l => l.startsWith('!')).map(l => l.slice(1)),
-    };
-  } catch {
-    return { paths: [], checkIds: [] };
+function blankTemplateLiteralSpans(
+  line: string,
+  state: { inTemplateLiteral: boolean; inBlockComment: boolean },
+): string {
+  // A line that starts in code state and holds neither a backtick nor a
+  // block-comment opener can neither blank anything nor change the carry,
+  // so the walk is skipped rather than run over every line of every file.
+  if (
+    !state.inTemplateLiteral &&
+    !state.inBlockComment &&
+    !line.includes('`') &&
+    !line.includes('/*')
+  ) {
+    return line;
   }
+  const blank = new Uint8Array(line.length);
+  const end = templateMaskInto(
+    line, 0, 'regex', false, [], state.inTemplateLiteral, state.inBlockComment, [], 0, 0, blank,
+  );
+  state.inTemplateLiteral = end.inTemplateLiteral;
+  state.inBlockComment = end.inBlockComment;
+  let out = '';
+  for (let i = 0; i < line.length; i++) out += blank[i] === 1 ? ' ' : line[i];
+  return out;
+}
+
+/**
+ * One lexing of `line` from `start` for the template blanker: writes 1 into
+ * `blank` at every character of a template-literal span (delimiters and text,
+ * never the `${...}` interpolation interior) and returns the two carries the
+ * line ends with. Token walking — words, parens, the opener set, `.`-prefixed
+ * property names — mirrors `lexMaskInto` through the shared helpers, because
+ * whether a backtick is a template opener or regex/string/comment text is
+ * decided by the same slash meaning that decides which `/` opens a regex.
+ * `${...}` interpolation re-enters this same code walk with a brace depth
+ * pushed onto `interpDepths` (one entry per open interpolation, so templates
+ * nest): the interior's strings, comments and regex literals are lexed under
+ * the same rules, and only a code-level `}` at depth zero hands the walk back
+ * to template text — a `}` inside any of them never closes the interpolation.
+ * An interpolation still open at end of line is an unsettled state and drops
+ * the carry. On an undecidable slash both readings are lexed: a character is
+ * blanked, and a carry survives the line, only when both lexings agree.
+ */
+function templateMaskInto(
+  line: string,
+  start: number,
+  slashMeaningIn: SlashMeaning,
+  afterDotIn: boolean,
+  parenStack: number[],
+  inTemplateIn: boolean,
+  inBlockIn: boolean,
+  interpDepths: number[],
+  undecidableCount: number,
+  itersIn: number,
+  blank: Uint8Array,
+): { inTemplateLiteral: boolean; inBlockComment: boolean } {
+  const DROP_CARRY = { inTemplateLiteral: false, inBlockComment: false };
+  let i = start;
+  let slashMeaning: SlashMeaning = slashMeaningIn;
+  let afterDot = afterDotIn;
+  let inTemplate = inTemplateIn;
+  let inBlock = inBlockIn;
+  let iters = itersIn;
+  while (i < line.length) {
+    if (++iters > MAX_WALK_ITERATIONS) {
+      // Pathological input: stop blanking and drop the carry. Kept text
+      // over-reports at worst, and the predicate still owns this line.
+      return DROP_CARRY;
+    }
+    if (inBlock) {
+      // Comment text is the predicate's business, not this walker's: no
+      // blanking, and no backtick in here opens a template.
+      if (line[i] === '*' && line[i + 1] === '/') {
+        inBlock = false;
+        i += 2;
+        continue; // comments are whitespace: slashMeaning is unchanged
+      }
+      i++;
+      continue;
+    }
+    if (inTemplate) {
+      const cj = line[i];
+      if (cj === '\\' && i + 1 < line.length) {
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        i += 2;
+        continue;
+      }
+      if (cj === '$' && line[i + 1] === '{') {
+        // Template interpolation is a re-entry into code state: push a
+        // brace depth and fall back into the code walk below, which owns
+        // the interior's strings, comments and regex literals. A `}`
+        // inside any of those never closes the interpolation — the bug a
+        // bare brace counter had: `${'}'; eval(x)}` closed at the quoted
+        // brace and blanked the live eval( after it as template text,
+        // under-reporting. The span between the braces is real code and
+        // stays unblanked.
+        blank[i] = 1;
+        blank[i + 1] = 1;
+        interpDepths.push(0);
+        inTemplate = false;
+        slashMeaning = 'regex';
+        afterDot = false;
+        i += 2;
+        continue;
+      }
+      blank[i] = 1;
+      if (cj === '`') {
+        inTemplate = false;
+        slashMeaning = 'division'; // a template literal is a value
+        afterDot = false;
+      }
+      i++;
+      continue;
+    }
+    const c = line[i];
+    if (c === '/') {
+      const next = line[i + 1];
+      if (next === '/') {
+        // A line comment eats the rest of the line and carries nothing out.
+        return DROP_CARRY;
+      }
+      if (next === '*') {
+        inBlock = true;
+        i += 2;
+        continue;
+      }
+      if (slashMeaning === 'undecidable') {
+        if (undecidableCount >= MAX_UNDECIDABLE_SLASHES) {
+          // Past the budget: blank nothing further and drop the carry —
+          // kept text over-reports at worst.
+          return DROP_CARRY;
+        }
+        // Lex both ways; blank only what both lexings call template text,
+        // and carry a state out only when both agree it is open.
+        const regexBlank = new Uint8Array(line.length);
+        const divisionBlank = new Uint8Array(line.length);
+        const regexEnd = templateMaskInto(
+          line, i, 'regex', false, [...parenStack], false, false, [...interpDepths], undecidableCount + 1, iters, regexBlank,
+        );
+        const divisionEnd = templateMaskInto(
+          line, i, 'division', false, [...parenStack], false, false, [...interpDepths], undecidableCount + 1, iters, divisionBlank,
+        );
+        for (let k = i; k < line.length; k++) blank[k] = regexBlank[k] & divisionBlank[k];
+        return {
+          inTemplateLiteral: regexEnd.inTemplateLiteral && divisionEnd.inTemplateLiteral,
+          inBlockComment: regexEnd.inBlockComment && divisionEnd.inBlockComment,
+        };
+      }
+      if (slashMeaning === 'division') {
+        i++;
+        slashMeaning = 'regex';
+        afterDot = false;
+        continue;
+      }
+      // A regex literal's body is copied through verbatim: a backtick
+      // inside it is regex text, not a template opener. Regex literals
+      // cannot span lines, so an unterminated one carries nothing out.
+      const end = scanRegexLiteralEnd(line, i);
+      if (end === -1) return DROP_CARRY;
+      iters += end - i;
+      i = end;
+      slashMeaning = 'division';
+      afterDot = false;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      let closed = false;
+      while (j < line.length) {
+        if (++iters > MAX_WALK_ITERATIONS) return DROP_CARRY;
+        if (line[j] === '\\' && j + 1 < line.length) {
+          j += 2;
+          continue;
+        }
+        if (line[j] === c) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      // An unclosed quote owns the rest of the line: nothing in it opens a
+      // template, and this walker does not carry ordinary-string state.
+      if (!closed) return DROP_CARRY;
+      i = j + 1;
+      slashMeaning = 'division';
+      afterDot = false;
+      continue;
+    }
+    if (c === '`') {
+      blank[i] = 1;
+      inTemplate = true;
+      i++;
+      continue;
+    }
+    if (WORD_CHAR.test(c)) {
+      const j = scanWordEnd(line, i);
+      slashMeaning =
+        !afterDot && REGEX_OPENING_KEYWORDS.has(line.slice(i, j)) ? 'regex' : 'division';
+      iters += j - i;
+      i = j;
+      afterDot = false;
+      continue;
+    }
+    if (c === '(') {
+      parenStack.push(i);
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      slashMeaning = slashMeaningAfterCloseParen(line, parenStack.pop());
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '{') {
+      if (interpDepths.length > 0) interpDepths[interpDepths.length - 1]++;
+      slashMeaning = 'regex';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      if (interpDepths.length > 0 && interpDepths[interpDepths.length - 1] === 0) {
+        // The code-level `}` at depth zero: the interpolation closes and
+        // the walk hands back to the enclosing template's text.
+        blank[i] = 1;
+        interpDepths.pop();
+        inTemplate = true;
+        i++;
+        continue;
+      }
+      if (interpDepths.length > 0) interpDepths[interpDepths.length - 1]--;
+      slashMeaning = 'undecidable';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === ']') {
+      slashMeaning = 'division';
+      afterDot = false;
+      i++;
+      continue;
+    }
+    if (c === '.') {
+      slashMeaning = 'division';
+      afterDot = true;
+      i++;
+      continue;
+    }
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\v' || c === '\f') {
+      i++;
+      continue;
+    }
+    slashMeaning = REGEX_OPENING_PUNCTUATORS.has(c) ? 'regex' : 'undecidable';
+    afterDot = false;
+    i++;
+  }
+  if (interpDepths.length > 0) {
+    // End of line inside an interpolation (or a template nested in one):
+    // an unsettled state. Drop the carry and read the next line as code —
+    // over-reporting, never under-reporting.
+    return DROP_CARRY;
+  }
+  return { inTemplateLiteral: inTemplate, inBlockComment: inBlock };
+}
+
+/**
+ * One parsed `.hmaignore` rule. Three channels, one file:
+ *
+ *   `<path>`                — scope: the path leaves the score and the exit code
+ *   `<path>:<CHECK-ID>`     — scope, narrowed to one check on that path
+ *   `!<CHECK-ID>`           — presentational: listed out, still scored and gated
+ *
+ * Every rule may carry a trailing `# <reason>` comment and an
+ * `expires:<YYYY-MM-DD>` attribute at the end of the line. A
+ * `<path>:<CHECK-ID>` rule REQUIRES the reason.
+ */
+export interface HmaIgnoreRule {
+  /** 1-based line in the file. */
+  line: number;
+  /** The line as written. */
+  rule: string;
+  channel: 'hmaignore-path' | 'hmaignore-check' | 'hmaignore-path-check';
+  /** Present for hmaignore-path and hmaignore-path-check. */
+  path?: string;
+  /** Present for hmaignore-check and hmaignore-path-check; UPPER-CASED pattern. */
+  checkId?: string;
+  /** Trailing `# <reason>` text, when non-empty. */
+  reason?: string;
+  /** YYYY-MM-DD as written. Only active rules parse into `rules`. */
+  expires?: string;
+}
+
+export interface HmaIgnoreParseError {
+  /** 1-based line; 0 for a file that exists and cannot be read. */
+  line: number;
+  /** The line as written ('' for the unreadable-file entry). */
+  rule: string;
+  error: string;
+}
+
+export interface ParsedHmaIgnore {
+  /** True iff a `.hmaignore` exists at the target (readable or not). */
+  present: boolean;
+  /** '.hmaignore', relative to the target. */
+  file: string;
+  rules: HmaIgnoreRule[];
+  /**
+   * Every line the parser refused, one entry per line, loud and EXIT-NEUTRAL:
+   * an unparseable, refused, lapsed or unreadable rule is inert, so everything
+   * it would have hidden is already in the score and the exit code.
+   */
+  errors: HmaIgnoreParseError[];
+}
+
+/**
+ * The two check-pattern expressions — one grammar
+ * shared by `!<CHECK>` and `<path>:<CHECK>`. Matched case-insensitively;
+ * matched ids are stored upper-cased, which is what the `secure` matcher has
+ * always done at runtime.
+ */
+const CHECK_PATTERN_WITH_STAR = /^[A-Z0-9*]+(-[A-Z0-9*]+)*$/i;
+const CHECK_PATTERN_EXACT = /^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$/i;
+
+// The three channel spellings, written once. Every comparison below goes
+// through these names (or `isScopeChannel`), never a string literal — a
+// literal comparison is the pattern that let a fourth channel fall through
+// the partition onto the wrong side of the gate.
+const WHOLE_PATH_CHANNEL: HmaIgnoreRule['channel'] = 'hmaignore-path';
+const PATH_CHECK_CHANNEL: HmaIgnoreRule['channel'] = 'hmaignore-path-check';
+const CHECK_CHANNEL: HmaIgnoreRule['channel'] = 'hmaignore-check';
+
+/** `2026-02-30` is not a date; neither is `2026-1-5` (zero-padded only). */
+function isRealCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [y, m, d] = value.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * The two-step `.hmaignore` parser, steps (a)-(h).
+ * `today` is the scan clock's UTC calendar date as `YYYY-MM-DD`, injected so
+ * the row table in the tests is deterministic; a rule is active while
+ * `today <= expires` (inclusive of the named day), and a lapsed rule is an
+ * error entry, not a rule.
+ */
+export function parseHmaIgnore(content: string, today: string): { rules: HmaIgnoreRule[]; errors: HmaIgnoreParseError[] } {
+  const rules: HmaIgnoreRule[] = [];
+  const errors: HmaIgnoreParseError[] = [];
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const lineNo = i + 1;
+    let raw = lines[i].replace(/\r$/, '');
+    // (a) strip a leading BOM, trim, skip blanks and whole-line comments
+    if (lineNo === 1 && raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    const asWritten = raw.trim();
+    const fail = (error: string) => errors.push({ line: lineNo, rule: asWritten, error });
+    if (asWritten.length === 0 || asWritten[0] === '#') continue;
+
+    // (b) a `#` preceded by whitespace begins the trailing comment; the text
+    // after it, trimmed, is the reason. `danger.py#1` is a path; `danger.py
+    // # fixture` is a path with a reason.
+    let text = asWritten;
+    let reason = '';
+    for (let j = 1; j < text.length; j++) {
+      if (text[j] === '#' && (text[j - 1] === ' ' || text[j - 1] === '\t')) {
+        reason = text.slice(j + 1).trim();
+        text = text.slice(0, j).trimEnd();
+        break;
+      }
+    }
+
+    // (c) pull attributes from the END of what remains, repeatedly
+    let expires: string | undefined;
+    let attrError: string | undefined;
+    for (;;) {
+      const m = text.match(/(\S+)\s*$/);
+      if (!m || !/^expires:/i.test(m[1])) break;
+      const token = m[1];
+      if (expires !== undefined) {
+        attrError = 'two `expires:` attributes on one line; keep one';
+        break;
+      }
+      const value = token.slice('expires:'.length);
+      if (!isRealCalendarDate(value)) {
+        attrError = `\`${token}\` is not a valid date; write \`expires:YYYY-MM-DD\``;
+        break;
+      }
+      expires = value;
+      text = text.slice(0, text.length - m[0].length).trimEnd();
+    }
+    if (attrError) { fail(attrError); continue; }
+    if (/(^|\s)expires:/i.test(text)) {
+      fail('`expires:` must follow the rule, at the end of the line');
+      continue;
+    }
+    if (text.length === 0) {
+      fail('an `expires:` attribute needs a rule in front of it');
+      continue;
+    }
+
+    const attach = (rule: Omit<HmaIgnoreRule, 'line' | 'rule'>) => {
+      // §2 — active while `today <= date` (ISO strings, so a laptop and a CI
+      // runner agree at the same instant). From the next UTC day the line is
+      // an error and its findings return to the report.
+      if (expires !== undefined && today > expires) {
+        fail(`expired on ${expires}; the rule is no longer applied and its findings are reported again`);
+        return;
+      }
+      rules.push({ line: lineNo, rule: asWritten, ...rule });
+    };
+
+    // (d) `!<CHECK PATTERN>` — presentational check suppression
+    if (text.startsWith('!')) {
+      const pattern = text.slice(1);
+      if (pattern.length === 0) { fail('empty check pattern; write `!<CHECK-ID>`'); continue; }
+      const wellFormed = pattern.includes('*')
+        ? CHECK_PATTERN_WITH_STAR.test(pattern)
+        : CHECK_PATTERN_EXACT.test(pattern);
+      if (!wellFormed) { fail(`\`${pattern}\` is not a check pattern; write \`!<CHECK-ID>\` (for example \`!NEMO-009\`), or a path without the \`!\``); continue; }
+      attach({
+        channel: CHECK_CHANNEL,
+        checkId: pattern.toUpperCase(),
+        ...(reason ? { reason } : {}),
+        ...(expires !== undefined ? { expires } : {}),
+      });
+      continue;
+    }
+
+    // (e) split at the LAST colon and classify the suffix
+    const idx = text.lastIndexOf(':');
+    let isPathCheck = false;
+    let suffix = '';
+    let prefix = text;
+    let suffixError: string | undefined;
+    if (idx >= 0) {
+      suffix = text.slice(idx + 1);
+      prefix = text.slice(0, idx);
+      if (/[/\\.\s]/.test(suffix)) {
+        // contains `/`, `\`, `.` or whitespace: not a check; the line is a path
+      } else if (suffix.includes('*')) {
+        if (/^[*-]+$/.test(suffix)) {
+          suffixError = `\`<path>:*\` is not a form; write \`${prefix}\` to exclude the whole path`;
+        } else if (CHECK_PATTERN_WITH_STAR.test(suffix)) {
+          isPathCheck = true;
+        } else {
+          suffixError = `\`${suffix}\` is a malformed check pattern; use letters, digits, \`-\` and \`*\` only`;
+        }
+      } else if (CHECK_PATTERN_EXACT.test(suffix)) {
+        isPathCheck = true;
+      }
+      // otherwise (`snapshot-10:30`): not letter-led-and-dashed, stays a path
+    }
+    if (suffixError) { fail(suffixError); continue; }
+
+    if (isPathCheck) {
+      // never a silent fallback to a path: each failed requirement is an error
+      if (prefix.length === 0) { fail('empty path; write `<path>:<CHECK-ID>`'); continue; }
+      if (prefix.includes('*')) { fail('globs are not supported in path rules; write a file or directory path (a directory covers everything under it)'); continue; }
+      if (reason.length === 0) {
+        fail('a `<path>:<CHECK-ID>` rule requires a reason; append `# <why>`');
+        continue;
+      }
+      attach({
+        channel: PATH_CHECK_CHANNEL,
+        path: prefix,
+        checkId: suffix.toUpperCase(),
+        reason,
+        ...(expires !== undefined ? { expires } : {}),
+      });
+      continue;
+    }
+
+    // (g) a path containing `*` is a loud error, never a silent no-op —
+    // `*.py` and `dan*` matched nothing at all before this parser existed.
+    // `[` is NOT a glob here (`app/[slug]/page.tsx` is a real path).
+    if (text.includes('*')) { fail('globs are not supported in path rules; write a file or directory path (a directory covers everything under it)'); continue; }
+    attach({
+      channel: WHOLE_PATH_CHANNEL,
+      path: text,
+      ...(reason ? { reason } : {}),
+      ...(expires !== undefined ? { expires } : {}),
+    });
+  }
+  return { rules, errors };
+}
+
+/** The scan clock's UTC calendar date, the production value of `today` (h). */
+export function utcToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Load and parse `.hmaignore` from a target directory. THE one parser —
+ * `secure`, the post-NanoMind re-filter and `check` all read this. Exported
+ * so the CLI can re-apply ignore filtering after NanoMind merge.
+ *
+ * A missing file is `present: false` and nothing else; a file that exists
+ * and cannot be read is `present: true` with an `errors[]` entry at line 0
+ * carrying the errno — loud, and exit-neutral like every other error here.
+ */
+export async function loadHmaIgnore(targetDir: string, today: string = utcToday()): Promise<ParsedHmaIgnore> {
+  const ignorePath = path.join(targetDir, '.hmaignore');
+  let content: string;
+  try {
+    content = await fs.readFile(ignorePath, 'utf-8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      return { present: false, file: '.hmaignore', rules: [], errors: [] };
+    }
+    return {
+      present: true,
+      file: '.hmaignore',
+      rules: [],
+      errors: [{ line: 0, rule: '', error: `cannot read .hmaignore (${code ?? 'unknown errno'})` }],
+    };
+  }
+  return { present: true, file: '.hmaignore', ...parseHmaIgnore(content, today) };
 }
 
 /**
@@ -1904,17 +2892,170 @@ export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean
 }
 
 /**
- * Check if a checkId matches any .hmaignore check ID pattern.
- * Supports exact match and trailing `*` wildcard (e.g. `SANDBOX-*`).
+ * THE check-pattern matcher — the one `secure` has always shipped, now the
+ * only one: case-insensitive ids, `*` anywhere in the pattern.
+ * `check` gains parity; the narrower trailing-`*`-only, case-sensitive
+ * matcher that used to live beside it is deleted, because a grammar stricter
+ * than its matcher would silently reopen the class this unit closes.
  */
-export function isCheckIgnored(checkId: string, ignoredChecks: string[]): boolean {
-  if (!checkId || ignoredChecks.length === 0) return false;
-  return ignoredChecks.some(pattern => {
-    if (pattern.endsWith('*')) {
-      return checkId.startsWith(pattern.slice(0, -1));
+export function matchesCheckPattern(checkId: string, pattern: string): boolean {
+  if (!checkId || !pattern) return false;
+  const upper = checkId.toUpperCase();
+  const p = pattern.toUpperCase();
+  if (p.includes('*')) {
+    const regexStr = '^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+    return new RegExp(regexStr).test(upper);
+  }
+  return upper === p;
+}
+
+/**
+ * Every path a finding speaks for — `details.files` plus `file` (#280).
+ * Module-level so `secure`'s scan pass, the post-merge re-filter and the
+ * `check` arm apply one rulebook.
+ */
+export function coveredFilesOfFinding(f: { file?: string; details?: Record<string, unknown> }): string[] {
+  const listed = Array.isArray(f.details?.files) ? (f.details.files as unknown[]) : [];
+  return [...new Set(
+    [f.file, ...listed].filter(
+      (p): p is string => typeof p === 'string' && p.length > 0,
+    ),
+  )];
+}
+
+/**
+ * #280 — decide whether a set of ignored paths suppresses a finding, keying
+ * on ALL the paths it covers. Returns true to KEEP; may re-point `f.file` /
+ * `f.details.files` onto surviving paths in place. See the method of the
+ * same name on `HardeningScanner` for the full history; the logic moved to
+ * module level so the `<path>:<CHECK>` tier and the `check` command share it.
+ */
+export function retainAfterPathSuppression(
+  f: { checkId: string; file?: string; details?: Record<string, unknown> },
+  ignoredPaths: string[],
+): boolean {
+  // A coverage statement is not a finding ABOUT a path's contents, so a path
+  // rule cannot scope it away (#438).
+  if (f.checkId === 'SCAN-UNREAD-001') return true;
+
+  const covered = coveredFilesOfFinding(f);
+  // Nothing path-shaped to judge — a finding about the tree as a whole.
+  if (covered.length === 0) return true;
+
+  const survivors = covered.filter((p) => !isPathIgnored(p, ignoredPaths));
+  if (survivors.length === 0) return false;
+  if (survivors.length === covered.length) return true;
+
+  // Partially ignored: keep it, but stop naming suppressed paths.
+  if (f.file && isPathIgnored(f.file, ignoredPaths)) {
+    f.file = survivors[0];
+  }
+  if (Array.isArray(f.details?.files)) {
+    (f.details as { files: string[] }).files = survivors;
+  }
+  return true;
+}
+
+/** What `matchHmaIgnore` decided for one finding. */
+export interface HmaIgnoreMatch {
+  channel: 'hmaignore-path' | 'hmaignore-check' | 'hmaignore-path-check';
+  /**
+   * 1-based line of the attributed rule — the first matching rule in file
+   * order WITHIN the winning tier. Undefined when a programmatic ignore path
+   * (no `.hmaignore` line) did the covering.
+   */
+  line?: number;
+}
+
+/**
+ * Classify one finding against a parsed `.hmaignore` — the one place the
+ * three channels' precedence lives. Tiers, in order:
+ * whole-path, then `<path>:<CHECK>`, then `!<CHECK>`. A flat first-in-file-
+ * order walk would let a `!NEMO-009` on line 1 keep a `danger.py:NEMO-009`
+ * finding in the exit code, inverting the scope semantics.
+ *
+ * May re-point a partially-covered multi-file finding in place (#280).
+ * Returns null when no rule matches (the finding stays reported).
+ */
+export function matchHmaIgnore(
+  f: { checkId: string; file?: string; details?: Record<string, unknown> },
+  parsed: ParsedHmaIgnore,
+  additionalIgnorePaths: string[] = [],
+): HmaIgnoreMatch | null {
+  const wholePathRules = parsed.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL);
+  const allPaths = [...wholePathRules.map((r) => r.path as string), ...additionalIgnorePaths];
+
+  // Tier 1: whole-path. Suppresses only when EVERY covered path is ignored;
+  // otherwise keeps the finding, re-pointed off the ignored paths.
+  if (allPaths.length > 0 && !retainAfterPathSuppression(f, allPaths)) {
+    const attributed =
+      wholePathRules.find((r) => f.file && isPathIgnored(f.file, [r.path as string]))
+      ?? wholePathRules.find((r) => coveredFilesOfFinding(f).some((p) => isPathIgnored(p, [r.path as string])));
+    return { channel: WHOLE_PATH_CHANNEL, line: attributed?.line };
+  }
+
+  // Tier 2: `<path>:<CHECK>` — scope, narrowed to one check. Same whole-set
+  // rule as tier 1, over the paths of the rules whose pattern matches this
+  // check; the same SCAN-UNREAD-001 carve-out (a path rule cannot make an
+  // unread file read, and neither can a narrower one).
+  if (f.checkId !== 'SCAN-UNREAD-001') {
+    const pcRules = parsed.rules.filter(
+      (r) => r.channel === PATH_CHECK_CHANNEL && matchesCheckPattern(f.checkId, r.checkId as string),
+    );
+    if (pcRules.length > 0) {
+      const covered = coveredFilesOfFinding(f);
+      const pcPaths = pcRules.map((r) => r.path as string);
+      if (covered.length > 0 && covered.every((p) => isPathIgnored(p, pcPaths))) {
+        const attributed =
+          pcRules.find((r) => f.file && isPathIgnored(f.file, [r.path as string])) ?? pcRules[0];
+        return { channel: PATH_CHECK_CHANNEL, line: attributed.line };
+      }
     }
-    return checkId === pattern;
-  });
+  }
+
+  // Tier 3: `!<CHECK>` — presentational.
+  const checkRule = parsed.rules.find(
+    (r) => r.channel === CHECK_CHANNEL && matchesCheckPattern(f.checkId, r.checkId as string),
+  );
+  if (checkRule) return { channel: CHECK_CHANNEL, line: checkRule.line };
+
+  return null;
+}
+
+/**
+ * Project a parsed file plus per-line match counts into the disclosure the
+ * CLI carries. `matchedByLine` must be counted over EXACTLY the
+ * findings the `suppressed`/`outOfScope` Rows count — that identity is the
+ * Σ-matched cross-check in the tests. A `<path>:<CHECK>` rule absorbed by a
+ * whole-path rule carries `redundantTo` (and, the tiers being what they are,
+ * `matched: 0`) — reported redundant, never silently swallowed.
+ */
+export function buildHmaIgnoreDisclosure(
+  parsed: ParsedHmaIgnore,
+  matchedByLine: ReadonlyMap<number, number>,
+): HmaIgnoreDisclosure | undefined {
+  if (!parsed.present) return undefined;
+  const wholePathRules = parsed.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL);
+  return {
+    file: parsed.file,
+    rules: parsed.rules.map((r) => {
+      const absorbedBy = r.channel === PATH_CHECK_CHANNEL
+        ? wholePathRules.find((wp) => isPathIgnored(r.path as string, [wp.path as string]))
+        : undefined;
+      return {
+        line: r.line,
+        rule: r.rule,
+        channel: r.channel,
+        ...(r.path !== undefined ? { path: r.path } : {}),
+        ...(r.checkId !== undefined ? { checkId: r.checkId } : {}),
+        ...(r.reason !== undefined ? { reason: r.reason } : {}),
+        ...(r.expires !== undefined ? { expires: r.expires } : {}),
+        matched: matchedByLine.get(r.line) ?? 0,
+        ...(absorbedBy ? { redundantTo: absorbedBy.line } : {}),
+      };
+    }),
+    errors: parsed.errors.map((e) => ({ line: e.line, rule: e.rule, error: e.error })),
+  };
 }
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
@@ -2334,11 +3475,18 @@ const SHELL_EXFIL_HOME_CRED_SUFFIXES = [
 /** Any file under the gcloud config dir is credential material. */
 const SHELL_EXFIL_GCLOUD_DIR = '/.config/gcloud/';
 
-/** Credential files matched by basename (project-local or home). */
+/**
+ * Credential files matched by basename (project-local or home). `credentials`
+ * (bare, no extension) is the CSR-ruled addition (2026-09-01, item 1): the AWS
+ * CLI's own store is `~/.aws/credentials`, and a copy dropped anywhere keeps
+ * that basename. The same membership makes the walk hand the file to CRED-001
+ * and makes its upload a shell-exfil hit — one vocabulary, both detectors.
+ */
 const SHELL_EXFIL_BARE_CRED_NAMES = new Set([
   '.npmrc',
   '.netrc',
   '.git-credentials',
+  'credentials',
 ]);
 
 /** `.env.example` and friends are placeholder templates, not secrets. */
@@ -2376,6 +3524,22 @@ export function isCredentialFilePath(rawPath: string): boolean {
     return !segments.some(s => SHELL_EXFIL_ENV_TEMPLATE_TOKENS.has(s));
   }
   return SHELL_EXFIL_BARE_CRED_NAMES.has(base);
+}
+
+/**
+ * HMA-30 single-file mode: does the lone file's PARENT directory name change what the
+ * two discovery predicates say about it? True for `.aws/credentials`, `.kube/config`,
+ * `config/x.json`, `.ssh/id_rsa`; false for `CLAUDE.md`, `.env`, `SKILL.md`, `mcp.json` and
+ * a bare `credentials`, which match by basename alone. The caller nests the temp copy under
+ * the parent only when this is true, so basename-matched files stay at the scan root where
+ * the root-only probes (CLAUDE-001, GIT-003, PERM-001, project-type detection) still see them.
+ * A derived view of the two existing vocabularies, not a third list.
+ */
+export function singleFileNeedsParent(parentBase: string, base: string): boolean {
+  return (
+    isConfigShapedFile(base, parentBase) !== isConfigShapedFile(base, '') ||
+    isCredentialFilePath('/' + parentBase + '/' + base) !== isCredentialFilePath('/' + base)
+  );
 }
 
 /**
@@ -2466,8 +3630,9 @@ function firstPatternMatch(patterns: RegExp[], line: string): string | null {
 /**
  * What makes one line of a BUNDLED skill file a payload, or null.
  *
- * Two shapes, both conjunctive, because a bundled script is ordinary code and a
- * single-signal rule over `scripts/` would flag most of them:
+ * Three shapes. The first two are conjunctive, because a bundled script is
+ * ordinary code and a single-signal credential or network rule over `scripts/`
+ * would flag most of them:
  *
  *  1. `detectShellCredentialExfil` — a curl/wget that reads a known credential
  *     file into the request body of a remote URL. Already the SHELL-EXFIL-001
@@ -2476,10 +3641,19 @@ function firstPatternMatch(patterns: RegExp[], line: string): string | null {
  *     script that legitimately reads `~/.aws/credentials` does not also POST it
  *     to `webhook.site` in the same statement, and a script that POSTs telemetry
  *     does not name a credential file in the same statement.
+ *  3. a reverse shell, which needs no second signal. `SKILL_REVERSE_SHELL_PATTERNS`
+ *     is the list the skill Markdown path already treats as sufficient on its
+ *     own, and the conjunctions above are blind to it: an interactive shell over
+ *     `/dev/tcp` names no credential and posts to no sink, so a payload moved
+ *     into `scripts/` was described by nothing here. Reusing the list rather
+ *     than restating it is what stops the bundle and the Markdown from drifting
+ *     apart pattern by pattern.
  *
  * Comment lines are skipped so a `# curl ... @~/.aws/credentials` note in a
  * runbook does not fire, matching `checkShellCredentialExfil`. The shebang is
- * skipped as a comment for the same reason it is not code.
+ * skipped as a comment for the same reason it is not code. The skip is at the
+ * top, so it covers the reverse-shell branch too — a `# bash -i >& /dev/tcp/...`
+ * line in a recovery runbook is documentation, not a payload.
  */
 function describeSkillBundlePayload(line: string): string | null {
   const trimmed = line.trimStart();
@@ -2487,6 +3661,9 @@ function describeSkillBundlePayload(line: string): string | null {
 
   const cred = detectShellCredentialExfil(line);
   if (cred) return `uploads ${cred.credPath} to ${cred.url}`;
+
+  const reverseShell = firstPatternMatch(SKILL_REVERSE_SHELL_PATTERNS, line);
+  if (reverseShell) return `opens a reverse shell via ${reverseShell}`;
 
   const credRead = firstPatternMatch(SKILL_CREDENTIAL_ACCESS_PATTERNS, line);
   if (!credRead) return null;
@@ -2571,6 +3748,13 @@ export class HardeningScanner {
   private lastBackupCovered: string[] = [];
   /** Identity of the directory the last `createBackup` created. See #317. */
   private lastBackupIdent: FsIdentity | undefined;
+  /**
+   * Candidates the last `createBackup` refused to copy because they resolve
+   * outside the scanned tree. The refusal is a policy skip that must be
+   * ANNOUNCED, never silent: the caller that renders withheld links merges
+   * these with the scan-side records (`backupWithheldLinks`).
+   */
+  private lastBackupWithheldLinks: WithheldLink[] = [];
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -2621,51 +3805,6 @@ export class HardeningScanner {
   }
 
   /**
-   * Load .hmaignore file from target directory.
-   * Returns path patterns (plain lines) and check ID suppression patterns (lines starting with !).
-   */
-  private async loadHmaIgnore(targetDir: string): Promise<{ paths: string[]; checkIds: string[] }> {
-    const ignorePath = path.join(targetDir, '.hmaignore');
-    try {
-      const content = await fs.readFile(ignorePath, 'utf-8');
-      const lines = content
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#'));
-      const paths: string[] = [];
-      const checkIds: string[] = [];
-      for (const line of lines) {
-        if (line.startsWith('!')) {
-          // Check ID suppression pattern: strip the ! prefix, store uppercase
-          checkIds.push(line.slice(1).toUpperCase());
-        } else {
-          paths.push(line);
-        }
-      }
-      return { paths, checkIds };
-    } catch {
-      return { paths: [], checkIds: [] };
-    }
-  }
-
-  /**
-   * Check if a check ID matches any suppression pattern from .hmaignore.
-   * Supports exact match and wildcard (*) at the end (e.g. SANDBOX-* matches SANDBOX-001).
-   */
-  private isCheckIdSuppressed(checkId: string, patterns: string[]): boolean {
-    if (patterns.length === 0) return false;
-    const upper = checkId.toUpperCase();
-    return patterns.some(pattern => {
-      if (pattern.includes('*')) {
-        // Convert glob pattern to regex: escape special chars, replace * with .*
-        const regexStr = '^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
-        return new RegExp(regexStr).test(upper);
-      }
-      return upper === pattern;
-    });
-  }
-
-  /**
    * Re-apply .hmaignore filters to a set of findings.
    * Call this after NanoMind merge overwrites result.findings with unfiltered data.
    *
@@ -2695,16 +3834,18 @@ export class HardeningScanner {
     projectType: ProjectType,
     additionalIgnorePaths?: string[],
   ): Promise<T[]> {
-    const hmaIgnore = await this.loadHmaIgnore(targetDir);
-    const allIgnoredPaths = [...hmaIgnore.paths, ...(additionalIgnorePaths || [])];
-    const suppressedCheckPatterns = hmaIgnore.checkIds;
+    const parsed = await loadHmaIgnore(targetDir);
+    const extraPaths = additionalIgnorePaths || [];
 
     // Reset FIRST, and on the no-op path too: a reused scanner instance must not
     // let the previous target's scope narrowing be disclosed against this one.
     this.lastOutOfScope = [];
     this.lastSuppressed = [];
+    // Presence rule, not rule-count rule: an empty or all-error file still
+    // discloses itself (and its errors) on this run.
+    this.lastHmaIgnore = buildHmaIgnoreDisclosure(parsed, new Map());
 
-    if (allIgnoredPaths.length === 0 && suppressedCheckPatterns.length === 0) {
+    if (parsed.rules.length === 0 && extraPaths.length === 0) {
       return findings;
     }
 
@@ -2712,30 +3853,33 @@ export class HardeningScanner {
     // rule is MARKED and kept, because this runs after the NanoMind merge on the
     // very array the CLI recomputes the score from, so returning a shortened
     // array re-created the laundering the scan path had just stopped doing. A
-    // path rule is a scope change and leaves the array, with the summary parked
-    // on `lastOutOfScope` for the caller to disclose. Callers render with
-    // `isDisplayed()`.
+    // path-shaped rule (whole-path or `<path>:<CHECK>`) is a scope change and
+    // leaves the array, with the summary parked on `lastOutOfScope` for the
+    // caller to disclose. Callers render with `isDisplayed()`.
     const pathExcluded: T[] = [];
     const checkSuppressed: T[] = [];
+    const attribution = new Map<T, number>();
     for (const f of findings) {
-      // Already out of scope from the scan pass. It must be re-collected, not
-      // skipped: `nmResult.mergedFindings` is rebuilt from `allFindings`, which
-      // holds the SAME objects `scanInner` marked, so an early `continue` here
-      // let every path-excluded finding ride back into the scored array. That
-      // put HMA's own 65 excluded fixture findings on both the `Scope` line and
-      // the `Suppressed` line while still scoring them 0/100 — the marking was
-      // idempotent, the filtering was not.
-      if (f.suppressedBy === 'hmaignore-path') { pathExcluded.push(f); continue; }
-      if (f.suppressed) { checkSuppressed.push(f); continue; }
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
+      // A finding the caller suppressed by flag keeps that channel; only the
+      // `.hmaignore` channels are re-derived here.
+      if (f.suppressedBy === 'ignore-flag') { checkSuppressed.push(f); continue; }
+      // Findings the scan pass already marked are re-CLASSIFIED, not skipped:
+      // `nmResult.mergedFindings` is rebuilt from `allFindings`, which holds
+      // the SAME objects `scanInner` marked, so an early `continue` here let
+      // every path-excluded finding ride back into the scored array. Rules and
+      // file are the same, so re-classification lands where the scan pass did —
+      // and carries the per-rule attribution the disclosure needs.
+      const m = matchHmaIgnore(f, parsed, extraPaths);
+      if (m) {
         f.suppressed = true;
-        f.suppressedBy = 'hmaignore-check';
+        f.suppressedBy = m.channel;
+        if (m.line !== undefined) attribution.set(f, m.line);
+        if (isScopeChannel(m.channel)) pathExcluded.push(f);
+        else checkSuppressed.push(f);
+      } else if (f.suppressed) {
+        // Marked earlier by a channel this file does not explain (defensive:
+        // the base behaviour kept such findings on the suppressed side).
         checkSuppressed.push(f);
-      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
-        // #280 — keys on every covered path, not just `f.file`.
-        f.suppressed = true;
-        f.suppressedBy = 'hmaignore-path';
-        pathExcluded.push(f);
       }
     }
     // #457 — the DISCLOSURE is gated on what would have been reported; the
@@ -2761,6 +3905,15 @@ export class HardeningScanner {
     const reportable = (f: SecurityFindingDraft) => isReportableFinding(f, projectType);
     this.lastOutOfScope = summarizeSuppressed(pathExcluded.filter(reportable));
     this.lastSuppressed = summarizeSuppressed(checkSuppressed.filter(reportable));
+    // Σ matched per rule ≡ the Row counts above: counted over the same arrays,
+    // through the same reportable + countsAgainstScore gates the summaries use.
+    const matchedByLine = new Map<number, number>();
+    for (const f of [...pathExcluded, ...checkSuppressed]) {
+      if (!reportable(f) || !countsAgainstScore(f)) continue;
+      const line = attribution.get(f);
+      if (line !== undefined) matchedByLine.set(line, (matchedByLine.get(line) ?? 0) + 1);
+    }
+    this.lastHmaIgnore = buildHmaIgnoreDisclosure(parsed, matchedByLine);
     if (pathExcluded.length === 0 && checkSuppressed.length === 0) return findings;
     const removed = new Set([...pathExcluded, ...checkSuppressed]);
     return findings.filter((f) => !removed.has(f));
@@ -2784,6 +3937,15 @@ export class HardeningScanner {
   lastSuppressed: ReturnType<typeof summarizeSuppressed> = [];
 
   /**
+   * The per-rule `.hmaignore` disclosure from the most recent
+   * `reapplyIgnoreFilters` call, with `matched` recounted over the post-merge
+   * array — the same array `lastOutOfScope`/`lastSuppressed` are counted
+   * over, so the Σ-matched cross-check holds on the record the CLI adopts.
+   * `undefined` when the target has no `.hmaignore` (presence rule).
+   */
+  lastHmaIgnore: HmaIgnoreDisclosure | undefined = undefined;
+
+  /**
    * Every path a finding speaks for.
    *
    * `details.files`: checks like GIT-001 and PERM-001 point `file` at one
@@ -2791,12 +3953,7 @@ export class HardeningScanner {
    * `details.files`, so reading either side alone loses paths.
    */
   private coveredFilesOf(f: SecurityFindingDraft): string[] {
-    const listed = Array.isArray(f.details?.files) ? f.details.files : [];
-    return [...new Set(
-      [f.file, ...listed].filter(
-        (p): p is string => typeof p === 'string' && p.length > 0,
-      ),
-    )];
+    return coveredFilesOfFinding(f);
   }
 
   /**
@@ -2820,42 +3977,10 @@ export class HardeningScanner {
    * Returns true to KEEP. May re-point `f.file` / `f.details.files` in place.
    */
   private retainAfterPathSuppression(f: SecurityFindingDraft, ignoredPaths: string[]): boolean {
-    // A coverage statement is not a finding ABOUT a path's contents, so a path
-    // rule cannot scope it away (#438).
-    //
-    // `test-fixtures/` in an `.hmaignore` means "this part of the tree is not my
-    // product", which honestly removes findings about what is IN those files.
-    // It cannot make the scan's own claim about what it READ true. And the
-    // paragraph above is explicit that scoping is legitimate *provided the scope
-    // is disclosed* — for this finding that proviso does not hold: `outOfScope`
-    // is rendered as a bare count on text and `--json`, and NOT AT ALL on sarif,
-    // asff and html. Letting a path rule clear this gate therefore produced
-    // exit 0 with nothing said on three of the five channels, on the channels a
-    // CI consumer reads. Measured, and it is the exact failure this unit exists
-    // to remove.
-    //
-    // So it stays visible and stays in the exit code. The remedy is to make the
-    // file readable or to scan a narrower target — not to declare the unread
-    // file out of scope. If `outOfScope` ever renders on every channel, this
-    // carve-out is the thing to revisit.
-    if (f.checkId === 'SCAN-UNREAD-001') return true;
-
-    const covered = this.coveredFilesOf(f);
-    // Nothing path-shaped to judge — a finding about the tree as a whole.
-    if (covered.length === 0) return true;
-
-    const survivors = covered.filter((p) => !this.isPathIgnored(p, ignoredPaths));
-    if (survivors.length === 0) return false;
-    if (survivors.length === covered.length) return true;
-
-    // Partially ignored: keep it, but stop naming suppressed paths.
-    if (f.file && this.isPathIgnored(f.file, ignoredPaths)) {
-      f.file = survivors[0];
-    }
-    if (Array.isArray(f.details?.files)) {
-      (f.details as { files: string[] }).files = survivors;
-    }
-    return true;
+    // The SCAN-UNREAD-001 carve-out and the full history live on the
+    // module-level function, which `matchHmaIgnore` and the `check` command
+    // share so `secure` and `check` apply one rulebook.
+    return retainAfterPathSuppression(f, ignoredPaths);
   }
 
   /**
@@ -2940,12 +4065,7 @@ export class HardeningScanner {
   }
 
   private isPathIgnored(filePath: string, ignoredPaths: string[]): boolean {
-    if (!filePath || ignoredPaths.length === 0) return false;
-    const normalized = filePath.replace(/\\/g, '/');
-    return ignoredPaths.some(pattern => {
-      const normalizedPattern = pattern.replace(/\\/g, '/').replace(/\/$/, '');
-      return normalized.startsWith(normalizedPattern + '/') || normalized === normalizedPattern;
-    });
+    return isPathIgnored(filePath, ignoredPaths);
   }
 
   /**
@@ -2987,12 +4107,14 @@ export class HardeningScanner {
     const isQuick = scanDepth === 'quick';
     const isDeepScan = scanDepth === 'deep';
 
-    // Load .hmaignore for path-based exclusions and check ID suppressions
-    const hmaIgnore = await this.loadHmaIgnore(targetDir);
-    // Merge with any programmatic ignorePaths
-    const allIgnoredPaths = [...hmaIgnore.paths, ...(options.ignorePaths || [])];
-    // Check ID suppression patterns from .hmaignore (supports wildcards)
-    const suppressedCheckPatterns = hmaIgnore.checkIds;
+    // Load .hmaignore: whole-path exclusions, `<path>:<CHECK>` narrowings and
+    // `!CHECK-ID` suppressions, through the one parser
+    const hmaIgnore = await loadHmaIgnore(targetDir);
+    // Merge whole-path rules with any programmatic ignorePaths
+    const allIgnoredPaths = [
+      ...hmaIgnore.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL).map((r) => r.path as string),
+      ...(options.ignorePaths || []),
+    ];
 
     // Normalize ignore list to uppercase for case-insensitive matching
     // Merge CLI --ignore flags with .hmaignore !-prefixed check IDs
@@ -4074,24 +5196,24 @@ export class HardeningScanner {
     // So: path exclusions leave the scored set and are reported as scope;
     // check-ID suppressions stay in it and are reported as suppression.
     const pathExcluded: SecurityFindingDraft[] = [];
+    const hmaAttribution = new Map<SecurityFindingDraft, number>();
     for (const f of filteredFindings) {
       if (ignoredChecks.has(f.checkId.toUpperCase())) {
         f.suppressed = true;
         f.suppressedBy = 'ignore-flag';
-      } else if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) {
-        f.suppressed = true;
-        f.suppressedBy = 'hmaignore-check';
-      } else if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) {
-        // #280's re-pointing behaviour is preserved: `retainAfterPathSuppression`
-        // returns true for a multi-file finding while ANY covered path survives,
-        // and has already re-pointed `file` onto a survivor by the time it does.
-        // Only a finding whose every covered path is ignored reaches here, so a
-        // partial ignore still keeps its finding and still scores — which is the
-        // #280 rule, unchanged.
-        f.suppressed = true;
-        f.suppressedBy = 'hmaignore-path';
-        pathExcluded.push(f);
+        continue;
       }
+      // `matchHmaIgnore` holds the tier order (whole-path, then
+      // `<path>:<CHECK>`, then `!<CHECK>`) and #280's re-pointing behaviour:
+      // `retainAfterPathSuppression` keeps a multi-file finding while ANY
+      // covered path survives, re-pointed onto a survivor. Only a finding
+      // whose every covered path is ignored comes back as a scope channel.
+      const m = matchHmaIgnore(f, hmaIgnore, options.ignorePaths || []);
+      if (!m) continue;
+      f.suppressed = true;
+      f.suppressedBy = m.channel;
+      if (m.line !== undefined) hmaAttribution.set(f, m.line);
+      if (isScopeChannel(m.channel)) pathExcluded.push(f);
     }
     // Both kinds leave `findings`; they differ in what happens to the SCORE.
     //
@@ -4113,9 +5235,21 @@ export class HardeningScanner {
     // actually is — the score and the gate, via `suppressed`, which
     // `scoreWithSuppressed` adds back.
     const suppressed = summarizeSuppressed(
-      filteredFindings.filter((f) => f.suppressedBy && f.suppressedBy !== 'hmaignore-path'),
+      filteredFindings.filter((f) => f.suppressedBy && !isScopeChannel(f.suppressedBy)),
     );
     const outOfScope = summarizeSuppressed(pathExcluded);
+
+    // Per-rule match counts for the `.hmaignore` disclosure — over the same
+    // findings, through the same `countsAgainstScore` gate, as the two Row
+    // summaries above, so Σ matched per (checkId, channel) equals the Row
+    // count (the cross-check the tests hold).
+    const hmaMatchedByLine = new Map<number, number>();
+    for (const f of filteredFindings) {
+      if (!f.suppressed || !countsAgainstScore(f)) continue;
+      const line = hmaAttribution.get(f);
+      if (line !== undefined) hmaMatchedByLine.set(line, (hmaMatchedByLine.get(line) ?? 0) + 1);
+    }
+    const hmaignoreDisclosure = buildHmaIgnoreDisclosure(hmaIgnore, hmaMatchedByLine);
 
     filteredFindings = filteredFindings.filter((f) => !f.suppressed);
 
@@ -4157,8 +5291,10 @@ export class HardeningScanner {
       if (f.passed && !f.fixed) continue;
       if (survived.has(f)) continue;
       if (ignoredChecks.has(f.checkId.toUpperCase())) continue;
-      if (this.isCheckIdSuppressed(f.checkId, suppressedCheckPatterns)) continue;
-      if (!this.retainAfterPathSuppression(f, allIgnoredPaths)) continue;
+      // One classifier for all three `.hmaignore` channels — a finding any of
+      // them covers was withheld at the USER's request and is disclosed
+      // through `suppressed`/`outOfScope`, not re-reported here.
+      if (matchHmaIgnore(f, hmaIgnore, options.ignorePaths || [])) continue;
       if (!f.file) {
         unevidencedFailures++;
         continue;
@@ -4302,6 +5438,12 @@ export class HardeningScanner {
       // penalties ARE in `score`, and every later re-score must add them back
       // via `expandSuppressed` or the laundering returns.
       suppressed: suppressed.length > 0 ? suppressed : undefined,
+      // The per-rule `.hmaignore` disclosure. Present iff the FILE is present
+      // (rules empty, all-error and matched-nothing included), absent
+      // otherwise — so a document from a tree without the file is
+      // byte-identical to one from before this key existed. CLI-local:
+      // `secure --json` spreads `...result`; no wire builder reads it.
+      hmaignore: hmaignoreDisclosure,
       semanticAnalysis: (layer2Count > 0 || layer3Count > 0) ? {
         layer2Findings: layer2Count,
         layer3Findings: layer3Count,
@@ -4664,7 +5806,14 @@ export class HardeningScanner {
     // locations, never subtract them. Absent files are skipped by the same
     // readFile catch as before.
     const { configFiles: discovered } = await this.collectSensitiveArtifacts(targetDir);
-    const nested = discovered.filter((rel) => rel.includes(path.sep)).sort();
+    // HMA-30 — filtered by membership in the root probe, not by depth. The old
+    // `rel.includes(path.sep)` filter existed only to dedupe the root probe's
+    // own names, but it also dropped every OTHER root-level discovery: a bare
+    // `credentials` at the scan root was found by the walk and then never
+    // read. Root-level rels are single-component, so the set test dedupes
+    // exactly the ten probed names and nothing deeper.
+    const rootProbeSet = new Set(rootProbeOrder);
+    const nested = discovered.filter((rel) => !rootProbeSet.has(rel)).sort();
     const filesToCheck = [...rootProbeOrder, ...nested];
 
     for (const filename of filesToCheck) {
@@ -5428,6 +6577,17 @@ export class HardeningScanner {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Copy candidates the last backup WITHHELD because they resolve outside the
+   * scanned tree, for the caller that renders the run's disclosures.
+   * `harden-soul` merges these with the scan-side records — same
+   * `WithheldLinkRecord` shape after `withheldLinkRecords`, deduped by `rel`,
+   * so one withheld link is one line however many sides refused it.
+   */
+  backupWithheldLinks(): WithheldLink[] {
+    return [...this.lastBackupWithheldLinks];
   }
 
   /**
@@ -6652,7 +7812,28 @@ dist/
         // #317 — and the directory is recognised by `dev`+`ino`, decided on the
         // way in by `isOwnBackupDir`, never by comparing this file's path
         // against a string.
-        if (isConfigShapedFile(dirent.name, path.basename(dir)) && !insideOwnBackup) {
+        //
+        // HMA-30 — credential-store files join the CRED-001 population through
+        // the SAME predicate the shell-exfil detector already owns:
+        // `isCredentialFilePath` over the file's absolute path (posix-
+        // separated, so the /.aws/credentials-style suffixes fire on every
+        // platform). No third basename list: a file is examined when it is
+        // config-shaped OR a credential path, and nothing else. The one
+        // exception is an SSH identity (`/.ssh/id_*`): it holds a private key,
+        // not key=value credentials, so it routes to `keyFiles` through the
+        // same `pemLooksPrivate` gate as `.pem` and is reported by CRED-002 —
+        // running the CRED-001 regexes over PEM base64 would be noise.
+        const credAbsPosix = absResolved.split(path.sep).join('/');
+        const isCredentialStore = isCredentialFilePath(credAbsPosix);
+        const isSshIdentity = isCredentialStore
+          && SHELL_EXFIL_HOME_CRED_SUFFIXES.some(
+            (suf) => suf.startsWith('/.ssh/') && credAbsPosix.endsWith(suf));
+        if (isSshIdentity) {
+          if (await this.pemLooksPrivate(abs, targetDir)) keyFiles.push(rel);
+        } else if (
+          (isConfigShapedFile(dirent.name, path.basename(dir)) || isCredentialStore)
+          && !insideOwnBackup
+        ) {
           configFiles.push(rel);
         }
         if (dirent.name.endsWith('.key')) {
@@ -10400,6 +11581,7 @@ dist/
    * Create a backup of files that may be modified during auto-fix
    */
   private async createBackup(targetDir: string): Promise<string> {
+    this.lastBackupWithheldLinks = [];
     const backupDir = await this.createRunBackupDir(await this.prepareBackupRoot(targetDir));
 
     // The identity of the directory just created, captured once. Every later
@@ -10465,22 +11647,27 @@ dist/
       const sourcePath = path.join(targetDir, file);
       try {
         await fs.access(sourcePath);
-        // NOTE: `access` and `copyFile` both follow symlinks, so a symlinked
-        // candidate is backed up by CONTENT. That is deliberate for now.
-        //
-        // It has a real downside — a repo shipping `SOUL.md -> ~/.ssh/id_rsa`
-        // gets that key's bytes copied into `.hackmyagent-backup/`, inside
-        // the scanned tree. But simply skipping symlinked candidates is
-        // WORSE, and was tried and reverted: roughly 18 fix sites here plus
-        // `hardenSoul`'s `appendFileSync` still write through the link, so
-        // skipping the backup leaves the out-of-tree file mutated with no
-        // copy to restore from, and `rollback` reports success having
-        // reverted nothing. Following the link at least keeps the write
-        // recoverable.
-        //
-        // The root fix is to stop writing through symlinks at every fix
-        // site, not to drop the backup that compensates for it. Tracked
-        // separately; do not re-apply the skip on its own.
+        // `access` and `copyFile` both follow symlinks, so an unconfined copy
+        // backs a symlinked candidate up by CONTENT: a repo shipping
+        // `SOUL.md -> <outside>/SOUL.md` got the link target's bytes copied
+        // into `.hackmyagent-backup/`, inside the scanned tree. Skipping the
+        // copy SILENTLY was tried and reverted while the fix sites still
+        // wrote through links; those writes are refused now
+        // (`resolveInsideTree`, `followLeafLink: true`), so this is the
+        // separate track the old note promised: every candidate is resolved
+        // against the scanned tree, and one that leaves it is WITHHELD — no
+        // copy, and a manifest entry in NEITHER list (not restorable, so
+        // `existingFiles` would lie; not a creation, so `absentAtBackup`
+        // would let rollback delete through it; uncovered, so
+        // `ensureBackupCovers` refuses a write through it — the safe
+        // direction) — plus a disclosure the caller renders alongside the
+        // scan-side withheld links. An in-tree link (`SOUL.md ->
+        // docs/SOUL.md`) resolves inside and is still backed up by content.
+        const stays = readStaysInsideTree(sourcePath, targetDir);
+        if (!stays.ok) {
+          this.lastBackupWithheldLinks.push({ rel: file, resolved: stays.resolved, call: 'copyFile' });
+          continue;
+        }
         const destPath = path.join(backupDir, file);
         await fs.mkdir(path.dirname(destPath), { recursive: true });
         await fs.copyFile(sourcePath, destPath);
@@ -11314,6 +12501,26 @@ dist/
     targetDir: string,
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
+    // 1-based line of the first vendor-shaped key or JWT in a skill body, or
+    // undefined. Lines that carry the skill's own signature or guard hash are
+    // not credentials and are skipped.
+    //
+    // Anchored, because a skill body is prose: the unanchored alternation
+    // reads a slug such as "risk-assessment-…" as an OpenAI legacy key (`sk-`
+    // plus twenty slug characters) and raised an unfixable CRITICAL on a
+    // benign skill. This is a positive gate on a document, the polarity the anchored
+    // form is reserved for; `sk-xxxxxxxx…` placeholders still match.
+    const SIGNATURE_LINE = /opena2a_signature:|opena2a-guard hash=|-----(BEGIN|END) SIGNATURE-----/;
+    const vendorRe = new RegExp(anchoredVendorAlternation());
+    const findSkillCredentialLine = (bodyLines: readonly string[]): number | undefined => {
+      for (let i = 0; i < bodyLines.length; i++) {
+        const line = bodyLines[i];
+        if (SIGNATURE_LINE.test(line)) continue;
+        if (vendorRe.test(line) || findJwtMatch(line, true)) return i + 1;
+      }
+      return undefined;
+    };
+
     const findings: SecurityFindingDraft[] = [];
     const skillFiles = await this.findSkillFiles(targetDir);
 
@@ -11350,6 +12557,38 @@ dist/
       const lines = content.split('\n').map(line =>
         line.length > MAX_LINE_LENGTH ? line.substring(0, MAX_LINE_LENGTH) : line
       );
+
+      // SKILL-025: a credential VALUE in the skill body.
+      //
+      // SKILL-005 reports a skill that names a credential file (`~/.aws`,
+      // `.env`); nothing here read the body for a credential itself, so a
+      // vendor-shaped key in a SKILL.md scored `benign` while the same value in
+      // `.mcp.json` was CRITICAL (measured 0.32.0 on five vendor shapes). The
+      // detector is the shared credential-format registry, the same one the
+      // config paths use, so the two surfaces agree on what a credential is.
+      // The message carries the location and never the value.
+      //
+      // Vendor prefixes and JWTs only, not the registry's entropy fallback: a
+      // signed skill carries a base64 signature and a guard hash in its
+      // frontmatter, and an entropy rule would report the signature as a
+      // credential on every signed skill. Signature lines are skipped as well.
+      const credentialLine = findSkillCredentialLine(lines);
+      if (credentialLine !== undefined) {
+        findings.push({
+          checkId: 'SKILL-025',
+          name: 'Hardcoded Credential in Skill',
+          description: 'Skill file contains a credential value',
+          category: 'skill',
+          severity: 'critical',
+          passed: false,
+          message: `Credential-shaped value at ${relativePath}:${credentialLine} (the value is not repeated here)`,
+          file: relativePath,
+          line: credentialLine,
+          fixable: false,
+          fix: `Move the value out of ${relativePath} into an environment variable the skill references by name, then rotate it: a value that has been in a skill file has been in every context that loaded the skill`,
+          guidance: 'A skill is loaded into the agent context on every run, so a credential in its body reaches the model, the transcript and any log that captures either. Use npx secretless-ai init to keep credentials out of AI tool context.',
+        });
+      }
 
       // SKILL-001: Unsigned Skill
       const hasSignature =
@@ -12009,7 +13248,11 @@ dist/
         { pattern: /eval\s*\(/, label: 'eval() dynamic execution' },
         { pattern: /String\.fromCharCode/, label: 'String.fromCharCode obfuscation' },
         { pattern: /\\x[0-9a-fA-F]{2}/, label: 'hex-encoded string' },
-        { pattern: /(?:atob|Buffer\.from)\s*\([^)]+\)[\s\S]*?eval\s*\(/, label: 'base64+eval combo' },
+        // The decode-to-eval scan is bounded at the next decode call so a
+        // flood of unclosed openers costs O(n) total instead of O(n^2)
+        // (HMA-44); when a later decode call precedes the eval, that later
+        // call anchors its own match, so decode..eval content still tests true.
+        { pattern: /(?:atob|Buffer\.from)\s*\([^)]+\)(?:(?!(?:atob|Buffer\.from)\s*\()[\s\S])*?eval\s*\(/, label: 'base64+eval combo' },
         { pattern: /base64\s+-d/, label: 'shell base64 decode' },
         { pattern: /eval\s+\$\(/, label: 'shell eval $(...)' },
         { pattern: /\becho\s+['"][A-Za-z0-9+/=]{20,}['"]\s*\|\s*base64/, label: 'echo+base64 pipe' },
@@ -12085,7 +13328,15 @@ dist/
    * Symlinked entries are skipped here exactly as `findSkillFiles` skips them.
    * This walk adds no way out of the tree.
    */
-  private async findSkillBundleFiles(skillDir: string, depth: number = 0): Promise<string[]> {
+  private async findSkillBundleFiles(
+    skillDir: string,
+    depth: number = 0,
+    // Shared across the recursion below ONE skill directory: every
+    // `startsWithShebang` call spends from the same probe budget, admitted or
+    // not, so junk extensionless files cannot buy unbounded opens.
+    walk: { probes: number; probeCapped: boolean; admitted: number; droppedAdmitted: number } =
+      { probes: 0, probeCapped: false, admitted: 0, droppedAdmitted: 0 },
+  ): Promise<string[]> {
     if (depth > SKILL_BUNDLE_MAX_DEPTH) return [];
 
     const bundleFiles: string[] = [];
@@ -12097,7 +13348,6 @@ dist/
     }
 
     for (const entry of entries) {
-      if (bundleFiles.length >= SKILL_BUNDLE_MAX_FILES) break;
       if (entry.isSymbolicLink()) continue;
 
       const fullPath = path.join(skillDir, entry.name);
@@ -12105,31 +13355,84 @@ dist/
 
       if (entry.isDirectory()) {
         if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
-        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1));
+        bundleFiles.push(...await this.findSkillBundleFiles(fullPath, depth + 1, walk));
       } else if (entry.isFile()) {
         // SKILL.md and *.skill.md are analyzed as skill files; other Markdown
         // beside a skill is prose (README, CHANGELOG), not a payload carrier.
         if (entry.name.toLowerCase().endsWith('.md')) continue;
         const ext = path.extname(entry.name).toLowerCase();
-        const admitted = ext
-          ? SKILL_BUNDLE_EXTENSIONS.has(ext)
-          : await this.startsWithShebang(fullPath);
-        if (admitted) bundleFiles.push(fullPath);
+        let admitted: boolean;
+        if (ext) {
+          admitted = SKILL_BUNDLE_EXTENSIONS.has(ext);
+        } else if (walk.probes >= MAX_FILES_PER_LAYER) {
+          walk.probeCapped = true;
+          continue;
+        } else {
+          walk.probes++;
+          admitted = await this.startsWithShebang(fullPath);
+        }
+        if (!admitted) continue;
+        // ONE admitted counter across the recursion below a skill directory:
+        // a per-level break and slice let the cap fire silently in the flat
+        // and single-subdirectory shapes and stopped the walk before a payload
+        // behind 60 admitted files was even probed. Past the cap an admissible
+        // file is counted as dropped, never pushed, so the depth-0 disclosure
+        // carries the exact number the scan did not read.
+        if (walk.admitted >= SKILL_BUNDLE_MAX_FILES) {
+          walk.droppedAdmitted++;
+          continue;
+        }
+        walk.admitted++;
+        bundleFiles.push(fullPath);
       }
     }
 
-    return bundleFiles.slice(0, SKILL_BUNDLE_MAX_FILES);
+    // A cap that fires is disclosed, never silent: an invisible cap is a
+    // cap-stuffing primitive — junk files ahead of the payload make the scan
+    // report a clean `skill` category over files it never opened. Reported at
+    // the top of the recursion, once per skill directory.
+    if (depth === 0) {
+      if (walk.probeCapped) {
+        this.coverage.truncate({
+          layer: 'skill-bundle',
+          cap: MAX_FILES_PER_LAYER,
+          prefixes: ['SKILL'],
+          reason: `probed at most ${MAX_FILES_PER_LAYER} extensionless files under a skill directory — extensionless files past that cap were not opened`,
+        });
+      }
+      if (walk.droppedAdmitted > 0) {
+        this.coverage.truncate({
+          layer: 'skill-bundle',
+          cap: SKILL_BUNDLE_MAX_FILES,
+          prefixes: ['SKILL'],
+          reason: `read at most ${SKILL_BUNDLE_MAX_FILES} bundled files per skill directory — ${walk.droppedAdmitted} admitted file${bundleFiles.length - SKILL_BUNDLE_MAX_FILES === 1 ? '' : 's'} not read`,
+        });
+      }
+    }
+
+    return bundleFiles;
   }
 
-  /** True when a file's first bytes are `#!` — how an extensionless script declares itself. */
+  /**
+   * True when a file's first bytes are `#!` — how an extensionless script
+   * declares itself. `execve` admits a script on those 2 bytes at offset 0 and
+   * nothing else, so the probe reads exactly those 2 bytes and never the file:
+   * a whole-file read here handed every extensionless byte in a skill tree to
+   * a yes/no question.
+   */
   private async startsWithShebang(filePath: string): Promise<boolean> {
+    let fh;
     try {
       const stat = await fs.stat(filePath);
       if (stat.size < 2 || stat.size > MAX_FILE_SIZE) return false;
-      const content = await fs.readFile(filePath, 'utf-8');
-      return content.startsWith('#!');
+      fh = await fs.open(filePath, 'r');
+      const head = Buffer.alloc(2);
+      const { bytesRead } = await fh.read(head, 0, 2, 0);
+      return bytesRead === 2 && head[0] === 0x23 && head[1] === 0x21; // `#!`
     } catch {
       return false;
+    } finally {
+      try { await fh?.close(); } catch { /* ignore */ }
     }
   }
 
@@ -12198,16 +13501,16 @@ dist/
       findings.push({
         checkId: 'SKILL-006',
         name: 'Data Exfiltration Pattern',
-        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — reads credential material and sends it to a remote endpoint.',
+        description: 'A file bundled with this skill — a script or test beside SKILL.md, not the Markdown itself — sends credential material to a remote endpoint or opens a reverse shell.',
         category: 'skill',
         severity: 'critical',
         passed: false,
-        message: `Exfiltration payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
+        message: `Payload in ${named.length} bundled skill file(s): ${named.join(', ')}`,
         file: hits[0].rel,
         line: hits[0].line,
         fixable: false,
-        fix: `Remove the exfiltration payload from ${named.join(', ')}. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
-        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ ships with the skill and executes with the agent\'s privileges.',
+        fix: `Remove the payload from ${named.join(', ')} — each citation's reason says what that file does. Reviewing only SKILL.md reviews the description of the skill, not the code that ships with it.`,
+        guidance: 'A skill is a directory: SKILL.md is what the agent is told, and the scripts beside it are what runs. A payload moved out of the Markdown into scripts/ or tests/ — an upload of credential material, or a reverse shell — ships with the skill and executes with the agent\'s privileges.',
         evidence: {
           kind: 'positive',
           lines: hits.map(h => ({ n: h.line, content: h.content, why: h.why })),
@@ -14792,11 +16095,14 @@ dist/
       // belongs with #424's AST dataflow work, and the finding's own guidance
       // already tells the reader which sinks it cannot see.
       //
-      // ONE NARROWING, DISCLOSED: matching per line means `eval` and `(`
-      // separated by a NEWLINE (`\s` spans one) no longer match. That spelling
-      // is legal JavaScript and is not detected any more, which is a loss of
-      // exactly one lexical variant on a corroborator that already misses the
-      // eight spellings above.
+      // The two patterns below are per-line, and `eval` and `(` separated by
+      // a NEWLINE is legal JavaScript, so the loop carries one bit of state
+      // across the line boundary (HMA-31.AC3): a line whose last code token
+      // (outside strings and comments) is `eval`, `Function` or
+      // `new Function`, followed by the next line with any code on it opening
+      // with `(`, is the same call the same-line patterns match, and it
+      // corroborates. The patterns themselves stay byte-identical — the
+      // newline case is state, not vocabulary.
       const EXECUTION_SINK_PATTERNS = [
         /(?:^|[^\w.$])eval\s*\(/,
         /(?:^|[^\w.$])(?:new\s+)?Function\s*\(/,
@@ -14813,10 +16119,33 @@ dist/
       );
       const sinkCommentState = { inBlockComment: false };
       let hasExecutionSink = false;
+      // HMA-31.AC3: the cross-line half of the sink patterns above. The same
+      // two sinks with the same `[^\w.$]` guard against `foo.eval`, anchored
+      // to end of line instead of to `(`; no new sink vocabulary.
+      const TRAILING_SINK_TOKEN = /(?:^|[^\w.$])((?:new\s+)?Function|eval)\s*$/;
+      let pendingSinkToken = false;
+      // HMA-31.AC4: a line over MAX_LINE_LENGTH is still skipped whole — the
+      // bound is what keeps a minified bundle from corroborating signals read
+      // from ordinary lines — but when such a line carries a sink token by a
+      // plain substring test, the uncorroborated message names it below, so
+      // the reader learns the line was not read rather than read and cleared.
+      let skippedSinkLine = 0;
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (line.length > MAX_LINE_LENGTH) continue;
+        if (line.length > MAX_LINE_LENGTH) {
+          if (
+            skippedSinkLine === 0 &&
+            (line.includes('eval(') || line.includes('Function('))
+          ) {
+            skippedSinkLine = i + 1;
+          }
+          // A skipped line is not blank: whatever follows it is not the
+          // continuation of a trailing sink token above it, so the carry
+          // ends here rather than leaking across the unread line.
+          pendingSinkToken = false;
+          continue;
+        }
         if (!hasCodePointAt && line.includes('.codePointAt(')) {
           hasCodePointAt = true;
           codePointAtLine = i + 1;
@@ -14825,20 +16154,36 @@ dist/
           hasHexLiteral = true;
           hexLiteralLine = i + 1;
         }
-        // A line that carries neither sink token and cannot open or close a
-        // block comment leaves both the state and the answer unchanged, so the
-        // character walk is skipped rather than run over every line of every
-        // scanned file. `inBlockComment` forces the walk because only the walk
-        // can find the closing delimiter.
+        // A line that carries neither sink token, cannot open or close a
+        // block comment, and has no pending cross-line sink token leaves both
+        // the state and the answer unchanged, so the character walk is
+        // skipped rather than run over every line of every scanned file.
+        // `inBlockComment` forces the walk because only the walk can find the
+        // closing delimiter; `pendingSinkToken` forces it because only the
+        // blanked line says whether its first code character is `(`.
         const mayAffectSink =
           !hasExecutionSink &&
-          (sinkCommentState.inBlockComment ||
+          (pendingSinkToken ||
+            sinkCommentState.inBlockComment ||
             line.includes('/*') ||
             line.includes('*/') ||
             line.includes('eval') ||
             line.includes('Function'));
         if (!mayAffectSink) continue;
         const codeLine = blankCommentRegions(line, sinkCommentState);
+        if (pendingSinkToken) {
+          const firstCode = codeLine.trimStart();
+          if (firstCode.length > 0) {
+            // A blank or comment-only line does not consume the pending
+            // token, same as the whitespace `\s*` inside the per-line
+            // patterns; the first line with code either opens the call or
+            // ends the carry.
+            pendingSinkToken = false;
+            if (firstCode.startsWith('(')) {
+              hasExecutionSink = true;
+            }
+          }
+        }
         for (const sinkScanner of executionSinkScanners) {
           sinkScanner.lastIndex = 0;
           let m: RegExpExecArray | null;
@@ -14860,6 +16205,18 @@ dist/
             if (sinkScanner.lastIndex <= m.index) sinkScanner.lastIndex = m.index + 1;
           }
           if (hasExecutionSink) break;
+        }
+        if (!hasExecutionSink) {
+          const trailing = TRAILING_SINK_TOKEN.exec(codeLine);
+          if (trailing) {
+            // Same discipline as the per-line loop above: the token must be
+            // code, not a string mention. Ask the predicate about the token
+            // itself, not the guard character before it.
+            const tokenIndex = trailing.index + trailing[0].indexOf(trailing[1]);
+            if (!isMatchInsideStringLiteral(codeLine, tokenIndex)) {
+              pendingSinkToken = true;
+            }
+          }
         }
       }
 
@@ -14950,7 +16307,11 @@ dist/
           passed: false,
           message: corroboration
             ? `Found GlassWorm decoder pattern in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), corroborated by ${corroboration}`
-            : `Found GlassWorm decoder shape in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), uncorroborated`,
+            : `Found GlassWorm decoder shape in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), uncorroborated${
+                skippedSinkLine > 0
+                  ? ` — note: line ${skippedSinkLine} contains an eval( or Function( token but was not read, because it exceeds the ${MAX_LINE_LENGTH}-character per-line limit`
+                  : ''
+              }`,
           file: relativePath,
           line: reportedLine,
           fixable: false,
@@ -15163,11 +16524,10 @@ dist/
     const yamlFiles = await this.walkDirectory(targetDir, ['.yaml', '.yml'], 0, 5);
 
     // Cap file counts to avoid scanning enormous repos
-    const maxFiles = 200;
-    const cappedSh = shFiles.slice(0, maxFiles);
-    const cappedTsJs = tsJsFiles.slice(0, maxFiles);
-    const cappedPy = pyFiles.slice(0, maxFiles);
-    const cappedYaml = yamlFiles.slice(0, maxFiles);
+    const cappedSh = shFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedTsJs = tsJsFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedPy = pyFiles.slice(0, MAX_FILES_PER_LAYER);
+    const cappedYaml = yamlFiles.slice(0, MAX_FILES_PER_LAYER);
 
     // A cap that fires means a clean NEMO result covers only the files that
     // were reached, not the tree. Reported so the category prints `partial`
@@ -15181,9 +16541,9 @@ dist/
     if (nemoDropped > 0) {
       this.coverage.truncate({
         layer: 'nemo-source',
-        cap: maxFiles,
+        cap: MAX_FILES_PER_LAYER,
         prefixes: ['NEMO'],
-        reason: `capped at ${maxFiles} files per extension — ${nemoDropped} source file${nemoDropped === 1 ? '' : 's'} not read`,
+        reason: `capped at ${MAX_FILES_PER_LAYER} files per extension — ${nemoDropped} source file${nemoDropped === 1 ? '' : 's'} not read`,
       });
     }
 
@@ -15677,14 +17037,22 @@ dist/
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
+        // Template-literal state carried across the line boundary, the
+        // `blankCommentRegions(line, state)` shape the AST sink walker
+        // already threads: a token standing alone on a continuation line
+        // of a multi-line backtick literal is text, not code. The blanked
+        // line is same-length, so match indices hand straight to the
+        // per-line predicate, which keeps owning the strings, comments
+        // and regexes that open and close on the line itself.
+        const templateState = { inTemplateLiteral: false, inBlockComment: false };
         for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
+          const codeLine = blankTemplateLiteralSpans(lines[i], templateState);
           // For each pattern, locate the match index and require that the
           // match site is real code — not a string literal or comment.
           // `screenInput('eval(atob("malicious"))', 'piped')` puts the
           // eval( token inside a string passed to a screener; suppress.
-          const bareEval = /(?<!\.)\beval\s*\(/.exec(line);
-          if (bareEval && !isMatchInsideStringLiteral(line, bareEval.index)) {
+          const bareEval = /(?<!\.)\beval\s*\(/.exec(codeLine);
+          if (bareEval && !isMatchInsideStringLiteral(codeLine, bareEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -15706,9 +17074,9 @@ dist/
           // and bypass the negative-lookbehind guard above. Detected separately
           // so the bare-eval finding above can stay narrow against method-call FPs.
           const indirectEval =
-            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.exec(line) ??
-            /\(\s*0\s*,\s*eval\s*\)\s*\(/.exec(line);
-          if (indirectEval && !isMatchInsideStringLiteral(line, indirectEval.index)) {
+            /\b(?:globalThis|window|self|frames|top|parent)\s*\.\s*eval\s*\(/.exec(codeLine) ??
+            /\(\s*0\s*,\s*eval\s*\)\s*\(/.exec(codeLine);
+          if (indirectEval && !isMatchInsideStringLiteral(codeLine, indirectEval.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -15725,8 +17093,8 @@ dist/
               guidance: 'Indirect eval forms (globalThis.eval, (0,eval)) are commonly used to access the global scope; they execute arbitrary code with the same risks as bare eval().',
             });
           }
-          const newFunction = /new\s+Function\s*\(/.exec(line);
-          if (newFunction && !isMatchInsideStringLiteral(line, newFunction.index)) {
+          const newFunction = /new\s+Function\s*\(/.exec(codeLine);
+          if (newFunction && !isMatchInsideStringLiteral(codeLine, newFunction.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',
@@ -15743,8 +17111,8 @@ dist/
               guidance: 'new Function() is equivalent to eval() -- it creates executable code from strings. If the string source is untrusted, this enables arbitrary code execution.',
             });
           }
-          const json5Parse = /JSON5\.parse/.exec(line);
-          if (json5Parse && !isMatchInsideStringLiteral(line, json5Parse.index)) {
+          const json5Parse = /JSON5\.parse/.exec(codeLine);
+          if (json5Parse && !isMatchInsideStringLiteral(codeLine, json5Parse.index)) {
             nemo009Found = true;
             findings.push({
               checkId: 'NEMO-009',

@@ -12,7 +12,7 @@
  */
 
 import type { SecurityAST, Capability } from '../types.js';
-import type { ASTFinding } from './capability-analyzer.js';
+import { purposeRedactionProvenance, type ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { findLineFromString } from '../../types/text-position.js';
@@ -293,6 +293,10 @@ function checkScopePurposeMismatch(ast: SecurityAST, artifactContent?: string): 
     // If zero overlap between purpose and capability keywords, it's a mismatch
     if (overlap.size === 0 && capKeywords.size > 0) {
       findings.push({
+        // This finding interpolates the declared purpose below; forward the
+        // purpose's redaction provenance so a removal at extraction is not
+        // reported 'clean' at emit (HMA-38).
+        ...purposeRedactionProvenance(ast),
         checkId: 'AST-SCOPE-003',
         name: 'Scope-Purpose Mismatch',
         description:
