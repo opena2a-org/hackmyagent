@@ -41,7 +41,7 @@ import { redactSecretsForReportReporting } from '../nanomind-core/security/defen
  * first, so the worst case here is linear in that bound times the input.
  */
 const LOCAL_RULES: ReadonlyArray<{ shape?: string; pattern: RegExp; replacement: string }> = [
-  // `scheme://user:pass@host`, any scheme; the password may carry `/` or `@`.
+  // `scheme://user:PLACEHOLDER@host`, any scheme; the password may carry `/` or `@`.
   { shape: 'url-credential', pattern: /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s'"@/:]{0,256}(?::[^\s'"]{0,256})?)@/gi, replacement: '$1[REDACTED_URL_CREDENTIAL]@' },
   // A quoted value assigned to a credential-named key, JSON spelling included.
   { pattern: /((?:password|passwd|pwd|pass|secret|token|key|credential|auth)[a-z0-9_-]{0,64}["']?\s*[:=]\s*["'])([^"'\s]{8,})(["'])/gi, replacement: '$1[REDACTED]$3' },

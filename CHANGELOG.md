@@ -100,7 +100,7 @@ single-page app's HTML fallback satisfies; an HTML body no longer counts.
 
 `hackmyagent red-team ./.mcp.json --json` placed the config's first long line
 into `target.declaredPurpose` verbatim; for a typical MCP config that is the
-`postgresql://user:password@host/db` connection string, password included, and
+`postgresql://user:PLACEHOLDER@host/db` connection string, password included, and
 depending on the artifact the same text reached `capabilities`,
 `modalStatements`, the surface map and the generated payloads
 (advertised-command audit, 2026-09-13). The text output carried less of it:

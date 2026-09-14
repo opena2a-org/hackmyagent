@@ -3,7 +3,7 @@
  * (advertised-command audit 2026-09-13, lane F).
  *
  * Measured on 0.33.0: `red-team ./.mcp.json --json` on a config whose first
- * long line is a `postgresql://user:password@host/db` connection string put
+ * long line is a `postgresql://user:PLACEHOLDER@host/db` connection string put
  * that line, password included, into `target.declaredPurpose`. The reader
  * treats the artifact as flat text, so the same text reaches `capabilities`,
  * `modalStatements`, `vulnerabilitySurface[].surface` and, through the payload
