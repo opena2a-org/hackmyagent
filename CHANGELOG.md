@@ -122,6 +122,16 @@ content was cut, and the JSON now goes through the shared stdout chokepoint,
 so it carries `hackmyagentVersion`: output without that key came from a
 version that echoed.
 
+### The root help names the contribution control that exists
+
+The telemetry block on `--help` said contribution could be disabled with
+`hackmyagent telemetry off`. That command toggles usage telemetry in
+`~/.config/opena2a/telemetry.json` and never read the contribution record,
+which lives in `~/.opena2a/config.json` under `contribute.enabled`
+(advertised-command audit, 2026-09-13, found on ai-trust's identical line).
+The block now names `--no-contribute` and that key, and says what
+`telemetry off` covers.
+
 ### Security
 
 `red-team` in 0.11.14 through 0.33.0, every published version with the command,

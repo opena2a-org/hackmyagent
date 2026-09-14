@@ -588,7 +588,8 @@ Quick start:
 program.addHelpText('after', `
 Telemetry:
   Anonymous usage telemetry is on. Disable: OPENA2A_TELEMETRY=off
-  Local scans may contribute to the OpenA2A Registry. Disable: --no-contribute or ${CLI_PREFIX} telemetry off
+  Local scans may contribute to the OpenA2A Registry once you have opted in. Disable: --no-contribute,
+  or set contribute.enabled to false in ~/.opena2a/config.json. '${CLI_PREFIX} telemetry off' covers usage telemetry only.
 `);
 
 program.hook('preAction', (thisCommand) => {
