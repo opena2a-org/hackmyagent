@@ -7,7 +7,7 @@
  * every root read site spelled the file by hand. Renaming the config raised
  * the rating while the servers stayed live.
  *
- * Contract under test (CPO ruling 2026-08-27, ledger):
+ * Contract under test (ruled 2026-08-27):
  *   - parity: both spellings score identically, and a record names the file
  *     it came from;
  *   - both present: EVERY existing config is evaluated (a first-found read
