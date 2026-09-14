@@ -23,7 +23,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'fs/promises';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'path';
 import * as os from 'os';
 import { HardeningScanner } from '../../src/hardening/scanner';
@@ -151,7 +151,7 @@ describe('secure on an empty directory (CLI)', () => {
     // A sandboxed HOME so a machine-level AI runtime cannot enter the picture.
     const home = mkdtempSync(path.join(os.tmpdir(), 'hackmyagent-dep001-home-'));
     spawned.push(home);
-    const r = spawnSync('node', [CLI, 'secure', dir, '--ci', '--json'], {
+    const r = spawnSync(process.execPath, [CLI, 'secure', dir, '--ci', '--json'], {
       encoding: 'utf8',
       env: { ...process.env, HOME: home, OPENA2A_CORPUS_DETERMINISTIC: '' },
     });
@@ -163,8 +163,8 @@ describe('secure on an empty directory (CLI)', () => {
     spawned.push(empty);
     const locked = mkdtempSync(path.join(os.tmpdir(), 'hackmyagent-dep001-locked-'));
     spawned.push(locked);
-    require('node:fs').writeFileSync(path.join(locked, 'package.json'), MANIFEST);
-    require('node:fs').writeFileSync(path.join(locked, 'package-lock.json'), LOCK);
+    writeFileSync(path.join(locked, 'package.json'), MANIFEST);
+    writeFileSync(path.join(locked, 'package-lock.json'), LOCK);
 
     const emptyRun = secureJson(empty);
     expect(dep001(emptyRun.findings)).toHaveLength(0);

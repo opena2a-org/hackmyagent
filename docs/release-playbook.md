@@ -134,13 +134,14 @@ node dist/cli.js secure /tmp/walk-empty --json \
 ```
 
 **Grade.**
-- Score MUST be `93/100`. The only scored findings are LOW `GIT-001` (missing
-  `.gitignore`) and MEDIUM `DEP-001` (no lock file; `file` is
-  `package-lock.json`, the path the fix creates). `SANDBOX-001` (`file`
+- Score MUST be `98/100`. The only scored finding is LOW `GIT-001` (missing
+  `.gitignore`). `DEP-001` reads `package.json` as its subject and records
+  not-applicable on a tree without one (0.34.0; on 0.33.0 it was a MEDIUM
+  with `file: package-lock.json` and the score was 93). `SANDBOX-001` (`file`
   `Dockerfile`) fails in `allFindings` but is out of scope for the `library`
   project type, so it is neither shown nor scored.
-- The human output MUST list exactly those two findings.
-- `na` MUST be `13`: a check whose subject is absent records
+- The human output MUST list exactly that one finding.
+- `na` MUST be `14`: a check whose subject is absent records
   `notApplicable: { subject, reason }` instead of a pass or a failure (#458).
   No not-applicable record may carry `severity` or `passed`, and none may
   appear in the human output.
