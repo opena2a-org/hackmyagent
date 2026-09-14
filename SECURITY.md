@@ -43,3 +43,10 @@ which version you reproduced on.
 We publish a GitHub Security Advisory for defects that affect users of the published package, and
 request a CVE where one applies. Advisories publish once a fixed version is installable from npm, so
 that the advisory and its remedy arrive together. We credit reporters who want credit.
+
+## Change control
+
+Changes to the automated review and release configuration (everything under
+`.github/`) require an approving review from a code owner. Automation can
+propose those changes; it cannot approve them. Ordinary pull requests are
+gated by status checks alone.
