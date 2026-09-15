@@ -11,13 +11,12 @@
  * and the failed-control list contradicting each other. The predicate now
  * matches both prefixes — the CRED-* and SEM-CRED-* families.
  *
- * NOTE (tracked separately, a benchmark-mapping gap): OASB-1 control 5.1's
- * `checkIds` include `CRED-002/003/004` and `SEM-CRED-*` but not the generic
- * `CRED-001` key detector, though 5.1's audit text expects it. The summary
- * counts CRED-001 (it is a hardcoded secret), so the summary is a SUPERSET of
- * control 5.1's cited findings until CRED-001 is mapped — filed for the
- * benchmark owner. The equality cell below is scoped to a semantic-only tree,
- * where CRED-001 does not fire and the two coincide.
+ * NOTE: when this landed, OASB-1 control 5.1's `checkIds` included
+ * `CRED-002/003/004` and `SEM-CRED-*` but not the generic `CRED-001` key
+ * detector, though 5.1's audit text expected it; #739 mapped CRED-001. The
+ * summary counts per finding over both families, so it stays a SUPERSET of
+ * control 5.1's cited lines (one per failing record), which is the
+ * direction the cells below pin.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -93,8 +92,8 @@ describe('#606 ASP credential summary counts the CRED- and SEM-CRED- families', 
   it('the summary is a superset of what control 5.1 cites — it never underreports', () => {
     // The two counts are NOT equal in general: the summary counts per finding
     // over the CRED-*/SEM-CRED-* families, while the control
-    // cites one entry per distinct failed checkId in its own (CRED-001-less)
-    // set. The invariant that matters for #606 is that the summary never
+    // cites one entry per failing record of its own checkId set. The
+    // invariant that matters for #606 is that the summary never
     // reports FEWER secrets than a failed control lists — the direction that
     // produced the false "0" contradiction.
     const j = asp(dotenvTree);
@@ -106,9 +105,10 @@ describe('#606 ASP credential summary counts the CRED- and SEM-CRED- families', 
 
   it('REGRESSION GUARD: a generic hardcoded key is still counted under --static-only', () => {
     // The first cut of this fix sourced the count from control 5.1 alone,
-    // which drops CRED-001 (the generic key detector, mapped to no control):
-    // under --static-only (semantic checks off) a real key then reported 0.
-    // The two-prefix predicate keeps it counted.
+    // which at the time dropped CRED-001 (the generic key detector was not
+    // mapped to any control until #739): under --static-only (semantic checks
+    // off) a real key then reported 0. The two-prefix predicate keeps it
+    // counted whatever the control mapping says.
     const j = asp(configTree, ['--static-only']);
     expect(j.credentials.hardcodedSecrets).toBeGreaterThan(0);
     expect(j.credentials.recommendation).not.toMatch(/No hardcoded credentials detected/);

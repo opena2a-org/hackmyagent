@@ -632,7 +632,12 @@ export const OASB_1_CATEGORIES: BenchmarkCategory[] = [
           '1. Remove all hardcoded credentials from code immediately\n2. Rotate any credentials that may have been exposed\n3. Use environment variables for development:\n   export OPENAI_API_KEY="sk-..."\n4. Use a secrets manager for production:\n   - AWS Secrets Manager\n   - HashiCorp Vault\n   - Azure Key Vault\n   - 1Password Connect\n5. Add .env to .gitignore\n6. Install pre-commit hooks to prevent secret commits:\n   pip install detect-secrets\n   detect-secrets-hook --baseline .secrets.baseline',
         impact: 'Requires infrastructure for secret management. Adds complexity to local development setup.',
         defaultValue: 'Many tutorials and examples include hardcoded API keys. Most agent frameworks do not enforce secure credential handling.',
-        checkIds: ['CRED-002', 'CRED-003', 'CRED-004', 'SEM-CRED-001', 'SEM-CRED-002', 'SEM-CRED-003', 'SEM-CRED-004'],
+        // #739 — CRED-001 is the scanner's plaintext-credential walk: the one
+        // record that covers every credential-bearing file `secure` reads
+        // (.claude/settings.json, .env, MCP configs, agent configs). Without
+        // it the control passed on CRED-002's clean "no private key files"
+        // record while the plain scan reported the key as CRITICAL.
+        checkIds: ['CRED-001', 'CRED-002', 'CRED-003', 'CRED-004', 'SEM-CRED-001', 'SEM-CRED-002', 'SEM-CRED-003', 'SEM-CRED-004'],
         verification: 'automated',
         references: [
           'https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html',
