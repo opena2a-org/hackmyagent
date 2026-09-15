@@ -137,6 +137,21 @@ which lives in `~/.opena2a/config.json` under `contribute.enabled`
 The block now names `--no-contribute` and that key, and says what
 `telemetry off` covers.
 
+### `secure --ci -b oasb-1` control 5.1 reads the credential files the scanner reads
+
+OASB-1 control 5.1 "No Hardcoded Credentials" mapped `CRED-002`, `CRED-003`,
+`CRED-004` and `SEM-CRED-001` to `SEM-CRED-004`, but not `CRED-001`, the
+plaintext-credential walk that reads `.claude/settings.json`, `.env` and the
+MCP and agent configs. The control therefore passed on a tree the plain scan
+flags. It now consumes `CRED-001`, and the evidence line cites the record's
+file and line through the same path escape the plain scan uses
+(`CRED-001: Anthropic API Key found in plaintext (.claude/settings.json:1)`);
+`oasb-2` goes through the same report and is fixed with it. On such a tree the
+benchmark now reports `[-] 5.1`, Credential Protection 0/1, and exits 1 where
+0.33.0 reported `[+] 5.1` and exited 0. The SARIF join matches evidence lines
+by their `checkId` prefix instead of a substring
+([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
+
 ### Security
 
 `red-team` in 0.11.14 through 0.33.0, every published version with the command,
@@ -216,7 +231,7 @@ Everything below this heading down to the 0.32.0 entry landed on main after
   without a `package.json` in the next release.
 - `secure --ci -b oasb-1` reports `5.1: No Hardcoded Credentials` as passed on
   a tree whose `.claude/settings.json` holds a plaintext key, while `secure`
-  and `detect` on the same tree flag it. Present in 0.32.0. Target 0.34.0
+  and `detect` on the same tree flag it. Present in 0.32.0. Fixed in 0.33.1
   ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
 - `check <local dir> --offline` prints a score (`96/100`, `Usable with caveats`)
   and exits 0 while noting that the static checks were not run, so a local
