@@ -20,7 +20,9 @@
  * empty figures once more: neither tree has a package.json, so the four
  * dependency controls (6.1-6.4) read not-applicable instead of failed.
  * wild: 33% (4/12) -> 50% (4/8), 8 failed -> 4, SARIF 8 -> 4 results;
- * empty: 3/4/19/0 at 43 -> 3/0/19/4 at 100. wildLock is unchanged.
+ * empty: 3/4/19/0 at 43 -> 3/0/19/4, and the zero-read floor then withholds
+ * the rating over those statuses (`Not Assessed`, compliance null, exit 2:
+ * the scan read no file from the tree). wildLock is unchanged.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -128,13 +130,18 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
     expect(gated.status).toBe(1);
   });
 
-  it('PIN: an empty directory is unmoved — 2.1 unverified, 3/0/19/4, compliance 100', () => {
-    const body = json(run(empty, ['--format', 'json']).stdout);
+  it('PIN: an empty directory is unmoved — 2.1 unverified, 3/0/19/4, rating withheld by the zero-read floor', () => {
+    const r = run(empty, ['--format', 'json']);
+    const body = json(r.stdout);
     const c = body.categories.flatMap((x: any) => x.controls).find((x: any) => x.controlId === '2.1');
     expect(c.status).toBe('unverified');
     // Was 3/4/19/0 and 43 while DEP-001 failed on a tree with no package
-    // manifest; those four controls (6.1-6.4) now read not-applicable.
+    // manifest; those four controls (6.1-6.4) now read not-applicable. The
+    // statuses are the records; the rating over them is withheld because
+    // the scan read no file from this tree (`Not Assessed`, null, exit 2).
     expect([body.passedControls, body.failedControls, body.unverifiedControls, body.notApplicableControls]).toEqual([3, 0, 19, 4]);
-    expect(body.compliance).toBe(100);
+    expect(body.rating).toBe('Not Assessed');
+    expect(body.compliance).toBeNull();
+    expect(r.status).toBe(2);
   });
 });

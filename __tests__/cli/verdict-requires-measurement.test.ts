@@ -546,6 +546,10 @@ describe('#440 no benchmark gate can be switched off by a score flag', () => {
     // `--fail-below 0` printed `Rating: Not Passing` and exited 0.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-oasb1-'));
     fs.writeFileSync(path.join(dir, 'README.md'), '# demo\n');
+    // A manifest with no lock file keeps DEP-001 failing, so the tree rates
+    // Not Passing. A README-only tree no longer does: DEP-001 reads
+    // package.json as its subject and is not-applicable without one.
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"demo","version":"1.0.0"}\n');
     for (const extra of [[], ['--fail-below', '0'], ['--fail-below', '1']]) {
       const { status, out } = run(['secure', dir, '-b', 'oasb-1', ...extra]);
       expect(out).toMatch(/Rating:\s+(Not Passing|Needs Improvement)/);

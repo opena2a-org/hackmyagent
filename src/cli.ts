@@ -4435,6 +4435,43 @@ interface BenchmarkRunFlags {
   ignore?: string[];
   deep?: boolean;
   staticOnly?: boolean;
+  /** The scan's own `coverage.filesExamined`; `0` is the zero-read floor. */
+  filesExamined?: number;
+}
+
+/**
+ * The zero-read floor: a benchmark over a scan that read no file is not a
+ * measurement of the tree, whatever its control statuses add up to.
+ *
+ * Once DEP-001 read the package manifest as its subject, an empty directory
+ * carried no failing L1 control at all — 6.1-6.4 not-applicable, three
+ * hazard probes passing on not-there, the rest unverified — and the ladder
+ * rated it `Certified` at 100% (3/3 verified controls), exit 0. Keyed on the
+ * `filesExamined` figure the scanner's coverage ledger already counts (the
+ * same field `secure --json` carries and the remote-target verdict reads):
+ * zero files read withholds the rating and every level's compliance, and
+ * leaves the control statuses as the true records they are. The existing
+ * `Not Assessed` exit path then raises the not-measured floor (2) and
+ * `--fail-below` is not evaluated over the null.
+ */
+function applyZeroReadFloor(
+  benchmarkResult: BenchmarkResult,
+  scan: { coverage?: { filesExamined: number } },
+): BenchmarkResult {
+  if (scan.coverage?.filesExamined !== 0) return benchmarkResult;
+  return {
+    ...benchmarkResult,
+    rating: 'Not Assessed',
+    compliance: null,
+    l1Compliance: null,
+    l2Compliance: null,
+    l3Compliance: null,
+  };
+}
+
+/** The reason a zero-read run prints beside its withheld rating. */
+function zeroReadReason(targetDir: string): string {
+  return `no file was read from ${escapeForDisplay(targetDir)}`;
 }
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -4466,6 +4503,16 @@ function notAssessedLines(result: BenchmarkResult, targetDir: string, flags?: Be
   // reader cannot be shown truthfully becomes the house `<dir>` placeholder.
   const dir = citationTarget(targetDir);
   const lines: string[] = [];
+  // The zero-read floor withholds every level for one reason, so one line
+  // says it; the per-level population sentences below would describe
+  // controls that did produce a result and contradict the withheld rating.
+  if (flags?.filesExamined === 0) {
+    return [
+      `Not assessed: ${zeroReadReason(targetDir)}, so no control was measured and no rating is awardable. ` +
+      `Verify: ${CLI_PREFIX} secure ${dir} --json | jq .coverage.filesExamined ` +
+      `Fix: run against the project root that holds the artifacts OASB-1 examines (package manifest, agent or MCP config, source).`,
+    ];
+  }
   for (const lv of examined) {
     if (byLevel[lv] !== null) continue;
     const inScope = result.categories
@@ -4551,7 +4598,8 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
   console.log(`Level: ${levelNames[result.level]}`);
   console.log(`Rating: ${ratingColors[result.rating]}${ratingWithScope(result)}${RESET()}`);
   if (result.compliance === null) {
-    console.log(`Compliance: not measured (0/0 verified controls)`);
+    const why = flags?.filesExamined === 0 ? zeroReadReason(targetDir) : '0/0 verified controls';
+    console.log(`Compliance: not measured (${why})`);
   } else {
     console.log(`Compliance: ${result.compliance}% (${result.passedControls}/${result.passedControls + result.failedControls} verified controls)`);
   }
@@ -4893,7 +4941,7 @@ Examples:
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
   .option('-o, --output <file>', 'Write output to file instead of stdout')
-  .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate; not evaluated when no compliance was measured (0 verified controls: exit 2)')
+  .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate; not evaluated when no compliance was measured (exit 2)')
   .option('-v, --verbose', 'Show all checks including passed ones')
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
@@ -5559,10 +5607,9 @@ Examples:
 
       // OASB composite mode: infrastructure (50%) + governance (50%)
       if (isOasb2) {
-        const infraResult = generateBenchmarkReport(
-          result.allFindings || result.findings,
-          level,
-          options.category,
+        const infraResult = applyZeroReadFloor(
+          generateBenchmarkReport(result.allFindings || result.findings, level, options.category),
+          result,
         );
 
         const { SoulScanner } = await import('./soul/index.js');
@@ -5623,6 +5670,7 @@ Examples:
             ignore: ignoreList,
             deep: options.deep === true,
             staticOnly: isStaticOnly,
+            filesExamined: result.coverage?.filesExamined,
           });
           printBenchmarkUnreadDisclosure(result);
 
@@ -5665,8 +5713,11 @@ Examples:
         // `Not Assessed`. A measured governance failure (conformance NONE,
         // exit 1 below) outranks it — that arm's recorded precedence.
         if (compositeScore === null) {
+          const why = result.coverage?.filesExamined === 0
+            ? zeroReadReason(targetDir)
+            : 'no scored OASB-1 control produced a result in this selection';
           console.error(
-            `Composite score is not measured: no scored OASB-1 control produced a result in this selection, so there is no infrastructure figure to average. Exit code raised to ${EXIT_UNMEASURED} (not measured).`,
+            `Composite score is not measured: ${why}, so there is no infrastructure figure to average. Exit code raised to ${EXIT_UNMEASURED} (not measured).`,
           );
           raiseExitCode(EXIT_UNMEASURED);
         }
@@ -5690,10 +5741,9 @@ Examples:
         // allFindings: every finding regardless of the score threshold. It is
         // not unfiltered: `--ignore` removed its checks above, so the controls
         // they measure read as not assessed (the cited Verify repeats the flag).
-        const benchmarkResult = generateBenchmarkReport(
-          result.allFindings || result.findings,
-          level,
-          options.category
+        const benchmarkResult = applyZeroReadFloor(
+          generateBenchmarkReport(result.allFindings || result.findings, level, options.category),
+          result,
         );
 
         // The run's own flags, for the Verify/Fix commands the report cites.
@@ -5704,6 +5754,7 @@ Examples:
           ignore: ignoreList,
           deep: options.deep === true,
           staticOnly: isStaticOnly,
+          filesExamined: result.coverage?.filesExamined,
         };
 
         // Output based on format
@@ -5777,9 +5828,11 @@ Examples:
         // ruling of 2026-08-25. The reason printed says which case it is.
         if (benchmarkResult.rating === 'Not Assessed') {
           const measuredElsewhere = benchmarkResult.passedControls + benchmarkResult.failedControls;
-          const why = measuredElsewhere > 0
-            ? `no scored L1 control produced a result in this selection, so the rating ladder cannot be read; ${plural(measuredElsewhere, 'scored control')} at a higher level produced a result and ${measuredElsewhere === 1 ? 'is' : 'are'} not rated`
-            : 'no scored control produced a result';
+          const why = result.coverage?.filesExamined === 0
+            ? zeroReadReason(targetDir)
+            : measuredElsewhere > 0
+              ? `no scored L1 control produced a result in this selection, so the rating ladder cannot be read; ${plural(measuredElsewhere, 'scored control')} at a higher level produced a result and ${measuredElsewhere === 1 ? 'is' : 'are'} not rated`
+              : 'no scored control produced a result';
           console.error(`Benchmark rating is Not Assessed: ${why}. Exit code raised to ${EXIT_UNMEASURED} (not measured).`);
           raiseExitCode(EXIT_UNMEASURED);
         }
@@ -5792,7 +5845,8 @@ Examples:
         // earlier). A threshold is a claim about a measurement.
         if (failBelow !== undefined) {
           if (benchmarkResult.compliance === null) {
-            console.error(`--fail-below ${failBelow} not evaluated: no compliance was measured (0 verified controls).`);
+            const why = result.coverage?.filesExamined === 0 ? zeroReadReason(targetDir) : '0 verified controls';
+            console.error(`--fail-below ${failBelow} not evaluated: no compliance was measured (${why}).`);
           } else if (benchmarkResult.compliance < failBelow) {
             // Beside a Not Assessed rating this is the case the comment above
             // describes: the breach is over a MEASURED figure, so it outranks
