@@ -4,6 +4,19 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### The not-found smoke tests name a Registry outage where they fail
+
+`__tests__/checker/check-not-found-json.test.ts` spawns the built CLI five
+times against the Registry and captured the child's stderr without printing
+it, so an outage reached CI as `expected '' to contain 'pack ...'` and
+`expected undefined to be 'github'` (Test matrix run 35032162323, 2026-09-15)
+with no line in the log naming the class. A new `expectRegistryAnswered`
+assertion runs first after every spawn and puts the child's stderr, on one
+line, into the assertion message when it carries `Registry request timed out
+after`, `Registry network error:` or `Registry API returned 5xx`, so the CLI's
+own marker lands on the failing test's `##[error]` line. No shipped code
+changes.
+
 ### The release is reviewed as the CI-packed tarball, never the tree (HMA-40)
 
 `release.yml` no longer grants `contents: write` and `id-token: write` to one
