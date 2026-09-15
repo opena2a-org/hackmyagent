@@ -147,10 +147,23 @@ flags. It now consumes `CRED-001`, and the evidence line cites the record's
 file and line through the same path escape the plain scan uses
 (`CRED-001: Anthropic API Key found in plaintext (.claude/settings.json:1)`);
 `oasb-2` goes through the same report and is fixed with it. On such a tree the
-benchmark now reports `[-] 5.1`, Credential Protection 0/1, and exits 1 where
-0.33.0 reported `[+] 5.1` and exited 0. The SARIF join matches evidence lines
-by their `checkId` prefix instead of a substring
+benchmark now reports `[-] 5.1` and Credential Protection 0/1 where 0.33.0
+reported `[+] 5.1` and 1/1. The exit code moves only on a tree that passes
+every other control: a developer tree holding `CLAUDE.md`, an `.env.example`
+of placeholder values, `package.json`, `package-lock.json` and `LICENSE`
+beside the key went from Certified, 100% (9/9), exit 0 on 0.33.0 to Needs
+Improvement, 89% (8/9), exit 1; a directory holding nothing but
+`.claude/settings.json` exits 1 on both versions, because other controls
+already fail there (Not Passing, 43% on 0.33.0 and 29% on 0.33.1). The SARIF
+join matches evidence lines by their `checkId` prefix instead of a substring
 ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
+`check <dir> --offline` still runs none of the static checks on a local
+directory ([#740](https://github.com/opena2a-org/hackmyagent/issues/740)),
+`-v` after `secure`, `scan-soul` or `check` still prints the version and exits
+0 without scanning ([#741](https://github.com/opena2a-org/hackmyagent/issues/741)),
+and `DEP-001` still fires on a tree without a `package.json`
+([#751](https://github.com/opena2a-org/hackmyagent/issues/751)); all three are
+unchanged from 0.33.0, listed under its Known issues, and target 0.34.0.
 
 ### Security
 
