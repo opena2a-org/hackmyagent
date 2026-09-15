@@ -3322,7 +3322,7 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
         });
 
         // Find related findings for locations
-        const relatedFindings = findings.filter(f => ctrl.findings.some(cf => cf.includes(f.checkId)));
+        const relatedFindings = findings.filter(f => ctrl.findings.some(cf => cf.startsWith(`${f.checkId}: `)));
 
         if (relatedFindings.length > 0) {
           for (const finding of relatedFindings) {
