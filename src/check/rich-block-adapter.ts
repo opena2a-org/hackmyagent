@@ -3,7 +3,7 @@
  * registry trust data, and runtime args into a `CheckRichBlockInput`
  * suitable for `renderCheckRichBlock` from `@opena2a/cli-ui`.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§3, §5, §7).
+ * Design brief: rich check context for skills and MCP, v1 (§3, §5, §7).
  *
  * Pure function — no I/O. Validates inner JSON shapes (the registry
  * handler ships them as opaque JSON.RawMessage) and returns null when

@@ -118,7 +118,7 @@ function scan(
 }
 
 // Frozen per-file counts of lines matching the first expression, measured on
-// the delivered tree: 82 files, 211 lines. Line numbers are deliberately not
+// the delivered tree: 47 files, 116 lines. Line numbers are deliberately not
 // pinned — unrelated edits would shift them.
 const PATTERN_BASELINE: Record<string, number> = {
   'CHANGELOG.md': 31,
@@ -168,41 +168,6 @@ const PATTERN_BASELINE: Record<string, number> = {
   'docs/release-playbook.md': 11,
   'docs/testing/release-smoke.md': 2,
   'src/attack/payloads/capability-abuse.ts': 10,
-  'src/benchmarks/benchmark-report.ts': 1,
-  'src/benchmarks/oasb-1.ts': 3,
-  'src/check/narrative-fetch.ts': 1,
-  'src/check/render-rich-block.ts': 1,
-  'src/check/rich-block-adapter.ts': 1,
-  'src/check/skill-mcp-check.ts': 1,
-  'src/cli-prefix.ts': 1,
-  'src/cli.ts': 19,
-  'src/eval/oracle.ts': 1,
-  'src/hardening/finding-emit.ts': 2,
-  'src/hardening/path-context.ts': 4,
-  'src/hardening/scanner.ts': 12,
-  'src/hardening/security-check.ts': 3,
-  'src/hardening/settled-outcome.ts': 3,
-  'src/mcp-server.ts': 4,
-  'src/mcp/roots.ts': 2,
-  'src/nanomind-core/analyst-coverage.ts': 4,
-  'src/nanomind-core/analyzers/credential-analyzer.ts': 3,
-  'src/nanomind-core/index.ts': 2,
-  'src/nanomind-core/inference/security-analyst.ts': 1,
-  'src/nanomind-core/orchestrate.ts': 6,
-  'src/nanomind-core/scanner-bridge.ts': 1,
-  'src/narrative/build-narrative.ts': 1,
-  'src/narrative/index.ts': 1,
-  'src/narrative/mcp-narrative.ts': 1,
-  'src/narrative/narrative-summary.ts': 3,
-  'src/narrative/publish-narrative.ts': 1,
-  'src/narrative/skill-narrative.ts': 2,
-  'src/narrative/wire-publish.ts': 2,
-  'src/output/json-stdout.ts': 1,
-  'src/registry/stub-writeback.ts': 2,
-  'src/semantic/integration/finding-adapter.ts': 1,
-  'src/soul/scanner.ts': 2,
-  'src/store/project-store.ts': 1,
-  'src/ui/analyst-dissent.ts': 1,
 };
 
 // Frozen per-file counts of non-exempted lines matching the second expression,
@@ -333,8 +298,8 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC3 every public-surface file carries exactly the frozen number of lines matching the first expression', () => {
-    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(82);
-    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(211);
+    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(47);
+    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(116);
     const { hits } = scan(REPO_ROOT, PATTERN);
     expect(compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE)).toEqual([]);
   });

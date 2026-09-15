@@ -3,7 +3,7 @@
  * and the evidence a recorded `integrated` carries.
  *
  * The CLI leg of DEFECT 2 in
- * `todo/roadmap/hackmyagent-pull-stubs-status-vocabulary-mismatch.md`: nothing
+ * the pull-stubs status-vocabulary mismatch unit: nothing
  * in HMA marked a stub integrated, so the observation -> shipped-check
  * transition was manual and unaudited. The value of a write-back is entirely
  * in whether the record it writes is TRUE, which is why the refusals live
@@ -74,7 +74,7 @@ export interface StubPatchBody {
 export const SOURCE_COMMIT_SHAPE = /^[0-9a-fA-F]{7,40}$/;
 
 /**
- * The two statuses this command gates on, named because the CPO ruling names
+ * The two statuses this command gates on, named because the ruling names
  * them: `integrated` is the claim that a check SHIPPED, and `rejected` is the
  * claim that a human decided against one. Both are assertions somebody will
  * later be asked to defend.

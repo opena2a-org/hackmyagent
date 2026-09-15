@@ -356,7 +356,7 @@ export async function runAnalystInference(
 
 /**
  * Raw (but boundary-sanitized) per-artifact classification for the coverage
- * sweep (Phase A P1, CDS-023). Unlike runAnalystInference, this preserves the
+ * sweep (Phase A P1). Unlike runAnalystInference, this preserves the
  * daemon's universal verdict fields verbatim so the routing layer
  * (analyst-coverage.ts routeAnalystVerdict) can apply the posture-vs-attack +
  * abstention mapping itself. The shape is assignable to AnalystVerdict.

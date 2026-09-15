@@ -84,7 +84,7 @@ export interface OrchestrationResult {
     modelLabel: string;
   };
   /**
-   * Analyst coverage escalations (--nanomind, Phase A P1, CDS-023/024).
+   * Analyst coverage escalations (--nanomind, Phase A P1).
    * Files the deterministic scan did NOT flag but the v3.0.0 analyst routed to
    * `attack` or `abstain` under the abstention-gated policy. ADVISORY channel
    * only: these never enter mergedFindings, never change severity, score, or
@@ -288,7 +288,7 @@ export async function orchestrateNanoMind(
           }
         }
 
-        // --- Coverage sweep (Phase A P1, CDS-023): the per-finding stage above
+        // --- Coverage sweep (Phase A P1): the per-finding stage above
         // only reaches files the structural layer ALREADY flagged. Behavioral
         // attacks the AST is blind to (intent-as-instruction-text: prompt
         // injection, social engineering, code-level RCE in prose) produce zero
@@ -298,7 +298,7 @@ export async function orchestrateNanoMind(
         // artifacts WITHOUT a high/critical structural attack finding through
         // the analyst and routes the verdict under the abstention-gated policy:
         // the analyst can only ESCALATE for human review, never raise the
-        // auto-verdict (CDS-024 — raw auto-verdict is NO-GO).
+        // auto-verdict (release-gate ruling — raw auto-verdict is NO-GO).
         const sweep = await runCoverageSweep(
           targetDir,
           nmResult.coverageCandidates,
@@ -453,7 +453,7 @@ async function runAnalystOnFindings(
     });
 
     if (response) {
-      // [CHIEF-CISO] 2026-08-21: the analyst response rides the secure/check
+      // Ruled 2026-08-21: the analyst response rides the secure/check
       // JSON channels raw, and "its input was already redacted" was a
       // prose-only invariant one upstream edit could break silently. The
       // open-bag walk makes it structural: every string leaf at any depth is
@@ -469,7 +469,7 @@ async function runAnalystOnFindings(
 export const runAnalystOnFindingsForTest = runAnalystOnFindings;
 
 // ============================================================================
-// Coverage sweep (Phase A P1 — CDS-023/024, abstention-gated)
+// Coverage sweep (Phase A P1 — abstention-gated)
 // ============================================================================
 
 /**
@@ -510,7 +510,7 @@ export interface CoverageSweepOutcome {
  * with a high/critical attack finding, and route each verdict under the
  * abstention-gated policy. The analyst can only ESCALATE (advisory, human
  * review); it never produces a finding, never changes severity/score/exit
- * code, and never suppresses anything (CDS-024).
+ * code, and never suppresses anything (release-gate ruling).
  *
  * The classify function is injected so tests can exercise routing without a
  * daemon; production passes classifyArtifactForCoverage (gate + NLM over the

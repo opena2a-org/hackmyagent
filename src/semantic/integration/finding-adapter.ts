@@ -26,7 +26,7 @@ import { resolveFindingLine } from '../../types/finding-location';
  * added here that the canonical draft lacks, or a type that widens past it.
  * The exported NAME stays `SecurityFinding` because it is public on the `.`
  * and `./semantic` subpaths and renaming a published type is a breaking
- * change (`[CHIEF-CA]` 2026-08-21).
+ * change (ruled 2026-08-21).
  */
 export interface SecurityFinding {
   checkId: string;
