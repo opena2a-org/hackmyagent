@@ -2,6 +2,8 @@
 
 All notable changes to HackMyAgent are documented in this file.
 
+## [Unreleased]
+
 ## [0.33.1] - 2026-09-15
 
 ### The release is reviewed as the CI-packed tarball, never the tree (HMA-40)

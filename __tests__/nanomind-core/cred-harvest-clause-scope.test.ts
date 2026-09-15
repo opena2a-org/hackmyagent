@@ -21,6 +21,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { sectionRecording } from '../helpers/changelog-record';
 import {
   SemanticCompiler,
   findCredentialHarvestClauses,
@@ -300,7 +301,7 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
     // names the fixture.
     expect(checkIdsOf(GOLDEN_CARRIERS[0])).not.toContain('AST-CRED-001');
 
-    const section = recordingSection(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8'));
+    const section = sectionRecording(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8'), /CRED-HARVEST prose rule is clause-scoped/);
     expect(section, 'the recording section must record the exfil-skill removal').toContain('exfil-skill');
   });
 
@@ -322,20 +323,6 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
   });
 });
 
-/**
- * `[Unreleased]` together with the newest dated release: the record moves at
- * the release cut and the invariant follows it, and an unrelated entry added
- * under `[Unreleased]` afterwards does not hide it.
- */
-function recordingSection(changelog: string): string {
-  const start = changelog.indexOf('## [Unreleased]');
-  expect(start, 'the [Unreleased] heading must exist').toBeGreaterThanOrEqual(0);
-  const next = changelog.indexOf('\n## ', start + 1);
-  if (next < 0) return changelog.slice(start);
-  const after = changelog.indexOf('\n## ', next + 1);
-  return after < 0 ? changelog.slice(start) : changelog.slice(start, after);
-}
-
 describe('HMA-41 delivery invariants', () => {
   it('HMA-41.AC7 package.json names a released version: a fix leg bumps nothing, the release seat cuts the release', () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
@@ -346,7 +333,7 @@ describe('HMA-41 delivery invariants', () => {
   });
 
   it('HMA-41.AC7 CHANGELOG.md describes the clause-scoping in the section that records it', () => {
-    const section = recordingSection(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8')).toLowerCase();
+    const section = sectionRecording(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8'), /CRED-HARVEST prose rule is clause-scoped/).toLowerCase();
     expect(section).toContain('cred-harvest');
     expect(section).toContain('clause');
   });
