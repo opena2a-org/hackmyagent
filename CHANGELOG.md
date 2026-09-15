@@ -147,6 +147,15 @@ lines from 0.26.0. Fixed here: the artifact is redacted before extraction, and
 key came from an affected version. If output from an artifact holding a
 credential left your machine, rotate the credential. `red-team` never uploads
 its output; it travelled only where you moved it.
+Separately, [GHSA-ccp3-g7fv-9cqr](https://github.com/opena2a-org/hackmyagent/security/advisories/GHSA-ccp3-g7fv-9cqr)
+("Credential characters could reach JSON output and be marked as checked", affected
+range `>= 0.17.11`) remains open in 0.33.1, and no published version resolves it. The
+advisory's guidance applies to 0.33.1 unchanged: search stored JSON and ASFF output for
+the vendor prefix of any key present in a scanned target, for example
+`grep -rn 'AKIA' path/to/stored-output`, and if characters of the key follow the prefix,
+rotate that key and remove the stored file wherever it travelled, including CI artifacts,
+log pipelines and tickets. A clean `secure` result is not evidence that no credential is
+present; keep a dedicated secret scanner in the path.
 
 ### The MCP checks read every root config spelling, so renaming mcp.json no longer raises the rating
 
