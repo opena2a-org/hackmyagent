@@ -45,3 +45,6 @@ coverage/
 
 # Runtime cache the scanner writes into the working directory
 .hackmyagent-cache/
+
+# docs/vhs tapes also render an MP4 for the websites; only the GIF is committed here
+docs/vhs/*.mp4

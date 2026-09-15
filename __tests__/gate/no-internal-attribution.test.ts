@@ -329,6 +329,9 @@ describe('internal attribution stays off the public surfaces', () => {
       'docs/hackmyagent-demo.gif',
       'docs/images/secure-demo.png',
       'docs/vhs/attack-dvaa.gif',
+      'docs/vhs/detect-inventory.png',
+      'docs/vhs/detect-path-forward.png',
+      'docs/vhs/detect.gif',
     ]);
   });
 
