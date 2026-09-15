@@ -121,7 +121,7 @@ const TOOL_DEFINITIONS = [
  * The registry, exported so tests can enumerate it instead of restating it.
  *
  * A table-driven confinement test that hardcodes its own list of tools stops
- * covering the next tool the moment one is added, which is the failure mode CPO
+ * covering the next tool the moment one is added, which is the failure mode review
  * named: "any new MCP tool that takes a path and does not call the shared root
  * helper" would pass a test that never looked at it.
  */
@@ -365,14 +365,14 @@ export async function handleToolCall(
         if (result.withheldLinks?.length) parts.push(mcpWithheldLinksText(result.withheldLinks));
         // The WRITE PATH is gone, not just the schema property: models pass
         // properties outside a schema routinely, so deleting the property alone
-        // would have left the write capability live and undocumented (CPO).
+        // would have left the write capability live and undocumented.
         // `scan` above is called with no `autoFix`, so there is nothing here for
         // a `fix` argument to reach. The flag is still READ, and only read, so
         // that a caller who sends it is told it was declined — dropping it
         // silently is the dead end the same ruling refused.
         if (args?.fix !== undefined) parts.push(fixRequestedNote(dir));
         // A model-supplied suppression list that does not appear in the output is
-        // the score-laundering defect of #450 with a different caller (CISO).
+        // the score-laundering defect of #450 with a different caller.
         if (ignore.length > 0) {
           parts.push(
             `Scope: ${ignore.length} check ID${ignore.length === 1 ? '' : 's'} suppressed at this tool's request (${ignore.join(', ')}). The score below is computed over the checks that ran.`,
@@ -497,7 +497,7 @@ export async function handleToolCall(
  *
  * The server still starts with no root so the client sees a working connection
  * and `tools/list` answers — a startup exit would surface as an opaque "server
- * failed to start" in a log the user may never open (CPO). Every path-taking
+ * failed to start" in a log the user may never open. Every path-taking
  * tool then returns the refusal, which carries the one command that fixes it.
  */
 export async function startMcpServer(cliRoots: string[] = []): Promise<void> {

@@ -1,7 +1,7 @@
 /**
  * HTTP client for the registry's POST /api/v1/trust/narrative endpoint.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§4)
+ * Design brief: rich check context for skills and MCP, v1 (§4)
  * Registry handler: opena2a-registry/internal/interfaces/http/handlers/package_narrative_handler.go
  *
  * Behavior:

@@ -2,7 +2,7 @@
  * The JSON-stdout document builder: version stamp + the publish-boundary read.
  *
  * Extracted from `cli.ts` (unit 2 of the redaction-boundary hardening) so the
- * chokepoint is IMPORTABLE — `[CHIEF-CISO]` 2026-08-21 requires every publish
+ * chokepoint is IMPORTABLE — the 2026-08-21 ruling requires every publish
  * boundary's read to be proven by runtime injection through the real builder,
  * and a function buried in the CLI entrypoint cannot be injected without
  * spawning. `cli.ts`'s `writeJsonStdout` delegates here; ~32 JSON surfaces

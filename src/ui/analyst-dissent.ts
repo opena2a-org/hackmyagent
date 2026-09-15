@@ -19,7 +19,7 @@
  *
  * The analyst is the channel that can cover this class, because it reads
  * behaviour rather than shape. Its escalation is advisory and non-scoring by
- * [CDS-024] — the analyst carries a measured ~22% false-positive rate on
+ * release-gate ruling — the analyst carries a measured ~22% false-positive rate on
  * dual-use security code — so it renders in a footer well below a verdict
  * line that says the tree is fine.
  *

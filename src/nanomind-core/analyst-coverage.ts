@@ -1,9 +1,9 @@
 /**
- * Analyst coverage routing (NanoMind Phase A — P1, CDS-023).
+ * Analyst coverage routing (NanoMind Phase A — P1).
  *
  * The v3.0.0 reasoning analyst (`sendClassify` -> gate -> Qwen3-1.7B NLM) can
  * recover behavioral attacks the structural AST pipeline misses. But its raw
- * verdict is NOT safe to auto-apply (CDS-024): on dual-use security code it
+ * verdict is NOT safe to auto-apply (release-gate ruling): on dual-use security code it
  * carries ~22% false-positive rate and its confidences cluster near 0.95 (weak
  * calibration, measured 2026-06-05). This module is the routing layer that lets
  * the analyst INFORM and ESCALATE without auto-flipping the deterministic
@@ -45,7 +45,7 @@ export type RoutedAnalystVerdict =
 export type CombinePolicy =
   | 'structural-only' // baseline: analyst ignored
   | 'union' // analyst auto-adds attacks (max recall; pays the analyst's benign FPR)
-  | 'abstention-gated'; // structural auto-verdict stands; analyst only ESCALATES misses (CDS-024 safe)
+  | 'abstention-gated'; // structural auto-verdict stands; analyst only ESCALATES misses (release-gate safe)
 
 /**
  * The subset of the daemon's classify response this layer reasons about.
@@ -165,7 +165,7 @@ export function routeAnalystVerdict(v: AnalystVerdict): RoutedAnalystVerdict {
  *
  *  - `structural-only`  analyst ignored; the published baseline.
  *  - `union`            analyst auto-adds attacks. Maximises recall but inherits
- *                       the analyst's benign FPR — NOT auto-safe (CDS-024); for
+ *                       the analyst's benign FPR — NOT auto-safe (release-gate ruling); for
  *                       measuring the recall ceiling and the FPR cost only.
  *  - `abstention-gated` the structural auto-verdict is never raised by the
  *                       analyst; an analyst `attack`/`abstain` on a structural

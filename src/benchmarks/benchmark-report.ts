@@ -73,8 +73,8 @@ export function generateBenchmarkReport(
   // failing `mcp.json` record followed by a clean `.mcp.json` record read
   // as passed. The fold over a checkId's records is the same join the loop
   // below already applies across a control's checkIds — any failure fails,
-  // a measured record outranks an NA sibling, order-independent (CA ruling
-  // 2026-08-27, ledger).
+  // a measured record outranks an NA sibling, order-independent (ruling of
+  // 2026-08-27).
   const findingsByCheckId = new Map<string, SecurityFinding[]>();
   for (const finding of findings) {
     const group = findingsByCheckId.get(finding.checkId);
@@ -206,7 +206,7 @@ export function generateBenchmarkReport(
   // (the sentence in #513's title); a category with no scored control read
   // `Rating: Certified` beside `Compliance: 0% (0/0)` because the overall
   // figure defaulted to 0 five lines below — the opposite default for the
-  // same case. CISO 2026-08-11 / CPO 2026-08-25: zero denominator => null,
+  // same case. Rulings of 2026-08-11 and 2026-08-25: zero denominator => null,
   // renders "not assessed", never feeds the ladder, never Not Passing.
   const pct = (passed: number, total: number): number | null =>
     total > 0 ? Math.round((passed / total) * 100) : null;

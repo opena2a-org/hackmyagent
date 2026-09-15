@@ -3515,7 +3515,7 @@ export function stampSequenceField(seq: number, attempt: number): string {
 /**
  * SHELL-EXFIL-001 helpers — deterministic credential-file exfiltration in
  * shell scripts. Modeled on `checkInstallScripts` (INSTALL-001), scoped by the
- * CSR ruling of 2026-08-24 to the credential-file-upload shape so it does not
+ * ruling of 2026-08-24 to the credential-file-upload shape so it does not
  * overlap INSTALL-001's `curl … | sh` download-execute surface.
  *
  * The signal is a remote `curl`/`wget` that READS a known credential file into
@@ -3548,7 +3548,7 @@ const SHELL_EXFIL_GCLOUD_DIR = '/.config/gcloud/';
 
 /**
  * Credential files matched by basename (project-local or home). `credentials`
- * (bare, no extension) is the CSR-ruled addition (2026-09-01, item 1): the AWS
+ * (bare, no extension) is the ruled addition (2026-09-01, item 1): the AWS
  * CLI's own store is `~/.aws/credentials`, and a copy dropped anywhere keeps
  * that basename. The same membership makes the walk hand the file to CRED-001
  * and makes its upload a shell-exfil hit — one vocabulary, both detectors.
@@ -12631,7 +12631,7 @@ dist/
     for (const skillFile of skillFiles) {
       // When secure targets the skill file directly, path.relative is '' —
       // fall back to the basename so findings keep a file path (the CLI filters
-      // out file-less findings) and remain CISO-actionable.
+      // out file-less findings) and remain actionable for a security manager.
       const relativePath = path.relative(targetDir, skillFile) || path.basename(skillFile);
 
       let content: string;
@@ -14840,7 +14840,7 @@ dist/
     for (const skillFile of skillFiles) {
       // When secure targets the skill file directly, path.relative is '' —
       // fall back to the basename so findings keep a file path (the CLI filters
-      // out file-less findings) and remain CISO-actionable.
+      // out file-less findings) and remain actionable for a security manager.
       const relativePath = path.relative(targetDir, skillFile) || path.basename(skillFile);
 
       let content: string;
@@ -15537,7 +15537,7 @@ dist/
 
     // RAG-002: No content sanitization in retrieval pipeline
     //
-    // Context gate (hma#108, CSR-011): the original check matched keyword
+    // Context gate (hma#108): the original check matched keyword
     // substrings anywhere on a line, which fires on data-catalog string
     // literals like `description: "...store and retrieve context..."`. Real
     // retrieval code is shaped like a CallExpression — a retriever method
@@ -15699,7 +15699,7 @@ dist/
             // Soften to MEDIUM inside examples/templates/docs/samples —
             // these are schema demonstrations, not production identities.
             // An insecure example still teaches insecure practice, so we
-            // report (not skip) but lower the alarm. [CSR-002].
+            // report (not skip) but lower the alarm.
             // Check both the relative file path AND targetDir, because
             // the scanner only looks for agent-card.json at the scan
             // root — when the user scans `.../examples/my-agent/`,
@@ -16006,7 +16006,7 @@ dist/
       // Skip ML training corpora and datasets entirely. These directories
       // intentionally contain adversarial Unicode (the model learns to
       // detect it); firing stego findings on training data teaches the
-      // wrong signal and blocks legitimate ML repos. [CSR-003]+[CDS-023].
+      // wrong signal and blocks legitimate ML repos.
       if (isCorpusPath(relativePath)) {
         continue;
       }
@@ -16969,7 +16969,7 @@ dist/
       const relForTest = path.relative(targetDir, file);
       // Test files deliberately spread process.env into subprocess setup to
       // mirror a real execution environment. This is fixture behavior, not
-      // a leak. [CSR-004].
+      // a leak.
       if (isTestPath(relForTest)) continue;
       try {
         const content = await fs.readFile(file, 'utf-8');
@@ -18049,7 +18049,7 @@ dist/
    * Detects a remote curl/wget that uploads a known credential file
    * (`~/.aws/credentials`, `~/.ssh/id_*`, `.env`, gcloud/docker/kube/npm/netrc/
    * git credentials). Scoped to credential-file upload so it does not overlap
-   * INSTALL-001's `curl … | sh` download-execute surface. CSR ruling 2026-08-24.
+   * INSTALL-001's `curl … | sh` download-execute surface. Ruled 2026-08-24.
    */
   private async checkShellCredentialExfil(
     targetDir: string,
@@ -18217,7 +18217,7 @@ dist/
         // Test files deliberately exercise check-then-use shapes (including
         // intentional TOCTOU demonstrations and file-IO exercisers). Skip
         // them — shape-based TOCTOU detection cannot distinguish fixture
-        // from production. [CSR-004].
+        // from production.
         if (isTestPath(relativePath)) continue;
 
         // Two-tier TOCTOU detection, 40-line proximity window (same function scope):
@@ -19022,11 +19022,11 @@ dist/
    * MEM-006: Memory store without input sanitization
    * Detects memory/persistence plugins that store user-provided text without sanitization.
    *
-   * Path gate (hma#109, CSR-011): skip files that are deliberately
+   * Path gate (hma#109): skip files that are deliberately
    * unsanitized by design — test harnesses, DVAA-style adversarial fixtures,
    * honeypots, trap pages. Flagging these as HIGH produces nonsensical fix
    * text ("sanitize this thing whose job is to stay unsanitized") and
-   * destroys CISO trust in other findings. Classification:
+   * destroys a security manager's trust in other findings. Classification:
    * (a) preserved-detection FP-suppress. Real production memory stores in
    * non-test, non-adversarial paths still fire.
    */

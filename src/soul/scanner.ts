@@ -1784,7 +1784,7 @@ export class SoulScanner {
     // The `claude --print` tier is GONE, and it was removed rather than
     // constrained (#462).
     //
-    // CISO ruled that HackMyAgent must never shell out to an agent binary
+    // The rule is that HackMyAgent must never shell out to an agent binary
     // without constraining its tools on attacker-controlled text, "and if the
     // installed version cannot be constrained by flags we can verify at
     // runtime, HMA must not shell out to it at all and must fall back to the
@@ -2332,7 +2332,7 @@ export class SoulScanner {
 
     // #206: Any HIGH finding clamps the rendered score to 74 so neither
     // the numeric verdict nor the conformance label can present
-    // "HARDENED" when a HIGH is unaddressed. A CISO reads "100" or
+    // "HARDENED" when a HIGH is unaddressed. A security manager reads "100" or
     // "HARDENED" first; the existing PARTIAL label (#162) was an
     // insufficient guard because the number and the label can both still
     // read clean if either threshold is held. 74 is one below the

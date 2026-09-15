@@ -2,7 +2,7 @@
  * Orchestrator — assembles a `PackageNarrative` from existing scan
  * outputs (SecurityAST, findings, scan-run id, package version).
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§4)
+ * Design brief: rich check context for skills and MCP, v1 (§4)
  *
  * The narrative is the wire shape POSTed to
  * `POST /api/v1/trust/narrative` on `secure --publish` for skill / mcp

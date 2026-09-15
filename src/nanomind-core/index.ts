@@ -76,12 +76,12 @@ export type {
   FalsePositiveAssessment,
 } from './inference/security-analyst.js';
 
-// Analyst coverage routing (Phase A P1, CDS-023): posture-vs-attack + abstention
+// Analyst coverage routing (Phase A P1): posture-vs-attack + abstention
 // layer that lets the analyst inform/escalate without auto-flipping the verdict.
 // Wired into orchestrateNanoMind's coverage sweep under the abstention-gated
 // policy (the only product-safe policy per the P3 corpus join, 2026-06-06):
 // the analyst escalates structural misses for human review; raw analyst
-// auto-verdict remains NO-GO (CDS-024).
+// auto-verdict remains NO-GO (release-gate ruling).
 export {
   routeAnalystVerdict,
   combineVerdict,
