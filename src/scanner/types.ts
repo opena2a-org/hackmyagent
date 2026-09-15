@@ -17,6 +17,14 @@ export interface ExternalFinding {
   fix: string;
 }
 
+/**
+ * What one TCP connect learned about a port.
+ * open: accepted; closed: refused (the host answered); filtered: no answer
+ * inside the timeout; unresolved: the hostname has no address; error: the
+ * connect failed for another reason (no route, permission).
+ */
+export type PortState = 'open' | 'closed' | 'filtered' | 'unresolved' | 'error';
+
 export interface ExternalScanResult {
   id: string;
   target: string;
@@ -26,6 +34,14 @@ export interface ExternalScanResult {
   duration: number;
   timestamp: Date;
   openPorts: number[];
+  /**
+   * Whether anything at the target answered at all: an open or refused port
+   * counts, a silent or unresolved one does not. Absent when the port scan was
+   * skipped, because then nothing was asked.
+   */
+  hostReachable?: boolean;
+  /** The state of every port scanned, keyed by port number. */
+  portStates?: Record<number, PortState>;
 }
 
 export interface ScannerOptions {

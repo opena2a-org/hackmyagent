@@ -122,6 +122,6 @@ describe('cli.ts JSON-serialization tripwire', () => {
     expect(
       count,
       'cli.ts gained or lost a JSON.stringify site — classify it against the publish-boundary read (unit 2) before updating this pin',
-    ).toBe(20);
+    ).toBe(19);
   });
 });

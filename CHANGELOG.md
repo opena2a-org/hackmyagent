@@ -66,6 +66,88 @@ gate files touched"), and over every no-approval input the conclusion
 vocabulary is exactly `action_required` or `failure` — never `success`, and
 never `neutral`, which required checks treat as passing.
 
+### `scan <host>` tells a live host apart from an unreachable one, and finishes
+
+`hackmyagent scan https://opena2a.org` reported a site that answers on 443 as
+`Target unreachable`, score -1/100, in 34 ms; `hackmyagent scan opena2a.org`
+ended with `Scan timed out after 4000ms` (advertised-command audit,
+2026-09-13). Two defects. The raw target string was handed to `socket.connect`
+as the DNS name, so a URL failed on every port before a packet left the
+machine. And the scan's global budget was ports x timeout, which covered the
+port probes and not the seventeen sequential HTTP requests that followed on
+each open port, so any host that opened both default ports outran it.
+
+The target is parsed first (`parseTarget`: a URL scans its hostname, and the
+port it names when it names one; `-p` still wins). Each TCP connect now keeps
+its outcome (`open`, `closed`, `filtered`, `unresolved`, `error`), the HTTP
+probe categories run side by side with an end-to-end bound per request, and
+the budget counts every phase. The result carries `hostReachable` and
+`portStates`, the text report prints a `Host:` line, and the no-open-port case
+says which of three states it is in: the name did not resolve
+(`SCAN-UNREACHABLE`), nothing answered on the scanned ports nor on 443/80
+(`SCAN-UNREACHABLE`), or the host answered and no scanned port was open
+(`SCAN-NO-OPEN-PORTS`, new, score N/A like its sibling). A refused connection
+counts as an answer: the host is there, the port is not.
+
+Two probes that the stall had been hiding are tightened in the same change:
+`MCP-TOOLS` fired on any 200 whose body contained the word "tools", so a site
+with an HTML /tools page was reported as exposing an MCP tools endpoint (a
+CRITICAL on a marketing page); it now requires a JSON listing with a `tools`
+member. `CLAUDE-MD-EXPOSED` fired on any 200 at /CLAUDE.md, which a
+single-page app's HTML fallback satisfies; an HTML body no longer counts.
+
+### `red-team` no longer echoes the credentials it read, in either output mode
+
+`hackmyagent red-team ./.mcp.json --json` placed the config's first long line
+into `target.declaredPurpose` verbatim; for a typical MCP config that is the
+`postgresql://user:PLACEHOLDER@host/db` connection string, password included, and
+depending on the artifact the same text reached `capabilities`,
+`modalStatements`, the surface map and the generated payloads
+(advertised-command audit, 2026-09-13). The text output carried less of it:
+through 0.25.2 the vulnerability block embedded the declared purpose in a
+payload description, and from 0.26.0 each `Stated rule:` surface line printed
+the first 80 characters of an artifact sentence, credential included when one
+sat inside them. The reader
+now redacts the whole artifact at the report boundary before any extraction,
+the order NanoMind's `extractDeclaredPurpose` already uses, plus one rule the
+boundary did not carry: userinfo in a URL of any scheme becomes
+`scheme://[REDACTED_URL_CREDENTIAL]@host`, the host kept because the surface
+map is about it. Four more carriers the shared boundary does not catch on an
+MCP config, a SKILL.md or a system prompt are masked in the same place: a
+quoted value under a credential-named key in JSON spelling
+(`"PGPASSWORD": "..."`), an unquoted value after such a key
+(`export DB_PASSWORD=...`, YAML `password: ...`, a `X-Api-Key: ...` header
+line), an `Authorization: Bearer ...` header value, and a `Password=...;`
+DSN field.
+Every rule is bounded, so a large artifact cannot make the reader hang. The
+profile records `redaction: { status, shapes }` so a consumer can tell that
+content was cut, and the JSON now goes through the shared stdout chokepoint,
+so it carries `hackmyagentVersion`: output without that key came from a
+version that echoed.
+
+### The root help names the contribution control that exists
+
+The telemetry block on `--help` said contribution could be disabled with
+`hackmyagent telemetry off`. That command toggles usage telemetry in
+`~/.config/opena2a/telemetry.json` and never read the contribution record,
+which lives in `~/.opena2a/config.json` under `contribute.enabled`
+(advertised-command audit, 2026-09-13, found on ai-trust's identical line).
+The block now names `--no-contribute` and that key, and says what
+`telemetry off` covers.
+
+### Security
+
+`red-team` in 0.11.14 through 0.33.0, every published version with the command,
+copied text from the scanned artifact into its output unredacted: with `--json`,
+`target.declaredPurpose`, `target.capabilities`, `target.modalStatements`,
+`target.vulnerabilitySurface[].surface` and `results[].payloadInput`; in text
+mode, the vulnerability block through 0.25.2 and the `Stated rule:` surface
+lines from 0.26.0. Fixed here: the artifact is redacted before extraction, and
+`red-team --json` carries a top-level `hackmyagentVersion`; output without that
+key came from an affected version. If output from an artifact holding a
+credential left your machine, rotate the credential. `red-team` never uploads
+its output; it travelled only where you moved it.
+
 ### The MCP checks read every root config spelling, so renaming mcp.json no longer raises the rating
 
 The deterministic MCP checks (`MCP-001` to `MCP-010`, `NET-001`, `NET-002`,
