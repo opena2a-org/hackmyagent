@@ -1,3 +1,3 @@
-score=98
-severities={"high":1,"low":2,"medium":3}
-checkIds=GIT-001,MCP-006,MCP-007,SANDBOX-001,TOOL-001,TOOL-002
+score=94
+severities={"high":1,"low":2,"medium":5}
+checkIds=AST-GOV-001,AST-GOV-003,GIT-001,MCP-006,MCP-007,SANDBOX-001,TOOL-001,TOOL-002
