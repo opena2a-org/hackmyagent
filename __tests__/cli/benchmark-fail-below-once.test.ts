@@ -38,6 +38,11 @@ function soulTree(): string {
     '## Honesty and Transparency', 'Always identify as AI.', '',
     '## Harm Avoidance', 'Refuse harmful requests.', '',
   ].join('\n'));
+  // One file the quick-depth hardening scan reads (SOUL.md is not among
+  // them): a scan that reads no file is `Not Assessed` under the zero-read
+  // floor, and these cells are about a MEASURED 100% compliance. Adds no
+  // control result; the plain score stays 98 (GIT-002 LOW replaces GIT-001).
+  fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\n');
   return dir;
 }
 

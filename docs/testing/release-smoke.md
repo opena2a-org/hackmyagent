@@ -164,8 +164,8 @@ coverage.
 |---|---|---|
 | Known-bad tree | `"$BAD"` (§0.5) | 69/100, ≥ 1 CRITICAL credential finding, exit 1 |
 | Local repo (clean) | `../ai-trust` or `../secretless` | 60–90 |
-| Empty dir | `"$CLEAN"` (§0.5) | 93 (`.gitignore` LOW + `DEP-001` MEDIUM: since #636 a missing lock file is an absent-mitigation advisory with a `file`, so it is no longer filtered out as file-less; measured 0.33.0) |
-| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 93/100 (was 96 before #636 made `DEP-001` visible; measured 0.33.0) |
+| Empty dir | `"$CLEAN"` (§0.5) | 98 (`.gitignore` LOW only: `DEP-001` reads `package.json` as its subject and records not-applicable on a tree without one; measured 0.34.0) |
+| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 98/100 (no `package.json`, so `DEP-001` is not-applicable; measured 0.34.0) |
 | Standalone SOUL.md | `node dist/cli.js scan-soul test/` | see note below |
 | npm package | `node dist/cli.js check express` | ≥ 95 |
 | PyPI package | `node dist/cli.js check pip:requests` | ~90 |
@@ -292,6 +292,15 @@ node -e 'const j=require("/tmp/smoke-bad.json");
 # scan of clean dir → exit 0
 node dist/cli.js secure "$CLEAN" --json > /tmp/smoke-clean.json; echo "exit: $?"
 # Expected: valid JSON object on stdout, exit 0
+
+# benchmark of the clean (empty) dir → Not Assessed, exit 2 (measured 0.34.0)
+node dist/cli.js secure "$CLEAN" -b oasb-1 --no-machine-posture > /tmp/smoke-clean-bench.txt 2>&1; echo "exit: $?"
+grep -c 'Rating: Not Assessed' /tmp/smoke-clean-bench.txt   # expect 1
+grep -c 'no file was read from' /tmp/smoke-clean-bench.txt  # expect >= 1
+# Expected: exit 2. The scan read no file from the tree, so no rating is
+# awarded; the control statuses (3 passed / 0 failed / 19 unverified /
+# 4 not applicable) are still listed. `Certified` or any percentage here
+# means the zero-read floor is gone.
 
 # not-found package → exit 2
 node dist/cli.js check nonexistent-xyz-999999 --json > /tmp/smoke-404.json; echo "exit: $?"
