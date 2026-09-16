@@ -1,0 +1,11 @@
+--- a/evaluator.go	2026-09-15 08:57:56
++++ b/evaluator.go	2026-09-15 08:57:56
+@@ -184,7 +184,7 @@
+ 	}
+ 
+ 	teardown()
+-	if err := v.Render(ctx); err != nil {
++	if err := v.Render(context.Background()); err != nil {
+ 		return []error{err}
+ 	}
+ 	return nil

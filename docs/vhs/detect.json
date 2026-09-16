@@ -1,0 +1,69 @@
+{
+  "tape": "docs/vhs/detect.tape",
+  "tapeSha256": "0fddf7615703c7c4d6bf4a47d6067f1d42fabefe0307141044185ba41aa5fc9c",
+  "commands": [
+    "npx hackmyagent detect",
+    "npx hackmyagent detect deploy-runbook-agent"
+  ],
+  "tool": "hackmyagent",
+  "version": "0.33.0",
+  "npmIntegrity": "sha512-z1WdWKBwyiVB0QREKyIAyR6jVC07pj1NH68DvTczOV7hdF1kYj/0MtlhlkO7BYnO6fnm/+rOXwT9Hr1wLb1k5Q==",
+  "ranAtUtc": "2026-09-15T15:11:53Z",
+  "fixture": "demo-agents",
+  "fixtureSha": "51b484d",
+  "fixtureUncommittedChanges": 0,
+  "fixturePath": "/work/demo-agents",
+  "hostname": "laptop",
+  "runningAssistants": 0,
+  "columns": 120,
+  "rows": 40,
+  "framerate": 10,
+  "gifsicle": "-O3 --lossy=40 --batch",
+  "gifFrames": 51,
+  "gifFullScreenFrames": 17,
+  "gifScrollInSpan": "#14-#27",
+  "gifScrollInNote": "the run of full-screen frames is the report streaming into the terminal; how many frames it spans varies with container load, so the GIF size varies per render",
+  "renderedPixelSize": {
+    "width": 1150,
+    "height": 774
+  },
+  "outputs": {
+    "gif": {
+      "path": "docs/vhs/detect.gif",
+      "bytes": 2271168
+    },
+    "mp4": {
+      "path": "docs/vhs/detect.mp4",
+      "bytes": 1256583
+    },
+    "inventoryFrame": "docs/vhs/detect-inventory.png",
+    "pathForwardFrame": "docs/vhs/detect-path-forward.png",
+    "capture": "docs/vhs/detect-capture.txt"
+  },
+  "durationSeconds": 23.2,
+  "exitCodes": [
+    1,
+    1
+  ],
+  "frames": {
+    "detect-inventory.png": {
+      "firstLine": "> npx hackmyagent detect",
+      "lastLine": "Fix: hackmyagent harden-soul invoice-reconciliation-agent"
+    },
+    "detect-path-forward.png": {
+      "firstLine": "HIGH  1 AI agent without governance",
+      "lastLine": "Scanned with hackmyagent v0.33.0"
+    }
+  },
+  "edits": [
+    "setup not shown"
+  ],
+  "environment": {
+    "container": "docs/vhs/docker/Dockerfile (Debian trixie, Node 22, hackmyagent installed globally)",
+    "vhs": {
+      "version": "v0.12.0+render-context-patch",
+      "patch": "docs/vhs/docker/vhs-0.12.0-render-context.patch",
+      "patchSha256": "c4b812056b2e16f046ea705f617906c30136ff20f19de5bf2f8bf5e3b38035a0"
+    }
+  }
+}
