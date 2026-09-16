@@ -3,7 +3,7 @@
  * `SkillNarrative` wire shape consumed by @opena2a/check-core's
  * `runRuleEngine` and the registry's `package_narratives` row.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§4)
+ * Design brief: rich check context for skills and MCP, v1 (§4)
  *
  * No new AST analysis here — every field is shaped from data the
  * SemanticCompiler / scanner already produced. Where comprehension data
@@ -20,7 +20,7 @@ import type { SecurityFinding } from "../hardening";
 
 /**
  * Static threat-model questions for the skill artifact type. Curated
- * by [CHIEF-CSR] per brief §6.1; rendered verbatim. Kept here (rather
+ * by security research per brief §6.1; rendered verbatim. Kept here (rather
  * than cli-ui) so the registry stores the full narrative — keeps the
  * renderer dumb.
  */

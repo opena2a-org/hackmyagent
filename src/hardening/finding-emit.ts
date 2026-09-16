@@ -1,7 +1,7 @@
 /**
  * The credential redaction boundary.
  *
- * RIDER B1 (CA): the boundary is `SecurityFinding` CONSTRUCTION — the last
+ * RIDER B1: the boundary is `SecurityFinding` CONSTRUCTION — the last
  * construction before any channel, the first construction after every
  * derivation. `ASTFinding` and `SemanticFinding` stay raw in process because
  * line derivation reads them.
@@ -519,7 +519,7 @@ function isFindingShaped(v: Record<string, unknown>): boolean {
  * Walks a payload about to leave the process and THROWS if any finding-shaped
  * value lacks redaction provenance: `redactionStatus` missing or outside
  * {'applied','clean'}, or `redactedShapes` not an array. `'unverified'` is
- * REJECTED at publish by `[CHIEF-CISO]` ruling (2026-08-21): it may exist on a
+ * REJECTED at publish by ruling (2026-08-21): it may exist on a
  * value in process, it may never cross a publish boundary.
  *
  * Fail-mode is THROW, in every environment — no CI/production fork, and
@@ -589,7 +589,7 @@ export function assertRedactionProvenance(payload: unknown, channel: string): vo
  * Redact an untyped bag that is about to ride a publish channel OUTSIDE any
  * `SecurityFinding` (the analyst advisory channel is the production caller).
  *
- * `[CHIEF-CISO]` 2026-08-21: the analyst channel's "input is already redacted"
+ * Ruled 2026-08-21: the analyst channel's "input is already redacted"
  * property was prose-only — one upstream edit away from a silent leak path.
  * This walk makes it structural: every string leaf at any depth is offered to
  * the redactor, exactly as `details` is inside `emitFinding`. The pass's

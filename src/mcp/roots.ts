@@ -16,7 +16,7 @@
  * cost: they disagreed, and the disagreement was the vulnerability. This module
  * is the root POLICY on top of that one primitive.
  *
- * The root is MANDATORY and there is no unconfined mode. CISO ruled out
+ * The root is MANDATORY and there is no unconfined mode. We ruled out
  * defaulting to `process.cwd()` for a specific reason: `src/init-mcp.ts` writes
  * `npx -y hackmyagent mcp-serve` into the client config with no `cwd` key, so the
  * working directory is whatever the HOST chose — commonly the user's home
@@ -237,7 +237,7 @@ export async function resolveWithinRoots(roots: string[], requested: string): Pr
  * spelling, or a symlink, or asks the user to copy the file in. So it has to say
  * that the boundary is operator-set and not negotiable from inside the session,
  * which is what redirects the model to TELLING the user instead of routing
- * around. That sentence is load-bearing (CPO).
+ * around. That sentence is load-bearing.
  */
 export function describeRootRefusal(refusal: RootRefusal, cliName = 'hackmyagent'): string {
   switch (refusal.kind) {

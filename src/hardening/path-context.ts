@@ -18,14 +18,14 @@
  *    common directory names with ambiguous semantics. Require a specific
  *    prefix (`training/corpus`) or narrower directory (`examples/`).
  *
- * Rules (per CSR/CDS decisions in briefs/release-findings.md):
- *  - [CSR-003] + [CDS-023] training/corpus/** and training/datasets/** are
+ * Rules (settled in the release-findings review):
+ *  - training/corpus/** and training/datasets/** are
  *    intentionally full of adversarial Unicode; UNICODE-STEGO-* skips them.
- *  - [CSR-004 revised] unambiguous test paths (`*.test.ts`, `*.spec.ts`,
+ *  - unambiguous test paths (`*.test.ts`, `*.spec.ts`,
  *    `_test.go`, `__tests__/`) deliberately contain what they test;
  *    NEMO-007 and TOCTOU-001 skip them. Generic `tests/` or `fixtures/`
  *    middle-of-path is NOT exempt.
- *  - [CSR-002 revised] examples/templates/samples are schema demos;
+ *  - examples/templates/samples are schema demos;
  *    AIM-002 softens severity inside them. docs/ and fixtures/ dropped
  *    from the list — too often contain real configs.
  */

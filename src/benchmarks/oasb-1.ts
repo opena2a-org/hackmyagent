@@ -79,7 +79,7 @@ export interface BenchmarkResult {
   /**
    * Overall compliance percentage over the scored controls that produced a
    * result; `null` when none did. A zero denominator is not a figure (#458
-   * step 0; CISO 2026-08-11: never 100, never 0).
+   * step 0; ruled 2026-08-11: never 100, never 0).
    */
   compliance: number | null;
   /** L1 compliance percentage over L1 scored controls; `null` when none produced a result */
@@ -1471,7 +1471,7 @@ const RATING_LADDER: Record<BenchmarkLevel, readonly LadderRung[]> = {
  * `Not Assessed`.
  *
  * Before this, a null-denominator level defaulted to 100 and read as perfect
- * (the sentence in #513's title); CISO 2026-08-11 / CPO 2026-08-25 rulings.
+ * (the sentence in #513's title); rulings of 2026-08-11 and 2026-08-25.
  */
 export function calculateRating(
   l1Compliance: number | null,
@@ -1517,7 +1517,7 @@ export function automatedControlsAt(level: BenchmarkLevel, catalogue: BenchmarkC
  * there can change the rating; a cited command that cannot produce the
  * outcome it promises is a dead end. Derived from the catalogue, never from
  * a literal, so the day OASB-1 gains an automated L3 check the citation
- * returns with no code change (#458 step 0, CPO 2026-08-25 R4).
+ * returns with no code change (#458 step 0, ruling of 2026-08-25, R4).
  */
 export function nextLevelFooter(
   current: BenchmarkLevel,
