@@ -38,9 +38,25 @@ export interface DeclaredPurposeRedaction {
   shapes: readonly ShapeId[];
 }
 
+/**
+ * How the parser decided an artifact's type. `'path'`: the file's name alone
+ * names the kind (SKILL.md, mcp.json, SOUL.md, agent.json, agent-config.yaml).
+ * `'content'`: a heuristic had to read the body (a `capabilities:` frontmatter
+ * block, an `mcpServers` key, an `agentType` field, a credential shape).
+ */
+export type ArtifactClassification = 'path' | 'content';
+
 export interface SecurityAST {
   /** Artifact identity */
   artifactType: ArtifactType;
+  /**
+   * How `artifactType` was decided (see `ArtifactClassification`). The
+   * sdk/library semantic gate reads it: a kind the path names is an agent
+   * artifact wherever it sits in the tree; a kind inferred from content keeps
+   * the gate (#740). Optional so hand-built ASTs stay valid; the compiler
+   * always sets it.
+   */
+  classifiedBy?: ArtifactClassification;
   contentHash: string;            // SHA-256 of the original artifact
   artifactPath?: string;          // File path (relative)
   artifactSize: number;           // Bytes

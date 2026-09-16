@@ -16,7 +16,7 @@
 import type { SecurityAST, Capability, Constraint, RiskSurface } from '../types.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import type { ShapeId } from '../../types/credential-format.js';
-import { isNonAgentProjectType } from './family-coverage.js';
+import { nonAgentGateApplies } from './family-coverage.js';
 import { FIX_LINES } from '../../hardening/fix-lines.js';
 
 // ============================================================================
@@ -133,7 +133,9 @@ export function analyzeCapabilities(ast: SecurityAST, projectType?: ProjectType,
   // Same predicate the governance, scope and prompt families use, and the same
   // one the semantic coverage disclosure reads (#456). It was a fourth private
   // copy of `sdk || library`; a gate with two definitions is a gate that drifts.
-  const isLibOrSDK = isNonAgentProjectType(projectType);
+  // Keyed on the artifact as well as the tree since #740: a path-named agent
+  // artifact under a library root still gets checks 2, 4 and 10.
+  const isLibOrSDK = nonAgentGateApplies(ast, projectType);
 
   // Check 1: Undeclared capabilities (inferred but not declared)
   findings.push(...checkUndeclaredCapabilities(ast));

@@ -6981,7 +6981,7 @@ Examples:
       let mergedFindings = findings;
       try {
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-        const nmResult = await orchestrateNanoMind(targetDir, findings, { silent: !!options.json });
+        const nmResult = await orchestrateNanoMind(targetDir, findings, { silent: !!options.json, projectType: result.projectType });
         mergedFindings = emitFindings(nmResult.mergedFindings);
       } catch { /* NanoMind unavailable */ }
 
@@ -13559,7 +13559,7 @@ async function checkGitHubRepo(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
+      const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
@@ -13922,7 +13922,7 @@ async function checkPyPiPackage(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
+      const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
@@ -14183,7 +14183,7 @@ async function checkRawUrl(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
+      const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
@@ -14414,7 +14414,7 @@ async function checkNpmPackage(
     let artifactSummaries: any[] | undefined;
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
-      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
+      const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
       const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir, result.projectType || 'library');
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
