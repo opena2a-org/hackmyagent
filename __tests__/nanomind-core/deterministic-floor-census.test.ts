@@ -62,6 +62,8 @@ const COMMAND_SURFACE = [
   '--system-prompt', '--target-type', '--tier', '--timeout', '--tool', '--type',
   '--verbose', '--version', '--version-id', '--with-aim', '--workspace',
   '-H', '-b', '-c', '-d', '-f', '-i', '-l', '-n', '-o', '-p', '-t', '-v',
+  // #741: -V is the version in any position (alias of --version); it turns nothing off.
+  '-V',
 ];
 
 /** Identifiers introduced by the deterministic floor. */
