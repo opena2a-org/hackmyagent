@@ -23,7 +23,7 @@ import {
   type BenchmarkCategoryResult,
 } from './index';
 import type { SecurityFinding } from '../hardening/security-check';
-import { escapeForDisplay } from '../ui/display-safe';
+import { escapeForDisplay, escapePathForDisplay } from '../ui/display-safe';
 
 export interface LocalControlResult {
   control: BenchmarkControl;
@@ -32,6 +32,17 @@ export interface LocalControlResult {
   remediation?: string;
   /** Absent subject artifacts, when status is `not-applicable` (#458). */
   naSubjects?: string[];
+}
+
+/**
+ * ` (file:line)` for a record that carries a file, ` (file)` when it has no
+ * line, empty when it has neither (#739). The path is a string the scanned
+ * tree chose, so it is rendered through the path escape the plain scan uses.
+ */
+function citeLocation(finding: SecurityFinding): string {
+  if (!finding.file) return '';
+  const line = finding.line !== undefined ? `:${finding.line}` : '';
+  return ` (${escapePathForDisplay(finding.file)}${line})`;
 }
 
 
@@ -128,7 +139,11 @@ export function generateBenchmarkReport(
           hasMeasured = true;
           if (!finding.passed) {
             hasFailure = true;
-            relatedFindings.push(`${checkId}: ${finding.description}`);
+            // #739 — the evidence line names the record's file:line when it
+            // has one, so the benchmark cites the same location the plain
+            // scan does. The `checkId: ` prefix stays first: the SARIF writer
+            // joins records to controls by finding it in this string.
+            relatedFindings.push(`${checkId}: ${finding.description}${citeLocation(finding)}`);
             if (finding.fix) {
               remediation = remediation || finding.fix;
             }

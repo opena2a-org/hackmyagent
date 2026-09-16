@@ -11,6 +11,7 @@ import {
   HardeningScanner,
   calculateSecurityScore,
   ExternalScanner,
+  resolvePorts,
   type RiskLevel,
   type Severity,
   type SecurityFinding,
@@ -587,7 +588,8 @@ Quick start:
 program.addHelpText('after', `
 Telemetry:
   Anonymous usage telemetry is on. Disable: OPENA2A_TELEMETRY=off
-  Local scans may contribute to the OpenA2A Registry. Disable: --no-contribute or ${CLI_PREFIX} telemetry off
+  Local scans may contribute to the OpenA2A Registry once you have opted in. Disable: --no-contribute,
+  or set contribute.enabled to false in ~/.opena2a/config.json. '${CLI_PREFIX} telemetry off' covers usage telemetry only.
 `);
 
 program.hook('preAction', (thisCommand) => {
@@ -3322,7 +3324,7 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
         });
 
         // Find related findings for locations
-        const relatedFindings = findings.filter(f => ctrl.findings.some(cf => cf.includes(f.checkId)));
+        const relatedFindings = findings.filter(f => ctrl.findings.some(cf => cf.startsWith(`${f.checkId}: `)));
 
         if (relatedFindings.length > 0) {
           for (const finding of relatedFindings) {
@@ -7265,10 +7267,12 @@ Examples:
         const customPorts = options.ports
           ? options.ports.split(',').map((p) => parseInt(p.trim(), 10))
           : undefined;
-        const portCount = customPorts?.length ?? 2;
+        // The scanner decides the list (a URL that names a port scans that
+        // port); the banner must not count a literal the scanner does not use.
+        const portCount = resolvePorts(target, customPorts).length;
 
         if (!options.json) {
-          console.log(`\nScanning ${escapePathForDisplay(target)} (${portCount} ports, ${timeoutMs}ms timeout)...\n`);
+          console.log(`\nScanning ${escapePathForDisplay(target)} (${portCount} ${portCount === 1 ? 'port' : 'ports'}, ${timeoutMs}ms timeout)...\n`);
         }
 
         const scanner = new ExternalScanner();
@@ -7295,6 +7299,15 @@ Examples:
         console.log(`Target: ${escapePathForDisplay(result.target)}`);
         console.log(`Score: ${gradeColor}${result.score}/100 (${result.grade})${RESET()}`);
         console.log(`Open Ports: ${result.openPorts.length > 0 ? result.openPorts.join(', ') : 'None detected'}`);
+        // Three states, said apart: the host answered (a refused port counts),
+        // it never answered, or its name never resolved. 0.33.0 printed
+        // "Target unreachable" for a live site (audit 2026-09-13).
+        if (result.hostReachable !== undefined) {
+          const states = result.portStates
+            ? ` (${Object.entries(result.portStates).map(([p, st]) => `${p} ${st}`).join(', ')})`
+            : '';
+          console.log(`Host: ${result.hostReachable ? 'reachable' : 'unreachable'}${states}`);
+        }
         console.log(`Duration: ${result.duration}ms\n`);
 
         if (result.findings.length === 0) {
@@ -11516,7 +11529,7 @@ program
     });
 
     if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
+      writeJsonStdout(result);
     } else {
       // Every value below is escaped before it reaches a console.log, even
       // though each currently comes from a fixed vocabulary rather than from the

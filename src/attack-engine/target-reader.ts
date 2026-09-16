@@ -16,15 +16,84 @@
  */
 
 import type { SemanticTargetProfile, VulnerabilitySurfaceEntry, AttackCategory } from './types.js';
+import { redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth.js';
+
+/**
+ * Local rules on top of the shared report boundary, applied AFTER it.
+ *
+ * The reader's output feeds only the surface map and the payload text, never
+ * a scanner verdict, so this boundary is deliberately WIDER than the shared
+ * one: over-redaction here costs a mangled surface string, under-redaction
+ * echoes a credential into `--json` (advertised-command audit 2026-09-13,
+ * measured on 0.33.0). Measured gaps of the shared boundary on an MCP config:
+ * userinfo in a URL of any scheme (the shared `connection-string` rule is
+ * anchored to four schemes and misses `postgresql://`), a JSON-quoted key
+ * (`"PGPASSWORD": "..."` -- the shared name-gated rule needs `password:` with
+ * no closing quote before the colon), an `Authorization: Bearer ...` header,
+ * and a `Password=...;` DSN.
+ *
+ * Only the URL rule names a shape, because it resolves one from the VALUE.
+ * The other three fire on a NAME or a POSITION and, per C9, contribute no
+ * shape id: `status: 'applied'` with no shape is the honest record for them.
+ *
+ * Every quantifier that has to backtrack to find a trailing anchor is bounded
+ * (`{0,31}` on the scheme, `{0,256}`, `{0,64}`); the shared boundary's 1 MiB gate runs
+ * first, so the worst case here is linear in that bound times the input.
+ */
+const LOCAL_RULES: ReadonlyArray<{ shape?: string; pattern: RegExp; replacement: string }> = [
+  // `scheme://user:PLACEHOLDER@host`, any scheme; the password may carry `/` or `@`.
+  // A bare port (`host:8080/`) is not a password, so a later `@` on the line (a mail address)
+  // does not turn the real host into userinfo.
+  { shape: 'url-credential', pattern: /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s'"@/:]{0,256}(?::(?!\d{1,5}(?:[/?#\s]|$))[^\s'"]{0,256})?)@/gi, replacement: '$1[REDACTED_URL_CREDENTIAL]@' },
+  // A quoted value assigned to a credential-named key, JSON spelling included.
+  { pattern: /((?:password|passwd|pwd|pass|secret|token|key|credential|auth)[a-z0-9_-]{0,64}["']?\s*[:=]\s*["'])([^"'\s]{8,})(["'])/gi, replacement: '$1[REDACTED]$3' },
+  // HTTP auth header values.
+  { pattern: /(\b(?:bearer|basic)\s+)([A-Za-z0-9._~+/=-]{16,})/gi, replacement: '$1[REDACTED_AUTH_TOKEN]' },
+  // An unquoted value after a credential-named key: `export DB_PASSWORD=...`, `PGPASSWORD=... psql`,
+  // YAML `password: ...`, a header line `X-Api-Key: ...`, `CLIENT_SECRET=...`. No leading `\b`: the
+  // name is usually prefixed (`PG`, `DB_`, `X-Api-`). `(?!\[)` skips a marker already placed.
+  { pattern: /((?:password|passwd|passphrase|pwd|secret|token|key|credential)[a-z0-9_-]{0,64}\s*[=:]\s*)(?!\[)([^;\s'"]{8,})/gi, replacement: '$1[REDACTED]' },
+  // `Password=...;` in a key=value DSN, any length.
+  { pattern: /(\b(?:password|passwd|pwd)\s*=\s*)(?!\[)([^;\s'"]+)/gi, replacement: '$1[REDACTED]' },
+];
+
+/**
+ * Redact the artifact at the REPORT boundary before anything is extracted
+ * from it, and say whether that changed anything.
+ *
+ * Whole content first, then extraction -- the order NanoMind's
+ * `extractDeclaredPurpose` settled on (HMA-38): a line selected first and
+ * redacted second can be a fragment too short for any rule to match. This
+ * reader treats the artifact as flat text, so every field it returns
+ * (`declaredPurpose`, `capabilities`, `modalStatements`, the surface map) and
+ * every payload built from them is downstream of this one call.
+ */
+export function redactTargetArtifact(content: string): { text: string; redaction: NonNullable<SemanticTargetProfile['redaction']> } {
+  const report = redactSecretsForReportReporting(content);
+  let text = report.text;
+  const shapes = new Set<string>(report.shapes);
+  for (const rule of LOCAL_RULES) {
+    const before = text;
+    text = text.replace(rule.pattern, rule.replacement);
+    if (text !== before && rule.shape) shapes.add(rule.shape);
+  }
+  return {
+    text,
+    redaction: { status: text === content ? 'clean' : 'applied', shapes: [...shapes].sort() },
+  };
+}
 
 /**
  * Read a target artifact and extract its semantic vulnerability surface.
  */
 export function readTarget(
-  content: string,
+  rawContent: string,
   artifactType: SemanticTargetProfile['artifactType'],
   name: string = 'unknown',
 ): SemanticTargetProfile {
+  // Nothing below reads the raw artifact. See `redactTargetArtifact`.
+  const { text: redactedContent, redaction } = redactTargetArtifact(rawContent);
+  const content = redactedContent;
   const text = content.toLowerCase();
 
   // Extract declared purpose (first meaningful paragraph or description)
@@ -56,6 +125,7 @@ export function readTarget(
     governanceMentions,
     dataAccessPatterns,
     vulnerabilitySurface,
+    redaction,
   };
 }
 

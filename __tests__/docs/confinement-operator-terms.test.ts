@@ -10,20 +10,16 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { sectionRecording } from '../helpers/changelog-record';
 import { retargetInstruction, withheldLinkLines } from '../../src/hardening/withheld-links';
 
 const ROOT = path.resolve(__dirname, '../..');
 const PHRASE = /point the scan at/;
 
 /**
- * `[Unreleased]` together with the newest dated release. The record moves at
- * the release cut and the invariant follows it; an unrelated entry added
- * under `[Unreleased]` afterwards does not hide it.
+ * The recording section is found by its content (helpers/changelog-record.ts), so the
+ * record is read wherever the release cuts have moved it.
  */
-function recordingSection(changelog: string): string {
-  const sections = changelog.split(/^## \[/m).slice(1);
-  return sections.slice(0, 2).join('\n## [');
-}
 
 describe('out-of-tree link confinement is stated in the operator\'s terms', () => {
   it('README says it in one sentence containing the retarget phrase', () => {
@@ -37,8 +33,7 @@ describe('out-of-tree link confinement is stated in the operator\'s terms', () =
   });
 
   it('CHANGELOG says it in the recording section in one sentence containing the retarget phrase', () => {
-    const unreleased = recordingSection(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'));
-    expect(unreleased.startsWith('Unreleased]')).toBe(true);
+    const unreleased = sectionRecording(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'), /link out of the directory it scans/);
     // A CHANGELOG paragraph is hard-wrapped; the sentence is contiguous once
     // the wrap is undone, and the phrase itself sits on one line.
     const unwrapped = unreleased.replace(/\n(?!\n)/g, ' ');
@@ -49,7 +44,7 @@ describe('out-of-tree link confinement is stated in the operator\'s terms', () =
   });
 
   it('CHANGELOG makes no from-version range claim (none was execution-confirmed)', () => {
-    const unreleased = recordingSection(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'));
+    const unreleased = sectionRecording(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'), /link out of the directory it scans/);
     const section = unreleased.split(/^### /m).find((s) => /link out of the directory it scans/.test(s)) ?? '';
     expect(section.length).toBeGreaterThan(0);
     expect(section).not.toMatch(/versions? (before|since|from|through|up to) \d/i);

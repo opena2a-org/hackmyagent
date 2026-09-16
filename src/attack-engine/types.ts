@@ -45,6 +45,12 @@ export interface SemanticTargetProfile {
   dataAccessPatterns: string[];
   /** Specific vulnerability surface identified by NanoMind */
   vulnerabilitySurface: VulnerabilitySurfaceEntry[];
+  /**
+   * Whether redacting the artifact at the report boundary changed it, and
+   * which credential shapes were removed. Every string field above is read
+   * from the redacted text, so this is the only witness that content was cut.
+   */
+  redaction?: { status: 'clean' | 'applied'; shapes: string[] };
 }
 
 export interface VulnerabilitySurfaceEntry {

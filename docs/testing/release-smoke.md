@@ -293,15 +293,15 @@ node -e 'const j=require("/tmp/smoke-bad.json");
 node dist/cli.js secure "$CLEAN" --json > /tmp/smoke-clean.json; echo "exit: $?"
 # Expected: valid JSON object on stdout, exit 0
 
-# not-found package → exit 1
+# not-found package → exit 2
 node dist/cli.js check nonexistent-xyz-999999 --json > /tmp/smoke-404.json; echo "exit: $?"
-# Expected: JSON with found: false or equivalent error shape, exit 1
+# Expected: JSON with found: false and an error naming the package, exit 2
 ```
 
-**On the not-found exit code.** It is **1**, not 2. This is long-standing
-behaviour — verified identical on published 0.24.0, 0.25.0 and 0.25.1 — and
-other tests assert it. The previous "exit 2" line in this checklist was the
-expectation that was wrong, not the code. Do not "fix" the CLI to match it.
+**On the not-found exit code.** It is **2**: the package could not be looked
+up, so there is no verdict to score. Measured on published 0.32.0 and 0.33.0
+and on the 0.33.1 build, online and `--offline`. An earlier version of this
+row said 1; the row was wrong, not the code. Do not "fix" the CLI to match it.
 
 ### The `--ci` cells
 
@@ -351,6 +351,18 @@ node -e 'const f=process.argv[1];const fs=require("fs");
   if(e.length) throw new Error("--ci did not disable contribution")' \
   "$SMOKE_HOME/.opena2a/contribute-queue.json"
 # Expected: queued: 0. Repeat for scan-soul, the other command declaring --ci.
+
+# 3. A plaintext key in .claude/settings.json fails OASB-1 control 5.1 (#739, 0.33.1).
+KEYTREE=$(mktemp -d) && mkdir -p "$KEYTREE/.claude"
+printf '{"env":{"ANTHROPIC_API_KEY":"sk-ant-api03-%s"}}\n' "$(head -c 82 /dev/zero | tr '\0' a)" > "$KEYTREE/.claude/settings.json"
+node dist/cli.js secure "$KEYTREE" --ci -b oasb-1 --verbose > /tmp/smoke-5-1.txt 2>&1; echo "exit: $?"
+grep -E "5\.1|Credential Protection|CRED-001" /tmp/smoke-5-1.txt
+# Expected: exit 1 AND `[-] Credential Protection: 0/1 (0%)`, `[-] 5.1: No Hardcoded Credentials`,
+#           `CRED-001: Anthropic API Key found in plaintext (.claude/settings.json:1)`.
+#           The exit code alone is not the discriminator: this bare tree exits 1 on 0.33.0 too
+#           (other controls fail). A `[+] 5.1` here is #739 back. Without --verbose the CRED-001
+#           evidence line is not printed; the [-] 5.1 line is.
+rm -rf "$KEYTREE"
 ```
 
 **Count the queue correctly.** The queue file is an object `{"events":[…]}`, not

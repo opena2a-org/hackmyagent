@@ -4,6 +4,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-09-15
+
 ### The release is reviewed as the CI-packed tarball, never the tree (HMA-40)
 
 `release.yml` no longer grants `contents: write` and `id-token: write` to one
@@ -66,6 +68,125 @@ gate files touched"), and over every no-approval input the conclusion
 vocabulary is exactly `action_required` or `failure` — never `success`, and
 never `neutral`, which required checks treat as passing.
 
+### `scan <host>` tells a live host apart from an unreachable one, and finishes
+
+`hackmyagent scan https://opena2a.org` reported a site that answers on 443 as
+`Target unreachable`, score -1/100, in 34 ms; `hackmyagent scan opena2a.org`
+ended with `Scan timed out after 4000ms` (advertised-command audit,
+2026-09-13). Two defects. The raw target string was handed to `socket.connect`
+as the DNS name, so a URL failed on every port before a packet left the
+machine. And the scan's global budget was ports x timeout, which covered the
+port probes and not the seventeen sequential HTTP requests that followed on
+each open port, so any host that opened both default ports outran it.
+
+The target is parsed first (`parseTarget`: a URL scans its hostname, and the
+port it names when it names one; `-p` still wins). Each TCP connect now keeps
+its outcome (`open`, `closed`, `filtered`, `unresolved`, `error`), the HTTP
+probe categories run side by side with an end-to-end bound per request, and
+the budget counts every phase. The result carries `hostReachable` and
+`portStates`, the text report prints a `Host:` line, and the no-open-port case
+says which of three states it is in: the name did not resolve
+(`SCAN-UNREACHABLE`), nothing answered on the scanned ports nor on 443/80
+(`SCAN-UNREACHABLE`), or the host answered and no scanned port was open
+(`SCAN-NO-OPEN-PORTS`, new, score N/A like its sibling). A refused connection
+counts as an answer: the host is there, the port is not.
+
+Two probes that the stall had been hiding are tightened in the same change:
+`MCP-TOOLS` fired on any 200 whose body contained the word "tools", so a site
+with an HTML /tools page was reported as exposing an MCP tools endpoint (a
+CRITICAL on a marketing page); it now requires a JSON listing with a `tools`
+member. `CLAUDE-MD-EXPOSED` fired on any 200 at /CLAUDE.md, which a
+single-page app's HTML fallback satisfies; an HTML body no longer counts.
+
+### `red-team` no longer echoes the credentials it read, in either output mode
+
+`hackmyagent red-team ./.mcp.json --json` placed the config's first long line
+into `target.declaredPurpose` verbatim; for a typical MCP config that is the
+`postgresql://user:PLACEHOLDER@host/db` connection string, password included, and
+depending on the artifact the same text reached `capabilities`,
+`modalStatements`, the surface map and the generated payloads
+(advertised-command audit, 2026-09-13). The text output carried less of it:
+through 0.25.2 the vulnerability block embedded the declared purpose in a
+payload description, and from 0.26.0 each `Stated rule:` surface line printed
+the first 80 characters of an artifact sentence, credential included when one
+sat inside them. The reader
+now redacts the whole artifact at the report boundary before any extraction,
+the order NanoMind's `extractDeclaredPurpose` already uses, plus one rule the
+boundary did not carry: userinfo in a URL of any scheme becomes
+`scheme://[REDACTED_URL_CREDENTIAL]@host`, the host kept because the surface
+map is about it. Four more carriers the shared boundary does not catch on an
+MCP config, a SKILL.md or a system prompt are masked in the same place: a
+quoted value under a credential-named key in JSON spelling
+(`"PGPASSWORD": "..."`), an unquoted value after such a key
+(`export DB_PASSWORD=...`, YAML `password: ...`, a `X-Api-Key: ...` header
+line), an `Authorization: Bearer ...` header value, and a `Password=...;`
+DSN field.
+Every rule is bounded, so a large artifact cannot make the reader hang. The
+profile records `redaction: { status, shapes }` so a consumer can tell that
+content was cut, and the JSON now goes through the shared stdout chokepoint,
+so it carries `hackmyagentVersion`: output without that key came from a
+version that echoed.
+
+### The root help names the contribution control that exists
+
+The telemetry block on `--help` said contribution could be disabled with
+`hackmyagent telemetry off`. That command toggles usage telemetry in
+`~/.config/opena2a/telemetry.json` and never read the contribution record,
+which lives in `~/.opena2a/config.json` under `contribute.enabled`
+(advertised-command audit, 2026-09-13, found on ai-trust's identical line).
+The block now names `--no-contribute` and that key, and says what
+`telemetry off` covers.
+
+### `secure --ci -b oasb-1` control 5.1 reads the credential files the scanner reads
+
+OASB-1 control 5.1 "No Hardcoded Credentials" mapped `CRED-002`, `CRED-003`,
+`CRED-004` and `SEM-CRED-001` to `SEM-CRED-004`, but not `CRED-001`, the
+plaintext-credential walk that reads `.claude/settings.json`, `.env` and the
+MCP and agent configs. The control therefore passed on a tree the plain scan
+flags. It now consumes `CRED-001`, and the evidence line cites the record's
+file and line through the same path escape the plain scan uses
+(`CRED-001: Anthropic API Key found in plaintext (.claude/settings.json:1)`);
+`oasb-2` goes through the same report and is fixed with it. On such a tree the
+benchmark now reports `[-] 5.1` and Credential Protection 0/1 where 0.33.0
+reported `[+] 5.1` and 1/1. The exit code moves only on a tree that passes
+every other control: a developer tree holding `CLAUDE.md`, an `.env.example`
+of placeholder values, `package.json`, `package-lock.json` and `LICENSE`
+beside the key went from Certified, 100% (9/9), exit 0 on 0.33.0 to Needs
+Improvement, 89% (8/9), exit 1; a directory holding nothing but
+`.claude/settings.json` exits 1 on both versions, because other controls
+already fail there (Not Passing, 43% on 0.33.0 and 29% on 0.33.1). The SARIF
+join matches evidence lines by their `checkId` prefix instead of a substring
+([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
+`check <dir> --offline` still runs none of the static checks on a local
+directory ([#740](https://github.com/opena2a-org/hackmyagent/issues/740)),
+`-v` after `secure`, `scan-soul` or `check` still prints the version and exits
+0 without scanning ([#741](https://github.com/opena2a-org/hackmyagent/issues/741)),
+and `DEP-001` still fires on a tree without a `package.json`
+([#751](https://github.com/opena2a-org/hackmyagent/issues/751)); all three are
+unchanged from 0.33.0, listed under its Known issues, and target 0.34.0.
+
+### Security
+
+`red-team` in 0.11.14 through 0.33.0, every published version with the command,
+copied text from the scanned artifact into its output unredacted: with `--json`,
+`target.declaredPurpose`, `target.capabilities`, `target.modalStatements`,
+`target.vulnerabilitySurface[].surface` and `results[].payloadInput`; in text
+mode, the vulnerability block through 0.25.2 and the `Stated rule:` surface
+lines from 0.26.0. Fixed here: the artifact is redacted before extraction, and
+`red-team --json` carries a top-level `hackmyagentVersion`; output without that
+key came from an affected version. If output from an artifact holding a
+credential left your machine, rotate the credential. `red-team` never uploads
+its output; it travelled only where you moved it.
+Separately, [GHSA-ccp3-g7fv-9cqr](https://github.com/opena2a-org/hackmyagent/security/advisories/GHSA-ccp3-g7fv-9cqr)
+("Credential characters could reach JSON output and be marked as checked", affected
+range `>= 0.17.11`) remains open in 0.33.1, and no published version resolves it. The
+advisory's guidance applies to 0.33.1 unchanged: search stored JSON and ASFF output for
+the vendor prefix of any key present in a scanned target, for example
+`grep -rn 'AKIA' path/to/stored-output`, and if characters of the key follow the prefix,
+rotate that key and remove the stored file wherever it travelled, including CI artifacts,
+log pipelines and tickets. A clean `secure` result is not evidence that no credential is
+present; keep a dedicated secret scanner in the path.
+
 ### The MCP checks read every root config spelling, so renaming mcp.json no longer raises the rating
 
 The deterministic MCP checks (`MCP-001` to `MCP-010`, `NET-001`, `NET-002`,
@@ -123,7 +244,7 @@ Everything below this heading down to the 0.32.0 entry landed on main after
   without a `package.json` in the next release.
 - `secure --ci -b oasb-1` reports `5.1: No Hardcoded Credentials` as passed on
   a tree whose `.claude/settings.json` holds a plaintext key, while `secure`
-  and `detect` on the same tree flag it. Present in 0.32.0. Target 0.34.0
+  and `detect` on the same tree flag it. Present in 0.32.0. Fixed in 0.33.1
   ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
 - `check <local dir> --offline` prints a score (`96/100`, `Usable with caveats`)
   and exits 0 while noting that the static checks were not run, so a local

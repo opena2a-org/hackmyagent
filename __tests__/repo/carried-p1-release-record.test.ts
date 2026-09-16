@@ -27,6 +27,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { sectionRecording, sectionsThroughRecording } from '../helpers/changelog-record';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const CHANGELOG = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf-8');
@@ -39,14 +40,6 @@ const PKG = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')) a
  * release cut; reading only the newest dated section would fail on the first
  * unrelated entry added after it.
  */
-function recordingSection(): string {
-  const start = CHANGELOG.indexOf('## [Unreleased]');
-  expect(start, 'the changelog has no [Unreleased] section').toBeGreaterThanOrEqual(0);
-  const next = CHANGELOG.indexOf('\n## [', start + 1);
-  if (next < 0) return CHANGELOG.slice(start);
-  const after = CHANGELOG.indexOf('\n## [', next + 1);
-  return after < 0 ? CHANGELOG.slice(start) : CHANGELOG.slice(start, after);
-}
 
 /** Every `### Known issues` block in `text`, body only. */
 function knownIssueBlocks(text: string): string[] {
@@ -91,12 +84,13 @@ describe('HMA-01.AC6: no third carry, no widened corroborator, no publish', () =
   it('HMA-01.AC6 the recording section records the carried P1s as fixed', () => {
     // The other direction: a suite that only forbids a Known issues entry
     // passes on a release that says nothing about them at all.
-    const section = recordingSection();
+    const section = sectionRecording(CHANGELOG, '#368');
     for (const issue of ['#368', '#477', '#478']) {
       expect(section, `the recording section does not name ${issue}`).toContain(issue);
     }
-    // A later release may carry other issues; it must not carry these again.
-    for (const block of knownIssueBlocks(section)) {
+    // A later release may carry other issues; it must not carry these again:
+    // every section from the newest down to the recording one is checked.
+    for (const block of knownIssueBlocks(sectionsThroughRecording(CHANGELOG, '#368'))) {
       for (const issue of ['#368', '#477', '#478']) {
         expect(block, `the recording section carries ${issue} as a known issue again`).not.toContain(issue);
       }
