@@ -228,6 +228,31 @@ SARIF uses. On every corpus fixture and test tree measured, no control status,
 count or compliance figure moves from the fold alone; evidence arrays grow
 to cite every failing site.
 
+### Known issues
+
+- `init-mcp` for Claude Code, selected with `-t claude` or detected from a
+  `.claude/` directory, prints `Detected: Claude Code` and `Added HackMyAgent
+  MCP server to .claude/settings.json`, and that file is the only one it
+  writes. `claude mcp list` (Claude Code 2.1.273) in that directory prints
+  `No MCP servers configured`, while the same `mcpServers` object copied into
+  `<dir>/.mcp.json` is listed, pending approval; that copy is the measured
+  workaround. Present in 0.33.0. Target 0.34.0
+  ([#757](https://github.com/opena2a-org/hackmyagent/issues/757)).
+- `harden-soul` on a SOUL.md holding a title, one descriptive sentence, a
+  one-line Trust Hierarchy and a one-line Injection Hardening section reports
+  `9 sections added` and writes a `<!-- soul:profile=conversational -->`
+  marker the starting file did not have; the analyzers then disagree on the
+  file it wrote. `scan-soul` reads the added sections as `autonomous` and
+  reports HIGH `SOUL-PROFILE-MISMATCH`, 74/100 with 4 of 9 domains evaluated,
+  and exits 0; `check <dir> --nanomind` reports HIGH `No Override Resistance`,
+  69/100, and exits 1; `secure <dir>` reports 93/100, `Usable with caveats`,
+  and exits 0, noting that governance, scope, prompt and code analysis did
+  not run. Removing the profile marker, the fix `scan-soul` prints, takes
+  `scan-soul` to 100/100 HARDENED and leaves `check --nanomind` at 69/100,
+  exit 1. Present in 0.33.0; the marker half is listed under the 0.32.0 Known
+  issues. Target 0.34.0
+  ([#446](https://github.com/opena2a-org/hackmyagent/issues/446)).
+
 ## [0.33.0] - 2026-09-13
 
 Everything below this heading down to the 0.32.0 entry landed on main after
