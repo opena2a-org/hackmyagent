@@ -4,7 +4,35 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
-## [0.33.1] - 2026-09-15
+## [0.33.2] - 2026-09-17
+
+### v0.33.1 was tagged and never published; the publish job now hands npm a file path
+
+v0.33.1 was tagged on 2026-09-16 and never reached npm. Its release run
+([35161269506](https://github.com/opena2a-org/hackmyagent/actions/runs/35161269506))
+built and reviewed the tarball, then the `publish` job ran
+`npm publish "release-pack/<tarball>"`. npm reads a bare `directory/name` as
+the GitHub shorthand `<owner>/<repo>`: it ran
+`git ls-remote ssh://git@github.com/release-pack/<tarball>.git` (no such
+repository exists), which failed with `Permission denied (publickey)`, and
+exited 128 before any registry request. `npm view hackmyagent@0.33.1` prints
+E404. The tag stays where it is and has no GitHub release; 0.33.2 is the same
+code with the version number changed, released through the fixed workflow. It
+was cut on the branch `release/0.33.2` from the v0.33.1 commit, with the
+workflow fix, the changelog and the version bump on top. `main` requires
+linear history, so the commit v0.33.2 points to is reachable from the tag and
+not from `main`: `git branch --contains v0.33.2` does not list `main`.
+
+`release.yml` now publishes `./release-pack/<tarball>`, which npm's parser
+types as a file. The shape test (`HMA-40.AC1` in
+`__tests__/repo/release-workflow-shape.test.ts`) asserted the bare form
+verbatim, so it passed at the tag. It now requires the argument to start with
+`./` or `/` and types it through npm's own package-spec parser, loaded from
+the npm on PATH, with the bare form as the positive control (it must read as
+`git`). If that parser cannot be loaded the test fails and names the path it
+expected; it never skips. `test-matrix.yml` also gains a `workflow_dispatch`
+trigger, so the test suite can be run on the exact commit a release tag points
+to, not only on pull requests and pushes to `main`.
 
 ### The release is reviewed as the CI-packed tarball, never the tree (HMA-40)
 
@@ -154,7 +182,7 @@ of placeholder values, `package.json`, `package-lock.json` and `LICENSE`
 beside the key went from Certified, 100% (9/9), exit 0 on 0.33.0 to Needs
 Improvement, 89% (8/9), exit 1; a directory holding nothing but
 `.claude/settings.json` exits 1 on both versions, because other controls
-already fail there (Not Passing, 43% on 0.33.0 and 29% on 0.33.1). The SARIF
+already fail there (Not Passing, 43% on 0.33.0 and 29% on 0.33.2). The SARIF
 join matches evidence lines by their `checkId` prefix instead of a substring
 ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
 `check <dir> --offline` still runs none of the static checks on a local
@@ -179,8 +207,8 @@ credential left your machine, rotate the credential. `red-team` never uploads
 its output; it travelled only where you moved it.
 Separately, [GHSA-ccp3-g7fv-9cqr](https://github.com/opena2a-org/hackmyagent/security/advisories/GHSA-ccp3-g7fv-9cqr)
 ("Credential characters could reach JSON output and be marked as checked", affected
-range `>= 0.17.11`) remains open in 0.33.1, and no published version resolves it. The
-advisory's guidance applies to 0.33.1 unchanged: search stored JSON and ASFF output for
+range `>= 0.17.11`) remains open in 0.33.2, and no published version resolves it. The
+advisory's guidance applies to 0.33.2 unchanged: search stored JSON and ASFF output for
 the vendor prefix of any key present in a scanned target, for example
 `grep -rn 'AKIA' path/to/stored-output`, and if characters of the key follow the prefix,
 rotate that key and remove the stored file wherever it travelled, including CI artifacts,
@@ -253,6 +281,13 @@ to cite every failing site.
   issues. Target 0.34.0
   ([#446](https://github.com/opena2a-org/hackmyagent/issues/446)).
 
+## [0.33.1] - 2026-09-15
+
+Tagged 2026-09-16; not published: the release workflow's `publish` job failed
+because npm read the tarball path as a git URL
+([run 35161269506](https://github.com/opena2a-org/hackmyagent/actions/runs/35161269506));
+nothing reached npm. Shipped as 0.33.2.
+
 ## [0.33.0] - 2026-09-13
 
 Everything below this heading down to the 0.32.0 entry landed on main after
@@ -269,7 +304,7 @@ Everything below this heading down to the 0.32.0 entry landed on main after
   without a `package.json` in the next release.
 - `secure --ci -b oasb-1` reports `5.1: No Hardcoded Credentials` as passed on
   a tree whose `.claude/settings.json` holds a plaintext key, while `secure`
-  and `detect` on the same tree flag it. Present in 0.32.0. Fixed in 0.33.1
+  and `detect` on the same tree flag it. Present in 0.32.0. Fixed in 0.33.2
   ([#739](https://github.com/opena2a-org/hackmyagent/issues/739)).
 - `check <local dir> --offline` prints a score (`96/100`, `Usable with caveats`)
   and exits 0 while noting that the static checks were not run, so a local
