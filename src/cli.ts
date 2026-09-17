@@ -589,8 +589,8 @@ Quick start:
     : ''
 ));
 
-// Two-bucket telemetry disclosure (briefs/scan-result-telemetry-policy.md §7,
-// [CHIEF-CSR-014] + [CHIEF-CPO-021]). Surfaces both consent rails on --help so
+// Two-bucket telemetry disclosure (scan-result telemetry policy §7).
+// Surfaces both consent rails on --help so
 // users see the boundary without reading the privacy policy.
 program.addHelpText('after', `
 Telemetry:
@@ -1292,7 +1292,7 @@ interface UnifiedCheckDisplayOptions {
      */
     semanticFamilyCoverage?: SemanticFamilyCoverage;
     /**
-     * `SecurityFinding[]`, not an inline bag — `[CHIEF-CA]` 2026-08-21. The
+     * `SecurityFinding[]`, not an inline bag (ruled 2026-08-21). The
      * previous hand-listed bag type was a TYPE-level named-field rebuild: it
      * admitted values without the two redaction fields, which is exactly how
      * the defect-(13) re-map downstream of it typechecked. With the canonical
@@ -1379,7 +1379,7 @@ interface UnifiedCheckDisplayOptions {
    * own labelled section, never merged into `findings`, never counted toward
    * the target score or the exit code. A directory-scoped score has to mean the
    * directory, or `--fail-below` is not a CI gate — the same commit scores 98
-   * on a runner and 0 on a laptop with an AI runtime installed. [CHIEF-CA]
+   * on a runner and 0 on a laptop with an AI runtime installed.
    */
   machinePosture?: MachinePostureEntry[];
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
@@ -2096,8 +2096,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // ── Observations + Verdict ──────────────────────────────────────────
   // Fill the zero-state gap: every scan now shows surfaces / checks /
   // categories / verdict so `100/100` never stands alone. Per brief
-  // briefs/cli-observation-verdict-ux.md [CPO-019]; intended home is
-  // `@opena2a/cli-ui` per [CA-030] — inlined here pending step-0d.
+  // on observation-verdict UX; intended home is
+  // `@opena2a/cli-ui` — inlined here pending step-0d.
   if (localScan || nanomindScan) {
     // Static rule-check suite size, derived from the taxonomy (single source
     // of truth, same as --help and check-metadata). This is the advertised
@@ -4407,7 +4407,7 @@ function notAssessedLevels(result: BenchmarkResult): BenchmarkLevel[] {
 }
 
 /**
- * #458 step 0 — the rating word never travels alone (CISO 2026-08-11, "no
+ * #458 step 0 — the rating word never travels alone (ruled 2026-08-11, "no
  * channel may render a rating word alone"): when a level at or below the
  * requested one was not assessed, the text and html renderers say so in the
  * same string. `--json` carries the bare word; the nulls sit beside it.
@@ -4828,7 +4828,7 @@ async function handleContribution(
 
     const event = buildScanEvent(packageName, targetDir, findings, durationMs, settled, completedChecks);
     await queueAndMaybeFlush(event, registryUrl, format === 'text');
-    // Silent-post-consent rule (briefs/scan-result-telemetry-policy.md §5):
+    // Silent-post-consent rule (scan-result telemetry policy §5):
     // once the user has opted in (--contribute or persisted choice),
     // contribution is invisible. No per-scan banner, no "queued for
     // OpenA2A Registry" line. Failures are swallowed by the catch.
@@ -5462,7 +5462,7 @@ Examples:
       const sendOutbound = outboundAllowed(settled);
       const withheldOutbound: string[] = [];
       // The one printed line when something outbound was withheld (#464,
-      // CISO slice A; CPO template). The reason clause is the exit-2
+      // slice A; fixed template). The reason clause is the exit-2
       // sentence this run already prints for its cause.
       const printWithheldLine = () => {
         if (withheldOutbound.length === 0) return;
@@ -5477,7 +5477,7 @@ Examples:
 
       // AI Infrastructure auto-detection — scan NemoClaw, OpenClaw, etc. if present.
       //
-      // [CHIEF-CA 2026-08-03] These runtimes live in $HOME, OUTSIDE the scan
+      // Ruled 2026-08-03: these runtimes live in $HOME, OUTSIDE the scan
       // target. Their findings are REPORTED but never SCORED: they do not enter
       // `result.findings`, do not reach `applyScore`, and do not set the exit
       // code. They are summarized on `result.machinePosture` instead.
@@ -5824,7 +5824,7 @@ Examples:
         // rating is Not Assessed, and a `--fail-below` breach over it still
         // exits 1 below. That is this arm's recorded precedence — measured-
         // and-failed outranks not-measured ("both true -> 1"), which differs
-        // from the secure arm's #512 rule and is kept as is by the CPO
+        // from the secure arm's #512 rule and is kept as is by the
         // ruling of 2026-08-25. The reason printed says which case it is.
         if (benchmarkResult.rating === 'Not Assessed') {
           const measuredElsewhere = benchmarkResult.passedControls + benchmarkResult.failedControls;
@@ -5982,7 +5982,7 @@ Examples:
         const jsonBase = {
           ...result,
           // The settled record's flat keys (#464): the document's top level IS
-          // the record — no nested duplicate (CPO ruling; the spread-order
+          // the record — no nested duplicate (by ruling; the spread-order
           // collision is a compile error in settled-outcome.ts). `score`,
           // `rawScore`, `scoreClamped`, `suppressed`, `outOfScope` already
           // ride via `...result` and are the same values by construction.
@@ -9814,7 +9814,7 @@ Examples:
       // arm returns, so text exits 1 and `--json` exits 0 on the same file.
       // This is the same shape `settleCheckVerdict` gives `check`.
       //
-      // Two rulings, `[CHIEF-CPO]` 2026-08-09, both Abdel's call:
+      // Two rulings, 2026-08-09, both Abdel's call:
       //
       //  1. exit 1 whenever `conformance === 'none'`, on BOTH channels. Three
       //     commands cannot disagree about what a governance failure is:
@@ -11964,8 +11964,8 @@ Examples:
 // pull-stubs: fetch pending HMA check stubs from the registry
 //
 // The status vocabulary is the REGISTRY'S, not this CLI's (DEFECT 1 of
-// `todo/roadmap/hackmyagent-pull-stubs-status-vocabulary-mismatch.md`, ruled
-// by [CHIEF-CA] 2026-08-31). This command used to validate against a
+// the pull-stubs status-vocabulary mismatch unit, ruled 2026-08-31). This
+// command used to validate against a
 // hardcoded `['draft','review','integrated','rejected']` and then filter the
 // response client-side against the same list, while the DB CHECK constraint
 // held a different set — so every value except the default `draft` was
@@ -12199,7 +12199,7 @@ Examples:
 
 // mark-stub: the write-back half of the observation -> shipped-check loop.
 //
-// DEFECT 2 of the same roadmap unit, UX ruled verbatim by [CHIEF-CPO]
+// DEFECT 2 of the same roadmap unit, UX ruled verbatim on
 // 2026-08-31. Nothing in HMA marked a stub integrated, so nobody could answer
 // "how many confirmed observations became a shipped check" — the only figure
 // that proves the flywheel turns. The registry endpoint this PATCHes ships
@@ -13296,7 +13296,7 @@ function printCheckNextSteps(
   // Tracks whether any next-step cites the separate `opena2a` CLI so we can
   // print a one-time install hint — a fresh user who only `npm i hackmyagent`
   // does not have `opena2a` on PATH, otherwise the step reads as a dead-end
-  // (release-test P2 / CISO Rule 11).
+  // (release-test P2: no dead ends).
   let citedOpena2a = false;
   if (context?.hasGovernanceIssues && isLocal) {
     console.log(`  ${colors.cyan}Auto-fix governance:${RESET()}  ${CLI_PREFIX} harden-soul ${citeDirTarget}`);
@@ -14559,8 +14559,8 @@ async function checkNpmPackage(
 // A security tool that doesn't verify itself is worse than no security tool
 (async () => {
   // Initialize telemetry FIRST so an integrity failure can fire a distinct
-  // INTEGRITY_FAIL event before the process exits. Per [CHIEF-CSR-018] +
-  // [CHIEF-CPO-022], supply-chain integrity violations get their own
+  // INTEGRITY_FAIL event before the process exits. By ruling,
+  // supply-chain integrity violations get their own
   // dashboard event row (not a generic command failure) and a per-event
   // pager threshold of 1. tele.init() is silent on file-I/O failures
   // (sandboxed envs) so this never blocks startup.

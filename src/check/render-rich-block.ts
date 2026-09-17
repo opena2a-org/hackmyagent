@@ -3,7 +3,7 @@
  * chalk palette to the structured tone-tagged output produced by
  * `renderCheckRichBlock` from `@opena2a/cli-ui`.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§3).
+ * Design brief: rich check context for skills and MCP, v1 (§3).
  *
  * cli-ui returns tone-tagged lines (no chalk imports); this module
  * paints them in HMA's terminal style and writes to stdout. ai-trust

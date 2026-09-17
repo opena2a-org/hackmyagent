@@ -271,7 +271,7 @@ function escapeRegExp(s: string): string {
  *
  * Pass 2 closes #201: ~29 finding-fix and explainer strings cite
  * `opena2a protect .`, and a user who installed hackmyagent on its own got
- * `command not found` — a dead end under CISO Rule 11. Fixing it here rather
+ * `command not found` — a dead end, which no finding may leave. Fixing it here rather
  * than at the 29 call sites keeps the citation policy in one place, and
  * matches how pass 1 already works.
  *

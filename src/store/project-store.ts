@@ -56,7 +56,7 @@ export interface ProjectStore {
   /**
    * Reserved for a credential store with a writer and a reader. No shipped
    * version has either — every vault ever written encrypted the literal `{}`
-   * — so nothing is created here until one exists (CISO, 2026-08-24).
+   * — so nothing is created here until one exists (ruled 2026-08-24).
    */
   credvaultDir: string;
   /** A directory for any other component, under the store root. */

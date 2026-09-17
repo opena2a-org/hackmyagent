@@ -1,7 +1,7 @@
 /**
  * `check skill:<name>` / `check mcp:<name>` orchestrator.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§3, §8).
+ * Design brief: rich check context for skills and MCP, v1 (§3, §8).
  *
  * Detects the prefix, fetches registry trust + narrative, builds a
  * `CheckRichBlockInput`, and prints via the rich-block renderer. When

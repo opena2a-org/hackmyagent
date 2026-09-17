@@ -635,7 +635,7 @@ export function annotateFindingsWithIntent(
  *
  * Capability names in the AST come from analyzer-internal taxonomy (e.g.
  * `filesystem.write`, `network.http`, `shell.exec`). Those don't read well
- * to a CISO — so we collapse them to short, readable phrases: "fs-write",
+ * to a security manager — so we collapse them to short, readable phrases: "fs-write",
  * "net-http", "shell-exec". The mapping is deterministic; no model inference.
  */
 function buildArtifactSummary(ast: SecurityAST, relativePath: string): ArtifactSummary {

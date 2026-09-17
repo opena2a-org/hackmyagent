@@ -3,9 +3,9 @@
  * is a skill or an MCP, builds the narrative, and POSTs it to the
  * registry. Always best-effort; never throws.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§8 task 2e)
+ * Design brief: rich check context for skills and MCP, v1 (§8 task 2e)
  *
- * [CHIEF-CA] DECISION 2026-04-27:
+ * Decision of 2026-04-27:
  *   v1 detection rules:
  *     1. `SKILL.md` exists at the scan root → skill artifact.
  *     2. `result.projectType === "mcp"` → mcp artifact (MCP config or
