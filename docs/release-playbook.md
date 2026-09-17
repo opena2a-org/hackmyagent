@@ -134,13 +134,14 @@ node dist/cli.js secure /tmp/walk-empty --json \
 ```
 
 **Grade.**
-- Score MUST be `93/100`. The only scored findings are LOW `GIT-001` (missing
-  `.gitignore`) and MEDIUM `DEP-001` (no lock file; `file` is
-  `package-lock.json`, the path the fix creates). `SANDBOX-001` (`file`
+- Score MUST be `98/100`. The only scored finding is LOW `GIT-001` (missing
+  `.gitignore`). `DEP-001` reads `package.json` as its subject and records
+  not-applicable on a tree without one (0.34.0; on 0.33.0 it was a MEDIUM
+  with `file: package-lock.json` and the score was 93). `SANDBOX-001` (`file`
   `Dockerfile`) fails in `allFindings` but is out of scope for the `library`
   project type, so it is neither shown nor scored.
-- The human output MUST list exactly those two findings.
-- `na` MUST be `13`: a check whose subject is absent records
+- The human output MUST list exactly that one finding.
+- `na` MUST be `14`: a check whose subject is absent records
   `notApplicable: { subject, reason }` instead of a pass or a failure (#458).
   No not-applicable record may carry `severity` or `passed`, and none may
   appear in the human output.
@@ -154,6 +155,37 @@ node dist/cli.js secure /tmp/walk-empty --json \
 **Failure class.** HIGH if any HIGH/CRITICAL fires or any other check passes.
 MEDIUM if the score moves without a scanner change, or a not-applicable record
 carries a severity, carries `passed`, or reaches the human output.
+
+### B3b — empty directory, benchmark mode
+
+```bash
+node dist/cli.js secure /tmp/walk-empty -b oasb-1 --no-machine-posture; echo "exit: $?"
+node dist/cli.js secure /tmp/walk-empty -b oasb-1 --no-machine-posture --format json \
+  | jq '{rating, compliance, l1Compliance, passedControls, failedControls, unverifiedControls, notApplicableControls}'
+```
+
+**Grade.** Measured on 0.34.0:
+- The human output MUST print `Rating: Not Assessed` and
+  `Compliance: not measured (no file was read from /tmp/walk-empty)`, and the
+  exit MUST be `2`. The scan read no file from the tree, so nothing was
+  measured: three hazard probes passing on not-there and four not-applicable
+  dependency controls are not a compliance figure. (On 0.33.0 the same tree
+  printed `Rating: Not Passing` at `43% (3/7 verified controls)`, exit 1; with
+  `DEP-001` not-applicable and no floor it would print `Certified` at
+  `100% (3/3 verified controls)`, exit 0.)
+- `--json` MUST carry `rating: "Not Assessed"`, `compliance: null`,
+  `l1Compliance: null`, and the statuses `3 / 0 / 19 / 4`
+  (passed / failed / unverified / not applicable): the floor withholds the
+  rating, not the records.
+- The same holds at `-l L1`, `-l L3`, `--scan-depth quick`, `-b oasb-2`
+  (`Infrastructure Score (OASB-1): not measured`) and in `--format html`,
+  `asp`, `sarif` (no `null%`, `undefined` or `NaN` anywhere). `--fail-below`
+  prints `not evaluated` and does not change the exit.
+
+**Failure class.** CRITICAL if the empty tree prints any rating word other
+than `Not Assessed`, a numeric compliance, or exits 0. A tree from which one
+file was read (a lone `README.md` at default depth) is unaffected and still
+rates on its records.
 
 ## Surface — `repo`
 

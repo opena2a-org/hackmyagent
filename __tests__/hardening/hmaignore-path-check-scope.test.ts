@@ -13,6 +13,11 @@
  * in `outOfScope` with `suppressedBy: "hmaignore-path-check"`, absent from
  * `suppressed`, absent from the gate set. The other three rows are unchanged.
  * Exit codes are captured from `spawnSync` status — no pipe.
+ *
+ * The two exit-0 rows now score 98, not 93: the 5 points were DEP-001's
+ * MEDIUM on a tree with no package manifest, which reads not-applicable
+ * since DEP-001 took the manifest as its subject. The exit-1 rows sit at the
+ * critical-finding cap and do not move.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -67,11 +72,11 @@ describe('HMA-21.AC2 — <path>:<CHECK-ID> scope semantics', { timeout: 600_000 
     expect(json.outOfScope).toBeUndefined();
   });
 
-  it('HMA-21.AC2 danger.py:NEMO-009 # r -> exit 0 / 93 / outOfScope via hmaignore-path-check, not suppressed, not in the gate set', () => {
+  it('HMA-21.AC2 danger.py:NEMO-009 # r -> exit 0 / 98 / outOfScope via hmaignore-path-check, not suppressed, not in the gate set', () => {
     const { status, json } = secure('danger.py:NEMO-009 # r\n');
     expect(status).toBe(0);
     expect(json.exitCode).toBe(0);
-    expect(json.score).toBe(93);
+    expect(json.score).toBe(98);
     expect(failing(json)).not.toContain('NEMO-009');
     const oos = (json.outOfScope ?? []).find((r: any) => r.checkId === 'NEMO-009');
     expect(oos).toBeDefined();
@@ -94,10 +99,10 @@ describe('HMA-21.AC2 — <path>:<CHECK-ID> scope semantics', { timeout: 600_000 
     expect(json.counts.critical).toBe(1);
   });
 
-  it('HMA-21.AC2 danger.py -> exit 0 / 93 (whole-path scope, unchanged)', () => {
+  it('HMA-21.AC2 danger.py -> exit 0 / 98 (whole-path scope, unchanged)', () => {
     const { status, json } = secure('danger.py\n');
     expect(status).toBe(0);
-    expect(json.score).toBe(93);
+    expect(json.score).toBe(98);
     const oos = (json.outOfScope ?? []).find((r: any) => r.checkId === 'NEMO-009');
     expect(oos).toBeDefined();
     expect(oos.suppressedBy).toBe('hmaignore-path');

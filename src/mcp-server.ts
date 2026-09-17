@@ -30,6 +30,7 @@ import {
 } from './semantic';
 import * as path from 'path';
 import { citationTarget } from './ui/shell-quote';
+import { escapeForDisplay } from './ui/display-safe';
 import { withheldLinkLines } from './hardening/withheld-links';
 import type { WithheldLinkRecord } from './hardening/security-check';
 
@@ -245,8 +246,19 @@ export interface BenchmarkAssessment {
 export function assessBenchmarkFindings(
   allFindings: ReadonlyArray<SecurityFinding>,
   level: BenchmarkLevel,
+  /**
+   * The scan's own coverage. `filesExamined === 0` is the zero-read floor
+   * the CLI benchmark arm applies: a scan that read no file is not a
+   * measurement of the tree, so the rating is withheld and the compliance
+   * is `null`, whatever the control statuses add up to (an empty directory
+   * otherwise reads `Certified` on three hazard probes passing on
+   * not-there). The statuses themselves are kept: they are true records.
+   */
+  coverage?: { filesExamined: number; directory?: string },
 ): BenchmarkAssessment {
-  const result = generateBenchmarkReport(allFindings, level);
+  const measured = generateBenchmarkReport(allFindings, level);
+  const zeroRead = coverage?.filesExamined === 0;
+  const result = zeroRead ? { ...measured, rating: 'Not Assessed' as const, compliance: null } : measured;
   const lines: string[] = [];
   for (const cat of result.categories) {
     for (const ctrl of cat.controls) {
@@ -264,8 +276,12 @@ export function assessBenchmarkFindings(
     }
   }
   const compliance = result.compliance;
+  const reason = zeroRead
+    ? `Not assessed: no file was read from ${coverage?.directory ? escapeForDisplay(coverage.directory) : 'the directory'}, so no control was measured and no rating is awardable.\n`
+    : '';
   const text =
     `OASB-1 ${level} Assessment: ${compliance === null ? 'not measured' : `${compliance}% compliance`} (${result.rating})\n` +
+    reason +
     `Passed: ${result.passedControls} | Failed: ${result.failedControls} | Not applicable: ${result.notApplicableControls} | Unverified: ${result.unverifiedControls}\n\n` +
     lines.join('\n');
   return {
@@ -452,8 +468,12 @@ export async function handleToolCall(
           const scanner = new HardeningScanner();
           const result = await scanner.scan({ targetDir: dir, confineRoots: roots });
 
-          // Generate benchmark assessment
-          const assessment = assessBenchmarkFindings(result.allFindings || result.findings, level);
+          // Generate benchmark assessment; the scan's coverage carries the
+          // zero-read floor.
+          const assessment = assessBenchmarkFindings(result.allFindings || result.findings, level, {
+            filesExamined: result.coverage?.filesExamined ?? 0,
+            directory: dir,
+          });
           return { content: [{ type: 'text', text: assessment.text }] };
         }
 
