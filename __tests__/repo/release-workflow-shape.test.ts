@@ -85,6 +85,55 @@ function executableLines(run: string): string {
     .join('\n');
 }
 
+/**
+ * The one `npm publish` line of a job's executable text, split into its
+ * first argument (quotes stripped) and the flags after it. Exactly one such
+ * line must exist: zero means the job does not publish, two means a retry or
+ * a second package is hiding in the step.
+ */
+function publishInvocation(run: string): { arg: string; flags: string } {
+  const lines = run.split('\n').filter((l) => /^\s*npm publish(\s|$)/.test(l));
+  expect(lines, 'exactly one `npm publish` line in the publish job').toHaveLength(1);
+  const m = /^\s*npm publish\s+("([^"]*)"|'([^']*)'|(\S+))\s*(.*)$/.exec(lines[0]);
+  expect(m, `unparseable npm publish line: ${lines[0]}`).not.toBeNull();
+  return { arg: m![2] ?? m![3] ?? m![4], flags: m![5] };
+}
+
+/**
+ * npm's own argument parser, loaded from the npm that `npm` on PATH runs
+ * (`npm root -g`/npm/node_modules/npm-package-arg). This is the code path
+ * `npm publish <arg>` takes to decide whether <arg> is a file or a remote
+ * spec, so the control below exercises the real reading, not a regex of it.
+ * Resolution failure is a test failure, not a skip: this suite runs in the
+ * tag-triggered build job, and a gate that skips when its instrument is
+ * missing is quiet exactly when nothing is checking.
+ */
+interface NpmParser {
+  npa: (spec: string) => { type: string };
+  /** Where it was loaded from and what it is, for the assertion messages. */
+  describe: string;
+}
+function loadNpmPackageArg(): NpmParser {
+  const env = gitFreeEnv();
+  const npmVersion = execFileSync('npm', ['--version'], { encoding: 'utf8', env }).trim();
+  const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', env }).trim();
+  const expected = path.join(npmRoot, 'npm', 'node_modules', 'npm-package-arg');
+  let resolved: string;
+  try {
+    resolved = require.resolve('npm-package-arg', { paths: [path.join(npmRoot, 'npm')] });
+  } catch (err) {
+    throw new Error(
+      `npm-package-arg not resolvable from the npm on PATH (npm ${npmVersion}; \`npm root -g\` = ${npmRoot}; ` +
+        `expected ${expected}). The control needs the npm that runs \`npm publish\`; fix the environment, never skip: ${String(err)}`,
+    );
+  }
+  const npaVersion = (JSON.parse(fs.readFileSync(path.join(path.dirname(resolved), '..', 'package.json'), 'utf8')) as { version?: string }).version ?? 'unknown';
+  return {
+    npa: require(resolved) as (spec: string) => { type: string },
+    describe: `npm-package-arg ${npaVersion} at ${resolved}, npm ${npmVersion}`,
+  };
+}
+
 /** The guard pipeline, verbatim from the criterion. One escape level: this is the shell text. */
 const PM_CONFIG_PATTERN = '(^|/)(\\.npmrc|\\.yarnrc(\\.yml)?|\\.pnpmfile\\.cjs|\\.envrc)$';
 const GUARD_COMMAND = `git ls-files | grep -E '${PM_CONFIG_PATTERN}'`;
@@ -157,7 +206,17 @@ describe('HMA-40.AC1: release.yml holds the build → review → publish → ver
     const run = executableLines(runs(jobs.publish));
     // Publishing the DOWNLOADED ARTIFACT, not the tree: the argument to
     // `npm publish` is the tarball path, with provenance, public.
-    expect(run).toMatch(/npm publish "release-pack\/\$\{TARBALL_NAME\}" --provenance --access public/);
+    const publish = publishInvocation(run);
+    expect(publish.arg).toContain('${TARBALL_NAME}');
+    expect(publish.flags).toMatch(/(^|\s)--provenance(\s|$)/);
+    expect(publish.flags).toMatch(/(^|\s)--access public(\s|$)/);
+    // The path must be one npm can only read as a FILE. A bare `dir/name.tgz`
+    // is a package spec to npm, and `release-pack/<tarball>` is the GitHub
+    // shorthand `<owner>/<repo>`: the v0.33.1 run (35161269506) reached this
+    // step with the reviewed bytes in hand and exited 128 on
+    // `git ls-remote ssh://git@github.com/release-pack/hackmyagent-0.33.1.tgz.git`.
+    // Nothing reached npm. Only a leading `./` or `/` closes that reading.
+    expect(publish.arg, `npm publish argument "${publish.arg}" is not a file path; npm reads a bare dir/name as <owner>/<repo>`).toMatch(/^\.?\//);
     // And the artifact is digest-checked before it is published.
     expect(run).toContain('TARBALL_SHA256');
   });
@@ -188,6 +247,23 @@ describe('HMA-40.AC1: release.yml holds the build → review → publish → ver
       if (name === 'publish') continue;
       expect((job.permissions ?? {})['id-token'], `job ${name} carries id-token`).not.toBe('write');
     }
+  });
+});
+
+describe('HMA-40.AC1 the publish argument is a file to npm, measured with npm\'s own parser', () => {
+  const sample = 'hackmyagent-0.0.0.tgz';
+
+  it('the bare release-pack/<tarball> form is a git spec to npm (the v0.33.1 failure), and the workflow argument is a file', () => {
+    const parser = loadNpmPackageArg();
+    // Positive control: the exact string the v0.33.1 run passed. If npm ever
+    // stops reading it as a remote, this row goes red and the rule is
+    // re-examined rather than silently carried.
+    const bare = `release-pack/${sample}`;
+    expect(parser.npa(bare).type, `${parser.describe}: "${bare}" no longer reads as a git spec; re-examine the prefix rule`).toBe('git');
+    const publish = publishInvocation(executableLines(runs(jobs.publish)));
+    const concrete = publish.arg.replace('${TARBALL_NAME}', sample);
+    expect(concrete, 'the publish argument carries ${TARBALL_NAME}').not.toBe(publish.arg);
+    expect(parser.npa(concrete).type, `${parser.describe}: publish argument "${concrete}" is not a file to npm`).toBe('file');
   });
 });
 
