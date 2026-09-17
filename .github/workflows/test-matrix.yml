@@ -13,6 +13,10 @@ name: Test matrix
 # publish time.
 
 on:
+  # Manual runs on an exact ref: a release tag commit that is not on main
+  # (0.33.2 is cut on a release branch) gets its witness on its own tree,
+  # not on a pull-request merge ref.
+  workflow_dispatch:
   pull_request:
   push:
     branches: [main]
