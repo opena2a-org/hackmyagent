@@ -120,7 +120,7 @@ jobs:
             echo "::error::Refusing to publish: artifact sha256 ${digest} is not the reviewed digest (${TARBALL_SHA256})"
             exit 1
           fi
-          npm publish "release-pack/${TARBALL_NAME}" --provenance --access public
+          npm publish "./release-pack/${TARBALL_NAME}" --provenance --access public
 
   verify:
     needs: [build, publish]
