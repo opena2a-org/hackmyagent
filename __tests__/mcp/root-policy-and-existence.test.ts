@@ -63,7 +63,7 @@ describe('#463 the root policy is one predicate, not one per caller', () => {
       expect(() => initMcp(root, undefined, [candidate])).toThrow(/Root not accepted/);
     }
     // The config the broken run would have written must not be there.
-    await expect(rm(path.join(root, '.claude', 'settings.json'))).rejects.toThrow();
+    await expect(rm(path.join(root, '.mcp.json'))).rejects.toThrow();
   });
 
   it('init-mcp still accepts a real project root', () => {

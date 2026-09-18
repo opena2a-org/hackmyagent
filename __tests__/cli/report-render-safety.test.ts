@@ -303,7 +303,7 @@ describe('#328 every report that renders a tree-derived path renders it safely',
    * `init-mcp` is the weakest case here, and saying so is the point.
    *
    * Its rendered path is RELATIVE and comes from a three-entry table in
-   * `src/init-mcp.ts` — `.claude/settings.json`, `.cursor/mcp.json`,
+   * `src/init-mcp.ts` — `.mcp.json`, `.cursor/mcp.json`,
    * `.vscode/mcp.json`. The target directory's name never reaches the line, so
    * the hostile marker cannot appear no matter what the tree is called, and
    * asserting that it does would be asserting something untrue.

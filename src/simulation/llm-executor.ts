@@ -166,7 +166,7 @@ export async function detectBestBackend(): Promise<LLMBackend | null> {
     }
   }
 
-  return null; // No LLM available, will use heuristic fallback
+  return null; // No executor available; the engine reports NOT_MEASURED and runs no probe
 }
 
 /**

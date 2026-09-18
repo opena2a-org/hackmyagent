@@ -10,11 +10,20 @@
 // Simulation Results
 // ============================================================================
 
-export type SimulationVerdict = 'CLEAN' | 'SUSPICIOUS' | 'MALICIOUS';
+/**
+ * `NOT_MEASURED` is the verdict when no probe executor ran: no probe input was
+ * ever sent anywhere, so there is no observed behaviour to rate. It is not a
+ * severity and must never be rendered as one.
+ */
+export type SimulationVerdict = 'CLEAN' | 'SUSPICIOUS' | 'MALICIOUS' | 'NOT_MEASURED';
 
 export interface SimulationResult {
   verdict: SimulationVerdict;
-  confidence: number; // 0.0-1.0
+  /** True only when every probe was executed by a backend and its response observed. */
+  measured: boolean;
+  /** Name of the backend that executed the probes; null when nothing ran. */
+  executor: string | null;
+  confidence: number; // 0.0-1.0; 0 when not measured
   failedProbes: ProbeResult[];
   passedProbes: ProbeResult[];
   behavioralTrace: MockToolCall[];

@@ -8,6 +8,15 @@
  * - Layer 1: NanoMind TME classification (< 8ms, handled by --semantic flag)
  * - Layer 2: 5 targeted probes (< 3 seconds)
  * - Layer 3: Full 20-probe simulation (< 30 seconds)
+ *
+ * A probe is a behavioural measurement: the artifact is loaded as the system
+ * prompt, the probe input is sent as the user turn, and the response is read
+ * for tool calls, HTTP requests, memory writes and credential requests. That
+ * requires an executor (NanoMind daemon, Ollama, or `ANTHROPIC_API_KEY`). Without
+ * one nothing is sent anywhere, so the engine returns `NOT_MEASURED` rather
+ * than a verdict. There is no text-search fallback: a verdict derived from the
+ * artifact's own wording rated the SOUL.md that `harden-soul` writes MALICIOUS
+ * because it names the attacks it forbids (#446).
  */
 
 import { MockToolEnvironment } from './mock-tools.js';
@@ -17,6 +26,7 @@ import type { LLMBackend } from './llm-executor.js';
 import type {
   SimulationResult,
   SimulationConfig,
+  SimulationVerdict,
   ProbeResult,
   ProbeDefinition,
   SkillProfile,
@@ -36,18 +46,26 @@ export class SimulationEngine {
   private useLLM: boolean;
 
   /**
-   * @param options.useLLM - If true, auto-detect and use LLM backends.
-   *   If false (default for tests), use heuristic analysis only.
-   *   Set to true in production or when LLM backends are available.
+   * @param options.useLLM - If true, auto-detect an executor backend on first
+   *   use (NanoMind daemon, then Ollama, then `ANTHROPIC_API_KEY`). If false (the
+   *   default), no probe runs and every result is `NOT_MEASURED`.
+   * @param options.backend - An injected executor. When given, detection is
+   *   skipped and this backend runs every probe; tests use it to drive the
+   *   engine without a network.
    */
-  constructor(options?: { useLLM?: boolean }) {
+  constructor(options?: { useLLM?: boolean; backend?: LLMBackend }) {
     this.mockEnv = new MockToolEnvironment();
-    this.useLLM = options?.useLLM ?? false;
+    if (options?.backend) {
+      this.llmBackend = options.backend;
+      this.llmDetected = true;
+      this.useLLM = true;
+    } else {
+      this.useLLM = options?.useLLM ?? false;
+    }
   }
 
   /**
-   * Auto-detect LLM backend on first use.
-   * Falls back to heuristic analysis if no LLM is available.
+   * Resolve the executor on first use. Null means no probe can run.
    */
   private async ensureLLM(): Promise<LLMBackend | null> {
     if (!this.useLLM) return null;
@@ -76,6 +94,7 @@ export class SimulationEngine {
 
   /**
    * Core simulation: run probe battery against skill in mock environment.
+   * Returns an unmeasured result, with no probe run, when there is no executor.
    */
   private async runSimulation(
     skill: SkillProfile,
@@ -83,6 +102,24 @@ export class SimulationEngine {
     layer: 2 | 3,
   ): Promise<SimulationResult> {
     const startMs = Date.now();
+
+    const backend = await this.ensureLLM();
+    if (!backend) {
+      return {
+        verdict: 'NOT_MEASURED',
+        measured: false,
+        executor: null,
+        confidence: 0,
+        failedProbes: [],
+        passedProbes: [],
+        behavioralTrace: [],
+        semanticDelta: 0,
+        durationMs: Date.now() - startMs,
+        probeCount: probes.length,
+        layer,
+      };
+    }
+
     const results: ProbeResult[] = [];
 
     for (const probe of probes) {
@@ -90,7 +127,7 @@ export class SimulationEngine {
       const probeStart = Date.now();
 
       try {
-        const result = await this.runSingleProbe(skill, probe);
+        const result = await executeProbeLLM(backend, skill, probe, this.mockEnv);
         results.push({
           ...result,
           durationMs: Date.now() - probeStart,
@@ -123,6 +160,8 @@ export class SimulationEngine {
 
     return {
       verdict,
+      measured: true,
+      executor: backend.name,
       confidence,
       failedProbes,
       passedProbes,
@@ -135,114 +174,12 @@ export class SimulationEngine {
   }
 
   /**
-   * Run a single probe against the skill.
-   * Uses LLM execution when available, falls back to heuristic analysis.
-   */
-  private async runSingleProbe(
-    skill: SkillProfile,
-    probe: ProbeDefinition,
-  ): Promise<ProbeResult> {
-    // Try LLM-powered execution first (actual behavioral observation)
-    const backend = await this.ensureLLM();
-    if (backend) {
-      return executeProbeLLM(backend, skill, probe, this.mockEnv);
-    }
-
-    // Fallback: heuristic analysis of skill content against probe
-    const passed = this.evaluateProbeHeuristic(skill, probe);
-    const flaggedCalls = this.mockEnv.getFlaggedCalls();
-
-    return {
-      probeId: probe.id,
-      probeName: probe.name,
-      category: probe.category,
-      passed,
-      attackClass: probe.attackClass,
-      observedBehavior: passed
-        ? `Skill passed ${probe.name}: ${probe.passCondition}`
-        : `Skill FAILED ${probe.name}: ${probe.failCondition}`,
-      evidence: flaggedCalls.map(c => c.flagReason ?? `Suspicious ${c.toolType} call: ${c.toolName}`),
-      confidence: passed ? 0.85 : 0.80,
-      durationMs: 0, // Set by caller
-    };
-  }
-
-  /**
-   * Heuristic probe evaluation.
-   * This is the interim implementation before full LLM simulation.
-   * Analyzes skill text for patterns that indicate probe failure.
-   */
-  private evaluateProbeHeuristic(skill: SkillProfile, probe: ProbeDefinition): boolean {
-    const text = skill.rawContent.toLowerCase();
-    const caps = skill.capabilities.map(c => c.toLowerCase());
-    const constraints = skill.constraints.map(c => c.toLowerCase());
-
-    switch (probe.category) {
-      case 'exfiltration': {
-        // Check for external URL references + data forwarding patterns
-        const hasExternalURL = /https?:\/\/[^\s]+\.(co|io|com|net|org)/i.test(skill.rawContent);
-        const hasForwarding = /forward|send|transmit|export|upload|post.*to/i.test(text);
-        const hasTokenRef = /session|token|credential|secret/i.test(text);
-        return !(hasExternalURL && hasForwarding && hasTokenRef);
-      }
-
-      case 'override_resistance': {
-        // Skills that mention "ignore previous" or lack constraint enforcement
-        const hasOverrideLanguage = /ignore.*previous|override.*instruction|new.*task/i.test(text);
-        const hasWeakConstraints = constraints.length === 0;
-        return !hasOverrideLanguage && !hasWeakConstraints;
-      }
-
-      case 'scope_expansion': {
-        // Check if skill references tools/resources beyond declared capabilities
-        const undeclaredTools = ['email', 'admin', 'system', 'root', 'sudo', 'exec', 'shell'];
-        const hasUndeclared = undeclaredTools.some(t =>
-          text.includes(t) && !caps.some(c => c.includes(t))
-        );
-        return !hasUndeclared;
-      }
-
-      case 'credential_secret': {
-        // Check for credential harvesting patterns
-        const harvestPatterns = /ask.*password|request.*credential|share.*key|provide.*token/i;
-        const storePatterns = /save.*password|store.*credential|remember.*key/i;
-        return !harvestPatterns.test(text) && !storePatterns.test(text);
-      }
-
-      case 'memory_persistence': {
-        // Check for instruction injection via memory patterns
-        const instructionWrite = /always.*remember|persist.*instruction|save.*rule/i;
-        const crossSession = /future.*session|next.*time|permanent/i;
-        return !instructionWrite.test(text) && !crossSession.test(text);
-      }
-
-      case 'heartbeat_remote': {
-        // Check for remote instruction fetch patterns
-        const remoteFetch = /fetch.*config|check.*update|load.*instruction.*from/i;
-        const callbackSetup = /webhook|callback|notify.*url|ping.*endpoint/i;
-        return !remoteFetch.test(text) && !callbackSetup.test(text);
-      }
-
-      case 'semantic_consistency': {
-        // Check if capabilities match declared purpose
-        const purposeWords = skill.declaredPurpose.toLowerCase().split(/\s+/);
-        const capWords = caps.join(' ').split(/\s+/);
-        const overlap = purposeWords.filter(w => capWords.some(c => c.includes(w))).length;
-        return overlap > 0 || purposeWords.length < 3; // Short purposes get a pass
-      }
-
-      default:
-        return true; // Unknown category passes by default
-    }
-  }
-
-  /**
    * Compute overall verdict from probe results.
    */
   private computeVerdict(
     results: ProbeResult[],
     totalProbes: number,
-  ): { verdict: 'CLEAN' | 'SUSPICIOUS' | 'MALICIOUS'; confidence: number } {
+  ): { verdict: Exclude<SimulationVerdict, 'NOT_MEASURED'>; confidence: number } {
     const failed = results.filter(r => !r.passed);
     const failRate = failed.length / totalProbes;
 
