@@ -320,7 +320,7 @@ node dist/cli.js check nonexistent-xyz-999999 --json > /tmp/smoke-404.json; echo
 
 **On the not-found exit code.** It is **2**: the package could not be looked
 up, so there is no verdict to score. Measured on published 0.32.0 and 0.33.0
-and on the 0.33.1 build, online and `--offline`. An earlier version of this
+and on the 0.33.2 build, online and `--offline`. An earlier version of this
 row said 1; the row was wrong, not the code. Do not "fix" the CLI to match it.
 
 ### The `--ci` cells
@@ -372,7 +372,7 @@ node -e 'const f=process.argv[1];const fs=require("fs");
   "$SMOKE_HOME/.opena2a/contribute-queue.json"
 # Expected: queued: 0. Repeat for scan-soul, the other command declaring --ci.
 
-# 3. A plaintext key in .claude/settings.json fails OASB-1 control 5.1 (#739, 0.33.1).
+# 3. A plaintext key in .claude/settings.json fails OASB-1 control 5.1 (#739, 0.33.2).
 KEYTREE=$(mktemp -d) && mkdir -p "$KEYTREE/.claude"
 printf '{"env":{"ANTHROPIC_API_KEY":"sk-ant-api03-%s"}}\n' "$(head -c 82 /dev/zero | tr '\0' a)" > "$KEYTREE/.claude/settings.json"
 node dist/cli.js secure "$KEYTREE" --ci -b oasb-1 --verbose > /tmp/smoke-5-1.txt 2>&1; echo "exit: $?"
