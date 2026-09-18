@@ -43,8 +43,9 @@ engine intelligent. That is the work below.
 
 - `src/simulation/llm-executor.ts` defines a real backend chain:
   `NanoMindBackend` (HTTP `POST 127.0.0.1:47200`) → `OllamaBackend` →
-  `AnthropicBackend` → heuristic fallback, selected by `detectBestBackend()` /
-  `executeProbeLLM()`.
+  `AnthropicBackend`, selected by `detectBestBackend()` / `executeProbeLLM()`.
+  When none answers the engine returns `NOT_MEASURED` and runs no probe; the
+  text-search fallback that used to stand in for a backend is gone (#446).
 - `src/simulation/index.ts` exposes a `SimulationEngine` with layered probes
   (NanoMind semantic ~8ms → targeted probes → full simulation).
 - `red-team` already builds a `SimulationEngine` instance — it just never calls

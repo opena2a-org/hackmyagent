@@ -77,7 +77,7 @@ const IDE_CONFIGS: Array<{
 }> = [
   {
     name: 'Claude Code',
-    configPath: '.claude/settings.json',
+    configPath: '.mcp.json',
     mcpKey: 'mcpServers',
   },
   {

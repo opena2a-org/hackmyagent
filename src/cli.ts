@@ -5473,15 +5473,28 @@ Examples:
             process.stderr.write(`\n[Simulation] No skill/SOUL/MCP artifacts found. Simulation skipped.\n\n`);
           } else {
             process.stderr.write(`\n[Simulation] Running behavioral simulation on ${skillFiles.length} artifact(s)...\n`);
-            const sim = new SimulationEngine({ useLLM: nanomindAvailable });
+            // The engine resolves its own executor (NanoMind daemon, Ollama,
+            // ANTHROPIC_API_KEY). Without one it runs no probe and reports
+            // NOT_MEASURED; the static findings above are then the whole
+            // verdict. A verdict computed from the artifact's own wording
+            // rated the SOUL.md that `harden-soul` writes MALICIOUS (#446).
+            const sim = new SimulationEngine({ useLLM: true });
 
             for (const file of skillFiles.slice(0, 10)) { // Cap at 10 files
               const content = readFileSync(file, 'utf-8');
               const profile = parseSkillProfile(content, file.split('/').pop() ?? 'unknown');
               const simResult = await sim.runLayer3(profile);
 
-              const icon = simResult.verdict === 'CLEAN' ? 'PASS' : simResult.verdict === 'SUSPICIOUS' ? 'WARN' : 'FAIL';
-              process.stderr.write(`  [${icon}] ${escapePathForDisplay(file.split('/').pop() ?? file)} — ${simResult.verdict} (${(simResult.confidence * 100).toFixed(0)}% confidence, ${simResult.failedProbes.length}/${simResult.probeCount} probes failed)\n`);
+              if (!simResult.measured) {
+                process.stderr.write(`  [Simulation] NOT MEASURED — no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_API_KEY); the Findings block is the verdict.\n`);
+                break;
+              }
+
+              // Advisory only: the simulation never moves the score or the exit
+              // code, so the line carries a count and the probe ids, not a
+              // severity word.
+              const flagged = simResult.failedProbes.map(p => p.probeId).join(', ');
+              process.stderr.write(`  [INFO] ${escapePathForDisplay(file.split('/').pop() ?? file)} — ${simResult.failedProbes.length}/${simResult.probeCount} probes flagged (advisory, not scored)${flagged ? `: ${flagged}` : ''}\n`);
 
               // Training export is opt-in only (HMA_EXPORT_TRAINING=1). Self-labeled
               // simulation verdicts bypass the training sanitizer, so the default
