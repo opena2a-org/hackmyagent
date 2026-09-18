@@ -10,11 +10,17 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { ArtifactType, CompilerConfig, DEFAULT_COMPILER_CONFIG } from '../types.js';
+import type { ArtifactClassification, ArtifactType, CompilerConfig, DEFAULT_COMPILER_CONFIG } from '../types.js';
 
 export interface ParsedArtifact {
   /** Classified artifact type */
   type: ArtifactType;
+  /**
+   * How `type` was decided: `'path'` when the matching signature holds with
+   * the content withheld, so the file's name alone named the kind; `'content'`
+   * when the body had to be read. `unknown` is always `'content'`.
+   */
+  classifiedBy: ArtifactClassification;
   /** SHA-256 content hash */
   contentHash: string;
   /** Original content */
@@ -195,8 +201,8 @@ export function parseArtifact(
     errors.push('Artifact contains binary data');
   }
 
-  // Classify type
-  const type = classifyArtifactType(content, path);
+  // Classify type, and record what decided it
+  const { type, classifiedBy } = classifyArtifact(content, path);
 
   // Compute content hash
   const contentHash = computeHash(content);
@@ -215,6 +221,7 @@ export function parseArtifact(
 
   return {
     type,
+    classifiedBy,
     contentHash,
     content,
     path,
@@ -226,16 +233,34 @@ export function parseArtifact(
 }
 
 /**
- * Classify artifact type from content and path.
+ * Classify artifact type from content and path, and say what decided it.
  * Tries each signature in order; returns 'unknown' if none match.
+ *
+ * `classifiedBy` is measured, not declared per signature: the signature that
+ * matched is asked again with the content withheld. If it still matches, the
+ * path alone named the kind (`SKILL.md`, `mcp.json`, `SOUL.md`, `agent.json`,
+ * `agent-config.yaml`, a source extension); if it does not, a content
+ * heuristic decided (`capabilities:` frontmatter on a `.md`, an `mcpServers`
+ * key in an unnamed JSON file, an `agentType` field). The semantic layer's
+ * sdk/library gate reads this so a path-named agent artifact nested under a
+ * library root still reaches the agent families (#740).
  */
-export function classifyArtifactType(content: string, path?: string): ArtifactType {
+export function classifyArtifact(
+  content: string,
+  path?: string,
+): { type: ArtifactType; classifiedBy: ArtifactClassification } {
   for (const sig of TYPE_SIGNATURES) {
     if (sig.test(content, path)) {
-      return sig.type;
+      const byPath = path !== undefined && sig.test('', path);
+      return { type: sig.type, classifiedBy: byPath ? 'path' : 'content' };
     }
   }
-  return 'unknown';
+  return { type: 'unknown', classifiedBy: 'content' };
+}
+
+/** `classifyArtifact(...).type`, for callers that only want the kind. */
+export function classifyArtifactType(content: string, path?: string): ArtifactType {
+  return classifyArtifact(content, path).type;
 }
 
 /**

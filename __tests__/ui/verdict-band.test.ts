@@ -14,11 +14,20 @@
 // composite out of the good band. The clamp never raises a score, never
 // changes the verdict or exit code, and preserves the pre-clamp value as
 // `rawScore` so it adds information rather than destroying it.
+//
+// The spawn cells below used the corpus fixture from the report. Since the
+// semantic gate keys on the artifact kind (#740), that fixture's root SOUL.md
+// reaches the governance analyzer under its `library` root, and its raw
+// composite lands at 69, below the good band, so it no longer exercises the
+// clamp. The cells now build their own fail-direction tree whose raw
+// composite is in the good band: a package.json beside a SOUL.md with no
+// controls (measured raw 79, clamped to 69, four HIGH governance and prompt
+// findings). The non-vacuity guards still prove both halves on every run.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   GOOD_BAND_FLOOR,
@@ -35,9 +44,18 @@ beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-const FIXTURE = join(homedir(), '.opena2a', 'corpus', 'soul', 'malicious', 'permissive-overrides-soul');
+/** A fail-direction tree whose raw composite sits in the good band. */
+const FIXTURE = mkdtempSync(join(tmpdir(), 'hma-259-'));
+writeFileSync(join(FIXTURE, 'package.json'), '{"name":"fx259","version":"1.0.0","private":true}\n');
+writeFileSync(join(FIXTURE, 'SOUL.md'), '# Soul\n\nA document with no controls.\n');
+afterAll(() => {
+  try { rmSync(FIXTURE, { recursive: true, force: true }); } catch { /* best effort */ }
+});
 
 function canRunSpawn(): boolean {
+  // The fixture is built above, so the second clause is the same guard it was
+  // for the corpus tree: a missing fixture skips the spawn cells rather than
+  // failing them for an absent input.
   return existsSync(CLI) && existsSync(FIXTURE);
 }
 

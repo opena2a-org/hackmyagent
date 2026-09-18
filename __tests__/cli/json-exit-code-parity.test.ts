@@ -160,6 +160,10 @@ beforeAll(() => {
   mkdirSync(cleanTarget);
   writeFileSync(path.join(fixture, 'SKILL.md'), MALICIOUS_SKILL);
   writeFileSync(path.join(cleanTarget, 'README.md'), '# nothing to see here\n');
+  // #740 — `check <dir>` runs the static suite, so "clean" is clean under it:
+  // the patterns GIT-002 requires and the lock file DEP-001 requires.
+  writeFileSync(path.join(cleanTarget, '.gitignore'), '.env\nsecrets.json\n*.pem\n*.key\n');
+  writeFileSync(path.join(cleanTarget, 'package-lock.json'), '{ "lockfileVersion": 3 }\n');
 });
 
 describe('#373 the CLI registry drives the list', () => {

@@ -881,6 +881,13 @@ export interface ScanOptions {
   /** CLI command prefix for fix messages (default: 'hackmyagent') */
   cliName?: string;
   /**
+   * The subcommand a SCAN-UNREAD-001 remedy tells the user to re-run once the
+   * input is readable (default: 'secure'). `check` runs this scan on a local
+   * directory and names itself here, so the remedy re-runs the command the
+   * user typed (#740).
+   */
+  unreadRemedyCommand?: string;
+  /**
    * Set to true when scanning a downloaded npm/registry package (not a local project).
    * Suppresses checks that only make sense for source repos (GIT-001, GIT-002, GIT-003).
    */
@@ -3745,6 +3752,8 @@ function describeSkillBundlePayload(line: string): string | null {
 
 export class HardeningScanner {
   private cliName = 'hackmyagent';
+  /** The verb a SCAN-UNREAD-001 remedy re-runs; see `ScanOptions.unreadRemedyCommand`. */
+  private unreadRemedyCommand = 'secure';
   /**
    * Coverage ledger for the current `scan()`. Replaced per run.
    *
@@ -4059,6 +4068,15 @@ export class HardeningScanner {
    */
   /** Every unreadable input this run recorded, before scope filtering. */
   private unreadableAll: { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }[] = [];
+  /**
+   * The unread inputs of the last `scan()`, with their paths. The result's
+   * `coverage.unreadableInputs` carries counts and errno codes only; a caller
+   * that names the paths under its own header (`check`'s local arm, #508)
+   * reads them here rather than re-walking the tree.
+   */
+  get lastUnreadInputs(): ReadonlyArray<{ path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }> {
+    return this.unreadableAll;
+  }
 
   /**
    * For a permission-denied read, the shallowest ancestor inside the target
@@ -4158,8 +4176,9 @@ export class HardeningScanner {
   }
 
   private async scanInner(options: ScanOptions): Promise<ScanResult> {
-    const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent' } = options;
+    const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent', unreadRemedyCommand = 'secure' } = options;
     this.cliName = cliName;
+    this.unreadRemedyCommand = unreadRemedyCommand;
     // Per-run, so a reused scanner instance cannot report a previous run's
     // failed writes.
     this.fixWriteFailures = [];
@@ -4870,7 +4889,7 @@ export class HardeningScanner {
       // `buildUnreadInputFinding`, extracted to module scope so the local
       // `check` arm can emit the identical finding through the same
       // errno->remedy logic rather than a second copy (#508 / #494 class).
-      findings.push(buildUnreadInputFinding(u, { cliName: this.cliName, targetDir }));
+      findings.push(buildUnreadInputFinding(u, { cliName: this.cliName, targetDir, command: this.unreadRemedyCommand }));
     }
 
     if (this.fixWritesIntoForeignArchive.length > 0) {

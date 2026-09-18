@@ -191,6 +191,12 @@ describe('#328 every report that renders a tree-derived path renders it safely',
   }, 300_000);
 
   it('harden-soul', () => {
+    // The `secure --fix` case above shares this tree, and since the semantic
+    // gate keys on the artifact kind (#740) it hardens a root SOUL.md under a
+    // library-typed root too, so the file arrives here with every domain
+    // section present and a dry run would have nothing to cite. Restore the
+    // no-controls file this case was written against.
+    writeFileSync(path.join(hostileDir, 'SOUL.md'), '# Soul\n\nA document with no controls.\n');
     const out = run(['harden-soul', '--dry-run', hostileDir]);
     expect(
       out,

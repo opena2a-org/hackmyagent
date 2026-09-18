@@ -358,6 +358,7 @@ export class SemanticCompiler {
     // Step 8: Build and sign the AST
     const ast: SecurityAST = {
       artifactType: parsed.type,
+      classifiedBy: parsed.classifiedBy,
       contentHash: parsed.contentHash,
       artifactPath: path,
       artifactSize: parsed.size,

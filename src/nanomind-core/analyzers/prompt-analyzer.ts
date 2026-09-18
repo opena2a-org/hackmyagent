@@ -18,7 +18,7 @@ import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { findLineFromString } from '../../types/text-position.js';
-import { isNonAgentProjectType } from './family-coverage.js';
+import { nonAgentGateApplies } from './family-coverage.js';
 
 // ============================================================================
 // Public API
@@ -45,8 +45,10 @@ export function analyzePrompt(
   assertASTIntegrity(ast, verifier);
 
   // SDKs and libraries don't have system prompts, instruction hierarchies,
-  // or trust boundaries. Prompt security checks only apply to agents.
-  if (isNonAgentProjectType(projectType)) {
+  // or trust boundaries. Prompt security checks only apply to agents -- and a
+  // path-named agent artifact (SKILL.md, mcp.json, SOUL.md) nested under a
+  // library root IS an agent artifact, so the gate does not silence it (#740).
+  if (nonAgentGateApplies(ast, projectType)) {
     return [];
   }
 

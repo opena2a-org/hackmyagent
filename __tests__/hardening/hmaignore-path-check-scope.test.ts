@@ -118,8 +118,9 @@ describe('HMA-21.AC2 — <path>:<CHECK-ID> scope semantics', { timeout: 600_000 
       expect(src, `${rel} compares a channel literal`).not.toMatch(/[!=]==?\s*'hmaignore-path'/);
       expect(src, `${rel} compares a channel literal`).not.toMatch(/[!=]==?\s*'hmaignore-path-check'/);
     }
-    // and the three partition sites actually route through the helper
+    // and the partition site actually routes through the helper. #740 — the
+    // `check` local-directory arm in `src/cli.ts` no longer partitions on
+    // its own: it runs the scanner's scan, so the scanner's site is the one.
     expect(fs.readFileSync(path.join(root, 'src/hardening/scanner.ts'), 'utf8')).toMatch(/isScopeChannel/);
-    expect(fs.readFileSync(path.join(root, 'src/cli.ts'), 'utf8')).toMatch(/isScopeChannel/);
   });
 });

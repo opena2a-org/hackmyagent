@@ -16,7 +16,7 @@ import { purposeRedactionProvenance, type ASTFinding } from './capability-analyz
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { findLineFromString } from '../../types/text-position.js';
-import { isNonAgentProjectType } from './family-coverage.js';
+import { nonAgentGateApplies } from './family-coverage.js';
 
 // ============================================================================
 // Public API
@@ -42,8 +42,9 @@ export function analyzeScope(
   assertASTIntegrity(ast, verifier);
 
   // SDKs and libraries don't declare tool access, permissions, or purpose
-  // in the OASB sense. Scope checks only apply to agents.
-  if (isNonAgentProjectType(projectType)) {
+  // in the OASB sense. Scope checks only apply to agents -- and a path-named
+  // agent artifact nested under a library root is one (#740).
+  if (nonAgentGateApplies(ast, projectType)) {
     return [];
   }
 
