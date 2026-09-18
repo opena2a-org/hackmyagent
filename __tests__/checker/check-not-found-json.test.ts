@@ -114,6 +114,26 @@ function expectShimServedPack(name: string): void {
   expect(log).toContain(`pack ${name}`);
 }
 
+/**
+ * Name the Registry class before any shape assertion. On a Registry query that
+ * produced no answer the spawned CLI exits 2 (EXIT_UNMEASURED), writes
+ * `Registry query for "<name>" failed: Registry request timed out after <n>ms`
+ * (or `... Registry network error: ...` / `... Registry API returned 5xx`) to
+ * stderr and, in --json, emits `found:false` with `errorClass:
+ * "registry-unreachable"` and no `ecosystem` (cli.ts emitRegistryQueryError).
+ * vitest prints neither stream of a spawnSync child, so that outage surfaced
+ * here as `expected '' to contain 'pack ...'` and `expected undefined to be
+ * 'github'` with no line in the CI log naming the class (Test matrix run
+ * 35032162323, 2026-09-15). The child's stderr goes into the assertion
+ * message, on one line, so the class is named where the test fails.
+ */
+function expectRegistryAnswered(res: { stderr?: string | null }): void {
+  const stderr = (res.stderr ?? '').replace(/\s+/g, ' ').trim();
+  expect(stderr, `Registry-class failure; spawned CLI stderr: ${stderr}`).not.toMatch(
+    /Registry request timed out after \d+ms|Registry network error:|Registry API returned 5\d\d/,
+  );
+}
+
 function resetMarker(): void {
   writeFileSync(markerFile!, '');
 }
@@ -248,6 +268,7 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
       env: shimEnv(),
     });
 
+    expectRegistryAnswered(res);
     expectShimServedPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
@@ -274,6 +295,7 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
       env: shimEnv(),
     });
 
+    expectRegistryAnswered(res);
     expectShimServedPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
@@ -300,6 +322,7 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
       env: shimEnv(),
     });
 
+    expectRegistryAnswered(res);
     expectShimServedPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
@@ -318,6 +341,7 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
       timeout: 30_000,
     });
 
+    expectRegistryAnswered(res);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
     // never fetched; the PyPI arm of this same suite already asserted 2. Every
@@ -364,6 +388,7 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
       },
     );
 
+    expectRegistryAnswered(res);
     expect(res.status).toBe(2);
 
     const hosts = recordedHosts();
