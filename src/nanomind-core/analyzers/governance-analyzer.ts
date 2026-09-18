@@ -17,7 +17,7 @@ import type { SecurityAST, Constraint, ConstraintDomain, Capability } from '../t
 import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
-import { isNonAgentProjectType } from './family-coverage.js';
+import { nonAgentGateApplies } from './family-coverage.js';
 import { findLineFromString } from '../../types/text-position.js';
 
 // ============================================================================
@@ -139,8 +139,10 @@ export function analyzeGovernance(
 
   // SDKs and libraries are not agents -- they don't have SOUL.md governance,
   // capability boundaries, or override resistance. Governance checks would
-  // only produce noise (e.g., "no constraints" for every source file).
-  if (isNonAgentProjectType(projectType)) {
+  // only produce noise (e.g., "no constraints" for every source file). A
+  // path-named agent artifact nested under a library root is still an agent
+  // artifact, so the gate does not silence it (#740).
+  if (nonAgentGateApplies(ast, projectType)) {
     return [];
   }
 

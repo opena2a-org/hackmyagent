@@ -3,7 +3,7 @@
  * `McpNarrative` wire shape consumed by @opena2a/check-core's
  * `runRuleEngine` and the registry's `package_narratives` row.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§4)
+ * Design brief: rich check context for skills and MCP, v1 (§4)
  *
  * Reuses what the existing scanners already extract from MCP configs
  * and TypeScript/JS source. Where comprehension data isn't available

@@ -348,11 +348,12 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
   });
 
   describe('direction on a name only one arm enters', { timeout: 300_000 }, () => {
-    it('a mode-000 dist/ is named by secure (which reads dist/) and not by check (which never enters it, readable or not)', (ctx) => {
-      // The direction rule binds on obstructions both arms would have READ. `check`
-      // runs the semantic walker only, whose skip list holds `dist`; the guard is
-      // that the obstruction never moves an arm's verdict cleaner than its readable
-      // tree: check(readable dist/.env) == check(000 dist/) == 0, secure 1 -> 2.
+    it('a mode-000 dist/ is named by secure and by check alike (#740: check reads what secure reads)', (ctx) => {
+      // The direction rule binds on obstructions both arms would have READ. Since
+      // #740 `check <dir>` runs the scanner `secure` runs, so both arms enter
+      // dist/ and both name the obstruction; the guard is that the obstruction
+      // never moves either arm's verdict cleaner than its readable tree:
+      // readable dist/.env -> 1 on both, 000 dist/ -> 2 on both.
       const dir = makeTree('dist-dir', { credential: false });
       fs.mkdirSync(path.join(dir, 'dist'));
       // A sensitive NAME: secure's sensitive-artifact walk reports `dist/.env`
@@ -362,15 +363,16 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
       const sOpen = json(['secure', '--scan-depth', 'quick', dir]);
       const cOpen = json(['check', '--offline', dir]);
       expect(sOpen.status).toBe(1);
-      expect(cOpen.status).toBe(0);
+      expect(cOpen.status).toBe(1);
       expect(cOpen.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
       if (!makeUnlistable(path.join(dir, 'dist'))) osDeclined(ctx);
       const sLocked = json(['secure', '--scan-depth', 'quick', dir]);
       const cLocked = json(['check', '--offline', dir]);
       expect(sLocked.status).toBe(EXIT_INCOMPLETE);
       expect(unreadFindings(sLocked.body).map((f) => f.file)).toEqual(['dist/']);
-      expect(cLocked.status).toBe(0);
-      expect(cLocked.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+      expect(cLocked.status).toBe(EXIT_INCOMPLETE);
+      expect(unreadFindings(cLocked.body).map((f) => f.file)).toEqual(['dist/']);
+      expect(cLocked.body.coverage.unreadableInputs).toEqual(sLocked.body.coverage.unreadableInputs);
     });
   });
 
@@ -410,7 +412,7 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
   });
 
   describe('policy-skipped names are breadth, not loss (attempt-set predicate)', { timeout: 300_000 }, () => {
-    it('a mode-000 .aws/ is named by secure (its sensitive-artifact walk enters it) and not by check', (ctx) => {
+    it('a mode-000 .aws/ is named by secure (its sensitive-artifact walk enters it) and by check alike (#740)', (ctx) => {
       const dir = makeTree('aws-dir', { credential: false });
       fs.mkdirSync(path.join(dir, '.aws'));
       fs.writeFileSync(path.join(dir, '.aws', 'credentials'), `[default]\naws_access_key_id = AKIA${'A'.repeat(16)}\n`);
@@ -421,8 +423,8 @@ describe('#588 a directory the scan cannot list is an unread input on every chan
         expect(unreadFindings(s.body).map((f) => f.file)).toEqual(['.aws/']);
       }
       const c = json(['check', '--offline', dir]);
-      expect(c.status).toBe(0);
-      expect(c.body.coverage.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+      expect(c.status).toBe(EXIT_INCOMPLETE);
+      expect(unreadFindings(c.body).map((f) => f.file)).toEqual(['.aws/']);
     });
 
     describe.each(['.git', 'node_modules'])('%s/', { timeout: 300_000 }, (name) => {

@@ -2,12 +2,12 @@
  * NanoMind v3 1-paragraph summary generator — gated by input-classifier
  * v3.1, with a graceful-degrade path baked in.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md (§4.1, §10)
+ * Design brief: rich check context for skills and MCP, v1 (§4.1, §10)
  *
  * Per project memory `project_nanomind_v05_intelreport_task_mismatch.md`,
  * v0.5.0 fails JSON-schema validation on clean-scan inputs and
  * hallucinates attack classes for non-attack tasks. v3 has the same
- * task-scope problem ([CDS-024]). Until a NanoMind release ships that
+ * task-scope problem (release-gate finding). Until a NanoMind release ships that
  * targets the comprehension task properly, this module returns empty
  * strings on every code path. The renderer treats `''` as
  * "Comprehension data not yet available" and renders graceful-degrade.
@@ -84,7 +84,7 @@ export async function generateNarrativeSummary(
   }
   // v1 stub: NanoMind v3 comprehension is not wired up. Real
   // implementation lives in a follow-up branch keyed on the new
-  // model release per [CHIEF-CDS] approval.
+  // model release once its release gate approves it.
   return emptyResult();
 }
 

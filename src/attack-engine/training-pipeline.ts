@@ -56,11 +56,17 @@ export function initTrainingPipeline(): void {
 /**
  * Export simulation results as training data.
  * CLEAN simulations -> benign labels. MALICIOUS -> malicious labels.
+ *
+ * An unmeasured result (no probe executor, verdict `NOT_MEASURED`) writes
+ * nothing and does not open the corpus: there is no observed behaviour to
+ * label (#446).
  */
 export function exportSimulationTraining(
   artifactContent: string,
   result: SimulationResult,
 ): number {
+  if (!result.measured) return 0;
+
   initTrainingPipeline();
   let count = 0;
 

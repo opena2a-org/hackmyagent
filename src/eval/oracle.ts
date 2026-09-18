@@ -325,7 +325,7 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
           // EACCES / EISDIR / JSON parse / other: throw. Oracle accuracy is
           // computed as correct/total; silently dropping fixtures reduces the
           // denominator and produces a misleading score. Fail loudly so the
-          // CDS gate decision is made on complete data.
+          // model release-gate decision is made on complete data.
           throw new Error(
             `oracle eval: could not read ${labelPath} (${code ?? 'parse-error'}): ${(e as Error).message}`
           );

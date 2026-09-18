@@ -193,8 +193,8 @@ function checkCredentialForwarding(
     return findings;
   }
 
-  // Corpus-only carve-out for transmission semantics (per [CSR-003] +
-  // [CDS-023]). Labeled credential-forwarding examples in training
+  // Corpus-only carve-out for transmission semantics (by ruling).
+  // Labeled credential-forwarding examples in training
   // data are intentional content for the classifier to learn. The
   // manifest path is NOT exempted here — a model integrity manifest
   // has no business declaring credential-transmit patterns; if it
@@ -1042,7 +1042,7 @@ function hasVendorPrefixCredential(content: string): boolean {
  * artifact is one of:
  *   (a) A verified integrity manifest (path + content shape) AND
  *       the content has NO vendor-prefix credential.
- *   (b) An adversarial training corpus (per [CSR-003] + [CDS-023])
+ *   (b) An adversarial training corpus (by ruling)
  *       AND the content has NO vendor-prefix credential.
  *
  * The "no vendor prefix" requirement closes the attacker-plant bypass

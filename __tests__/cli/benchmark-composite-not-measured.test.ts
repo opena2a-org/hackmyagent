@@ -50,6 +50,12 @@ function soulTree(): string {
     '## Honesty and Transparency', 'Always identify as AI.', '',
     '## Harm Avoidance', 'Refuse harmful requests.', '',
   ].join('\n'));
+  // One file the quick-depth hardening scan reads (SOUL.md is not among
+  // them): a scan that reads no file is `Not Assessed` under the zero-read
+  // floor for its own reason, and these cells are about the OASB-1 side
+  // being unmeasured by SELECTION (a category with no L1 control) beside a
+  // measured one. Adds no control result.
+  fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\n');
   return dir;
 }
 

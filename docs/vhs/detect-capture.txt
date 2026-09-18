@@ -1,0 +1,137 @@
+$ npx hackmyagent detect
+
+  demo-agents  shadow ai audit · laptop · 2 agents · 5 agent projects
+  4 of 5 agent projects need action (4 critical, 5 high)
+
+  ── Shadow AI agents (5) ────────────────────────────────────
+  project                       identified by  mcp servers     governance   cred      verdict
+  deploy-runbook-agent          Claude Code    3 mcp critical  gov   0/100  cred yes  CRITICAL
+  invoice-reconciliation-agent  Claude Code    3 mcp high      gov   4/100  cred yes  CRITICAL
+  hr-onboarding-assistant       Cursor         3 mcp medium    gov   7/100  cred yes  CRITICAL
+  support-triage-agent          SOUL.md        1 mcp medium    gov   7/100  cred no   HIGH
+  release-notes-agent           SOUL.md        1 mcp medium    gov 100/100  cred no   MEDIUM
+
+  deploy-runbook-agent  2 critical · 1 high · 1 medium
+  │ CRITICAL  1 project MCP server with sensitive access
+  │ shell: can run any command on your computer
+  │ Fix: hackmyagent secure deploy-runbook-agent
+
+  │ CRITICAL  AI config files contain credential references
+  │ .claude/settings.json:3 — "ANTHROPIC_API_KEY" = sk-ant-api0… (121 chars)
+  │ Fix: opena2a protect deploy-runbook-agent  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ Verify: sed -n '3p' deploy-runbook-agent/.claude/settings.json
+
+  │ HIGH  1 AI agent without governance
+  │ Claude Code (installed: .claude/settings.json) — no governance file found
+  │ Fix: hackmyagent harden-soul deploy-runbook-agent
+
+  + 1 more — hackmyagent detect deploy-runbook-agent for the full report
+
+  invoice-reconciliation-agent  1 critical · 2 high · 1 medium · 1 low
+  │ CRITICAL  AI config files contain credential references
+  │ CLAUDE.md:20 — "ANTHROPIC_API_KEY" = sk-ant-api0… (123 chars)
+  │ Fix: opena2a protect invoice-reconciliation-agent  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ Verify: sed -n '20p' invoice-reconciliation-agent/CLAUDE.md
+
+  │ HIGH  1 AI agent without governance
+  │ Claude Code (installed: .claude/settings.json) — CLAUDE.md is missing 2 critical control(s)
+  │ Fix: hackmyagent harden-soul invoice-reconciliation-agent
+
+  │ HIGH  AI config files grant broad permissions
+  │ .claude/settings.json — "Bash(*)" grants Bash with no command-name bound
+  │ Fix: Narrow .claude/settings.json — replace "Bash(*)" with "Bash(npm test)" or another entry the prefix bounds
+
+  + 2 more — hackmyagent detect invoice-reconciliation-agent for the full report
+
+  hr-onboarding-assistant  1 critical · 1 high · 1 medium · 1 low
+  │ CRITICAL  AI config files contain credential references
+  │ .cursorrules:15 — "OPENAI_API_KEY" = sk-proj-… (59 chars)
+  │ Fix: opena2a protect hr-onboarding-assistant  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ Verify: sed -n '15p' hr-onboarding-assistant/.cursorrules
+
+  │ HIGH  1 AI agent without governance
+  │ Cursor (installed: .cursorrules) — .cursorrules is missing 1 critical control(s)
+  │ Fix: hackmyagent harden-soul hr-onboarding-assistant
+
+  + 2 more — hackmyagent detect hr-onboarding-assistant for the full report
+
+  support-triage-agent  1 high · 1 medium
+  │ HIGH  Governance document subverts 1 of its own controls
+  │ SOUL.md:19 Override compliance mandate (SOUL-IH-001)
+  │ Fix: hackmyagent scan-soul support-triage-agent
+  │ Verify: sed -n '19p' support-triage-agent/SOUL.md
+
+  + 1 more — hackmyagent detect support-triage-agent for the full report
+
+  release-notes-agent  1 medium
+
+  + 1 more — hackmyagent detect release-notes-agent for the full report
+
+  ── AI Agents (2) ───────────────────────────────────────────
+  Claude Code           installed  governed in 0 of 2 projects (.claude/settings.json)
+  Cursor                installed  governed in 0 of 1 project (.cursorrules)
+
+  ── Next Steps ──────────────────────────────────────────────
+  Worst project:   hackmyagent detect deploy-runbook-agent          full report for one project
+  Full scan:       hackmyagent secure deploy-runbook-agent          deep security scan with findings
+  Inventory:       hackmyagent detect --export-csv inventory.csv    one row per asset across every project
+  All commands:    hackmyagent --help                               full command reference
+
+  Scanned with hackmyagent v0.33.0
+[exit 1]
+
+$ npx hackmyagent detect deploy-runbook-agent
+
+  deploy-runbook-agent  shadow ai audit · laptop · 1 agent · 3 mcp servers
+  2 critical issues found
+
+  Governance  ━━━━━━━━━━━━━━━━━━━━ 0/100
+
+  ── Findings ────────────────────────────────────────────────
+  2 critical  1 high  1 medium
+
+  │ CRITICAL  1 project MCP server with sensitive access
+  │ shell: can run any command on your computer
+  │ These MCP servers are configured in your project and grant access to sensitive operations like running shell commands or accessing databases. Running a security scan confirms they match what you intended to install.
+  │ Fix: hackmyagent secure deploy-runbook-agent
+
+  │ CRITICAL  AI config files contain credential references
+  │ .claude/settings.json:3 — "ANTHROPIC_API_KEY" = sk-ant-api0… (121 chars)
+  │ API keys or tokens appear to be stored directly in these configuration files. Anyone with repository access can see and use these credentials.
+  │ Fix: opena2a protect deploy-runbook-agent  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ Verify: sed -n '3p' deploy-runbook-agent/.claude/settings.json
+
+  │ HIGH  1 AI agent without governance
+  │ Claude Code (installed: .claude/settings.json) — no governance file found
+  │ These agents can take actions in your project but have no rules defining what they should or should not do. A SOUL.md file sets behavioral boundaries — what agents can and cannot do, and what requires human approval.
+  │ Fix: hackmyagent harden-soul deploy-runbook-agent
+
+  │ MEDIUM  2 project MCP servers without a security scan
+  │ kubernetes, github
+  │ These servers are configured in your project but have not been scanned for security issues. Running hackmyagent secure surfaces any vulnerabilities in their configuration.
+  │ Fix: hackmyagent secure deploy-runbook-agent
+
+  Path forward: 0 -> 100 by adding the missing governance controls and clearing 2 critical + 1 high
+
+  ── AI Agents (1) ───────────────────────────────────────────
+  Claude Code           installed  ungoverned (.claude/settings.json)  →  hackmyagent harden-soul deploy-runbook-agent
+
+  ── MCP Servers (3) ─────────────────────────────────────────
+  Project-local (3)
+    shell       CRITICAL — can run any command on your computer
+    kubernetes  MEDIUM
+    github      MEDIUM — can read and push code to your repositories
+
+  ── AI Config Files (1) ─────────────────────────────────────
+  .claude/settings.json  Claude Code
+    Contains hardcoded credentials line 3: "ANTHROPIC_API_KEY" — opena2a protect .
+
+  ── Next Steps ──────────────────────────────────────────────
+  Full scan:             hackmyagent secure /work/demo-agents/deploy-runbook-agent         deep security scan with findings
+  Add governance:        hackmyagent harden-soul /work/demo-agents/deploy-runbook-agent    generate SOUL.md behavioral boundaries
+  Protect credentials:   opena2a protect /work/demo-agents/deploy-runbook-agent            encrypt hardcoded secrets into secure vault
+  Audit MCP servers:     opena2a mcp audit                                                 list servers and verify capability risk
+  All commands:          hackmyagent --help                                                full command reference
+
+  Scanned with hackmyagent v0.33.0
+[exit 1]

@@ -30,6 +30,7 @@ import {
 } from './semantic';
 import * as path from 'path';
 import { citationTarget } from './ui/shell-quote';
+import { escapeForDisplay } from './ui/display-safe';
 import { withheldLinkLines } from './hardening/withheld-links';
 import type { WithheldLinkRecord } from './hardening/security-check';
 
@@ -120,7 +121,7 @@ const TOOL_DEFINITIONS = [
  * The registry, exported so tests can enumerate it instead of restating it.
  *
  * A table-driven confinement test that hardcodes its own list of tools stops
- * covering the next tool the moment one is added, which is the failure mode CPO
+ * covering the next tool the moment one is added, which is the failure mode review
  * named: "any new MCP tool that takes a path and does not call the shared root
  * helper" would pass a test that never looked at it.
  */
@@ -245,8 +246,19 @@ export interface BenchmarkAssessment {
 export function assessBenchmarkFindings(
   allFindings: ReadonlyArray<SecurityFinding>,
   level: BenchmarkLevel,
+  /**
+   * The scan's own coverage. `filesExamined === 0` is the zero-read floor
+   * the CLI benchmark arm applies: a scan that read no file is not a
+   * measurement of the tree, so the rating is withheld and the compliance
+   * is `null`, whatever the control statuses add up to (an empty directory
+   * otherwise reads `Certified` on three hazard probes passing on
+   * not-there). The statuses themselves are kept: they are true records.
+   */
+  coverage?: { filesExamined: number; directory?: string },
 ): BenchmarkAssessment {
-  const result = generateBenchmarkReport(allFindings, level);
+  const measured = generateBenchmarkReport(allFindings, level);
+  const zeroRead = coverage?.filesExamined === 0;
+  const result = zeroRead ? { ...measured, rating: 'Not Assessed' as const, compliance: null } : measured;
   const lines: string[] = [];
   for (const cat of result.categories) {
     for (const ctrl of cat.controls) {
@@ -264,8 +276,12 @@ export function assessBenchmarkFindings(
     }
   }
   const compliance = result.compliance;
+  const reason = zeroRead
+    ? `Not assessed: no file was read from ${coverage?.directory ? escapeForDisplay(coverage.directory) : 'the directory'}, so no control was measured and no rating is awardable.\n`
+    : '';
   const text =
     `OASB-1 ${level} Assessment: ${compliance === null ? 'not measured' : `${compliance}% compliance`} (${result.rating})\n` +
+    reason +
     `Passed: ${result.passedControls} | Failed: ${result.failedControls} | Not applicable: ${result.notApplicableControls} | Unverified: ${result.unverifiedControls}\n\n` +
     lines.join('\n');
   return {
@@ -349,14 +365,14 @@ export async function handleToolCall(
         if (result.withheldLinks?.length) parts.push(mcpWithheldLinksText(result.withheldLinks));
         // The WRITE PATH is gone, not just the schema property: models pass
         // properties outside a schema routinely, so deleting the property alone
-        // would have left the write capability live and undocumented (CPO).
+        // would have left the write capability live and undocumented.
         // `scan` above is called with no `autoFix`, so there is nothing here for
         // a `fix` argument to reach. The flag is still READ, and only read, so
         // that a caller who sends it is told it was declined — dropping it
         // silently is the dead end the same ruling refused.
         if (args?.fix !== undefined) parts.push(fixRequestedNote(dir));
         // A model-supplied suppression list that does not appear in the output is
-        // the score-laundering defect of #450 with a different caller (CISO).
+        // the score-laundering defect of #450 with a different caller.
         if (ignore.length > 0) {
           parts.push(
             `Scope: ${ignore.length} check ID${ignore.length === 1 ? '' : 's'} suppressed at this tool's request (${ignore.join(', ')}). The score below is computed over the checks that ran.`,
@@ -452,8 +468,12 @@ export async function handleToolCall(
           const scanner = new HardeningScanner();
           const result = await scanner.scan({ targetDir: dir, confineRoots: roots });
 
-          // Generate benchmark assessment
-          const assessment = assessBenchmarkFindings(result.allFindings || result.findings, level);
+          // Generate benchmark assessment; the scan's coverage carries the
+          // zero-read floor.
+          const assessment = assessBenchmarkFindings(result.allFindings || result.findings, level, {
+            filesExamined: result.coverage?.filesExamined ?? 0,
+            directory: dir,
+          });
           return { content: [{ type: 'text', text: assessment.text }] };
         }
 
@@ -477,7 +497,7 @@ export async function handleToolCall(
  *
  * The server still starts with no root so the client sees a working connection
  * and `tools/list` answers — a startup exit would surface as an opaque "server
- * failed to start" in a log the user may never open (CPO). Every path-taking
+ * failed to start" in a log the user may never open. Every path-taking
  * tool then returns the refusal, which carries the one command that fixes it.
  */
 export async function startMcpServer(cliRoots: string[] = []): Promise<void> {

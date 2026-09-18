@@ -231,7 +231,9 @@ function validateIntent(
   claims: ClaimValidation[],
   discrepancies: Discrepancy[],
 ): void {
-  if (!sim) {
+  // An unmeasured simulation (no probe executor) carries no observed behaviour
+  // and is read exactly like no simulation at all.
+  if (!sim || !sim.measured) {
     claims.push({
       claim: `Intent: ${ast.intentClassification}`,
       type: 'intent',

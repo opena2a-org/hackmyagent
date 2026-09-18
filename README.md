@@ -48,7 +48,7 @@ No config files. No flags required. Exit code 1 if any critical or high finding 
 - **318 static checks across 73 categories** (363 checks across 88 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
 - **29 NanoMind semantic checks.** Every artifact (skill, MCP config, SOUL.md, system prompt) compiles into an Abstract Security Tree. The seven AST analyzers run against the tree: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`. Pattern matching misses undeclared capabilities, constraint weakness, scope mismatches, and scanner-evasion attempts. AST queries catch them. (This 29 is the fixed catalog of semantic checks. The `Checks` line in scan output — e.g. `12 semantic (NanoMind AST)` above — reports the number of artifacts compiled in that particular run, not this catalog size.)
 - **164 adversarial payloads across 16 categories.** Prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP and A2A exploitation, memory weaponisation, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement integrity.
-- **20-probe behavioural simulation** under `--deep`. Observes what a skill actually does, not only what it declares.
+- **20-probe behavioural simulation** under `--deep`, when a probe executor is present (NanoMind daemon, Ollama or `ANTHROPIC_API_KEY`). Observes what a skill actually does, not only what it declares; without an executor it prints `NOT MEASURED` instead of a verdict.
 - **Self-securing.** Every binary verifies itself on startup against an embedded SHA-256 manifest. Post-install tampered binaries enter QUARANTINE mode (exit code 3) with a per-file forensics report. Symlink-redirected manifests are rejected.
 
 Full catalogue: [`docs/SECURITY_CHECKS.md`](docs/SECURITY_CHECKS.md).
@@ -108,6 +108,7 @@ npm view hackmyagent dist.attestations --json
 | A URL tarball | `hackmyagent check https://ex.com/pkg.tar.gz` | downloads, scans |
 | External infrastructure | `hackmyagent scan example.com` | external AI-endpoint inventory |
 | Governance (SOUL.md) | `hackmyagent scan-soul` | SOUL.md against OASB-2 behavioural controls |
+| Every agent project on a machine | `hackmyagent detect` | running assistants, MCP servers, credential references in AI config files, governance; one row per project, worst first |
 
 ### secure vs check vs red-team vs attack
 
@@ -145,7 +146,7 @@ Runs automatically on every `secure` scan. On first use, HMA downloads a 5.5 MB 
 
 - 7 AST analyzers: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`.
 - 9 attack classes: `exfiltration`, `injection`, `privilege_escalation`, `persistence`, `credential_abuse`, `lateral_movement`, `social_engineering`, `policy_violation`, `benign`.
-- `--deep` adds the 20-probe behavioural simulation.
+- `--deep` adds the 20-probe behavioural simulation (needs a probe executor; otherwise `NOT MEASURED`).
 - `--static-only` disables the semantic layer.
 - `--nanomind` opts into the generative analyst (specialist model, not the classifier). It produces per-finding threat narratives on HIGH or CRITICAL findings, and a coverage sweep over artifacts the deterministic checks did not flag — analyst verdicts there surface as advisory escalations for human review (never changing the score, findings, or exit code).
 
@@ -235,8 +236,8 @@ Inventory of AI tools, MCP servers, and governance gaps across your machine. Det
 From a directory that holds agent projects below it (a workspace, a home directory) the report opens with one line per project, worst first:
 
 ```
-  workspace  shadow ai audit · laptop · 1 agent · 40 machine-wide mcp servers · 5 agent projects
-  4 of 5 agent projects need action (4 critical, 6 high)
+  demo-agents  shadow ai audit · laptop · 2 agents · 5 agent projects
+  4 of 5 agent projects need action (4 critical, 5 high)
 
   ── Shadow AI agents (5) ────────────────────────────────────
   project                       identified by  mcp servers     governance   cred      verdict
@@ -246,6 +247,10 @@ From a directory that holds agent projects below it (a workspace, a home directo
   support-triage-agent          SOUL.md        1 mcp medium    gov   7/100  cred no   HIGH
   release-notes-agent           SOUL.md        1 mcp medium    gov 100/100  cred no   MEDIUM
 ```
+
+![hackmyagent detect on demo-agents, five sample agent projects with fake credentials, recorded with hackmyagent 0.33.0, 2026-09-15, setup not shown. The terminal prints a table of the five projects worst first, reports 4 of 5 need action (4 critical, 5 high), and lists each project's critical and high findings with a Fix command and, where a finding comes from one line of a file, a Verify command that prints that line.](docs/vhs/detect.gif)
+
+hackmyagent detect on demo-agents, five sample agent projects with fake credentials, recorded with hackmyagent 0.33.0, 2026-09-15, setup not shown. Text version of the recording: [docs/vhs/detect-capture.txt](docs/vhs/detect-capture.txt); provenance: [docs/vhs/detect.json](docs/vhs/detect.json); re-render: `docs/vhs/record-detect.sh`.
 
 A directory is an agent project when it holds an AI tool config (`.claude/settings.json`, `.cursorrules`, `CLAUDE.md`, ...), a project MCP file (`.mcp.json`, `mcp.json`), a governance file or a capability policy. The walk goes four levels down by default, does not enter `node_modules`, build output or hidden directories, and does not follow symbolic links. Each project's critical and high findings follow the table with their `file:line`, `Fix` and `Verify`; `hackmyagent detect <project>` prints the full report for one. The exit code is the worst project's.
 

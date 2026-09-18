@@ -20,8 +20,8 @@
  * spelling of "the findings the verdict is entitled to read".
  *
  * Wire consumers stamp `schemaVersion: 1`. The `secure --json` document does
- * NOT nest this record: its top level IS the record (flat keys; CPO ruling,
- * CA CONFIRM-FLAT), and `pickSettledOutcome` re-derives the record from a
+ * NOT nest this record: its top level IS the record (flat keys, confirmed by
+ * ruling), and `pickSettledOutcome` re-derives the record from a
  * parsed document so the identity `pickSettledOutcome(json) ≡
  * omit(record, 'schemaVersion')` is testable from either side. The identity
  * holds for every document the scanner emits today (its coverage record is
@@ -176,7 +176,7 @@ export function settledOutcome(result: ScanResult, exitCode: 0 | 1 | 2): Settled
 /**
  * May this run publish, report, or contribute ANYTHING outbound?
  *
- * CISO invariant: a run at `EXIT_UNMEASURED` never carries `pass`/`passed`
+ * Invariant: a run at `EXIT_UNMEASURED` never carries `pass`/`passed`
  * anywhere, and the smaller true statement is that it carries nothing — the
  * withhold is decided here, BEFORE each arm's own preconditions, so no arm
  * can rediscover a reason to send. One line is printed at the decision site.
@@ -188,7 +188,7 @@ export function outboundAllowed(settled: SettledOutcome): boolean {
 // The `--json` document spreads `...result` and then the record's flat keys.
 // If `ScanResult` ever grows a field named like a record key, spread order
 // would silently overwrite it — this assertion turns that day into a compile
-// error instead (CPO pre-mortem (a)).
+// error instead (pre-mortem item (a)).
 type _RecordKeyCollision = Extract<keyof ScanResult, 'verdict' | 'exitCode' | 'measured' | 'counts'>;
 const _noRecordKeyCollision: _RecordKeyCollision extends never ? true : never = true;
 void _noRecordKeyCollision;

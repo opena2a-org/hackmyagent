@@ -38,6 +38,8 @@ beforeAll(assertDistFreshIfPresent);
 
 let root: string;
 let empty: string;
+let manifestOnly: string;
+let oneFile: string;
 
 let home: string;
 
@@ -75,6 +77,22 @@ beforeAll(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-'));
   empty = path.join(root, 'empty');
   fs.mkdirSync(empty);
+  // A package manifest with no lock file: the one L1 failure (DEP-001 on
+  // controls 6.1-6.4) that an empty tree used to carry before DEP-001 read
+  // its manifest as the subject. The cells that need a measured L1 failure
+  // next to the null L3 rung run here; the empty tree has none to offer.
+  manifestOnly = path.join(root, 'manifest-only');
+  fs.mkdirSync(manifestOnly);
+  fs.writeFileSync(path.join(manifestOnly, 'package.json'), '{"name":"manifest458","version":"1.0.0","dependencies":{}}\n');
+  // One file the scan reads at EVERY depth (`.gitignore` is read by the
+  // quick-depth config checks; a README is not), adding no control result:
+  // measured, this tree carries the exact figures the empty tree carried
+  // before the zero-read floor. A scan that reads no file is `Not Assessed`
+  // at exit 2 now, so the null-scope and citation cells below run here and
+  // the empty tree pins the floor itself.
+  oneFile = path.join(root, 'one-file');
+  fs.mkdirSync(oneFile);
+  fs.writeFileSync(path.join(oneFile, '.gitignore'), 'node_modules\n');
   // An MCP-shaped tree: types as `mcp`, so 7.4 (Agent-to-Agent, L2) gets a
   // result while the category has no L1 control at all.
   mcpTree = path.join(root, 'mcp tree'); // the space is deliberate: cited commands must quote it
@@ -111,7 +129,7 @@ afterAll(() => {
 
 describe('#458 step 0: an unmeasured benchmark level is null and never feeds the ladder', () => {
   it('RED-ON-BASE json: -l L3 on an empty dir at quick depth carries null for L2/L3 and the ladder skips those rungs', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'json']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(body.l1Compliance).toBe(100);
     expect(body.l2Compliance).toBeNull();
@@ -126,7 +144,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE text: -l L3 prints Passing, one "Not assessed at" line per unmeasured level under Unverified:, and says so in the verbose line', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--verbose']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--verbose']);
     // The word never travels alone: the null scope rides in the same string.
     expect(res.out).toContain('Rating: Passing (L2, L3 not assessed)');
     expect(res.out).not.toContain('Rating: Certified');
@@ -158,7 +176,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
 
   // skipIf, not a silent early return: a machine without jq shows the cell as skipped.
   it.skipIf(!hasJq)('RED-ON-BASE text: the printed Verify runs as printed and reproduces the population the line counts', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture']);
     const verify = citedCommand(res.out, 'Not assessed at L2:', 'Verify');
     // The cited command names the tool by its installed name; run it through the built CLI.
     const cmd = verify.replace(/^\S+ secure /, `${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} secure `);
@@ -171,12 +189,14 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE text (T2): default depth -l L3 is Not Passing with the null scope in the same string, exit 1', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
     // Since #458 steps 1-2 an absent Dockerfile is a MEASURED L2 failure —
     // SANDBOX-001's ruled advisory shape (`passed: false`, `file` = the path
-    // the fix creates) — so L2 leaves the null scope on an empty tree and only
-    // L3 remains unmeasured. The property under test is unchanged: the null
-    // scope travels in the rating string, never alone.
+    // the fix creates) — so L2 leaves the null scope on this tree and only
+    // L3 remains unmeasured. The manifest-only tree supplies the L1 failure
+    // (DEP-001) that keeps the rating Not Passing; an empty tree reads
+    // DEP-001 as not-applicable and rates Passing. The property under test is
+    // unchanged: the null scope travels in the rating string, never alone.
     expect(res.out).toContain('Rating: Not Passing (L3 not assessed)');
     expect(res.out).toContain('Compliance by level: L1=');
     expect(res.out).toContain('L2=0% L3=not assessed');
@@ -184,7 +204,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE text: -l L2 prints the L2 line only — a level the run did not examine gets no line', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L2', '--scan-depth', 'quick', '--no-machine-posture', '--verbose']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L2', '--scan-depth', 'quick', '--no-machine-posture', '--verbose']);
     expect(res.out).toContain('Rating: Passing (L2 not assessed)');
     expect(res.out).toContain('Not assessed at L2:');
     expect(res.out).not.toContain('Not assessed at L3:');
@@ -201,7 +221,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE text: a run in which no control was measured is Not Assessed at exit 2, with a Verify and a Fix', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture']);
     // The word already says it: no `(L1 not assessed)` suffix on Not Assessed.
     expect(res.out).toContain('Rating: Not Assessed\n');
     expect(res.out).not.toContain('Rating: Certified');
@@ -221,13 +241,13 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
     expect(res.status).toBe(2);
   });
 
-  // The two checks that produce the only L1 results on an empty directory at
+  // The two checks that produce the only L1 results on the one-file tree at
   // quick depth (2.2 and 9.1). Ignoring them empties the L1 population — the
   // Verify must say so, and the Fix must name the flag, not the target.
   const QUICK_L1_CHECKS = 'PERM-001,PERM-002,SEM-PERM-001,SEM-PERM-002,SEM-MCP-001,PROC-001';
 
   it('RED-ON-BASE text: --ignore shapes the population, so the cited Verify repeats it and the Fix drops it', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '--scan-depth', 'quick', '--no-machine-posture', '--ignore', QUICK_L1_CHECKS]);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '--scan-depth', 'quick', '--no-machine-posture', '--ignore', QUICK_L1_CHECKS]);
     // Guard: the fixture reaches the arm under test (L1 emptied by --ignore).
     expect(res.out).toContain('Rating: Not Assessed\n');
     expect(res.status).toBe(2);
@@ -242,7 +262,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it.skipIf(!hasJq)('RED-ON-BASE text: the Verify cited beside an --ignore run reproduces the 0 the line counts', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '--scan-depth', 'quick', '--no-machine-posture', '--ignore', QUICK_L1_CHECKS]);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '--scan-depth', 'quick', '--no-machine-posture', '--ignore', QUICK_L1_CHECKS]);
     expect(res.out).toContain('Rating: Not Assessed\n');
     const verify = citedCommand(res.out, 'Not assessed at L1:', 'Verify');
     const cmd = verify.replace(/^\S+ secure /, `${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} secure `);
@@ -255,7 +275,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
 
   it('RED-ON-BASE text: an --ignore that names no check of this population gets the project-root Fix, not "drop --ignore"', () => {
     // 10.1 (Monitoring & Response, L1) is measured by LOG-001/AUDIT-001; FOO-999 cannot have emptied it.
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', 'Monitoring & Response', '--no-machine-posture', '--ignore', 'FOO-999']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', 'Monitoring & Response', '--no-machine-posture', '--ignore', 'FOO-999']);
     expect(res.out).toContain('Rating: Not Assessed\n');
     expect(res.status).toBe(2);
     const verify = citedCommand(res.out, 'Not assessed at L1:', 'Verify');
@@ -266,10 +286,10 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE text: the cited Verify repeats --deep and --static-only', () => {
-    const deep = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--deep']);
+    const deep = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--deep']);
     expect(deep.out).toContain('Rating: Passing (L2, L3 not assessed)');
     expect(citedCommand(deep.out, 'Not assessed at L2:', 'Verify')).toContain(' --deep ');
-    const stat = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--static-only']);
+    const stat = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--static-only']);
     expect(stat.out).toContain('Rating: Passing (L2, L3 not assessed)');
     expect(citedCommand(stat.out, 'Not assessed at L2:', 'Verify')).toContain(' --static-only ');
   });
@@ -278,14 +298,14 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
     // Why the cited `-c` value needs no display escaping: only a catalogue
     // name (case-insensitively) gets past this gate, and no catalogue name
     // carries a display hazard (pinned in calculate-rating-null-levels).
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', 'No Such Category', '--no-machine-posture']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', 'No Such Category', '--no-machine-posture']);
     expect(res.stderr).toContain("Error: Unknown category 'No Such Category'.");
     expect(res.out).not.toContain('Not assessed at');
     expect(res.status).toBe(1);
   });
 
   it('RED-ON-BASE text: a --category with no controls at an examined level says so instead of "none of the 0 controls ()"', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture']);
     expect(res.out).toContain('Not assessed at L3: the selected category has no L3 controls;');
     expect(res.out).not.toContain('none of the 0 ');
     expect(res.out).not.toContain('()');
@@ -324,7 +344,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE json: the Not Assessed run carries rating "Not Assessed" and null compliance at exit 2', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'json']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(body.rating).toBe('Not Assessed');
     expect(body.compliance).toBeNull();
@@ -335,14 +355,14 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE --fail-below is not evaluated against a NULL compliance: the Not Assessed exit 2 stands', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--fail-below', '80']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--fail-below', '80']);
     expect(res.stderr).toContain('--fail-below 80 not evaluated: no compliance was measured (0 verified controls).');
     expect(res.stderr).not.toContain('below threshold');
     expect(res.status).toBe(2);
   });
 
   it('RED-ON-BASE html: the Not Assessed run prints no null% and carries the not-assessed line', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'html']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'html']);
     expect(res.stdout).not.toMatch(/null%|NaN|undefined/);
     expect(res.stdout).toContain('not measured');
     expect(res.stdout).toContain('Not assessed at L1:');
@@ -355,20 +375,20 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE asp + sarif (T5): the Not Assessed run carries the same rating and nulls on asp, and sarif still parses, both at exit 2', () => {
-    const asp = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'asp']);
+    const asp = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'asp']);
     const body = parseJson(asp.stdout);
     expect(body.securityPosture.rating).toBe('Not Assessed');
     expect(body.securityPosture.compliance).toBeNull();
     expect(body.securityPosture.l1Compliance).toBeNull();
     expect(asp.stdout).not.toMatch(/null%|NaN|undefined/);
     expect(asp.status).toBe(2);
-    const sarif = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'sarif']);
+    const sarif = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '-c', NO_CONTROL_CATEGORY, '--no-machine-posture', '--format', 'sarif']);
     expect(Array.isArray(parseJson(sarif.stdout).runs)).toBe(true);
     expect(sarif.status).toBe(2);
   });
 
   it('RED-ON-BASE html: the badge carries the null scope at -l L3', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'html']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'html']);
     expect(res.stdout).toContain('Passing (L2, L3 not assessed)');
     // The document's title carries the same scope as its badge.
     expect(res.stdout).toContain('<title>OASB-1 Compliance Report | Passing (L2, L3 not assessed)</title>');
@@ -377,7 +397,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE asp: securityPosture carries the same null levels and rating as json', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'asp']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'asp']);
     const body = parseJson(res.stdout);
     expect(body.securityPosture.l1Compliance).toBe(100);
     expect(body.securityPosture.l2Compliance).toBeNull();
@@ -388,11 +408,13 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('RED-ON-BASE json: an L1 failure still reads Not Passing at -l L3 when L3 is unmeasured (null rungs are skipped, not failed)', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
+    // The manifest-only tree carries the L1 failure (DEP-001: a manifest
+    // with no lock file); an empty tree has no manifest and no L1 failure.
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(typeof body.l1Compliance).toBe('number');
     expect(body.l1Compliance).toBeLessThan(70);
-    // L2 is measured on an empty tree since #458 steps 1-2 (SANDBOX-001's
+    // L2 is measured on this tree since #458 steps 1-2 (SANDBOX-001's
     // advisory record fails 9.4 Sandboxing): 0, a number, not null. L3 is the
     // null rung this cell is about.
     expect(body.l2Compliance).toBe(0);
@@ -402,7 +424,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('PIN sarif: still parses; the SARIF writer reads neither compliance nor rating', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'sarif']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--format', 'sarif']);
     const body = parseJson(res.stdout);
     expect(Array.isArray(body.runs)).toBe(true);
     expect(Array.isArray(body.runs[0].results)).toBe(true);
@@ -410,7 +432,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('PIN: a measured level below threshold still fails as before (-l L1 at default depth is Not Passing, exit 1, numeric l1Compliance)', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--format', 'json']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(typeof body.l1Compliance).toBe('number');
     expect(typeof body.compliance).toBe('number');
@@ -419,7 +441,7 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('PIN: -l L1 on a measured tree prints the bare word and still cites -l L2 (L2 has automated controls)', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '--scan-depth', 'quick', '--no-machine-posture']);
+    const res = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L1', '--scan-depth', 'quick', '--no-machine-posture']);
     expect(res.out).toContain('Rating: Certified\n');
     expect(res.out).not.toContain('not assessed');
     expect(res.out).toContain("secure -b oasb-1 -l L2' for stricter checks");
@@ -427,16 +449,16 @@ describe('#458 step 0: an unmeasured benchmark level is null and never feeds the
   });
 
   it('PIN (T4): --fail-below at -l L3 compares the measured figure; null L2/L3 do not enter it', () => {
-    const ok = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--fail-below', '80']);
+    const ok = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--scan-depth', 'quick', '--no-machine-posture', '--fail-below', '80']);
     expect(ok.stderr).not.toContain('threshold');
     expect(ok.status).toBe(0);
-    const low = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--fail-below', '80']);
+    const low = run(['secure', oneFile, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--fail-below', '80']);
     expect(low.stderr).toMatch(/Compliance \d+% is below threshold 80%/);
     expect(low.status).toBe(1);
   });
 
   it('PIN: --fail-below over a measured compliance still applies', () => {
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--fail-below', '80']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L1', '--no-machine-posture', '--fail-below', '80']);
     expect(res.stderr).toContain('below threshold 80%');
     expect(res.stderr).not.toContain('not evaluated');
     expect(res.status).toBe(1);
@@ -477,9 +499,16 @@ describe('#458 step 3: a control whose every check reports its subject absent is
     expect(na.notApplicableSubjects).toContain('mcp.json or .mcp.json');
   });
 
-  it('RED-ON-BASE json: a measured record outranks an NA sibling in both directions (empty tree)', () => {
+  it('RED-ON-BASE json: a measured record outranks an NA sibling in both directions (empty tree), under a rating the zero-read floor withholds', () => {
     const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
+    // The zero-read floor: no file was read from the empty tree, so the
+    // rating is withheld and every level is null at exit 2 — while the
+    // statuses below stay the true records they are.
+    expect(body.rating).toBe('Not Assessed');
+    expect(body.compliance).toBeNull();
+    expect(body.l1Compliance).toBeNull();
+    expect(res.status).toBe(2);
     const byId: Record<string, string> = {};
     for (const cat of body.categories) for (const c of cat.controls) byId[c.controlId] = c.status;
     // 5.1: CRED-002 measured PASS + CRED-003/004 not-applicable -> passed.
@@ -487,8 +516,11 @@ describe('#458 step 3: a control whose every check reports its subject absent is
     // 9.4: SANDBOX-001 measured FAIL (the ruled absent-mitigation advisory)
     // + SANDBOX-002 not-applicable -> stays failed. [PIN either side]
     expect(byId['9.4']).toBe('failed');
-    // Every NA record on this tree shares its control with a measured record.
-    expect(body.notApplicableControls).toBe(0);
+    // 6.1-6.4: every check reads package.json as its subject (DEP-001 since
+    // it stopped treating the lock file as a must-exist artifact), so on a
+    // tree with no manifest the four controls are not-applicable, not failed.
+    expect(byId['6.1']).toBe('not-applicable');
+    expect(body.notApplicableControls).toBe(4);
     // NA came out of `failed`, never out of `unverified`.
     expect(body.unverifiedControls).toBe(38);
   });
@@ -515,11 +547,11 @@ describe('#458 step 3: a control whose every check reports its subject absent is
   });
 
   it('PIN: the step-0 null contract and the #636 re-pins hold across step 3', () => {
-    const text = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
+    const text = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--verbose']);
     expect(text.out).toContain('Rating: Not Passing (L3 not assessed)');
     expect(text.out).toContain('L2=0% L3=not assessed');
     expect(text.status).toBe(1);
-    const res = run(['secure', empty, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
+    const res = run(['secure', manifestOnly, '-b', 'oasb-1', '-l', 'L3', '--no-machine-posture', '--format', 'json']);
     const body = parseJson(res.stdout);
     expect(body.l2Compliance).toBe(0);
     expect(body.l3Compliance).toBeNull();

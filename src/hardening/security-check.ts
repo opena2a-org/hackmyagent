@@ -266,10 +266,10 @@ export interface SecurityFinding {
    * path sets it — every construction emits. It is what a publish boundary
    * would stamp on a finding-shaped value carrying no redaction provenance IF
    * its fail-mode were not to throw — an explicit unknown, never a claim of
-   * cleanliness. Under the shipped fail-mode (`[CHIEF-CISO]` 2026-08-21, throw
+   * cleanliness. Under the shipped fail-mode (ruled 2026-08-21, throw
    * in every environment) it has no producer, and `assertRedactionProvenance`
    * REJECTS it at every publish boundary: it may exist on a value in process,
-   * it may never cross a channel. (`[CHIEF-CA]` 2026-08-21 corrected the
+   * it may never cross a channel. (A 2026-08-21 ruling corrected the
    * earlier "INITIALIZER" wording here, which described semantics nothing
    * implemented — the reader is the implementation now.)
    *
@@ -312,7 +312,7 @@ export interface SecurityFinding {
  *
  * This is the type that makes the boundary provable rather than asserted. The
  * settlement brief's claim that four route points cover every construction site
- * was an unverified premise (CA rejected it as such): with the two fields
+ * was an unverified premise (rejected as such in review): with the two fields
  * REQUIRED on `SecurityFinding`, the compiler enumerates the real set, and it
  * found three producers the four-point route set did not name
  * (`skill-capability-validator.ts:167`, `cli.ts:4341`, `cli.ts:1575`).
@@ -480,7 +480,7 @@ export interface ScanResult {
    * Summaries of AI runtimes installed on this machine but OUTSIDE the scan
    * target (`~/.openclaw`, `~/.nemoclaw`, ...).
    *
-   * [CHIEF-CA 2026-08-03] Reported, never scored. Nothing here has ever been
+   * Ruled 2026-08-03: reported, never scored. Nothing here has ever been
    * counted in `findings`, `score`, or the exit code — a directory-scoped
    * score has to mean the directory, or `--fail-below` is not a CI gate.
    * Consumers that aggregate `findings` get the target's findings only.

@@ -3,7 +3,7 @@
  *
  * Re-exports the public surface used by `secure --publish` and tests.
  *
- * Brief: opena2a-org/briefs/check-rich-context-skills-mcp-v1.md
+ * Design brief: rich check context for skills and MCP, v1
  */
 export {
   buildSkillNarrative,

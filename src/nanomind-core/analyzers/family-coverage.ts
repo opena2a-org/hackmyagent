@@ -13,14 +13,14 @@
  * NOT a second copy of the analyzers' own gates: each family's predicate here
  * either calls the analyzer's own exported gate (`isCodeArtifact`) or is the
  * single definition that the analyzers themselves obey
- * (`isNonAgentProjectType`). A family gate must have one definition, or the
+ * (`nonAgentGateApplies`). A family gate must have one definition, or the
  * disclosure drifts away from the behaviour it describes the first time an
  * analyzer changes its mind.
  *
  * Disclosure only: nothing here raises a finding or changes a severity.
  */
 
-import type { SecurityAST } from '../types.js';
+import type { ArtifactType, SecurityAST } from '../types.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { isCodeArtifact } from './code-analyzer.js';
 
@@ -87,14 +87,60 @@ export function analyzerFamiliesInvoked(route: AnalyzerRoute): readonly Analyzer
 }
 
 /**
- * SDKs and libraries are not agents, so the governance, scope and prompt
- * families return `[]` wholesale for them. This is the single definition of
- * that gate: `analyzeGovernance`, `analyzeScope` and `analyzePrompt` all call
- * it, and so does the coverage measurement, so the disclosure cannot claim a
- * family ran that the analyzer declined to run.
+ * SDKs and libraries are not agents: the tree-level half of the sdk/library
+ * gate. On its own it says nothing about a file; `nonAgentGateApplies` is
+ * the predicate the analyzers and the coverage measurement read.
  */
 export function isNonAgentProjectType(projectType?: ProjectType): boolean {
   return projectType === 'sdk' || projectType === 'library';
+}
+
+/**
+ * The agent artifact kinds: what `analyzerRouteFor` sends down the agent route,
+ * and the kinds the parser can name from a file's path alone (`SKILL.md` /
+ * `*.skill.md`, `mcp.json` / `.mcp.json` / `mcpServers.json`, `SOUL.md`,
+ * `agent.json`, `agent-config*` / `*.agent.*`). One set for both readers so
+ * the route and the gate cannot disagree about what an agent artifact is.
+ * `system_prompt` is not here on purpose: an actual system prompt file routes
+ * as an agent below, but its path test is a loose substring match and
+ * `CLAUDE.md` classifies as one, so it keeps the tree-level gate.
+ */
+const AGENT_ARTIFACT_TYPES: ReadonlySet<ArtifactType> = new Set<ArtifactType>([
+  'skill',
+  'mcp_config',
+  'soul',
+  'agent_config',
+  'a2a_card',
+]);
+
+/**
+ * Does the sdk/library gate silence the agent families for THIS artifact?
+ *
+ * The gate exists because a library's `README.md` or `index.ts` is not an
+ * agent, and running the governance, scope and prompt families over it is
+ * noise. It was keyed on the tree's project type alone, which also silenced
+ * a `SKILL.md` under `.claude/skills/` in a package.json root: the compiler
+ * routed the file as an agent artifact while the root type `library` muted
+ * the analyzers, and a CRITICAL prompt injection in it went unreported by
+ * `secure` and, from #740, by `check <dir>` (#740, ledger 2026-09-16).
+ *
+ * The boundary: a kind the parser named from the PATH is an agent artifact
+ * wherever it sits, so the gate does not apply; a kind inferred from CONTENT
+ * (a `capabilities:` block in a stray `.md`, an `mcpServers` key in an unnamed
+ * JSON file) keeps the gate, because that inference is what the sdk/library
+ * false-positive class came from.
+ *
+ * This is the single definition: `analyzeGovernance`, `analyzeScope`,
+ * `analyzePrompt` and `analyzeCapabilities` (checks 2, 4 and 10) all call it, and
+ * so does `familyExaminesArtifact`, so the disclosure cannot claim a family
+ * ran that the analyzer declined to run, or vice versa.
+ */
+export function nonAgentGateApplies(
+  ast: Pick<SecurityAST, 'artifactType' | 'classifiedBy'>,
+  projectType?: ProjectType,
+): boolean {
+  if (!isNonAgentProjectType(projectType)) return false;
+  return !(ast.classifiedBy === 'path' && AGENT_ARTIFACT_TYPES.has(ast.artifactType));
 }
 
 /**
@@ -107,7 +153,7 @@ export function isNonAgentProjectType(projectType?: ProjectType): boolean {
  * `non_agent` — a disagreement about six of the seven families.
  */
 export function analyzerRouteFor(ast: SecurityAST): AnalyzerRoute {
-  const AGENT_TYPES = new Set(['soul', 'skill', 'agent_config', 'a2a_card', 'mcp_config']);
+  const AGENT_TYPES = AGENT_ARTIFACT_TYPES;
   // `system_prompt` is agent-like ONLY for an actual system prompt file, not a
   // developer instruction file (CLAUDE.md, .cursorrules, .clinerules,
   // .windsurfrules).
@@ -131,9 +177,10 @@ export function analyzerRouteFor(ast: SecurityAST): AnalyzerRoute {
  * The unit here is the FAMILY, and the question is whether the family inspected
  * the AST at all. Two things it deliberately does not claim:
  *
- * - **Check-level depth.** `analyzeCapabilities` runs three of its checks only
- *   off `isNonAgentProjectType`, so on an sdk or library project it examines the
- *   artifact with a narrower set than on an agent project. The family still
+ * - **Check-level depth.** `analyzeCapabilities` runs three of its checks
+ *   (unconstrained capabilities, injection surface, scope mismatch) only off
+ *   `nonAgentGateApplies`, so on an sdk or library project it examines a
+ *   content-inferred artifact with a narrower set than on an agent project. The family still
  *   looked, so it counts as examined; the static `Coverage` line is where
  *   check-level accounting lives, and reporting a family as blind because some
  *   of its checks were skipped would understate real coverage.
@@ -153,12 +200,12 @@ function familyExaminesArtifact(
   projectType?: ProjectType,
 ): boolean {
   switch (family) {
-    // `analyzeGovernance` / `analyzeScope` / `analyzePrompt`: early return for
-    // sdk and library project types.
+    // `analyzeGovernance` / `analyzeScope` / `analyzePrompt`: early return
+    // when the sdk/library gate applies to this artifact.
     case 'governance':
     case 'scope':
     case 'prompt':
-      return !isNonAgentProjectType(projectType);
+      return !nonAgentGateApplies(ast, projectType);
     // `analyzeCode`'s three checks — command injection, unsafe
     // deserialization, path traversal — each early-return on the same gate, so
     // the family contributes nothing at all off it. This is why an `unknown`

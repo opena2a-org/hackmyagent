@@ -406,20 +406,60 @@ describe('#417 check says a missing target is missing', () => {
 
   it('a directory holding nothing the scan can read is unmeasured, not clean', () => {
     // Deliberate, and the reason the counter-direction test above names a real
-    // source directory. `fixtures/` holds three `.txt` files, which compile to
-    // no artifact, so the quick scan reads nothing there.
+    // source directory. An empty directory gives the scan nothing to read.
     //
     // Pre-fix this returned `low` / exit 0 — a clean bill of health over a
     // tree the scan never opened, which is #358 and #361's shape. It is also
     // the safety property behind #396 and #414, where an extension the reader
     // did not enumerate (`.mjs`) made real credentials invisible: a coverage
     // gap must surface as "not measured", never as "clean".
-    const { status, stdout } = run(['check', fixtures, '--json']);
-    expect(status).toBe(EXIT_UNMEASURED);
+    //
+    // #740 — the fixture was `fixtures/`, three `.txt` files that compile to
+    // no semantic artifact. `check <dir>` now runs the static suite, which
+    // reads them (the case below). An existing, readable, EMPTY directory
+    // is a measured absence (the scanner walked it and ran its checks; the
+    // reading `secure` gives the same tree, ruled 2026-09-15), so the tree
+    // the scan cannot read is the one whose only input is unreadable.
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-verdict-unread-'));
+    const file = path.join(dir, 'config.json');
+    fs.writeFileSync(file, '{}\n');
+    fs.chmodSync(file, 0o000);
+    try {
+      const { status, stdout } = run(['check', dir, '--json']);
+      expect(status).toBe(EXIT_UNMEASURED);
+      const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
+      expect(payload.measured).toBe(false);
+      expect(payload.risk).toBeNull();
+      expect(payload.compiledArtifacts).toBe(0);
+      expect(payload.coverage.examined).toBe(0);
+      expect(payload.coverage.reason).toBe('target-unreadable');
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+  });
+
+  it('an existing, readable, empty directory is measured: the scan ran and recorded an absence', () => {
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-verdict-empty-'));
+    const { status, stdout } = run(['check', empty, '--json']);
+    expect(status).toBe(0);
     const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
-    expect(payload.measured).toBe(false);
-    expect(payload.risk).toBeNull();
+    expect(payload.measured).toBe(true);
+    expect(['low', 'medium']).toContain(payload.risk);
+    expect(payload.coverage.examined).toBe(0);
+    expect(payload.coverage.executions.length).toBeGreaterThan(0);
+  });
+
+  it('a directory of files the semantic layer does not compile is still measured by the static suite', () => {
+    // #740 — the three `.txt` files compile to no artifact and the static
+    // checks read them, so the run has evidence and reports a band.
+    const { status, stdout } = run(['check', fixtures, '--json']);
+    expect(status).not.toBe(EXIT_UNMEASURED);
+    const payload = JSON.parse(stdout.slice(stdout.indexOf('{')));
+    expect(payload.measured).toBe(true);
     expect(payload.compiledArtifacts).toBe(0);
+    expect(payload.coverage.examined).toBeGreaterThan(0);
+    expect(payload.coverage.unit).toBe('file');
   });
 });
 
@@ -546,6 +586,10 @@ describe('#440 no benchmark gate can be switched off by a score flag', () => {
     // `--fail-below 0` printed `Rating: Not Passing` and exited 0.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-oasb1-'));
     fs.writeFileSync(path.join(dir, 'README.md'), '# demo\n');
+    // A manifest with no lock file keeps DEP-001 failing, so the tree rates
+    // Not Passing. A README-only tree no longer does: DEP-001 reads
+    // package.json as its subject and is not-applicable without one.
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"demo","version":"1.0.0"}\n');
     for (const extra of [[], ['--fail-below', '0'], ['--fail-below', '1']]) {
       const { status, out } = run(['secure', dir, '-b', 'oasb-1', ...extra]);
       expect(out).toMatch(/Rating:\s+(Not Passing|Needs Improvement)/);
