@@ -34,8 +34,11 @@ vhs docs/vhs/detect.tape
 gifsicle -O3 --lossy=40 --batch docs/vhs/detect.gif
 # Frame census: the report streaming into the terminal is the run of full-screen frames; how many
 # ticks it spans varies with container load, so the sidecar records it per render.
-rm -rf /tmp/frames && mkdir -p /tmp/frames && (cd /tmp/frames && gifsicle --explode /work/docs/vhs/detect.gif -o f >/dev/null 2>&1)
-FRAME_CENSUS="$(node docs/vhs/frame-census.mjs /tmp/frames)"
+FRAMES_DIR="$(mktemp -d)"
+cleanup_frames() { rm -rf "$FRAMES_DIR"; }
+trap cleanup_frames EXIT
+(cd "$FRAMES_DIR" && gifsicle --explode /work/docs/vhs/detect.gif -o f >/dev/null 2>&1)
+FRAME_CENSUS="$(node docs/vhs/frame-census.mjs "$FRAMES_DIR")"
 cd /work/demo-agents
 {
   echo "\$ npx hackmyagent detect"
