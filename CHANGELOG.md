@@ -4,6 +4,63 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+### `check` unpacks every archive through one fence, and the open adm-zip advisory is written down
+
+- **The seven inline `tar`/`unzip` spawns in `check` are one exported function
+  that refuses an escaping entry.** Three arms of `check` download an archive
+  whose bytes the target's publisher or its host chooses, and each unpacked it
+  by spawning an archiver inline with no shared helper and no look at an entry
+  before creating it: `checkPyPiPackage` (2 sites), `checkRawUrl` (4, selected
+  on a filename suffix and a `content-type` header the fetched server returns)
+  and `checkNpmPackage` (1). Every site had a `mkdtemp` destination made fresh
+  for the run, which defeats a symbolic link the *destination* already held and
+  does nothing about one the *archive* plants: a member `esc` pointing outside
+  followed by a member `esc/planted` writes through it, and which host tools
+  follow which entry class is a property of the machine the scan happens to run
+  on. All three arms now call `extractArchiveInto(archivePath, destDir)` in the
+  new `src/hardening/extract-archive.ts`, which reads the archive's own entry
+  table first and refuses the whole archive — naming the entry, and the target
+  for a link — if any member's name is absolute, climbs out of the destination,
+  or is a link whose target leaves it. Nothing is written before every entry has
+  been judged, so a hostile archive is not half-unpacked and then scanned as if
+  it were the package. Tar and zip are parsed in process rather than read out of
+  `tar -tv` or `unzip -Z`, whose formats vary by implementation and locale; gzip
+  is `zlib`, bzip2 is decoded in the module (Node ships no bzip2 and `bzip2(1)`
+  is absent from minimal images, which is where `tar xjf` fails obscurely today),
+  and xz is delegated to `xz(1)` and refused when that binary is missing.
+  Unpacking also no longer needs `unzip(1)` on the host at all. Regression:
+  `__tests__/hardening/archive-extraction-fence.test.ts` — four entry classes
+  (link out and a member through it, `../planted`, an absolute name, and a hard
+  link to a file outside followed by a member that would overwrite it) across
+  `.tar.gz`, `.tar.bz2`, `.tar.xz` and `.zip`, each archive built by the case in
+  its own temporary directory, each with a benign control so a refusal cannot be
+  a failure to read the container.
+- **`GHSA-vwc7-r8mq-g2x9` (adm-zip) is recorded as known-open in
+  `docs/security/adm-zip-ghsa-vwc7-r8mq-g2x9.md`.** Neither advisory instrument
+  in this repository can report it: `dependency-audit.yml` gates at `high` and
+  `scripts/audit-consumer-resolution.mjs` drops everything below `high` before
+  it looks at a waiver, and there is no patched version to move to. The record
+  states its evidence inline — the single edge (`onnxruntime-node@1.27.0`
+  declaring `adm-zip: ^0.5.16`), what this tree's `overrides` pin does and does
+  not reach, where the extraction actually runs, and the advisory's own numbers
+  carried only beside the date they were read and the command to re-read them.
+  Regression: `__tests__/supply-chain/adm-zip-advisory-record.test.ts` re-reads
+  every file:line the record cites and fails naming the field when one of its
+  four lockfile readings stops matching `package-lock.json`;
+  `__tests__/supply-chain/adm-zip-call-sites.test.ts` holds the zero the verdict
+  rests on, printing the size of the set it walked so an empty walk cannot pass
+  as a clean one.
+- **Correction to the `[0.27.0]` entry below.** That entry says of the sibling
+  advisory `GHSA-xcpc-8h2w-3j85` that `onnxruntime-node`'s postinstall "exits
+  before requiring `adm-zip` on a default install". At `onnxruntime-node@1.27.0`
+  that is false for linux/x64: `script/install.js:22` requires `install-utils.js`
+  at module top and `install-utils.js:11` requires `adm-zip` at module top, so
+  the module is loaded before any early exit, and the download and extraction
+  themselves do run on a default linux/x64 install. This does not change either
+  advisory's disposition for this tree — no first-party code calls the package
+  either way — but the sentence was load-bearing for a reachability claim and it
+  was wrong.
+
 ### `init-mcp` writes the file Claude Code reads
 
 - **`init-mcp` for Claude Code writes `<dir>/.mcp.json`.** The Claude Code
