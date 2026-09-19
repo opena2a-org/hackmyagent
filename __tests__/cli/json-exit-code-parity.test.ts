@@ -78,6 +78,11 @@ const JSON_EXIT_PARITY: Record<string, Parity> = {
   'secure-nemoclaw': { kind: 'local', args: (f) => ['secure-nemoclaw', f] },
   'fix-all': { kind: 'local', args: (f) => ['fix-all', f, '--dry-run'] },
   'scan-soul': { kind: 'local', args: (f) => ['scan-soul', f] },
+  // Takes one TEXT, not a directory, so it runs over the fixture's own
+  // SKILL.md — whose `IGNORE PRIOR INSTRUCTIONS` line is an instruction-override
+  // payload at HIGH, which is what makes this row exercise a failing target on
+  // both channels rather than a clean one.
+  'scan-text': { kind: 'local', args: (f) => ['scan-text', path.join(f, 'SKILL.md')] },
   'harden-soul': { kind: 'local', args: (f) => ['harden-soul', f, '--dry-run'] },
   'red-team': { kind: 'local', args: (f) => ['red-team', f] },
   wild: { kind: 'local', args: (f) => ['wild', f] },
