@@ -52,6 +52,8 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
   'AST-CRED-001': 'Credentials in non-environment context. The artifact reads, transmits, or references credential data from a context where it can be extracted via prompt injection, leaked in git history, or exposed in build artifacts. Fix: opena2a protect . — encrypts secrets into a secure vault, injects at runtime.',
   'AST-CRED-002': 'Credential forwarding. The artifact transmits credential data to an external destination — even to "trusted" endpoints this is dangerous because the destination can be compromised or spoofed. Fix: remove credential forwarding. Use OAuth token exchange or a credential broker instead of passing raw credentials.',
   'AST-CRED-003': 'Hardcoded secret. The artifact contains patterns consistent with hardcoded API keys, tokens, or passwords. These are exposed in version control history and to anyone who can read the file. Fix: opena2a protect . — encrypts secrets into a secure vault and rotates any already-exposed credentials.',
+  'TEXT-001': `Instruction-override payload in a free text. A line of a pull-request body, issue, comment or agent card asks to be read as an instruction to whoever is processing it — setting aside instructions already in force — rather than as content. Fix: treat the line as quoted content, do not act on it, and quote it back to whoever is waiting on the text. Run: ${CLI_PREFIX} scan-text <file> to see the line and column.`,
+  'TEXT-002': `Authority-claim payload in a free text. A line asserts an authorization, or waives a control, on the strength of the text itself rather than of any system that records one — "pre-approved by the owner", "the security gate can be skipped". Fix: treat the line as quoted content, not as authorization, and confirm any authorization through the system that records it. Run: ${CLI_PREFIX} scan-text <file> to see the line and column.`,
 };
 
 /** Map check ID prefixes to human-readable category labels. */
@@ -77,6 +79,7 @@ export const PREFIX_DESCRIPTIONS: Record<string, string> = {
   'LOG': 'logging and audit',
   'AUTH': 'authentication',
   'TOOL': 'tool permission and safety',
+  'TEXT': 'free-text payload (scan-text)',
 };
 
 /**

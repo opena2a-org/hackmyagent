@@ -77,6 +77,10 @@ export const COMMAND_CLASSIFICATION: Record<string, 'renders-paths' | string> = 
   // and renders that path back in the hint that points at `secure`.
   scan: 'renders-paths',
   check: 'renders-paths',
+  // Takes ONE text rather than a tree, and still renders a path: the operand as
+  // typed heads the report, and every finding's `verify` names it inside a
+  // `sed` command the reader is meant to paste.
+  'scan-text': 'renders-paths',
   detect: 'renders-paths',
   'scan-soul': 'renders-paths',
   'harden-soul': 'renders-paths',

@@ -154,12 +154,21 @@ function collectExpressionSites(): Set<string> {
  *   one of the covered sites; introduces no new ids.
  * - user-input: a `.hmaignore` rule's check id, matched against findings,
  *   never emitted as one.
+ * - text-payload-ids: the two exported id constants of
+ *   src/hardening/text-payload-scan.ts (the `scan-text` rules). They are
+ *   written as constants rather than as literals at the emission site, so a
+ *   literal-only census cannot see them; the cell below resolves the
+ *   constants and holds them to the inventory.
  */
 const EXPRESSION_SITES: Record<string, string> = {
   'cli.ts :: ctrl.id': 'control-catalog',
   'cli.ts :: f.checkId': 'pass-through',
   "cli.ts :: f.checkId || ''": 'pass-through',
   'cli.ts :: finding.checkId': 'pass-through',
+  'cli.ts :: p.checkId': 'pass-through',
+  'hardening/text-payload-scan.ts :: INSTRUCTION_OVERRIDE_CHECK_ID': 'text-payload-ids',
+  'hardening/text-payload-scan.ts :: AUTHORITY_CLAIM_CHECK_ID': 'text-payload-ids',
+  'hardening/text-payload-scan.ts :: rule.checkId': 'pass-through',
   'hardening/scanner.ts :: check.id': 'scanner-id-literals',
   'hardening/scanner.ts :: f.checkId': 'pass-through',
   'hardening/scanner.ts :: pattern.toUpperCase()': 'user-input',
@@ -369,6 +378,21 @@ describe('the emission shapes a literal-only census misses', () => {
     expect(emitted.has('SEM-MCP-001')).toBe(true);
     expect(exclusionFamilies.has('SEM-LLM')).toBe(true);
     // ctrl.id → covered by the control-catalogue cell above.
+
+    // INSTRUCTION_OVERRIDE_CHECK_ID / AUTHORITY_CLAIM_CHECK_ID → the two
+    // `scan-text` rule ids, written as exported constants rather than as
+    // literals at the emission site. Resolve the constants to their values and
+    // hold those to the same contract every other emitted id is held to: an
+    // inventory key, or declared-excluded. Before this, `scan-text` could have
+    // emitted an id `check-metadata` and `explain` denied existed.
+    const payloadSrc = readFileSync(join(SRC_ROOT, 'hardening/text-payload-scan.ts'), 'utf8');
+    const payloadIds = new Set(
+      [...payloadSrc.matchAll(
+        /export const (?:INSTRUCTION_OVERRIDE|AUTHORITY_CLAIM)_CHECK_ID = '([A-Z][A-Z0-9-]+)'/g,
+      )].map((m) => m[1]),
+    );
+    expect(payloadIds.size, 'the scan-text rule ids must be readable as constants').toBe(2);
+    expect(censusGap(payloadIds, inventory, isDeclaredExcludedCheckId)).toEqual([]);
   });
 
   it('plant (expression-site shape): an unregistered site is reported as exactly that site', () => {

@@ -68,9 +68,17 @@ const TRACKED_FS_SHA256 = 'bf6566fa2dfab6877ebed88b67b0d28e518e013d2ca164d5640aa
  * write-back) are on two registry commands that never reach the scanner walk,
  * and two of them are refusal GATES rather than escape hatches. A flag that
  * did make the walk opt-in would still turn this red.
+ *
+ * SCOPE DECISION, taken with HMA-70 (`scan-text`), on the same rule: that
+ * change legitimately adds one flag, `--as <surface>`, so it is recorded here.
+ * `--as` is on a NEW command that takes one text and never walks a directory at
+ * all — `scanTextForPayloads` reaches no filesystem — so it cannot make the
+ * skills walk opt-in in either direction. It names where a text came from
+ * (`pr-body`, `issue`, `comment`, `card`, `text`); it turns nothing off, and a
+ * value outside the five is a usage error rather than a wider or narrower scan.
  */
 const REGISTERED_LONG_FLAGS = [
-  '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--at',
+  '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--as', '--at',
   '--atx', '--audit', '--aws-account-id', '--aws-region', '--batch', '--benchmark',
   '--broker-socket', '--broker-token', '--category', '--check-id', '--ci', '--ci-publish',
   '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
