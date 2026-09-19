@@ -43,12 +43,18 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
  * is an opt-out of anything — `--source-commit` and `--reason` are GATES that
  * make a write-back refuse without them, which is the opposite direction to
  * the flag this invariant exists to forbid.
+ *
+ * HMA-70 adds one, on the same terms: `--as <surface>` on the new `scan-text`
+ * command. It names where a text came from (`pr-body`, `issue`, `comment`,
+ * `card`, `text`) and turns nothing off — `scan-text` takes one text and
+ * touches no semantic layer, no deterministic floor and no scanner walk.
  */
 const COMMAND_SURFACE = [
   '--a2a-recipient', '--a2a-sender', '--analm', '--api-format', '--at', '--atx',
   '--audit', '--aws-account-id', '--aws-region', '--batch', '--benchmark',
   '--broker-socket', '--broker-token', '--category', '--ci', '--ci-publish',
   '--all', '--check-id', '--reason', '--source-commit',        // HMA-08, see note below
+  '--as',                                                      // HMA-70, see note above
   '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',

@@ -366,6 +366,15 @@ function statTargetWithoutFollowingOut(target: string): { stats?: import('node:f
   return { stats: link, outOfTreeLink: true };
 }
 import { emitFindings, reemitFinding, assertRedactionProvenance, rethrowIfRedactionProvenance, type RedactedFinding } from './hardening/finding-emit';
+import {
+  TEXT_SURFACES,
+  DEFAULT_TEXT_SURFACE,
+  isTextSurface,
+  scanTextForPayloads,
+  TEXT_PAYLOAD_FIX,
+  TEXT_PAYLOAD_DESCRIPTION,
+  type TextSurface,
+} from './hardening/text-payload-scan';
 import { buildJsonStdoutDocument } from './output/json-stdout';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
@@ -9547,6 +9556,222 @@ function handEditClause(controlId: string): string[] {
   const def = CONTROL_DEFS.find((c) => c.id === controlId);
   return def ? [`"${def.remediation}"`] : [];
 }
+
+/**
+ * The whole of standard input, as text.
+ *
+ * Read to EOF before anything is scanned: a payload can sit on the last line,
+ * and a scan of a prefix would report a clean result over a text it had not
+ * finished reading — the same shape as a verdict over an empty measurement.
+ *
+ * The only place this file consumes stdin. Every other `process.stdin`
+ * reference is a TTY check or a readline confirmation, and this one is neither:
+ * the caller has asked, by writing `-`, for the stream to BE the subject.
+ */
+async function readStdinText(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * `scan-text` — one text, read as text, for the two payload classes an agent
+ * can be talked into acting on.
+ *
+ * A sibling of `check`, `secure` and `scan-soul`, and deliberately none of
+ * them. Those three take a TREE and report a posture for it. This takes a
+ * STRING — a PR body, an issue, a comment, an agent card — and answers one
+ * question about it: does it carry a line that asks to be read as an
+ * instruction, or as an authorization?
+ *
+ * ## No score, and no approval
+ *
+ * There is no number here, on any channel. A text is not a tree with a
+ * measurable surface; "72/100 of this comment" means nothing, and printing one
+ * would invite a caller to threshold on it.
+ *
+ * And a clean result is not an admission. Exit 0 with an empty `findings`
+ * array is the WHOLE of it: the run found no payload of either class in this
+ * text. It is not a statement that the text is honest, that the change it
+ * describes is safe, or that the request it belongs to should be granted. The
+ * `--help` text and README say so in a sentence, and the output carries no key
+ * and no line a consumer could read as one — which is why nothing below prints
+ * the matched bytes: a payload that says "pre-approved" would otherwise put
+ * that word on the terminal under this tool's own name.
+ *
+ * ## The text is never written anywhere
+ *
+ * It is not staged into a `SKILL.md`, a `CLAUDE.md` or a `SOUL.md` and handed
+ * to the directory scanner. That shim would be the easy implementation and it
+ * would report the tree it just built — a missing `.gitignore`, an absent lock
+ * file, a skill with no frontmatter — as properties of somebody's comment.
+ * `scanTextForPayloads` takes the string and reaches no filesystem.
+ */
+program
+  .command('scan-text')
+  .description(`Scan one text for instruction-override and authority-claim payloads
+
+Reads ONE text — a pull-request body, an issue, a comment, an agent card — and
+reports every line that asks to be read as an instruction to the reader, or as
+an authorization the text grants itself. The text is scanned AS TEXT: it is
+never written to a file and never handed to the directory scanner, so nothing
+about a tree is reported about it.
+
+The operand is a path, or - to read the whole of standard input.
+
+Reports no score. A payload is present or it is not; there is nothing to grade.
+
+Rules:
+  TEXT-001  instruction-override — a line setting aside instructions in force
+  TEXT-002  authority-claim      — a line asserting an authorization, or
+                                   waiving a control, on its own say-so
+
+Exit codes:
+  ${EXIT_PASS}  the text was read, and no finding is high or critical
+  ${EXIT_FAIL}  the text was read, and at least one finding is high or critical
+  ${EXIT_UNMEASURED}  not measured: the operand does not exist or could not be read.
+     No text was scanned, so no finding is reported on either channel.
+
+A clean result means only that no instruction-override or authority-claim
+payload was found in this text; it is not an approval of the text, or of the
+request the text belongs to.
+
+Examples:
+  $ ${CLI_PREFIX} scan-text ./pr-body.md
+  $ ${CLI_PREFIX} scan-text ./pr-body.md --as pr-body --json
+  $ cat ./comment.txt | ${CLI_PREFIX} scan-text - --as comment --json`)
+  .argument('<file>', 'Path to the text to scan, or - to read the whole of standard input')
+  .option('--as <surface>', `Where the text came from: ${TEXT_SURFACES.join(', ')}`, DEFAULT_TEXT_SURFACE)
+  .option('--json', 'Output as JSON (for scripting/CI)')
+  .action(async (file: string, options: { as?: string; json?: boolean }) => {
+    // A surface outside the five is a usage error: it runs no scan, and it
+    // settles through the funnel rather than a bare exit, so the event still
+    // fires and no new dark exit site is added (#350).
+    const surfaceAsGiven = String(options.as ?? DEFAULT_TEXT_SURFACE);
+    if (!isTextSurface(surfaceAsGiven)) {
+      console.error(
+        `Error: Invalid surface '${escapeForDisplay(surfaceAsGiven)}'. Use: ${TEXT_SURFACES.join(', ')}`,
+      );
+      raiseExitCode(EXIT_FAIL);
+      return;
+    }
+    const surface: TextSurface = surfaceAsGiven;
+    const fromStdin = file === '-';
+
+    let text: string;
+    if (fromStdin) {
+      if (process.stdin.isTTY) {
+        console.error(
+          'Error: the operand - reads the text from standard input, and standard input is a '
+          + 'terminal. Pipe the text in, or give a path.',
+        );
+        raiseExitCode(EXIT_FAIL);
+        return;
+      }
+      text = await readStdinText();
+    } else {
+      // The operand names ONE file the caller typed, not a tree this run
+      // walked, so there is no scan root for an out-of-tree link to escape —
+      // the same shape as `attack --payload-file`. What it must not do is
+      // report a read failure as a clean text, which is the branch below.
+      const resolvedTextPath = require('path').resolve(file);
+      try {
+        text = require('fs').readFileSync(resolvedTextPath, 'utf-8');
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code ?? 'unknown error';
+        console.error(
+          `Error: ${escapePathForDisplay(file)} could not be read (${escapeForDisplay(code)}), `
+          + 'so no text was scanned and nothing is reported about it.',
+        );
+        // EXIT_UNMEASURED, and NO document on stdout. An empty `findings` array
+        // here would read to a consumer exactly like a clean text — the one
+        // claim a run that read nothing may not make.
+        await finishWithFindings(EXIT_UNMEASURED);
+        return;
+      }
+    }
+
+    const payloads = scanTextForPayloads(text);
+    const emitted = emitFindings(payloads.map((p) => ({
+      checkId: p.checkId,
+      name: p.name,
+      description: TEXT_PAYLOAD_DESCRIPTION[p.checkId],
+      category: p.category,
+      severity: p.severity,
+      passed: false,
+      // Carries no scanned byte: the line itself rides on `evidence`, where the
+      // redaction boundary walks it. A message built out of the match would put
+      // the payload's own words on every channel that prints a message.
+      message: `${p.name} at line ${p.line}, column ${p.col} of the scanned text.`,
+      fixable: false,
+      line: p.line,
+      fix: TEXT_PAYLOAD_FIX[p.checkId],
+      evidence: {
+        kind: 'positive' as const,
+        lines: [{ n: p.line, content: p.lineText, why: `${p.name}, from column ${p.col}` }],
+      },
+    })) as SecurityFindingDraft[]);
+
+    // `citationPath` and not the operand verbatim: for every path a shell can
+    // reach unquoted the two are byte-identical, and where they differ the
+    // literal spelling would have named a different file. A path that cannot be
+    // shown truthfully gets the pathless form rather than a wrong command.
+    const citedInput = fromStdin ? null : citationPath(file);
+    const verifyFor = (line: number): string => (
+      citedInput === null
+        ? `read line ${line} of the text that was piped in`
+        : `sed -n '${line}p' ${citedInput}`
+    );
+
+    // `col` and `verify` are added HERE rather than carried on the draft: both
+    // are properties of this invocation (the operand as typed, the column in
+    // the string) rather than of the finding, and the emitted value is spread
+    // whole so its redaction provenance crosses `writeJsonStdout` intact.
+    const reported = emitted.map((f, i) => ({
+      ...f,
+      col: payloads[i].col,
+      verify: verifyFor(payloads[i].line),
+    }));
+
+    if (options.json) {
+      writeJsonStdout({ surface, input: file, findings: reported });
+    } else {
+      if (fromStdin) {
+        console.log(`\nScanned the text read from standard input as ${surface}.\n`);
+      } else {
+        console.log(`\nScanned ${escapePathForDisplay(file)} as ${surface}.\n`);
+      }
+      for (const f of reported) {
+        console.log(
+          `  ${f.line}:${f.col}  ${f.checkId}  ${String(f.severity).toUpperCase()}  `
+          + `${escapeForDisplay(f.name)}`,
+        );
+        console.log(`    Verify: ${escapeForDisplay(f.verify)}`);
+        // #596 — the fix goes out one authored part per line, escaped on its own
+        // printing line, rather than as one escaped string. These fixes are a
+        // single authored part today, and the idiom is the one every other fix
+        // print in this file uses, so a multi-part one added later renders as
+        // lines instead of as literal `\n`s.
+        const parts = fixParts(f);
+        console.log(`    Fix:    ${escapeForDisplay(parts[0])}`);
+        for (const part of parts.slice(1)) {
+          console.log(part === '' ? '' : `            ${escapeForDisplay(part)}`);
+        }
+      }
+      console.log(
+        reported.length === 0
+          ? '  No instruction-override or authority-claim payload was found in this text.'
+          : `\n  ${reported.length} payload${reported.length === 1 ? '' : 's'} found.`,
+      );
+    }
+
+    // The exit rule `secure` applies, on both channels: a critical or high
+    // finding exits 1, nothing else does, and neither --json nor --ci moves it.
+    const failing = payloads.filter((p) => p.severity === 'critical' || p.severity === 'high');
+    if (failing.length > 0) return finishWithFindings(EXIT_FAIL);
+  });
 
 program
   .command('scan-soul')
