@@ -1,0 +1,7 @@
+{
+  "baseCommit": "2ec82d2adce3988565b132fd90ee6121c27b08fc",
+  "credHarvestNegatorBlock": "/**\n * Clause-internal negation.\n *\n * Deliberately narrow: these are negators of the VERB, not of the sentence's\n * mood. Bare `no` is excluded — it is a determiner far more often than a\n * negator (\"no more than three\"), and every entry here can only ever SUPPRESS a\n * finding, so a loose list is a silent false-negative generator.\n */\nconst CRED_HARVEST_NEGATOR = new RegExp(\n  [\n    `\\\\b(?:never|not|cannot|neither|nor|avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?`,\n    `|refuse[sd]?|forbidden|prohibited|disallowed)\\\\b|n['’]t\\\\b`,\n  ].join(''),\n  'i',\n);\n",
+  "ruleSectionStartMarker": "// The CRED-HARVEST prose rule",
+  "ruleSectionEndMarker": "// The Deterministic Floor",
+  "ruleSectionSha256": "ce0ff82055979885617a3b95987d0ace4e118e4a34f1ce4b876144174d466b58"
+}
