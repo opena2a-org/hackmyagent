@@ -39,11 +39,17 @@ describe('check-count single source of truth', () => {
     // TAXONOMY_MAP keys now, as are the 8 SEM-MCP structural checks
     // (354/37/87 → 362/45/88), which are emitted as `id:` rather than
     // `checkId:` and so were missed by a literal-only census.
-    expect(counts.total).toBe(363);
-    expect(counts.static).toBe(318);
+    //
+    // 363 → 365, and one new category: TEXT-001 and TEXT-002, the two rules
+    // `scan-text` emits over a free text. They are static, they are the whole
+    // of the new `text` category, and they are inventory keys rather than
+    // declared exclusions because they are stable rules — which is what makes
+    // `check-metadata` list them and `explain <id>` answer for them.
+    expect(counts.total).toBe(365);
+    expect(counts.static).toBe(320);
     expect(counts.semantic).toBe(45);
-    expect(counts.totalCategories).toBe(88);
-    expect(counts.staticCategories).toBe(73);
+    expect(counts.totalCategories).toBe(89);
+    expect(counts.staticCategories).toBe(74);
   });
 
   it('the scan display no longer hardcodes a static-check count (teeth)', () => {

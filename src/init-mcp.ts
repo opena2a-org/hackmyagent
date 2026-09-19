@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { rootTooBroad, describeRootRefusal, RootRefusalError } from './mcp/roots';
+import { MCP_CLIENT_TARGETS, MCP_SERVER_MAP_KEYS, type McpClientTarget } from './mcp-clients';
 
 /**
  * The real path when it exists, the lexical one when it does not.
@@ -29,12 +30,25 @@ function realpathSyncOrSelf(p: string): string {
   }
 }
 
-interface McpConfig {
-  mcpServers?: Record<string, {
-    command: string;
-    args: string[];
-    cwd?: string;
-  }>;
+interface McpServerEntry {
+  command: string;
+  args: string[];
+  cwd?: string;
+}
+
+/**
+ * A client config document. The server map hangs off a top-level key the
+ * CLIENT chooses, so the document is indexed by key rather than typed with one
+ * spelling baked in.
+ */
+type McpConfig = Record<string, unknown>;
+
+/** The server map under `key`, or undefined when the key is absent or not an object. */
+function serverMap(config: McpConfig, key: string): Record<string, McpServerEntry> | undefined {
+  const map = config[key];
+  return map && typeof map === 'object' && !Array.isArray(map)
+    ? (map as Record<string, McpServerEntry>)
+    : undefined;
 }
 
 interface InitResult {
@@ -69,30 +83,25 @@ export function entryNeedsRoots(entry: { args?: string[] } | undefined): boolean
   return !entry?.args?.includes('--root');
 }
 
-/** Config file locations, in detection priority order */
-const IDE_CONFIGS: Array<{
-  name: string;
-  configPath: string;
-  mcpKey: string;
-}> = [
-  {
-    name: 'Claude Code',
-    configPath: '.mcp.json',
-    mcpKey: 'mcpServers',
-  },
-  {
-    name: 'Cursor',
-    configPath: '.cursor/mcp.json',
-    mcpKey: 'mcpServers',
-  },
-  {
-    name: 'VS Code',
-    configPath: '.vscode/mcp.json',
-    mcpKey: 'mcpServers',
-  },
-];
+/**
+ * Config file locations, in detection priority order. ONE definition, shared
+ * with the checks that read the same files — see `./mcp-clients`.
+ */
+const IDE_CONFIGS = MCP_CLIENT_TARGETS;
 
-function detectIde(targetDir: string): typeof IDE_CONFIGS[number] | null {
+/**
+ * Compare tool names with the separators dropped, so every spelling of one
+ * name reaches the same target.
+ *
+ * `'vs code'.includes('vscode')` is false, so `--tool vscode` — the spelling
+ * the option's OWN help text advertises — threw `Unknown tool: vscode` while
+ * `--tool "vs code"`, which the help does not mention, worked.
+ */
+function normalizeToolName(name: string): string {
+  return name.toLowerCase().replace(/[\s_-]+/g, '');
+}
+
+function detectIde(targetDir: string): McpClientTarget | null {
   // Check for existing config files to detect IDE
   for (const config of IDE_CONFIGS) {
     const configFile = path.join(targetDir, config.configPath);
@@ -128,11 +137,11 @@ export function initMcp(targetDir: string, forceTool?: string, roots: string[] =
       throw new RootRefusalError(describeRootRefusal({ kind: 'root-too-broad', root: real, why }));
     }
   }
-  let ideConfig: typeof IDE_CONFIGS[number] | null = null;
+  let ideConfig: McpClientTarget | null = null;
 
   if (forceTool) {
-    const lower = forceTool.toLowerCase();
-    ideConfig = IDE_CONFIGS.find((c) => c.name.toLowerCase().includes(lower)) || null;
+    const wanted = normalizeToolName(forceTool);
+    ideConfig = IDE_CONFIGS.find((c) => normalizeToolName(c.name).includes(wanted)) || null;
     if (!ideConfig) {
       throw new Error(`Unknown tool: ${forceTool}. Supported: Claude Code, Cursor, VS Code`);
     }
@@ -164,27 +173,51 @@ export function initMcp(targetDir: string, forceTool?: string, roots: string[] =
     // ENOENT or parse error on missing/empty file: start with empty config
   }
 
-  const existing = config.mcpServers?.hackmyagent;
+  // The key THIS client reads, off the client's own record. Hard-coding
+  // `config.mcpServers` here is what wrote the VS Code entry under a key VS
+  // Code does not load — and under a key this tree's own VSCODE-002 does not
+  // read either, so `secure` could not see what `init-mcp` had just written.
+  const mcpKey = ideConfig.mcpKey;
+  const otherKeys = MCP_SERVER_MAP_KEYS.filter((k) => k !== mcpKey);
 
-  // An entry that already carries the roots the caller asked for is left alone.
-  // One that predates `--root`, or that names different roots, is REWRITTEN:
-  // #463's refusal text tells the user to run this command, so returning
-  // "already configured" and changing nothing would be a dead end inside the
-  // command that exists to unblock them.
-  if (existing && !entryNeedsRoots(existing) && roots.length === 0) {
+  const own = serverMap(config, mcpKey)?.hackmyagent;
+  // An entry an earlier release put under a key this client does not read: the
+  // file is misconfigured however complete that entry looks, so it counts as
+  // an existing entry to REPAIR, never as one to leave alone.
+  const misplaced = otherKeys.map((k) => serverMap(config, k)?.hackmyagent).find(Boolean);
+  const existing = own ?? misplaced;
+
+  // An entry that already carries the roots the caller asked for, under the key
+  // the client reads, is left alone. One that predates `--root`, that names
+  // different roots, or that sits under the wrong key is REWRITTEN: #463's
+  // refusal text tells the user to run this command, so returning "already
+  // configured" and changing nothing would be a dead end inside the command
+  // that exists to unblock them.
+  if (own && !entryNeedsRoots(own) && roots.length === 0) {
     return {
       tool: ideConfig.name,
       configPath: ideConfig.configPath,
       created: false,
       updated: false,
-      roots: existing.args.filter((a, i) => existing.args[i - 1] === '--root'),
+      roots: own.args.filter((a, i) => own.args[i - 1] === '--root'),
     };
   }
 
-  if (!config.mcpServers) {
-    config.mcpServers = {};
+  const map = serverMap(config, mcpKey) ?? {};
+  map.hackmyagent = buildMcpServerEntry(resolvedRoots);
+  config[mcpKey] = map;
+
+  // The repair half of #463's discipline, for a key instead of an argument:
+  // OUR entry under a key this client does not read is removed, so one file
+  // never advertises two hackmyagent servers and the stale one cannot be the
+  // one a client picks up. Every other entry, under either key, is left
+  // exactly as it was — they are not ours to move.
+  for (const key of otherKeys) {
+    const stale = serverMap(config, key);
+    if (!stale?.hackmyagent) continue;
+    delete stale.hackmyagent;
+    if (Object.keys(stale).length === 0) delete config[key];
   }
-  config.mcpServers.hackmyagent = buildMcpServerEntry(resolvedRoots);
 
   // Write config
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n');

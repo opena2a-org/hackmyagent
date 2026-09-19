@@ -479,6 +479,15 @@ const TAXONOMY_MAP: Record<string, string> = {
   'AST-SCOPE-002': 'SCOPE-UNDECLARED',
   'AST-SCOPE-003': 'SEMANTIC-MISMATCH',
 
+  // Free-text payload checks (`scan-text`, src/hardening/text-payload-scan.ts).
+  // A NEW number space: no check family used the `TEXT-` prefix for anything
+  // before these two, so neither id can be read as an existing check. They are
+  // inventory keys rather than declared exclusions because they are stable
+  // rules with a fixed meaning — which is also what makes `check-metadata`
+  // list them and `explain <id>` answer for them.
+  'TEXT-001': 'SOUL-INJECT',
+  'TEXT-002': 'AUTHORITY-CONFUSION',
+
   // SOUL narrative-analysis checks (the scanner's soul-analysis
   // integration, src/hardening/scanner.ts), same shape: each is
   // emitted with an inline attackClass equal to the class here.
@@ -725,6 +734,11 @@ const PREFIX_SEVERITY: Record<string, string> = {
   UNICODE: 'medium',
   DNA: 'medium',
   WEBEXPOSE: 'medium',
+  // Both `scan-text` rules emit HIGH at their sites: either one is an attempt
+  // to act THROUGH the reader of the text, and the command's exit code is the
+  // critical/high rule `secure` uses. The inventory default matches the
+  // emission sites, so `check-metadata` and the scan agree.
+  TEXT: 'high',
 };
 
 /** Per-check severity overrides where the default prefix doesn't apply. */

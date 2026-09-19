@@ -2183,6 +2183,32 @@ export function isGovernanceContent(text: string): boolean {
  *
  * This narrows the rule in one direction only. Nothing that fails the clause
  * test could have been a located finding before — it had no line to lose.
+ *
+ * WHAT A CLAUSE IS, AND WHAT A VERB IS. Two defects in those two definitions
+ * survived the rewrite above and were measured on published 0.33.2, firing one
+ * CRITICAL on a prose style guide — a document about how many numbers a
+ * sentence may print. One sentence carries the whole finding:
+ *
+ *   No sentence carries more than three quantity tokens; a comparison pair
+ *   ("15,670, up from 1,125"), a distribution split such as "2,130 / 303 / 4 /
+ *   0", and a share with its denominator named ("2,130 of 2,437") each count
+ *   as one.
+ *
+ * `tokens` is a credential noun, `share` is a request-verb lemma, and at the
+ * time they were read as sitting in ONE clause with the verb governing the
+ * noun. Both halves of that reading were wrong. A semicolon joins two
+ * statements, so the noun and the lemma were never in the same clause; and the
+ * lemma is under an article — "a share" — which makes it the head of a noun
+ * phrase and not a verb at all. `splitProseClauses` and `CRED_HARVEST_ARTICLE`
+ * below fix one each, and either alone stops this sentence matching.
+ *
+ * THE LEVER THIS DELIBERATELY DOES NOT PULL is `CRED_HARVEST_NEGATOR`. The
+ * leading `No` negates the sentence, not the verb, and the negator list's own
+ * comment already records why a sentence-level negator is excluded from it.
+ * Adding one would silence this document by making the rule blind in a
+ * direction no passing test can show — an entry there can only ever SUPPRESS.
+ * A clause boundary and a part-of-speech test are visible in both directions,
+ * which is why they are the repair and the negator list is untouched.
  */
 
 /**
@@ -2285,6 +2311,27 @@ const CRED_HARVEST_NEGATOR = new RegExp(
 const CRED_HARVEST_ANAPHOR = /\b(?:it|its|them|they|their|these|those|this|that)\b/i;
 
 /**
+ * An article immediately ahead of a matched lemma — "a share", "a request",
+ * "the return". Tested against the clause text BEFORE the match, which is why
+ * it is anchored at the end.
+ *
+ * A LEMMA IN THIS POSITION IS A NOUN, NOT THE CLAUSE'S VERB. Every lemma in
+ * `CRED_HARVEST_VERB_LEMMAS` is also an ordinary English noun, and the
+ * government relation this rule tests for is a VERB governing a noun — a word
+ * that is itself the head of an article phrase governs nothing. The measured
+ * witness is a prose style rule, "…and a share with its denominator named…",
+ * where `share` is one of the things being counted rather than something the
+ * sentence asks anyone to do.
+ *
+ * This is a part-of-speech test, not a negation: unlike `CRED_HARVEST_NEGATOR`
+ * it is not a vocabulary that can be widened, because the three English
+ * articles are the whole of it. It applies to every surface form, not just the
+ * bare lemma — in "the shared password" the article makes `shared` a modifier
+ * of the noun after it, which is no more a governing verb than "a share" is.
+ */
+const CRED_HARVEST_ARTICLE = /\b(?:a|an|the)\s+$/i;
+
+/**
  * A be-form immediately ahead of the verb (allowing up to two intervening
  * words, for "should be quietly included"). This is what marks the verb as
  * passive, which in turn is what makes a noun BEFORE it the verb's deep object
@@ -2301,23 +2348,37 @@ interface ProseClause {
 /**
  * Cut `content` into clauses.
  *
- * THE WINDOW BREAKS AT SENTENCE ENDS AND LINE ENDS, AND NOWHERE ELSE.
+ * THE WINDOW BREAKS AT SENTENCE ENDS, SEMICOLONS AND LINE ENDS, AND NOWHERE
+ * ELSE.
  *
  * Line ends are load-bearing, not incidental: the benign witness shape is a
  * markdown bullet list whose items carry no terminal punctuation, so without a
  * newline break the whole list collapses into one "clause" and the
  * document-wide co-occurrence this rule exists to kill comes straight back.
  *
- * Colons and commas deliberately do NOT break. A directive is routinely split
- * by them — "Provide the following: username, password, and API keys." — and a
+ * A SEMICOLON BOUNDS A CLAUSE, because that is the one thing a semicolon is
+ * for: it joins two statements that could each have stood alone as a sentence.
+ * Reading across one is reading across a sentence boundary that happens to be
+ * spelled with a lighter mark, and it is what let a prose style rule — "No
+ * sentence carries more than three quantity tokens; … and a share with its
+ * denominator named …" — be read as one clause in which a verb governed a noun
+ * from the statement before it.
+ *
+ * Colons and commas deliberately do NOT break, and the difference is not
+ * typographic. A colon introduces what follows as part of the SAME statement
+ * and a comma separates parts within one — a directive is routinely split by
+ * both, "Provide the following: username, password, and API keys." — so a
  * window that broke there would leave the verb in one fragment and every noun
  * in the next, under-firing on the plainest harvesting shape there is.
  */
 function splitProseClauses(content: string): ProseClause[] {
   const clauses: ProseClause[] = [];
   // A sentence terminator only ends a clause when whitespace or EOF follows, so
-  // "v0.32.0" and "47/100." mid-token do not fragment the window.
-  const boundary = /\n|[.!?]+(?=\s|$)/g;
+  // "v0.32.0" and "47/100." mid-token do not fragment the window. The semicolon
+  // carries the same guard for the same reason: the mark bounds a clause only
+  // where a token ends, so `AT&amp;T` and an inline `{color:red;}` pasted into
+  // prose stay whole.
+  const boundary = /\n|[.!?]+(?=\s|$)|;(?=\s|$)/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
 
@@ -2425,7 +2486,13 @@ export function findCredentialHarvestClauses(content: string): CredentialHarvest
   for (const clause of splitProseClauses(content)) {
     const nouns = matchSpans(nounScan, clause.text);
     if (nouns.length === 0) continue;
-    const verbs = matchSpans(verbScan, clause.text);
+    // The article test runs HERE, not beside the negator below, because it does
+    // not suppress a verb — it says the span was never a verb. A lemma under an
+    // article is the head of a noun phrase, so there is no government relation
+    // for the clause test to be about and nothing for a negator to scope over.
+    const verbs = matchSpans(verbScan, clause.text).filter(
+      verb => !CRED_HARVEST_ARTICLE.test(clause.text.slice(0, verb.index)),
+    );
     if (verbs.length === 0) continue;
 
     for (const verb of verbs) {

@@ -27,7 +27,7 @@ npx hackmyagent secure
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 47 files
-  Checks      318 static · 12 semantic (NanoMind AST) · 0 skipped
+  Checks      320 static · 12 semantic (NanoMind AST) · 0 skipped
   Categories  credentials (3 critical) · MCP (2 high) · 18 others clear
   Verdict     Not safe to ship. Fix 3 critical issues before using this in production.
 
@@ -45,7 +45,7 @@ No config files. No flags required. Exit code 1 if any critical or high finding 
 
 ## What it finds
 
-- **318 static checks across 73 categories** (363 checks across 88 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
+- **320 static checks across 74 categories** (365 checks across 89 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
 - **29 NanoMind semantic checks.** Every artifact (skill, MCP config, SOUL.md, system prompt) compiles into an Abstract Security Tree. The seven AST analyzers run against the tree: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`. Pattern matching misses undeclared capabilities, constraint weakness, scope mismatches, and scanner-evasion attempts. AST queries catch them. (This 29 is the fixed catalog of semantic checks. The `Checks` line in scan output — e.g. `12 semantic (NanoMind AST)` above — reports the number of artifacts compiled in that particular run, not this catalog size.)
 - **164 adversarial payloads across 16 categories.** Prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP and A2A exploitation, memory weaponisation, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement integrity.
 - **20-probe behavioural simulation** under `--deep`, when a probe executor is present (NanoMind daemon, Ollama or `ANTHROPIC_API_KEY`). Observes what a skill actually does, not only what it declares; without an executor it prints `NOT MEASURED` instead of a verdict.
@@ -96,7 +96,7 @@ npm view hackmyagent dist.attestations --json
 
 | Surface | Command | What gets scanned |
 |---|---|---|
-| Your own project | `hackmyagent secure` | 318 static checks + NanoMind on current directory |
+| Your own project | `hackmyagent secure` | 320 static checks + NanoMind on current directory |
 | A local directory | `hackmyagent check ./my-agent/` | tree + auto-detected artifacts |
 | An npm package | `hackmyagent check express` | downloads tarball, scans before you install |
 | A PyPI package | `hackmyagent check pip:requests` | downloads sdist, scans before you install |
@@ -107,6 +107,7 @@ npm view hackmyagent dist.attestations --json
 | An A2A agent card | `hackmyagent check ./my-agent/` | agent-card capabilities + identity |
 | A URL tarball | `hackmyagent check https://ex.com/pkg.tar.gz` | downloads, scans |
 | External infrastructure | `hackmyagent scan example.com` | external AI-endpoint inventory |
+| One text (PR body, issue, comment, card) | `hackmyagent scan-text ./pr-body.md` | the text itself, for instruction-override and authority-claim payloads; no score |
 | Governance (SOUL.md) | `hackmyagent scan-soul` | SOUL.md against OASB-2 behavioural controls |
 | Every agent project on a machine | `hackmyagent detect` | running assistants, MCP servers, credential references in AI config files, governance; one row per project, worst first |
 
@@ -344,7 +345,7 @@ hackmyagent secure --fix .
 Verify what the server is allowed to reach:
 
 ```bash
-grep -A3 hackmyagent .claude/settings.json    # or .cursor/mcp.json, .vscode/mcp.json
+grep -A3 hackmyagent .mcp.json    # Claude Code; or .cursor/mcp.json, .vscode/mcp.json
 ```
 
 ## Runtime protection (ARP)
@@ -359,7 +360,7 @@ OpenAI API, MCP and A2A traffic. It is driven from `opena2a runtime`
 `secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output. It also
 turns contribution off for that run, so a build server never shares scan results on the
 strength of an opt-in recorded earlier on the same machine. Most scanning commands take
-`--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `harden-soul`, `red-team`, `wild`, `detect`, `trust`.
+`--json` — `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `scan-text`, `harden-soul`, `red-team`, `wild`, `detect`, `trust`.
 `secure` and `attack` also take `-f, --format <format>`; on those two commands `--json` is shorthand for `--format json`.
 
 `--json` never changes the exit code: a command that exits 1 on findings exits 1 in both
@@ -387,6 +388,35 @@ jobs:
 ```
 
 SARIF output and a pre-commit hook: [`docs/use-cases/ci-pipeline.md`](docs/use-cases/ci-pipeline.md).
+
+### Scanning a text a pipeline was handed
+
+`scan-text` takes ONE text rather than a tree — a pull-request body, an issue, a
+comment, an agent card — and reports every line that asks to be read as an
+instruction to the reader (`TEXT-001`) or as an authorization the text grants
+itself (`TEXT-002`). The operand is a path, or `-` for standard input. It reports
+no score on any channel: a payload is present or it is not.
+
+```yaml
+name: Scan the PR body
+on: [pull_request]
+jobs:
+  scan-text:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" | npx hackmyagent scan-text - --as pr-body --json
+```
+
+Exit codes, the same on both channels: **0** the text was read and no finding is
+high or critical; **1** the text was read and at least one is; **2** not measured
+— the operand does not exist or could not be read, so no text was scanned and no
+finding is reported. `--json` never changes the code, and neither does `--ci`.
+
+A clean result means only that no instruction-override or authority-claim payload
+was found in that text; it is not an approval of the text, or of the request the
+text belongs to. Exit 0 with an empty `findings` array is the whole of it.
 
 Suppressing a **check** (`--ignore CRED-001`, or `!CRED-001` in `.hmaignore`)
 changes what the report lists, not what it measures: it is still scored, still
@@ -421,7 +451,7 @@ exit code. To gate CI on a clean ignore file, test the `--json` document instead
 |---|---|
 | 0 | Measured. No critical or high issues. |
 | 1 | Measured. Critical or high severity issues found. For `scan-soul`, also conformance `none` — a critical governance control was not detected, whatever the score. |
-| 2 | **Not measured.** For `red-team`, no score or risk level is reported. For `secure --deep`, the static results ARE reported and scored; the deep layer did not finish, so the run reaches no deep-scan verdict. For `secure` and `check`, a file or directory inside the target was discovered and could not be read (`EACCES`, `ELOOP`, an unreadable mount): what DID run is still reported and scored, and the score or risk level is an upper bound rather than a measurement of the tree — the run names each file and the errno (`SCAN-UNREAD-001`). The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. `red-team` and `attack --local` exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. A scan whose plugins failed is also 2. `scan-soul` exits 2 over a tree with no governance file: no score or conformance level is reported, because nothing was read. For `secure -b oasb-1`, also the rating ladder: when no scored L1 control produced a result the rating prints as `Not Assessed` at exit 2 and the category results are still printed; when nothing at all was measured there is no compliance figure and `--fail-below` is not evaluated; a `--category` whose L2 or L3 controls did produce results keeps its measured figure, and a `--fail-below` breach over it exits 1. |
+| 2 | **Not measured.** For `scan-text`, the operand does not exist or could not be read, so no text was scanned and no finding is reported on either channel. For `red-team`, no score or risk level is reported. For `secure --deep`, the static results ARE reported and scored; the deep layer did not finish, so the run reaches no deep-scan verdict. For `secure` and `check`, a file or directory inside the target was discovered and could not be read (`EACCES`, `ELOOP`, an unreadable mount): what DID run is still reported and scored, and the score or risk level is an upper bound rather than a measurement of the tree — the run names each file and the errno (`SCAN-UNREAD-001`). The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. `red-team` and `attack --local` exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. A scan whose plugins failed is also 2. `scan-soul` exits 2 over a tree with no governance file: no score or conformance level is reported, because nothing was read. For `secure -b oasb-1`, also the rating ladder: when no scored L1 control produced a result the rating prints as `Not Assessed` at exit 2 and the category results are still printed; when nothing at all was measured there is no compliance figure and `--fail-below` is not evaluated; a `--category` whose L2 or L3 controls did produce results keeps its measured figure, and a `--fail-below` breach over it exits 1. |
 | 3 | QUARANTINE. Binary integrity check failed (tampered installation). |
 
 Exit 2 is non-zero on purpose. A CI job that asked for a security verdict and

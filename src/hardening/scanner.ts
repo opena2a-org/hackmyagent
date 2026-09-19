@@ -41,6 +41,10 @@ import {
 } from './contain';
 import { withheldLinkRecords } from './withheld-links';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
+// One definition of which file each MCP client loads and which top-level key
+// it loads from, shared with the command that WRITES those files (#757,
+// HMA-71), so the writer and these readers cannot disagree on either.
+import { MCP_SERVER_MAP_KEYS, VSCODE_CLIENT } from '../mcp-clients';
 // One vocabulary with `detect`'s permission-grant rule (#363, #364), so the two
 // commands cannot disagree in direction on the same `.claude/settings.json`.
 import { walkConfigForGrants } from '../scanner/permission-vocabulary';
@@ -6155,8 +6159,16 @@ export class HardeningScanner {
       let hasUnrestrictedShell = false;
       let mcp001Fixed = false;
 
-      if (config.servers && typeof config.servers === 'object') {
-        for (const [name, server] of Object.entries(config.servers as Record<string, { command?: string; args?: string[] }>)) {
+      // EVERY key a client carries its server map under. #637 widened the set
+      // of FILES these checks read; this widens the set of keys read inside
+      // them. `.mcp.json` is keyed `mcpServers` — Claude Code's spelling, and
+      // the one `init-mcp` writes there — so walking `servers` alone left a
+      // live filesystem server scoped at `/` in a file the scan had already
+      // opened completely unreported.
+      for (const mapKey of MCP_SERVER_MAP_KEYS) {
+        const servers = config[mapKey];
+        if (!servers || typeof servers !== 'object' || Array.isArray(servers)) continue;
+        for (const [name, server] of Object.entries(servers as Record<string, { command?: string; args?: string[] }>)) {
           // A server entry that is not an object (`null`, a string) carries
           // no command or args to inspect.
           if (!server || typeof server !== 'object') continue;
@@ -7692,7 +7704,10 @@ dist/
     autoFix: boolean
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
-    const vscodeMcpPath = path.join(targetDir, '.vscode', 'mcp.json');
+    // The file and the key come off the VS Code record `init-mcp` writes
+    // from, so the check and the command cannot drift apart again.
+    const vscodeMcpPath = path.join(targetDir, VSCODE_CLIENT.configPath);
+    const absent = `No ${VSCODE_CLIENT.configPath} in the scanned tree, so there is no VS Code MCP configuration to inspect.`;
 
     let vscodeConfig: Record<string, unknown> | null = null;
     let vscodeContent = '';
@@ -7714,7 +7729,7 @@ dist/
     }
 
     if (vscodeRead.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'VSCODE-001', name: 'VSCode MCP Config Credentials', description: 'VSCode MCP configuration contains exposed credentials', category: 'vscode' }, '.vscode/mcp.json', 'No .vscode/mcp.json in the scanned tree, so there is no VS Code MCP configuration to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'VSCODE-001', name: 'VSCode MCP Config Credentials', description: 'VSCode MCP configuration contains exposed credentials', category: 'vscode' }, VSCODE_CLIENT.configPath, absent));
     } else if (vscodeRead.state === 'read') {
       findings.push({
         checkId: 'VSCODE-001',
@@ -7733,8 +7748,9 @@ dist/
 
     // VSCODE-002: Check for overly permissive paths
     let hasRootAccess = false;
-    if (vscodeConfig?.servers) {
-      for (const [, server] of Object.entries(vscodeConfig.servers as Record<string, { args?: string[] }>)) {
+    const vscodeServers = vscodeConfig?.[VSCODE_CLIENT.mcpKey];
+    if (vscodeServers && typeof vscodeServers === 'object') {
+      for (const [, server] of Object.entries(vscodeServers as Record<string, { args?: string[] }>)) {
         if (server.args?.some((arg: string) => arg === '/' || arg === '~')) {
           hasRootAccess = true;
           break;
@@ -7743,7 +7759,7 @@ dist/
     }
 
     if (vscodeRead.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'VSCODE-002', name: 'VSCode MCP Root Access', description: 'VSCode MCP server has root or home directory access', category: 'vscode' }, '.vscode/mcp.json', 'No .vscode/mcp.json in the scanned tree, so there is no VS Code MCP configuration to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'VSCODE-002', name: 'VSCode MCP Root Access', description: 'VSCode MCP server has root or home directory access', category: 'vscode' }, VSCODE_CLIENT.configPath, absent));
     } else if (vscodeRead.state === 'read') {
       findings.push({
         checkId: 'VSCODE-002',
