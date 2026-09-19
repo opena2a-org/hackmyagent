@@ -1,0 +1,1 @@
+No sentence carries more than three quantity tokens; a comparison pair ("15,670, up from 1,125"), a distribution split such as "2,130 / 303 / 4 / 0", and a share with its denominator named ("2,130 of 2,437") each count as one.
