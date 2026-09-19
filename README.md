@@ -345,7 +345,7 @@ hackmyagent secure --fix .
 Verify what the server is allowed to reach:
 
 ```bash
-grep -A3 hackmyagent .claude/settings.json    # or .cursor/mcp.json, .vscode/mcp.json
+grep -A3 hackmyagent .mcp.json    # Claude Code; or .cursor/mcp.json, .vscode/mcp.json
 ```
 
 ## Runtime protection (ARP)

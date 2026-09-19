@@ -11,6 +11,7 @@
  */
 
 import type { SemanticFinding, AnalysisFile, McpServerConfig } from '../types';
+import { MCP_SERVER_MAP_KEYS } from '../../mcp-clients';
 
 /** Paths that indicate overprivileged filesystem scope */
 const OVERPRIVILEGED_PATHS = [
@@ -94,8 +95,20 @@ export class McpConfigAnalyzer {
         continue;
       }
 
-      const servers =
-        (config as { mcpServers?: Record<string, McpServerConfig> }).mcpServers || {};
+      // The server map hangs off a key the CLIENT chooses: `mcpServers` in
+      // `.mcp.json` and `.cursor/mcp.json`, `servers` in the VS Code workspace
+      // file this collector also globs. Reading `mcpServers` alone handed this
+      // analyzer an EMPTY map for every `.vscode/mcp.json` — no overprivileged
+      // scope, no secret in args, no attack chain, a server count of zero —
+      // while Layer 1's VSCODE-002 was reading the same file's servers.
+      //
+      // One map, so a server named under both keys is evaluated once.
+      const servers: Record<string, McpServerConfig> = {};
+      for (const mapKey of MCP_SERVER_MAP_KEYS) {
+        const map = (config as Record<string, unknown>)[mapKey];
+        if (!map || typeof map !== 'object' || Array.isArray(map)) continue;
+        Object.assign(servers, map as Record<string, McpServerConfig>);
+      }
 
       const allCapabilities = new Map<string, Capability[]>();
 
