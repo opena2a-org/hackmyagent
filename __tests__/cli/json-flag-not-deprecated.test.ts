@@ -122,13 +122,16 @@ describe('HMA-36 `--json` is shorthand, never deprecated, across the whole comma
     expect(names).toContain('nanomind status'); // nested via a sub-program handle
     expect(names).toContain('telemetry'); // registered inside the entry IIFE
 
-    // The measured population: 16 commands register `--json`, 3 register
-    // `--format` (secure, attack, eval oracle); 14 are `--json`-only, 2
+    // The measured population: 17 commands register `--json`, 3 register
+    // `--format` (secure, attack, eval oracle); 15 are `--json`-only, 2
     // carry both, 1 is `--format`-only. A command gaining or losing either
     // flag moves a count here on purpose — re-measure, then retune.
-    expect(withJson().map(label).sort()).toHaveLength(16);
+    // 16 → 17 and 14 → 15 with `scan-text`, which registers `--json` and no
+    // `--format`: it has one machine shape and one human one, so a format
+    // vocabulary would name nothing it can produce.
+    expect(withJson().map(label).sort()).toHaveLength(17);
     expect(withFormat().map(label).sort()).toEqual(['attack', 'eval oracle', 'secure']);
-    expect(withJson().filter((w) => !formatOpt(w.command))).toHaveLength(14);
+    expect(withJson().filter((w) => !formatOpt(w.command))).toHaveLength(15);
     expect(withJson().filter((w) => formatOpt(w.command)).map(label).sort()).toEqual(['attack', 'secure']);
   });
 
