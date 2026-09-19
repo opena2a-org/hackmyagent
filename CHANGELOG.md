@@ -4,6 +4,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 ## [Unreleased]
 
+AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
+
 ### `init-mcp` writes the file Claude Code reads
 
 - **`init-mcp` for Claude Code writes `<dir>/.mcp.json`.** The Claude Code

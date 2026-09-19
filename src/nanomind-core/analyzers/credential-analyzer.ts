@@ -510,7 +510,8 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   const isTestOrDoc = isDocumentationOrTestContext(ast);
   const evidenceTexts =
     valueHit !== undefined ? [valueHit.value] : credentialEvidence.map(e => e.text);
-  const allTestFixtures = evidenceTexts.every(t => isTestFixtureCredential(t));
+  const allTestFixtures =
+    evidenceTexts.length > 0 && evidenceTexts.every(t => isTestFixtureCredential(t));
 
   if (isTestOrDoc && allTestFixtures) {
     return findings;
