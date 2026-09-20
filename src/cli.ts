@@ -59,6 +59,7 @@ import {
   type SoulLevel,
 } from './index';
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
+import { extractArchiveInto, type ArchiveFormat } from './hardening/extract-archive';
 import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolved-categories';
 import { analystDissentSuffix, dissentingFiles } from './ui/analyst-dissent';
 import { WildScanner, type WildScanReport } from './wild';
@@ -14055,7 +14056,6 @@ async function checkPyPiPackage(
   const { mkdtemp, rm, readdir } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const { execFileSync } = await import('node:child_process');
 
   if (!options.json && !globalCiMode) {
     console.error(`Downloading ${name} from PyPI...`);
@@ -14135,18 +14135,25 @@ async function checkPyPiPackage(
     const { writeFileSync } = await import('node:fs');
     writeFileSync(archivePath, archiveBuffer);
 
-    // Extract
+    // Extract. The distribution's bytes are PyPI's publisher's, so the entries
+    // go through the one fenced unpacker (src/hardening/extract-archive.ts)
+    // rather than a spawned `tar`/`unzip` that decides for itself what to do
+    // with a link member. An sdist carries its own `<name>-<version>/` prefix,
+    // which is the component that used to be dropped by `--strip-components=1`;
+    // a wheel does not.
     const extractDir = join(tempDir, 'package');
     const { mkdirSync } = await import('node:fs');
     mkdirSync(extractDir, { recursive: true });
 
-    if (dist.filename.endsWith('.tar.gz') || dist.filename.endsWith('.tgz')) {
-      execFileSync('tar', ['xzf', archivePath, '-C', extractDir, '--strip-components=1'], { timeout: 30_000 });
-    } else if (dist.filename.endsWith('.zip') || dist.filename.endsWith('.whl')) {
-      execFileSync('unzip', ['-q', '-o', archivePath, '-d', extractDir], { timeout: 30_000 });
-    } else {
+    const isSdist = dist.filename.endsWith('.tar.gz') || dist.filename.endsWith('.tgz');
+    const isWheel = dist.filename.endsWith('.zip') || dist.filename.endsWith('.whl');
+    if (!isSdist && !isWheel) {
       throw new Error(`Unsupported archive format: ${dist.filename}`);
     }
+    await extractArchiveInto(archivePath, extractDir, {
+      format: isSdist ? 'tar.gz' : 'zip',
+      stripComponents: isSdist ? 1 : 0,
+    });
 
     // Run full HMA scan + NanoMind (same pipeline as checkNpmPackage)
     const scanner = new HardeningScanner();
@@ -14281,7 +14288,7 @@ async function checkRawUrl(
   url: string,
   options: { verbose?: boolean; json?: boolean; offline?: boolean; nanomind?: boolean; analm?: boolean },
 ): Promise<void> {
-  const { mkdtemp, rm, writeFile, readdir } = await import('node:fs/promises');
+  const { mkdtemp, mkdir, rm, writeFile, readdir } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join, basename } = await import('node:path');
   const { execFile } = await import('node:child_process');
@@ -14375,16 +14382,27 @@ async function checkRawUrl(
         await writeFile(archivePath, buffer);
 
         const extractDir = join(tempDir, 'extracted');
-        await execAsync('mkdir', ['-p', extractDir]);
+        await mkdir(extractDir, { recursive: true });
 
+        // The four branches below are the four this arm always had, in the
+        // order it always had them — the suffix and the `content-type` are
+        // both chosen by the host serving the archive, so an unmatched
+        // combination still extracts nothing, as before. What changed is where
+        // they lead: one fenced unpacker instead of four spawned ones, which
+        // is what makes a link member that leaves `extractDir` a refusal
+        // rather than a property of whichever `tar` this host ships.
+        let format: ArchiveFormat | undefined;
         if (/\.(tar\.gz|tgz)$/i.test(fileName) || contentType.includes('gzip') || contentType.includes('tar')) {
-          await execAsync('tar', ['xzf', archivePath, '-C', extractDir], { timeout: 30_000 });
+          format = 'tar.gz';
         } else if (/\.tar\.bz2$/i.test(fileName)) {
-          await execAsync('tar', ['xjf', archivePath, '-C', extractDir], { timeout: 30_000 });
+          format = 'tar.bz2';
         } else if (/\.tar\.xz$/i.test(fileName)) {
-          await execAsync('tar', ['xJf', archivePath, '-C', extractDir], { timeout: 30_000 });
+          format = 'tar.xz';
         } else if (/\.zip$/i.test(fileName)) {
-          await execAsync('unzip', ['-q', archivePath, '-d', extractDir], { timeout: 30_000 });
+          format = 'zip';
+        }
+        if (format) {
+          await extractArchiveInto(archivePath, extractDir, { format });
         }
 
         // If extraction produced a single directory, scan that
@@ -14613,7 +14631,9 @@ async function checkNpmPackage(
       { timeout: 60_000 },
     );
     const tarball = stdout.trim().split('\n').pop()!;
-    await execAsync('tar', ['xzf', join(tempDir, tarball), '-C', tempDir], { timeout: 30_000 });
+    // `npm pack` hands back a tarball the package's publisher wrote, so its
+    // entries go through the same fenced unpacker as the other two arms.
+    await extractArchiveInto(join(tempDir, tarball), tempDir, { format: 'tar.gz' });
 
     // npm tarballs normally extract to 'package/', but some packages (e.g. @types/*)
     // may use a different directory name. Detect the actual extracted directory.
