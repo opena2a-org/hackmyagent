@@ -143,6 +143,13 @@ const REVIEWED: Record<string, { count: number; why: string }> = {
     why: "HMA's OWN bytes (dist/, ~/.nanomind, the integrity manifest). Routing this through "
       + 'the ledger would count roughly 957 of our files as coverage of the scanned tree',
   },
+  'hardening/extract-archive.ts': {
+    count: 1,
+    why: 'promises-as-fs on the two paths `check` hands it and nothing else: a downloaded '
+      + 'archive in a fresh mkdtemp, and the destination it unpacks into. Both are BUILT here '
+      + 'and scanned afterwards through the tracked namespace, so these reads and writes are '
+      + 'not reads of a scan target — they are what produces one',
+  },
   'semantic/llm/budget.ts': { count: 1, why: 'LLM state dir, outside any scan target' },
   'semantic/llm/cache.ts': { count: 1, why: 'LLM state dir, outside any scan target' },
 };
