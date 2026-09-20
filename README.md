@@ -81,6 +81,14 @@ npm run build
 node dist/cli.js secure
 ```
 
+### Install-time download, and how to skip it
+
+Installing this package runs the install script of `onnxruntime-node`, the dependency this tool uses for local NanoMind inference. On Linux x64 that script downloads an execution-provider package, `Microsoft.ML.OnnxRuntime.Gpu.Linux`, from nuget.org: about 236 MB at `onnxruntime-node` 1.30.0, the release a fresh install resolved on 2026-09-19. This tool does not use that provider: it requests no execution provider anywhere, so the CPU provider is the only one it runs. The check is `grep -rn "executionProviders" src/`, which prints nothing and exits 1, read on 2026-09-20.
+
+To install without that download, set `ONNXRUNTIME_NODE_INSTALL=skip` in the environment of the install command, or run `npm config set onnxruntime-node-install skip` once so that every later install skips it. The CPU runtime this tool uses ships inside the npm package itself: at 1.27.0, `bin/napi-v6/linux/x64` carries `libonnxruntime.so.1` and `onnxruntime_binding.node`, read on 2026-09-20.
+
+`--ignore-scripts` is safe for a CI install of this package: this tree carries exactly one non-dev dependency that declares an install script, `onnxruntime-node`. In `package-lock.json`, exactly one `"hasInstallScript": true` entry has no `"dev": true` beside it, and it is `node_modules/onnxruntime-node`, read on 2026-09-20.
+
 ### Verifying what was installed
 
 Every release publishes via npm Trusted Publishing with SLSA v1 provenance. No long-lived `NPM_TOKEN`. GitHub Actions exchanges its OIDC token with npm at publish time.
