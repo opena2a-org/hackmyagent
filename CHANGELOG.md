@@ -259,7 +259,7 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
   requires `adm-zip` at module top, before any of the script's exits; the npm package's
   `bin/napi-v6/linux/x64` carries only `libonnxruntime.so.1` and `onnxruntime_binding.node`,
   and `install-metadata.js:13` lists `cuda12` as required on `linux/x64`, so a default
-  install on Linux x64 — no `ONNXRUNTIME_NODE_INSTALL` and no `--ignore-scripts` — finds the
+  install on Linux x64 (no `ONNXRUNTIME_NODE_INSTALL` and no `--ignore-scripts`) finds the
   three provider files missing, downloads `Microsoft.ML.OnnxRuntime.Gpu.Linux` from nuget.org
   at `install-utils.js:151` and extracts it with `adm-zip` at `install-utils.js:183`. So a
   default Linux x64 install does run the download and extraction path that entry said it
