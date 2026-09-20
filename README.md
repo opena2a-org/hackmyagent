@@ -8,7 +8,7 @@ Security scanner, red-team toolkit, and behavioural simulator for AI agents. Apa
 
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-2072%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent)
+[![Tests](https://img.shields.io/badge/tests-5782%20passing-brightgreen)](https://github.com/opena2a-org/hackmyagent/actions/workflows/test.yml)
 [![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20layer-teal)](https://huggingface.co/opena2a/nanomind-security-classifier)
 
 [Website](https://hackmyagent.com) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
