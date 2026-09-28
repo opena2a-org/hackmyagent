@@ -6151,13 +6151,17 @@ Examples:
         if (remainingWithFix.length > 0) {
           console.log(`${remainingWithFix.length} remaining issue${remainingWithFix.length === 1 ? '' : 's'} ${remainingWithFix.length === 1 ? 'has' : 'have'} fix guidance. Run \`${CLI_PREFIX} fix-all\` to apply all available fixes.\n`);
         }
+      }
 
-        if (result.backupPath) {
-          // #339 — the backup path is derived from the target, and the rollback
-          // hint is a command the report tells the user to paste. Both were raw.
-          console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
-          console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
-        }
+      // #610 — keyed on the backup the scanner wrote, not on the attempt count.
+      // A `--fix` run that attempted nothing still writes a fresh run directory
+      // under `.hackmyagent-backup/`; nested under `fixedFindings.length > 0`
+      // it did so without a word.
+      if (result.backupPath) {
+        // #339 — the backup path is derived from the target, and the rollback
+        // hint is a command the report tells the user to paste. Both were raw.
+        console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+        console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
       }
 
       // Registry reporting: only when explicitly requested via --version-id (CI) or --registry-report
@@ -6777,13 +6781,28 @@ Examples:
           fixed: fixedFindings.length,
           passed: passedFindings.length,
           findings: allOpenClawFindings,
+          // #610 — the same field `secure --format json` carries through its
+          // `...result` spread; absent when `--fix` wrote no backup.
+          ...(result.backupPath ? { backupPath: result.backupPath } : {}),
         };
         writeJsonStdout(jsonOutput);
         return;
       }
 
+      // #274/#610 — the recoverability disclosure keys on the BACKUP the
+      // scanner wrote. It is printed on every text path that follows the write,
+      // the unmeasured one included: the scanner applies non-OpenClaw fixes
+      // (a GIT-001 `.gitignore`) before this command's filter runs, so an arm
+      // with no OpenClaw check to evaluate can still have rewritten the tree.
+      const printBackupDisclosure = (): void => {
+        if (!result.backupPath) return;
+        console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+        console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${citationTarget(targetDir)}`);
+      };
+
       if (!ocVerdict.measured) {
         console.error(unmeasuredBanner(ocVerdict));
+        printBackupDisclosure();
         return;
       }
 
@@ -6848,12 +6867,10 @@ Examples:
       // false`) rewrote the tree and has this backup all the same; gated on
       // `fixedFindings` it printed neither the path nor the rollback command
       // for exactly that run. The attempt itself is disclosed under Findings
-      // ("Auto-fix did not resolve this"). Known sibling gaps, recorded not
-      // fixed here: the unmeasured arm returns above before this line, and
-      // the hand-built `--json` document carries no `backupPath` (#610).
+      // ("Auto-fix did not resolve this"). The unmeasured arm and the
+      // hand-built `--json` document disclose the same backup above (#610).
       if (result.backupPath) {
-        console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
-        console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${citationTarget(targetDir)}`);
+        printBackupDisclosure();
         console.log();
         console.log(`${colors.cyan}Note:${RESET()} If you replaced tokens with env vars, set OPENCLAW_AUTH_TOKEN`);
         console.log(`      in your environment before starting OpenClaw.\n`);
