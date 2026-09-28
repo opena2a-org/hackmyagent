@@ -49,6 +49,7 @@ import { MCP_SERVER_MAP_KEYS, VSCODE_CLIENT } from '../mcp-clients';
 // commands cannot disagree in direction on the same `.claude/settings.json`.
 import { walkConfigForGrants } from '../scanner/permission-vocabulary';
 import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/permission-grant';
+import { lineOfJsonValue } from '../scanner/json-locate';
 
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
@@ -7599,13 +7600,13 @@ dist/
     // share one slot between two checks; it is filed as its own issue rather
     // than bolted on here.
     let claudeSettings: unknown = null;
-    let claudeSettingsLines: string[] = [];
+    let claudeSettingsText = '';
     try {
       const content = await fs.readFile(claudeSettingsPath, 'utf-8');
       const parsed = parseAiConfig(content, 'settings.json');
       if (parsed !== undefined) {
         claudeSettings = parsed;
-        claudeSettingsLines = content.split('\n');
+        claudeSettingsText = content;
       }
     } catch {}
 
@@ -7629,11 +7630,13 @@ dist/
 
     // Only report if overly permissive
     if (overlyPermissive) {
-      // The SHARED locator, not a local `indexOf`. A settings-level grant is
-      // synthesised — `defaultMode: acceptEdits` is not a substring of
-      // `"defaultMode": "acceptEdits"` — so a plain substring search returned
-      // nothing and this rendered a HIGH with no line number at all, while
-      // `detect` cited `:2` for the same file.
+      // #379 — the line of the judged value, found by following the walk's own
+      // path through the raw JSON (`lineOfJsonValue`), the same citation
+      // `detect` makes for this file. Never a text search: a deny entry holds
+      // the same text. Without a line this HIGH rendered no `Verify:` at all.
+      const grantLine = overlyPermissive.at
+        ? lineOfJsonValue(claudeSettingsText, overlyPermissive.at.path, overlyPermissive.at.value)
+        : undefined;
       findings.push({
         checkId: 'CLAUDE-002',
         name: 'Overly Permissive Permissions',
@@ -7650,6 +7653,7 @@ dist/
         passed: false,
         message: 'Scope permissions to specific paths',
         file: path.join('.claude', 'settings.json'),
+        ...(grantLine !== undefined ? { line: grantLine } : {}),
         fixable: false,
         fix: forFinding(overlyPermissive.fix),
         guidance: 'Wildcard permissions give the AI unrestricted shell, read, or write access. Scope each permission to the specific commands and paths your workflow needs. Entries in the deny list are restrictions and are never reported here.',

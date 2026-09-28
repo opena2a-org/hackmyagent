@@ -879,14 +879,13 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
   // finds nothing and the finding renders with no line number, which is the
   // house rule this check would then be violating. `detect` cited `:2` for the
   // same file; both now use one locator, which falls back to the key's line.
-  // No line, by design — see the note in `permission-vocabulary.ts`. `f17f6ac`
-  // rendered CLAUDE-002 without one too, so this is not a regression against
-  // what shipped; what changed is that it is now deliberate and documented.
-  it('reports a settings-level grant against the file, with no line', async () => {
+  // #379: the line now comes from the walk's path through the parse, so a
+  // synthesised entry is cited at its value's own line, not searched for.
+  it('reports a settings-level grant at the line of its value', async () => {
     await settingsFixture({ permissions: { defaultMode: 'acceptEdits' } });
     const finding = await claude002();
     expect(finding).toBeDefined();
-    expect(finding!.line).toBeUndefined();
+    expect(finding!.line).toBe(3);
     expect(finding!.file).toBe(path.join('.claude', 'settings.json'));
     expect(finding!.fix).toContain('"default"');
   });
@@ -1010,14 +1009,15 @@ describe('CLAUDE-002 and detect agree on the same settings file (#363)', () => {
     expect(finding!.severity).toBe('high');
   });
 
-  // The citation contract, on the `secure` side. A file holding a restriction
-  // key gets no line — so no `Verify:`, which is what `f17f6ac` already did
-  // here — and the description still names the entry and why it is a grant.
-  it('withholds the line on a settings file that declares a deny list', async () => {
+  // The citation contract, on the `secure` side (#379). A file holding a
+  // restriction key is cited at the allow entry's own line — the walk's path
+  // decides, so the deny list cannot pull the citation — and the description
+  // still names the entry and why it is a grant.
+  it('cites the allow entry on a settings file that declares a deny list', async () => {
     await settingsFixture({ permissions: { allow: ['Bash(*)'], deny: ['Read(./.env)'] } });
     const finding = await claude002();
     expect(finding).toBeDefined();
-    expect(finding!.line, 'a line was cited on a file holding a deny list').toBeUndefined();
+    expect(finding!.line, 'the citation is not the allow entry').toBe(4);
     expect(finding!.description).toContain('Bash(*)');
     expect(finding!.fix).toBeTruthy();
   });

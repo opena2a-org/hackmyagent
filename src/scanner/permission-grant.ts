@@ -55,6 +55,7 @@
  */
 import * as yaml from 'js-yaml';
 import { escapeForDisplay } from '../ui/display-safe';
+import { lineOfJsonValue } from './json-locate';
 import {
   classifyPermissionEntry,
   walkConfigForGrants,
@@ -68,18 +69,13 @@ export interface PermissionGrant {
   /**
    * 1-indexed line within the config file, when one can be cited SAFELY.
    *
-   * Absent for a structured config that also declares a restriction key. The
-   * two keys hold textually identical values, so locating an entry by text on
-   * such a file can return the DENY line — and the finding then prints
-   * `replace "Read(**` + `/*.key)"` against the rule that stops an agent
-   * reading private keys. Two attempts to make the text search structure-aware
-   * failed, the second worse than the first, so the citation is now emitted
-   * only where it is provably safe: a document with no restriction key anywhere
-   * has no restriction subtree for a citation to land in.
-   *
-   * The reader still gets the entry, the reason and the fix. What they lose on
-   * a file with a deny list is the line number and, through it, the `Verify:`
-   * command — which is what `f17f6ac` already did on the `secure` side.
+   * Prose: the line the pattern matched. JSON: the line of the judged value,
+   * found by following the walk's own path through the raw text
+   * (`lineOfJsonValue`, #379) — never by searching for the entry, which can
+   * return a deny entry holding the same text and turn the fix into "remove the
+   * rule that stops an agent reading private keys". Absent for YAML, whose
+   * parser exposes no positions, and whenever the path does not resolve to the
+   * judged value: the failure mode is a missing line, never a different one.
    */
   line?: number;
   /**
@@ -90,7 +86,11 @@ export interface PermissionGrant {
    * `CLAUDE.md` line or an allow entry would rewrite the reader's screen.
    */
   token: string;
-  /** The whole cited line, trimmed, redacted, escaped and capped. Absent with `line`. */
+  /**
+   * The whole cited line, trimmed, redacted, escaped and capped. Prose only: a
+   * structured line can hold anything else the file carries (a minified
+   * settings file is one line), and the entry is already quoted as `token`.
+   */
   text?: string;
   /** Why it is a grant, as one clause. Absent for prose, which quotes itself. */
   reason?: string;
@@ -333,7 +333,6 @@ export function proseAllowEntry(entry: string, key: string): UnboundedGrant | un
 }
 
 export function findPermissionGrant(content: string, file: string): PermissionGrant | undefined {
-  const lines = content.split('\n');
   const format = structuredFormat(file);
 
   if (format) {
@@ -346,10 +345,13 @@ export function findPermissionGrant(content: string, file: string): PermissionGr
     // to the reader.
     const grant = walkConfigForGrants(doc, proseAllowEntry);
     if (!grant) return undefined;
-    // NO line. A structured config names the file only — see the note above
-    // `asStringList` in `permission-vocabulary.ts` for why a text search cannot
-    // be made safe here, and what the real fix is.
+    // The line comes from the walk's own path, not from searching for the
+    // entry (#379; see `json-locate.ts`). YAML has no positions to follow.
+    const line = format === 'json' && grant.at
+      ? lineOfJsonValue(content, grant.at.path, grant.at.value)
+      : undefined;
     return {
+      ...(line !== undefined ? { line } : {}),
       token: forReport(grant.entry.trim(), MAX_TOKEN),
       // Both arrive redacted and escaped from `makeGrant`, so only the cap is
       // left. `reason` was uncapped, and it interpolates the entry — an entry
@@ -359,6 +361,7 @@ export function findPermissionGrant(content: string, file: string): PermissionGr
     };
   }
 
+  const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.length > MAX_LINE) continue; // minified or generated; not prose
