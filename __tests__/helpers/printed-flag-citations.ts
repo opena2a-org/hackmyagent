@@ -354,6 +354,14 @@ export function printedFlagsInMarkdown(opts: {
   }
 
   for (const region of regions) {
+    // A shell line continuation (`\` then newline) makes the next line part of
+    // the same invocation. Read line by line, `npx hackmyagent attack \` owned no
+    // flags and `--target` on the line below belonged to no command, so
+    // docs/REGISTRY_INTEGRATION.md cited an unregistered `attack --target` in
+    // four blocks and this walk passed (#762). The backslash and newline become
+    // two spaces: the joined line is the invocation, and every offset (so every
+    // reported line number) is unchanged.
+    region.body = region.body.replace(/\\[ \t]*\n/g, (m) => ' '.repeat(m.length));
     // One invocation per line, and a line can hold SEVERAL — `a && b`, `a; b`,
     // `a | b`. Scanning a line once and taking every flag after the first verb
     // attributed the second command's flags to the first, so
