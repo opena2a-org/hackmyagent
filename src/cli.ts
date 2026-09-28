@@ -6738,7 +6738,13 @@ Examples:
       const issues = allOpenClawFindings.filter(isMeasured).filter((f) => countsAgainstScore(f));
       // #274 — confirmed fixes only; a disproved attempt is counted in `issues`.
       const fixedFindings = allOpenClawFindings.filter((f) => confirmedFix(f));
-      const passedFindings = allOpenClawFindings.filter((f) => f.passed);
+      // #609 — the complement of the two above. A check that fixes what it
+      // found reports `passed: <check>Fixed`, so `f.passed` alone counted a
+      // confirmed fix under BOTH `fixed` and `passed` and the three numbers
+      // on the Checks line summed past the total (5 + 2 + 2 over 7). An
+      // attempted fix of any outcome is accounted for above (`fixed` when
+      // confirmed, `issues` when disproved), never here.
+      const passedFindings = allOpenClawFindings.filter((f) => f.passed && !f.fixed);
 
       // #373, same class as `check`. `--help` above promises "Exit code 1 if
       // critical/high issues found"; the `--json` branch returned before the
@@ -6793,7 +6799,7 @@ Examples:
       console.log(`${risk.description}\n`);
 
       // Summary stats
-      console.log(`Checks: ${allOpenClawFindings.length} total | ${issues.length} issues | ${fixedFindings.length} fixed | ${passedFindings.length} passed\n`);
+      console.log(`Checks: ${allOpenClawFindings.length} total | ${issues.length} issue${issues.length === 1 ? '' : 's'} | ${fixedFindings.length} fixed | ${passedFindings.length} passed\n`);
 
       // Show issues
       if (issues.length > 0) {
@@ -7071,7 +7077,7 @@ Examples:
       console.log(`${risk.description}\n`);
 
       // Summary stats
-      console.log(`Checks: ${findings.length} total | ${issues.length} issues | ${passedFindings.length} passed\n`);
+      console.log(`Checks: ${findings.length} total | ${issues.length} issue${issues.length === 1 ? '' : 's'} | ${passedFindings.length} passed\n`);
 
       // Show issues
       if (issues.length > 0) {

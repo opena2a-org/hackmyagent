@@ -6,6 +6,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+`secure-openclaw --fix` no longer counts a confirmed fix under both `fixed` and `passed` (#609). Checks that fix what they found report `passed`, so the Checks line summed past its total (`7 total | 5 issues | 2 fixed | 2 passed`); `passed` now excludes fixed checks, on the text line, in `--json` and in the `--verbose` passed list, and the line reads `1 issue` for one. `secure-nemoclaw`'s Checks line gets the same singular.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
