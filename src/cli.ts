@@ -3452,8 +3452,9 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
 
   radarCategories.forEach((cat, i) => {
     const angle = (Math.PI * 2 * i) / radarCategories.length - Math.PI / 2;
-    // Use minimum 5% so 0% categories still show on the chart edge (not at center)
-    const value = Math.max(0.05, cat.compliance / 100);
+    // Use minimum 5% so 0% categories still show on the chart edge (not at center).
+    // A category with no measured control (`null`, #615) sits at the same edge.
+    const value = Math.max(0.05, (cat.compliance ?? 0) / 100);
     const x = radarCenter + Math.cos(angle) * radarRadius * value;
     const y = radarCenter + Math.sin(angle) * radarRadius * value;
     radarPoints.push(`${x},${y}`);
@@ -3507,7 +3508,7 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
 
   // Find worst category
   const worstCategory = result.categories
-    .filter(cat => cat.passed + cat.failed > 0)
+    .filter((cat): cat is typeof cat & { compliance: number } => cat.compliance !== null)
     .sort((a, b) => a.compliance - b.compliance)[0];
 
   // Security grade based on compliance
@@ -3541,9 +3542,13 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
 
   // Category rows with collapsible sections
   const categoryRows = result.categories.map((cat, catIndex) => {
-    const statusIcon = cat.failed === 0 ? icons.check : cat.passed > 0 ? icons.warning : icons.x;
-    const statusClass = cat.failed === 0 ? 'status-pass' : cat.passed > 0 ? 'status-warn' : 'status-fail';
-    const barColor = cat.compliance >= 90 ? '#22c55e' : cat.compliance >= 70 ? '#eab308' : '#ef4444';
+    // #615 — a category with no measured control is neither a pass nor a 0%
+    // failure: it takes the unverified icon and prints `n/a`.
+    const measured = cat.compliance !== null;
+    const statusIcon = !measured ? icons.circle : cat.failed === 0 ? icons.check : cat.passed > 0 ? icons.warning : icons.x;
+    const statusClass = !measured ? 'status-unverified' : cat.failed === 0 ? 'status-pass' : cat.passed > 0 ? 'status-warn' : 'status-fail';
+    const barPct = cat.compliance ?? 0;
+    const barColor = barPct >= 90 ? '#22c55e' : barPct >= 70 ? '#eab308' : '#ef4444';
 
     const controlRows = cat.controls.map(ctrl => {
       const statusSvg = ctrl.status === 'passed' ? icons.check : ctrl.status === 'failed' ? icons.x : icons.circle;
@@ -3571,8 +3576,8 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
           <span class="category-name">${escapeHtml(cat.category)}</span>
           <div class="category-meta">
             <span class="category-score">${cat.passed}/${cat.passed + cat.failed}</span>
-            <div class="mini-bar"><div class="mini-fill" style="width: ${cat.compliance}%; background: ${barColor};"></div></div>
-            <span class="category-percent">${cat.compliance}%</span>
+            <div class="mini-bar"><div class="mini-fill" style="width: ${barPct}%; background: ${barColor};"></div></div>
+            <span class="category-percent">${measured ? `${cat.compliance}%` : 'n/a'}</span>
             <span class="chevron">▼</span>
           </div>
         </div>
@@ -4598,6 +4603,21 @@ function notAssessedLines(result: BenchmarkResult, targetDir: string, flags?: Be
   return lines;
 }
 
+/**
+ * Why an OASB-1 control is unverified. One lookup for the `Unverified:` header
+ * and the `[?]` rows, so the two cannot disagree (#615): a manual or forward
+ * control needs a person, while an automated control that is unverified had
+ * no scanner result on this tree.
+ */
+function unverifiedReason(controlId: string): 'manual/forward' | 'no scanner data' {
+  const control = OASB_1_CATEGORIES
+    .flatMap((c: BenchmarkCategory) => c.controls)
+    .find((c: BenchmarkControl) => c.id === controlId);
+  return control && (control.verification === 'manual' || control.verification === 'forward')
+    ? 'manual/forward'
+    : 'no scanner data';
+}
+
 function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetDir: string, flags?: BenchmarkRunFlags): void {
   const ratingColors: Record<BenchmarkResult['rating'], string> = {
     'Certified': colors.green,
@@ -4628,7 +4648,19 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
     console.log(`Compliance: ${result.compliance}% (${result.passedControls}/${result.passedControls + result.failedControls} verified controls)`);
   }
   if (result.unverifiedControls > 0) {
-    console.log(`Unverified: ${result.unverifiedControls} controls require manual/forward verification`);
+    // #615 — the reason clause used to cover every unverified control, but
+    // an automated control whose check produced nothing on this tree is in
+    // the same count and needs no person. Split it by the rows' own reason.
+    const unverified = result.categories
+      .flatMap((c) => c.controls)
+      .filter((c) => c.status === 'unverified');
+    const manual = unverified.filter((c) => unverifiedReason(c.controlId) === 'manual/forward').length;
+    const noData = unverified.length - manual;
+    const reasons: string[] = [];
+    if (manual > 0) reasons.push(`${manual} require manual/forward verification`);
+    if (noData > 0) reasons.push(`${noData} automated with no scanner data`);
+    const n = result.unverifiedControls;
+    console.log(`Unverified: ${n} control${n === 1 ? '' : 's'} (${reasons.join(', ')})`);
   }
   if (result.notApplicableControls > 0) {
     // #458 step 3 — a control whose every automated check reported its
@@ -4681,14 +4713,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
             : 'subject artifact';
           console.log(`     [.] ${ctrl.controlId}: ${ctrl.name} ${colors.dim}(not applicable: ${escapeForDisplay(subjects)} absent)${RESET()}`);
         } else if (verbose && ctrl.status === 'unverified') {
-          // Look up the original control to determine why it's unverified
-          const originalControl = OASB_1_CATEGORIES
-            .flatMap((c: BenchmarkCategory) => c.controls)
-            .find((c: BenchmarkControl) => c.id === ctrl.controlId);
-          const reason = originalControl && (originalControl.verification === 'manual' || originalControl.verification === 'forward')
-            ? 'manual/forward'
-            : 'no scanner data';
-          console.log(`     [?] ${ctrl.controlId}: ${ctrl.name} (${reason})`);
+          console.log(`     [?] ${ctrl.controlId}: ${ctrl.name} (${unverifiedReason(ctrl.controlId)})`);
         }
       }
     }
@@ -4705,7 +4730,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
     const pctOrNot = (v: number | null): string => (v === null ? 'not assessed' : `${v}%`);
     const byLevel: Record<BenchmarkLevel, number | null> = { L1: result.l1Compliance, L2: result.l2Compliance, L3: result.l3Compliance };
     console.log(`\nCompliance by level: ${examinedLevels(result.level).map((lv) => `${lv}=${pctOrNot(byLevel[lv])}`).join(' ')}`);
-    console.log(`Legend: [?] = Manual/Forward verification required`);
+    console.log(`Legend: [?] = unverified (manual/forward verification required, or no scanner data)`);
   }
 
   // Show appropriate next step based on current level
