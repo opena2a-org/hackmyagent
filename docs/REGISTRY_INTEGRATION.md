@@ -13,47 +13,56 @@ HackMyAgent can automatically report scan results to the OpenA2A Registry for ce
 
 ### Secure Command (Hardening Scan)
 
+`secure` scans a local directory. To scan a published package, install or
+unpack it first and pass that directory; resolving an npm, PyPI or GitHub
+identifier is `check`'s job.
+
 ```bash
-npx hackmyagent secure <package-or-directory> \
+npx hackmyagent secure <directory> \
   --registry-report \
   --version-id <uuid> \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
 
+`--registry-url` defaults to `https://api.oa2a.org` (or `REGISTRY_URL` when
+set); pass it only to report to a different registry.
+
 **Example:**
 ```bash
-# Scan and report results to registry
-npx hackmyagent secure @modelcontextprotocol/server-filesystem \
+# Scan an installed package and report results to the registry
+npx hackmyagent secure ./node_modules/@modelcontextprotocol/server-filesystem \
   --registry-report \
   --version-id d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
 
 ### Attack Command (Offensive Testing)
 
+The target is a positional argument. `--intensity` takes `passive`, `active`
+or `aggressive`.
+
 ```bash
-npx hackmyagent attack \
-  --target http://localhost:3000 \
-  --intensity high \
+npx hackmyagent attack <target-url> \
+  --intensity active \
   --registry-report \
   --version-id <uuid> \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
 
 **Example:**
 ```bash
-# Run attack simulation and report to registry
-npx hackmyagent attack \
-  --target http://localhost:3000 \
-  --local \
+# Attack a running agent endpoint and report the results to the registry
+npx hackmyagent attack http://localhost:3000 \
+  --intensity active \
   --registry-report \
   --version-id d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
+
+Only a run that reached the target is reported. `attack --local` generates and
+parses payloads without testing an agent, so it prints
+`Registry: not reported — this run measured nothing about the target.` and sends
+nothing.
 
 ## Configuration
 
@@ -68,16 +77,16 @@ export REGISTRY_API_KEY=your-api-key-here
 
 Then use:
 ```bash
-npx hackmyagent secure <package> --registry-report --version-id <uuid>
+npx hackmyagent secure <directory> --registry-report --version-id <uuid>
 ```
 
-### Required Parameters
+### Parameters
 
 | Parameter | Flag | Environment | Required | Description |
 |-----------|------|-------------|----------|-------------|
-| Registry URL | `--registry-url` | `REGISTRY_URL` | Yes | Base URL of the registry API |
-| API Key | `--registry-key` | `REGISTRY_API_KEY` | Yes | API key for authentication |
-| Version ID | `--version-id` | - | Yes | UUID of the package version to report against |
+| Registry URL | `--registry-url` | `REGISTRY_URL` | No | Base URL of the registry API. Default `https://api.oa2a.org` |
+| API Key | `--registry-key` | `REGISTRY_API_KEY` | With `--version-id` | API key for authentication |
+| Version ID | `--version-id` | - | No | UUID of the package version to report against. Without it, `--registry-report` shares a community result for the package named in the directory's manifest, and needs no key |
 
 ## What Gets Reported
 
@@ -171,11 +180,11 @@ When a scan result is reported, the registry automatically:
 
 ## Error Handling
 
-### Missing Parameters
+### Missing API Key
 
 ```bash
-$ npx hackmyagent secure . --registry-report
-Error: --registry-url or REGISTRY_URL env is required for registry reporting
+$ npx hackmyagent secure . --registry-report --version-id <uuid>
+Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id
 ```
 
 ### Authentication Failure
@@ -245,11 +254,11 @@ curl -X POST https://registry.opena2a.org/api/v1/registry/internal/simulate-scan
 # Get a package version ID from the registry
 VERSION_ID=$(curl https://registry.opena2a.org/api/v1/registry/packages | jq -r '.[0].versions[0].id')
 
-# Run HackMyAgent with registry reporting
-npx hackmyagent secure @modelcontextprotocol/server-filesystem \
+# Run HackMyAgent with registry reporting (secure takes a local directory)
+npm install @modelcontextprotocol/server-filesystem
+npx hackmyagent secure ./node_modules/@modelcontextprotocol/server-filesystem \
   --registry-report \
   --version-id $VERSION_ID \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 
 # Verify scan results were recorded
@@ -259,13 +268,12 @@ curl https://registry.opena2a.org/api/v1/registry/versions/$VERSION_ID | jq '.sc
 ### 3. Test Attack Mode + Registry Report
 
 ```bash
-# Run attack simulation locally and report to registry
-npx hackmyagent attack \
-  --local \
-  --intensity medium \
+# Attack a running agent endpoint and report to registry
+# (a --local run tests no agent and is never reported)
+npx hackmyagent attack http://localhost:3000 \
+  --intensity active \
   --registry-report \
   --version-id $VERSION_ID \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
 
@@ -342,7 +350,7 @@ curl -X POST https://registry.opena2a.org/api/v1/registry/internal/recalculate-t
 
 ## Further Reading
 
-- [HackMyAgent Documentation](https://github.com/ecolibria/hackmyagent)
+- [HackMyAgent Documentation](https://github.com/opena2a-org/hackmyagent)
 - [OpenA2A Registry API Docs](https://registry.opena2a.org/docs)
 - [Trust Scoring Algorithm](https://docs.opena2a.org/registry/trust-scoring)
 - [OASB Attack Scenarios](https://oasb.ai/)

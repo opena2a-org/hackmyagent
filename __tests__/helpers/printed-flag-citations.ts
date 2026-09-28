@@ -360,14 +360,35 @@ export function printedFlagsInMarkdown(opts: {
     // `hackmyagent check ./x && hackmyagent attack --bogus` reported `--bogus`
     // against `check`. Every invocation on the line is matched, and each owns
     // only the flags up to where the next one starts.
+    //
+    // A line ending in `\` continues the same shell command on the next line,
+    // so it is joined first. Reading physical lines left every flag after the
+    // first line of `hackmyagent attack \` unattributed: the fenced examples in
+    // docs/REGISTRY_INTEGRATION.md cited `attack --target`, which `attack` has
+    // never registered, through every run of this walker (#527). `offsets`
+    // maps each character of the joined line back to its place in `src`.
+    const logical: Array<{ text: string; offsets: number[] }> = [];
+    let pending: { text: string; offsets: number[] } | null = null;
     let cursor = 0;
-    for (const rawLine of region.body.split('\n')) {
-      const lineStart = region.start + cursor;
-      cursor += rawLine.length + 1;
+    for (const physical of region.body.split('\n')) {
+      const physicalStart = region.start + cursor;
+      cursor += physical.length + 1;
+      const continued = /\\\s*$/.test(physical);
+      const body = continued ? physical.replace(/\\\s*$/, ' ') : physical;
+      const offsets: number[] = [];
+      for (let k = 0; k < body.length; k++) offsets.push(physicalStart + Math.min(k, physical.length - 1));
+      pending = pending
+        ? { text: pending.text + body, offsets: pending.offsets.concat(offsets) }
+        : { text: body, offsets };
+      if (!continued) { logical.push(pending); pending = null; }
+    }
+    if (pending) logical.push(pending);
 
+    for (const { text: rawLine, offsets } of logical) {
       // Strip a shell prompt so `$ hackmyagent check --json` reads the same as
       // the bare form.
-      const line = rawLine.replace(/^\s*\$\s*/, '');
+      const prompt = /^\s*\$\s*/.exec(rawLine)?.[0].length ?? 0;
+      const line = rawLine.slice(prompt);
       const invocations = [...line.matchAll(
         // `npx hackmyagent@latest` and `pnpm dlx hackmyagent` are the same
         // invocation with a different launcher; a version suffix is not a
@@ -388,7 +409,7 @@ export function printedFlagsInMarkdown(opts: {
 
         for (const fm of tail.matchAll(/(?:^|\s)(--[a-z][a-z0-9-]+)/g)) {
           const at = from + fm.index! + fm[0].indexOf('--');
-          const lineIdx = lineOf(lineStart + at);
+          const lineIdx = lineOf(offsets[prompt + at]);
           found.push({
             file: rel,
             line: lineIdx + 1,
