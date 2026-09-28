@@ -6,6 +6,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### A collapsed group in the default report names the files its findings are in (#360)
+
+- **`+ N more <severity> in <file>` named the printed finding's file, not the folded ones.**
+  The default report folds findings that share a name and a directory under the one it
+  prints, and the fold line took the printed finding's file name. The same `eval()` in
+  `lib/cbom.js`, `lib/scanner.js` and `lib/scanner-tls.js` rendered as `+ 2 more critical in
+  cbom.js`, sending the reader to a file holding one of the three. The line now names the
+  folded files (`in scanner-tls.js, scanner.js`), counts them past three (`in 5 files`), and
+  claims no location when a folded finding has no file. `--verbose` output is unchanged.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
