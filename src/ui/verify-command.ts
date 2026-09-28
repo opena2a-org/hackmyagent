@@ -140,3 +140,40 @@ export function generateVerifyCommand(
 
   return `sed -n '${line}p' ${quoted}`;
 }
+
+/**
+ * A fix citation whose operand is the finding's OWN file, rebased onto the
+ * scan root (#524).
+ *
+ * `f.file` is TARGET-relative, and some emit sites build their `fix` from it:
+ * SUPPLY-001 cites `hackmyagent check SKILL.md`. That command only runs when
+ * the reader's shell sits at the scan target; `secure ./skill-out` run from the
+ * parent printed it, and pasting it failed with "Invalid skill identifier".
+ * `generateVerifyCommand` solved the same problem for `Verify:` (#286) by
+ * joining the root at render time, because only the renderer knows the root
+ * (for a single-file target the scanner saw an isolated temp copy). This does
+ * the same join for the one operand whose meaning is certain: the exact token
+ * the emit site produced from `f.file`.
+ *
+ * Narrow on purpose. Only `hackmyagent <verb> <own file>` is rewritten, and
+ * only when the operand is the whole token; any other operand (a package name,
+ * `.`, a different path) is left exactly as authored, and a root or path that
+ * cannot be named truthfully leaves the text unchanged. Text channels only:
+ * JSON `fix` fields stay target-relative, like every other JSON fix.
+ */
+export function rebaseOwnFileCitation(
+  text: string,
+  file: string | undefined,
+  scanRoot: string | undefined,
+): string {
+  if (!text || !file || scanRoot === undefined || isAbsolute(file)) return text;
+  const own = citationPath(file);
+  if (own === null) return text;
+  const rebased = citationPath(join(scanRoot, file));
+  if (rebased === null || rebased === own) return text;
+  const escaped = own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(\\bhackmyagent [a-z][a-z0-9-]* )${escaped}(?=$|\\s|\`)`, 'g');
+  // A replacer FUNCTION: `rebased` is a path, and `$&` or `$1` inside a
+  // replacement STRING would be read as a pattern (#600).
+  return text.replace(re, (_m, head: string) => head + rebased);
+}
