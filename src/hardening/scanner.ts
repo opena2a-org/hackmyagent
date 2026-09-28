@@ -4592,10 +4592,12 @@ export class HardeningScanner {
     if ((isDeepScan || options.deep) && process.env.ANTHROPIC_API_KEY) {
       try {
         const structural = new StructuralAnalyzer();
-        // Same exclusion as Layer 2 above, and it costs money here: every
-        // duplicated backup copy would be a billed LLM call.
+        // Wider than Layer 2's exclusion, because this layer transmits content:
+        // it withholds any archive at this tree's base, not only this run's
+        // (#385). A previous run's archive holds the pre-fix plaintext; Layers
+        // 1 and 2 above still read it and still report what is in it.
         const files = await structural.discoverFiles(targetDir, {
-          isExcludedDir: (dir) => this.isOwnBackupDir(dir),
+          isExcludedDir: (dir) => this.isWithheldFromTransmission(dir, targetDir),
           confineTo: this.structuralConfinement(),
         });
         const llm = new LLMAnalyzer({
@@ -4996,13 +4998,13 @@ export class HardeningScanner {
         // aid, is a different bargain and was not one this tool disclosed. Cost was
         // never the reason to avoid it; that is.
         //
-        // The price is real and is disclosed instead of hidden: on a `--fix --deep`
-        // with an API key set, the announced score does not include Layer-3 findings
-        // inside the archive, so it can read higher than the next `--deep` scan.
-        // Layer 1 and Layer 2 archive findings — every credential detector among
-        // them — are still counted, so the number is not the pre-#374 number.
-        // Tracked as #386; the transmission hole itself is #385, and a plain
-        // `secure --deep` still walks any archive in the tree because of it.
+        // The announced score therefore has no Layer-3 findings inside the archive.
+        // Since #385 neither does the next `--deep` scan: Layer 3 withholds the
+        // tree's archive base on every scan (`isWithheldFromTransmission`), so the
+        // two numbers agree. Layer 1 and Layer 2 archive findings — every
+        // credential detector among them — are still counted, so the number is
+        // not the pre-#374 number. Keeping the cap also keeps `--fix --deep` to
+        // one Layer-3 pass.
         const verifyDepth: ScanDepth = scanDepth === 'deep' ? 'standard' : scanDepth;
         const verifyScanner = new HardeningScanner();
         const verifyResult = await verifyScanner.scan({
@@ -6447,6 +6449,35 @@ export class HardeningScanner {
     absPath: string,
     targetDir: string,
   ): Promise<'yes' | 'no' | 'unknown'> {
+    return this.isArchiveBaseDir(path.dirname(path.resolve(absPath)), targetDir);
+  }
+
+  /**
+   * Layer 3's exclusion (#385): may the files in `dirPath` be put on the wire?
+   *
+   * `isOwnBackupDir` alone answered this, and it returns false whenever there
+   * is no `backupContext`, which exists only inside a `--fix` run. So a plain
+   * `secure --deep` walked into a previous run's archive and sent its pre-fix
+   * copies, the plaintext the live files no longer hold, to the LLM.
+   *
+   * The tree's archive base is asked of the filesystem the same way the write
+   * gate asks it (`isArchiveBaseDir`), so no directory NAME the scanned tree
+   * types (`vendor/.hackmyagent-backup`) withholds anything (#305/#309/#341).
+   *
+   * An `'unknown'` withholds. The harm on this path is a transmission, and "no"
+   * is what authorises it. This gates transmission only: Layers 1 and 2 still
+   * read the archive and still report the plaintext they find there.
+   */
+  private async isWithheldFromTransmission(dirPath: string, targetDir: string): Promise<boolean> {
+    if (await this.isOwnBackupDir(dirPath)) return true;
+    return (await this.isArchiveBaseDir(path.resolve(dirPath), targetDir)) !== 'no';
+  }
+
+  /** `isInsideArchiveBase` for a directory: is `startDir` the archive base or below it? */
+  private async isArchiveBaseDir(
+    startDir: string,
+    targetDir: string,
+  ): Promise<'yes' | 'no' | 'unknown'> {
     let base = this.archiveBases.get(targetDir);
     if (base === undefined) {
       base = await resolveArchiveBase(targetDir);
@@ -6457,7 +6488,7 @@ export class HardeningScanner {
     // previous run's backup.
     if (base.kind === 'unknown') return 'unknown';
     if (base.kind === 'none') return 'no';
-    let dir = path.dirname(path.resolve(absPath));
+    let dir = startDir;
     const asked: string[] = [];
     let answer: 'yes' | 'no' | 'unknown' = 'no';
     // Bounded for the same reason the identity walk is: a path more than 64

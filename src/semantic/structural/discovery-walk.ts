@@ -100,6 +100,10 @@ export interface WalkOptions {
    * excludes THIS RUN's backup and nothing else. A pre-existing archive holds
    * a real plaintext secret and is still reported — the same policy Layer 1
    * settled on.
+   *
+   * Layer 3 passes a wider predicate, `isWithheldFromTransmission`, because it
+   * sends content off the machine: it also withholds a previous run's archive
+   * at the tree's base, again by identity rather than by name (#385).
    */
   isExcludedDir?: (absDir: string) => Promise<boolean>;
 }
