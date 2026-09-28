@@ -6,6 +6,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+A finding the semantic merge reintroduces and the CLI's post-merge re-filter drops is now held to the `coverage.suppressedFailures` ledger by a regression test (#427). The re-filter moved from `cli.ts` to `src/hardening/semantic-refilter.ts` so the test drives it in-process; its behaviour is unchanged.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before

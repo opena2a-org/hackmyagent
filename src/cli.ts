@@ -390,6 +390,7 @@ import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifac
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed, type MeasuredFinding } from './ui/verdict-band';
+import { refilterAfterSemanticMerge } from './hardening/semantic-refilter';
 import { gateSet, deepScanIncomplete, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
@@ -13270,75 +13271,6 @@ function isAiToolingFile(filePath: string): boolean {
  * type branded through both the read and the write.
  */
 type NanoMindRun = Awaited<ReturnType<typeof import('./nanomind-core/orchestrate.js').orchestrateNanoMind>>;
-
-/**
- * Re-apply the scope and suppression filters after the semantic merge, and
- * record what they narrowed. Runs on `secure` and on `check`'s local
- * directory arm (#740), which runs the same scan through the same hook.
- *
- * #499 — re-filter from `result.allFindings`, NOT from
- * `nmResult.mergedFindings`. The semantic pass runs inside the scan and
- * therefore BEFORE `SCAN-UNREAD-001` is generated, so `mergedFindings` is the
- * merge of the static set as it stood at that moment and carries no
- * unread-input findings. Re-deriving the whole report from it would delete
- * them, taking #438's per-path disclosure with them and leaving exit 2 with
- * nothing named — the precise failure the scanner's own comment at the
- * generation site warns against. `allFindings` is the merged set with those
- * findings pushed on top.
- */
-async function refilterAfterSemanticMerge(
-  scanner: HardeningScanner,
-  result: ScanResult,
-  targetDir: string,
-): Promise<void> {
-  const postMerge = result.allFindings || result.findings || [];
-  const refiltered = await scanner.reapplyIgnoreFilters(postMerge, targetDir, result.projectType || 'library');
-  // #450 — the semantic layer produces findings the scan pass never saw,
-  // so this call can narrow scope where `scanInner` did not. Take the
-  // wider of the two records rather than the later one, or a narrowing
-  // disclosed by the static pass disappears from the report the moment the
-  // semantic pass runs.
-  if (scanner.lastOutOfScope.length > (result.outOfScope?.length ?? 0)) {
-    result.outOfScope = scanner.lastOutOfScope;
-  }
-  // REPLACED, not merged. `nmResult.mergedFindings` is rebuilt from
-  // `allFindings`, which still holds every finding `scanInner` suppressed,
-  // so this pass re-derives the whole suppression set from the post-merge
-  // array. Accumulating instead counted each suppressed finding twice and
-  // printed `CONFIG-004 (critical x2)` for a single occurrence.
-  result.suppressed = scanner.lastSuppressed.length > 0 ? scanner.lastSuppressed : undefined;
-  // The disclosure's `matched` counts are recounted by the same call
-  // over the same post-merge array as the two Row records above, so the
-  // Σ-matched cross-check holds on what `--json` finally carries.
-  // Presence rule unchanged: `lastHmaIgnore` is undefined exactly when
-  // the target has no `.hmaignore`.
-  result.hmaignore = scanner.lastHmaIgnore;
-  if (result.allFindings) {
-    // No cast. `reapplyIgnoreFilters` is generic over the finding type and
-    // only marks and filters, so `refiltered` is still branded and assigns
-    // directly. A cast here would have compiled just as quietly while
-    // laundering the boundary guarantee at the one point downstream of it
-    // that rebuilds both channels.
-    result.allFindings = refiltered;
-  }
-  if (result.findings) {
-    // Re-apply the same gates as the original filter:
-    // 1. Failed OR fixed  2. Has file path  3. Applies to project type
-    //
-    // The `f.fixed` half is not optional. This filter claimed to mirror
-    // the scanner's, but the scanner keeps fixed findings
-    // (`if (!f.fixed && f.passed) return false`) while this dropped
-    // every one of them. That silently deleted any finding a check
-    // reported as `passed: <check>Fixed` — including one the
-    // verification pass had just proved did NOT land — before
-    // `countsAgainstScore` ran a few lines below, so the score was
-    // recomputed from a list the unverified fix had been removed from.
-    const projectType = result.projectType || 'library';
-    result.findings = refiltered.filter((f) =>
-      scanner.isReportableFinding(f, projectType)
-    );
-  }
-}
 
 /**
  * Isolate a lone file target for scanning. Shared by `secure <file>` and
