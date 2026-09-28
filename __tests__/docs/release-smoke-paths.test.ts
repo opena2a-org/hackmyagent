@@ -6,8 +6,8 @@
  * That is not hypothetical. §2, §3, §5 and §6 all pointed at `test/hma/`, which
  * lives in the workspace playground (`~/workspace/opena2a-org/test/hma`) and has
  * never been a path in this repo. `secure` on a missing directory prints
- * `Error: Directory ... does not exist.` and exits **1** — the same exit code as
- * "findings were found" — so §6.1's "expect exit 1" passed vacuously for
+ * `Error: Directory ... does not exist.` and exited **1** — the same exit code as
+ * "findings were found" (exit 2, not measured, since #481) — so §6.1's "expect exit 1" passed vacuously for
  * multiple releases, and §5.6's telemetry payload check produced empty output
  * that was read as "no PII" rather than "no event fired".
  *
