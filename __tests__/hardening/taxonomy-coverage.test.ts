@@ -170,6 +170,28 @@ describe('taxonomy coverage (#138)', () => {
     }
   });
 
+  // #626 — a value is an attack-class ID, never a check ID. SOUL-HV-001..004
+  // mapped to themselves, so class SOUL-HV derived zero checks and four
+  // phantom classes appeared to any consumer grouping the map by value.
+  // A check ID ends in a `-NNN` index; a class ID never does. (An unnumbered
+  // self-mapping such as `'SOUL-BYPASS': 'SOUL-BYPASS'` is deliberate: those
+  // narrative-analysis checks are named after, and emitted with, their class.)
+  it('every TAXONOMY_MAP value is an attack class, not a check ID (#626)', () => {
+    const checkShaped = Object.entries(taxonomy).filter(
+      ([, attackClass]) => /-[0-9]{3}$/.test(attackClass),
+    );
+    expect(
+      checkShaped.map(([k, v]) => `${k} -> ${v}`),
+      'these entries map a check to a check-shaped ID instead of its attack class',
+    ).toEqual([]);
+  });
+
+  it('SOUL-HV-001..004 map to class SOUL-HV (#626)', () => {
+    for (const id of ['SOUL-HV-001', 'SOUL-HV-002', 'SOUL-HV-003', 'SOUL-HV-004']) {
+      expect(taxonomy[id], id).toBe('SOUL-HV');
+    }
+  });
+
   it('SKILL-022 maps to SKILL-EXFIL (issue #138 headline case)', () => {
     expect(taxonomy['SKILL-022']).toBe('SKILL-EXFIL');
   });

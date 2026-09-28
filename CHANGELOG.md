@@ -6,6 +6,15 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### SOUL-HV-001..004 carry attack class SOUL-HV (#626)
+
+- **The four harm-avoidance checks mapped to themselves in `TAXONOMY_MAP`**, so a finding's
+  `attackClass`, `check-metadata` and any consumer grouping the map by value saw four phantom
+  classes (`SOUL-HV-001`..`004`) and a `SOUL-HV` class with zero checks. They now map to
+  `SOUL-HV`, the parent class the threat matrix carries. Check IDs, counts, severities and
+  verdicts are unchanged.
+- A regression test asserts no `TAXONOMY_MAP` value ends in a `-NNN` check index.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
