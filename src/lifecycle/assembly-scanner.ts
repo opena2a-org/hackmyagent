@@ -33,6 +33,7 @@ import type {
 // library consumers as objects that never touch a serializer. It emits here
 // rather than relying on the scanner's boundary downstream.
 import { emitFindings, type RedactedFinding } from '../hardening/finding-emit';
+import { escapeForDisplay, escapePathForDisplay } from '../ui/display-safe';
 
 /** Patterns that indicate prompt injection when found in assembled context */
 const INJECTION_PATTERNS: { pattern: RegExp; name: string; severity: 'critical' | 'high' | 'medium' }[] = [
@@ -71,6 +72,79 @@ const TOOL_DESC_FILES = ['tools.json', 'mcp.json', 'mcpServers.json', '.mcp.json
 const MEMORY_FILES = ['memory.json', 'context.json', '.memory', 'agent-memory.json', 'conversation-history.json', '.claude/memory/*.md'];
 const USER_PREF_FILES = ['user-preferences.json', 'preferences.json', 'config.json', 'agent-config.json', '.agent.json', 'settings.json'];
 const HISTORY_FILES = ['history.json', 'messages.json', 'chat-history.json', 'conversation.json'];
+
+/** LIFECYCLE-003 fires when one non-safety component is over this share of the assembled prompt... */
+const DISPLACEMENT_SHARE = 0.6;
+/** ...and the assembled prompt is over this many characters. */
+const DISPLACEMENT_MIN_TOTAL = 2000;
+
+/**
+ * The largest entry in a JSON component's server or tool map, by serialized
+ * size, or undefined when the content is not JSON or has no such map.
+ */
+function largestJsonEntry(content: string): { name: string; chars: number } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  for (const mapKey of ['mcpServers', 'servers', 'tools']) {
+    const map = (parsed as Record<string, unknown>)[mapKey];
+    if (!map || typeof map !== 'object') continue;
+    const entries: [string, unknown][] = Array.isArray(map)
+      ? map.map((v, i) => {
+        const name = (v as { name?: unknown } | null)?.name;
+        return [typeof name === 'string' ? name : String(i), v];
+      })
+      : Object.entries(map);
+    let best: { name: string; chars: number } | undefined;
+    for (const [name, value] of entries) {
+      const chars = JSON.stringify(value)?.length ?? 0;
+      if (!best || chars > best.chars) best = { name: `${mapKey}.${name}`, chars };
+    }
+    if (best) return best;
+  }
+  return undefined;
+}
+
+/**
+ * LIFECYCLE-003's fix: which file, how large, the size at which the check stops
+ * firing, and where to look first (#528). The check fires when the component is
+ * over DISPLACEMENT_SHARE of the assembled prompt AND the prompt is over
+ * DISPLACEMENT_MIN_TOTAL characters, so with everything else unchanged it clears
+ * at the larger of the two sizes that make either condition false.
+ */
+function displacementFix(comp: AssemblyComponent, totalLength: number): string {
+  const size = comp.content.length;
+  const rest = totalLength - size;
+  // The same predicate the check applies, so the stated size is exact under
+  // floating point rather than off by one at a boundary.
+  const fires = (n: number) => n > (rest + n) * DISPLACEMENT_SHARE && rest + n > DISPLACEMENT_MIN_TOTAL;
+  let clearsAt = Math.max(
+    Math.floor((rest * DISPLACEMENT_SHARE) / (1 - DISPLACEMENT_SHARE)),
+    DISPLACEMENT_MIN_TOTAL - rest,
+    0,
+  );
+  while (clearsAt > 0 && fires(clearsAt)) clearsAt--;
+  while (clearsAt + 1 < size && !fires(clearsAt + 1)) clearsAt++;
+  // The file name is attacker-chosen (any file under a memory directory) and this
+  // text reaches SARIF help and the asp remediation field as is, so an escape
+  // sequence or a newline in it must not survive into the fix.
+  const file = escapePathForDisplay(comp.source);
+  const largest = largestJsonEntry(comp.content);
+  const where = largest
+    ? ` Its largest entry is ${escapeForDisplay(largest.name.slice(0, 80))} (${largest.chars} characters).`
+    : '';
+  return (
+    `${file} is ${size} of the ${totalLength} characters in the assembled prompt; this check fires above `
+    + `${Math.round(DISPLACEMENT_SHARE * 100)}% once the prompt is over ${DISPLACEMENT_MIN_TOTAL} characters.${where} `
+    + `Trim ${file} to ${clearsAt} characters or fewer, for example by removing entries the agent `
+    + `does not use or by moving long descriptions out of the prompt, and keep the safety instructions at the start and `
+    + `end of the assembled prompt. Verify: hackmyagent secure .`
+  );
+}
 
 interface AssemblyScanOptions {
   targetDir: string;
@@ -304,7 +378,7 @@ function scanAssembledPrompt(
   for (const comp of components) {
     if (comp.role === 'soul' || comp.role === 'systemInstruction') continue;
     // Flag if a non-safety component is >60% of total assembled prompt
-    if (comp.content.length > totalLength * 0.6 && totalLength > 2000) {
+    if (comp.content.length > totalLength * DISPLACEMENT_SHARE && totalLength > DISPLACEMENT_MIN_TOTAL) {
       interactions.push({
         components: [comp.source, ...(safetyComponents.map(c => c.source))],
         attackType: 'displacementAttack',
@@ -322,7 +396,7 @@ function scanAssembledPrompt(
         message: `${comp.source} displaces safety instructions (${comp.content.length}/${totalLength} chars)`,
         fixable: false,
         file: comp.source,
-        fix: 'Limit component sizes. Pin safety instructions at start and end of the assembled prompt. Implement attention anchoring.',
+        fix: displacementFix(comp, totalLength),
         guidance: 'LLMs have limited effective attention. A disproportionately large component (memory dump, verbose tool descriptions) can push safety instructions out of the "attention window", effectively disabling them.',
         attackClass: 'ASSEMBLY-DISPLACE',
       });
