@@ -220,6 +220,23 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
 # this release: {"score":67,"unit":"file","mode":null,"notRun":null}
 ```
 
+### Use-case guides show output the current build prints (#441)
+
+- `docs/use-cases/scan-my-agent.md`, `openclaw-security.md` and
+  `red-team-mcp.md` opened their sample output with `HackMyAgent v0.10.1 --
+  Security Scanner`, a banner the CLI no longer prints, over finding lists,
+  check counts and fix results no current build produces. Each sample is now
+  an excerpt of a 0.33.2 run on a fixture the guide describes.
+- Prose corrected to what the tool does: OpenClaw is detected by
+  `openclaw.json` (not `gateway.yaml`), the CVE table names the checks and the
+  `2026.1.29` threshold they use, the ClawHavoc section lists SUPPLY-005 to
+  SUPPLY-007, the MCP locations are the files `secure` reads, `attack` sends 111
+  payloads at the default intensity (not 75), and the `--ignore` and `--ci`
+  tips say what the flags do.
+- `__tests__/docs/use-case-sample-output.test.ts` fails if the retired banner
+  returns to any doc, and reads the red-team guide's payload counts from the
+  payload registry.
+
 ### check on a local directory runs the static checks (#740)
 
 - A local directory target runs the static suite with the semantic pass,
