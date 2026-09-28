@@ -83,6 +83,14 @@ export interface HmaIgnoreDisclosure {
     expires?: string;
     /** Findings this rule removed from the report on this run. */
     matched: number;
+    /**
+     * Which findings those were: check, severity and the file the finding
+     * cites (#465). `matched` alone could not say which rule excluded which
+     * critical, so a path exclusion could not be audited. Present only when
+     * `matched > 0`; `excluded.length === matched`. Local only, like the rest
+     * of this record: it never rides a wire.
+     */
+    excluded?: Array<{ checkId: string; severity: string; file?: string }>;
     /** Line of the whole-path rule that absorbs this rule. */
     redundantTo?: number;
   }>;

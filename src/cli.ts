@@ -419,6 +419,12 @@ import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { collapsedLocation } from './ui/collapse-label';
 import { SARIF_SCHEMA_URL } from './output/sarif-schema';
+import {
+  disclosureSentences,
+  hasDisclosure,
+  sarifRunProperties,
+  type SuppressionDisclosure,
+} from './output/suppression-disclosure';
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
@@ -4192,7 +4198,7 @@ function escapeHtml(str: string): string {
 }
 
 // SARIF output for non-benchmark secure scans
-function generateScanSarif(findings: SecurityFinding[], targetDir: string): string {
+function generateScanSarif(findings: SecurityFinding[], targetDir: string, disclosure: SuppressionDisclosure = {}): string {
   assertRedactionProvenance(findings, 'sarif-scan');
   const issues = findings.filter(f => countsAgainstScore(f));
   // #452 — `tool.driver.rules` holds one descriptor per RULE. It was built
@@ -4249,6 +4255,8 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string): stri
     }] : undefined,
   }));
 
+  const runProperties = sarifRunProperties(disclosure);
+
   return JSON.stringify({
     $schema: SARIF_SCHEMA_URL,
     version: '2.1.0',
@@ -4262,12 +4270,15 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string): stri
         },
       },
       results,
+      // #465 — what `--ignore` / `.hmaignore` withheld, so a failing run over
+      // the listed results is reconciled by the document itself.
+      ...(runProperties ? { properties: runProperties } : {}),
     }],
   }, null, 2);
 }
 
 // HTML report for non-benchmark secure scans
-function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score: number; maxScore: number; projectType: string }, targetDir: string): string {
+function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score: number; maxScore: number; projectType: string } & SuppressionDisclosure, targetDir: string): string {
   assertRedactionProvenance(scanResult.findings, 'html-scan');
   const issues = scanResult.findings.filter(isMeasured).filter(f => countsAgainstScore(f));
   // Verified fixes only, so "Auto-Fixed" and "issues" stay disjoint and the
@@ -4373,6 +4384,23 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
       <table>
         <thead><tr><th>Status</th><th>Check</th><th>Description</th><th>Location</th><th>Details</th></tr></thead>
         <tbody>${fixedRows}</tbody>
+      </table>
+    </div>` : ''}
+
+    ${hasDisclosure(scanResult) ? `
+    <div class="section">
+      <h2>Suppressed and out of scope</h2>
+      ${disclosureSentences(scanResult).map((s) => `<p>${escapeHtml(s)}</p>`).join('\n      ')}
+      <table>
+        <thead><tr><th>Severity</th><th>Check</th><th>Name</th><th>Count</th><th>Withheld by</th></tr></thead>
+        <tbody>${[...(scanResult.outOfScope ?? []), ...(scanResult.suppressed ?? [])].map((r) => `
+          <tr>
+            <td>${escapeHtml(r.severity)}</td>
+            <td><code>${escapeHtml(r.checkId)}</code></td>
+            <td>${escapeHtml(r.name)}</td>
+            <td>${r.count}</td>
+            <td>${escapeHtml(r.suppressedBy)}</td>
+          </tr>`).join('')}</tbody>
       </table>
     </div>` : ''}
 
@@ -6104,7 +6132,7 @@ Examples:
 
       // Handle SARIF/HTML/ASP for non-benchmark mode
       if (format === 'sarif') {
-        const output = generateScanSarif(result.findings, targetDir);
+        const output = generateScanSarif(result.findings, targetDir, result);
         if (options.output) {
           require('fs').writeFileSync(options.output, output);
           console.error(`Report written to ${options.output}`);
@@ -6144,6 +6172,12 @@ Examples:
           console.error(`Import: aws securityhub batch-import-findings --findings file://${options.output}`);
         } else {
           console.log(output);
+        }
+        // #465 — ASFF is a bare array of findings with no document-level slot,
+        // so the disclosure goes to stderr, beside the document, where the
+        // import instructions already go. Stdout stays importable as is.
+        for (const sentence of disclosureSentences(result)) {
+          console.error(`${sentence} Not in this ASFF document.`);
         }
         const critHigh = gateSet(result).filter((f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'));
         if (critHigh.length > 0) await finishWithFindings(1);
