@@ -209,6 +209,30 @@ describe('#372 the walker sees what it claims to see', () => {
     expect(found.some((f) => f.flag === '--stat')).toBe(false);
   });
 
+  it('reads a command continued over several lines with a trailing backslash (#527)', () => {
+    // docs/REGISTRY_INTEGRATION.md wrote `npx hackmyagent attack \` and put
+    // `--target` on the next line; read line by line, the flag had no verb.
+    const continued = printedFlagsInMarkdown({
+      src: [
+        '```bash',
+        'npx hackmyagent attack \\',
+        '  --not-a-real-flag http://localhost:3000 \\',
+        '  --registry-report',
+        'git log --oneline',
+        '```',
+      ].join('\n'),
+      file: 'planted.md',
+      verbs,
+    });
+    const hit = continued.find((f) => f.flag === '--not-a-real-flag');
+    expect(hit?.command, 'a flag on a continuation line was not attributed').toBe('attack');
+    expect(hit?.line, 'the finding must cite the physical line the flag is on').toBe(3);
+    expect(continued.find((f) => f.flag === '--registry-report')?.line).toBe(4);
+    // The continuation ends where the backslash does: the next command's flags
+    // are not attributed to `attack`.
+    expect(continued.find((f) => f.flag === '--oneline')).toBeUndefined();
+  });
+
   it('does not read markdown prose as an invocation', () => {
     // The over-correction direction. A hyphenated phrase in a sentence, and a
     // flag belonging to another program in a pipeline, must not be attributed
