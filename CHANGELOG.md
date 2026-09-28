@@ -140,6 +140,12 @@ AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric sec
   (`scan-soul`, `check --nanomind` and `secure --deep` agree on a hardened tree, and the `--deep`
   score and exit code equal the plain ones), `__tests__/repo/446-release-record.test.ts`.
 
+### `attack -H` can be repeated (#660)
+
+- **Every `-H/--header` reaches the target.** The help said the flag "can be used multiple
+  times", but it was registered without a collector, so a repeated `-H` overwrote the previous
+  one and only the last header was sent. Repeats now accumulate.
+
 ### Breaking: check <dir> --json carries the full-scan shape
 
 `check <dir>` ran only the semantic pass and labelled the result "Quick scan". On
