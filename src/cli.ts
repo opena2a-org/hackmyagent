@@ -4950,7 +4950,7 @@ Examples:
   .option('-f, --format <format>', 'Output format: text, json, sarif, html (sarif/html not with -b oasb-2); asff without -b; asp with -b oasb-1', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
-  .option('-o, --output <file>', 'Write output to file instead of stdout')
+  .option('-o, --output <file>', 'Write the json, sarif, html, asp or asff report to a file instead of stdout (not with text)')
   .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate; not evaluated when no compliance was measured (exit 2)')
   .option('-v, --verbose', 'Show all checks including passed ones')
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
@@ -5090,10 +5090,18 @@ Examples:
       const formatContradiction = options.json
         && cmd.getOptionValueSource('format') === 'cli'
         && options.format !== 'json';
-      if (formatContradiction || !validFormats.includes(format)) {
+      // #647 — no text arm writes `-o`: the OASB-1 arm cleared it, the
+      // composite and ordinary arms print and return. `-o report.txt` exited
+      // 0 with the report on stdout and no file, nothing said. Refused here
+      // (same site, so the exit-surface baseline holds) until a text arm
+      // renders to a string; the machine formats write the file as before.
+      const textOutputRefused = format === 'text' && options.output !== undefined;
+      if (formatContradiction || !validFormats.includes(format) || textOutputRefused) {
         console.error(formatContradiction
           ? `Error: --json is shorthand for --format json and contradicts --format '${escapeForDisplay(String(options.format))}'. Drop one of the two flags.`
-          : `Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`);
+          : !validFormats.includes(format)
+            ? `Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}`
+            : `Error: -o/--output writes the json, sarif, html, asp and asff reports; the text report prints to stdout. Use --format json -o ${escapePathForDisplay(String(options.output))}, or redirect stdout to the file.`);
         process.exit(1); // exit-unsettled(#350/S006): pre-work refusal; events await the schema reason field (#525)
       }
       // #563 — the Agent Security Profile is rendered only by the OASB-1

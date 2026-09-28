@@ -111,6 +111,14 @@ AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric sec
   `__tests__/semantic/mcp-config-servers-key.test.ts`,
   `__tests__/repo/hma-71-client-config-docs.test.ts`.
 
+### `secure -o <file>` with the text format is refused instead of ignored (#647)
+
+- **`-o/--output` with the text format (the default) now exits 1 before any scan**, on the
+  ordinary arm and with `-b oasb-1` or `-b oasb-2`. No text arm wrote the file: the report went
+  to stdout, no file appeared, and nothing said so. The message names `--format json -o <file>`
+  and redirecting stdout. json, sarif, html, asp and asff still write the file; the `-o`
+  description in `secure --help` now names those formats.
+
 ### `secure --deep` prints NOT MEASURED without a probe executor (#446)
 
 - **The `secure --deep` simulation verdict is a measurement, or it is not printed.** The
