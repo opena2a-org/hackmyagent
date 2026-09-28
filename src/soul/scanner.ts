@@ -46,6 +46,7 @@ import { DOMAIN_TEMPLATES } from './templates';
 import { GOVERNANCE_FILES } from './governance-files';
 import { resolveInsideTree, describeResolveRefusal, readStaysInsideTree } from '../hardening/contain';
 import type { WithheldLink } from '../hardening/coverage-ledger';
+import { usageError } from '../checker/errors';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2439,6 +2440,18 @@ export class SoulScanner {
     options?: { dryRun?: boolean; profile?: string; writeGuard?: GovernanceWriteGuard },
   ): Promise<HardenResult> {
     const dryRun = options?.dryRun ?? false;
+
+    // #611 — the profile is written into the file's `<!-- soul:profile=… -->`
+    // marker, which `scanSoul` later trusts to decide which domains apply. An
+    // unknown value was cast and written verbatim (`soul:profile=bogus`, exit 0).
+    // Refused here, at the writer and before anything is read or written, so the
+    // CLI, the library and the MCP server all get the same answer.
+    if (options?.profile !== undefined) {
+      const accepted = Object.keys(PROFILE_DOMAINS);
+      if (!accepted.includes(options.profile.toLowerCase())) {
+        throw usageError`Unknown --profile '${options.profile}'. Accepted: ${accepted.join(', ')}.`;
+      }
+    }
 
     // Detect tier BEFORE hardening so we can pin it.
     //
