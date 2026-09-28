@@ -6,6 +6,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+Library API: `SEMANTIC_OASB_MAPPINGS` no longer lists control 5.2 (#645). Its `'5.2': ['SEM-CRED-002']` entry told a library consumer that 5.2 is verified by `SEM-CRED-002`, while the OASB-1 catalogue the assessor reads verifies 5.2 with `MCP-006` and `MCP-009`. The export is documentation of the catalogue, not configuration; a test now holds every entry to a subset of the catalogue's `checkIds`. Benchmark results are unchanged.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
