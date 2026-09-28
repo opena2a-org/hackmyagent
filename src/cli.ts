@@ -4,7 +4,7 @@
  * Find it. Break it. Fix it.
  */
 
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import {
   VERSION,
   checkSkill,
@@ -11606,14 +11606,29 @@ program
 // resilience score — see src/attack-engine/feedback-loop.ts and #369 for why a
 // number here was worse than no number. Execution is tracked in
 // docs/design/redteam-nanomind-judge.md.
+/**
+ * `red-team --iterations`: a whole number of 1 or more (#392). It took `0`,
+ * negatives and non-numbers without a word and handed `parseInt`'s result to
+ * the engine. The flag is inert today, so the value reached nothing, but a
+ * value the command could never honour is refused at parse time, through
+ * Commander's usage error like any other malformed flag.
+ */
+function parseRedTeamIterations(value: string): number {
+  const n = Number(value.trim());
+  if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(n) || n < 1) {
+    throw new InvalidArgumentError('Must be a whole number of 1 or more.');
+  }
+  return n;
+}
+
 program
   .command('red-team')
   .argument('<target>', 'Path to artifact to red-team (skill, SOUL.md, MCP config, system prompt)')
   .description('Map an artifact\'s attack surface and generate target-specific attack payloads. Does NOT execute them: no agent is run, so resistance is not measured and no resilience score is reported (see docs/design/redteam-nanomind-judge.md). Exits 2 to mark the unmeasured result.')
-  .option('--iterations <n>', 'Reserved for the execution path; inert today (iteration adapts a payload to an observed defense, and nothing is observed)', '5')
+  .option('--iterations <n>', 'Reserved for the execution path; inert today (iteration adapts a payload to an observed defense, and nothing is observed)', parseRedTeamIterations, 5)
   .option('--json', 'Output results as JSON')
   .option('--export-training', 'Append results to the local training corpus (~/.opena2a/training-data). Off by default; exported pairs are UNSANITIZED and must pass the training sanitizer before any NanoMind training use.')
-  .action(async (target: string, options: { iterations?: string; json?: boolean; exportTraining?: boolean }) => {
+  .action(async (target: string, options: { iterations?: number; json?: boolean; exportTraining?: boolean }) => {
     const { readFileSync } = await import('node:fs');
     const { runAttackSession } = await import('./attack-engine/feedback-loop.js');
     const { exportAttackTraining } = await import('./attack-engine/training-pipeline.js');
@@ -11665,7 +11680,7 @@ program
     }
 
     const result = await runAttackSession(content, artifactType, name, {
-      maxIterations: parseInt(options.iterations ?? '5', 10),
+      maxIterations: options.iterations ?? 5,
     });
 
     if (options.json) {
