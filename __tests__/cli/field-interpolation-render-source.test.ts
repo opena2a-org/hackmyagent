@@ -50,7 +50,7 @@ const ESCAPED = /escapeForDisplay\(|escapePathForDisplay\(|escapeForTerminal\(|s
  * classification; each entry is a claim reviewed as a gate change.
  */
 const AUTHORED_ALLOW: ReadonlyArray<readonly [string, string]> = [
-  ["console.log(`Publisher: @${result.publisher.name}`);", "authored: publisher parsed from the user CLI arg"],
+  ["console.log(`Publisher: @${publisher.name}`);", "authored: publisher parsed from the user CLI arg (printSkillPublisher)"],
   ["console.log(`└─ [!!] Revoked: ${result.revocation.reason}`);", "authored: hardcoded revocation reason string"],
   ["console.log(`  ${borderColor}│${RESET()} ${colors.cyan}${colors.bold}━━ ${explainer.title} ━━${RESET()} ${colors.dim}(shown once per scan)${RESET()}`);", "authored: CONCEPT_EXPLAINERS[].title catalog"],
   ["console.log(`  ${colors.bold}${colors.white}${block.header.name}${RESET()}${metaSuffix}`);", "authored: registry-only header name = user identifier"],

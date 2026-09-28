@@ -249,6 +249,20 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
   `AST-INJECT-001`, `AST-PROMPT-001`, `AST-PROMPT-003` and `AST-PROMPT-004`.
   `coverage.semanticFamilyCoverage` in `--json` moves with it.
 
+### check on a scoped name npm does not have is not measured (#761)
+
+- `check @publisher/skill`, the placeholder in `check --help` and the README,
+  or any scoped name npm does not have, printed "Trying as skill
+  identifier...", then `MEDIUM RISK` and exit 0. That lookup fetches nothing
+  about the skill: it reads the publisher's DNS TXT record and a local
+  blocklist, so the band said "measured" about a target nothing was read
+  from. It now prints the npm not-found block with the verify URL and exits
+  2, as a bare-name miss does, and keeps the publisher record that
+  `docs/dns-verification.md` has a publisher read with this command. `--json`
+  carries the not-found shape (`found: false`, `errorHint`, `coverage`) plus
+  `publisher`, and no `risk`. An identifier on the blocklist still reports
+  `CRITICAL RISK` at exit 1.
+
 ### The install-time download on a default Linux x64 install
 
 - **Correction to the `[0.27.0]` entry below.** Its last bullet, on the advisory a fresh
