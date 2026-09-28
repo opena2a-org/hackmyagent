@@ -229,7 +229,11 @@ export function generateBenchmarkReport(
     const failed = catControls.filter((r: LocalControlResult) => r.status === 'failed').length;
     const unverified = catControls.filter((r: LocalControlResult) => r.status === 'unverified').length;
     const notApplicable = catControls.filter((r: LocalControlResult) => r.status === 'not-applicable').length;
-    const compliance = (passed + failed) > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
+    // #615 — the same zero-denominator rule as the level grain above: a
+    // category with no measured control has no figure. The old `: 0` put
+    // `"compliance": 0` beside `"passed": 0, "failed": 0` on `--json` and
+    // `--format asp`, a failing grade for controls nobody measured.
+    const compliance = pct(passed, passed + failed);
 
     categoryResults.push({
       category: category.name,
