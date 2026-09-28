@@ -6,6 +6,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### SARIF `$schema` points at a schema that exists (#394)
+
+- **Every SARIF document named a `$schema` URL that returns 404.** The three writers
+  (`secure -f sarif`, the benchmark SARIF and `attack -f sarif`) each carried
+  `raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json`,
+  which the upstream repository moved off `master`. They now share one constant, the
+  schema's own `$id`:
+  `https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json`.
+  The document content is unchanged; only the pointer an editor or validator resolves.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
