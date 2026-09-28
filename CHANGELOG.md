@@ -6,6 +6,24 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### Which channels read the redaction stamp (#553)
+
+- **Correction to the `[0.32.0]` entry below.** Its bullet "Every channel that publishes
+  findings now reads the stamp before a byte leaves" is broader than the code. The JSON
+  stdout chokepoint, the `--output` file arms, the SARIF/HTML/ASFF/ASP generators, the
+  registry publish builders' input and the MCP tool payloads it lists do read it. Three paths
+  that carry finding-derived text do not, read on this tree:
+  - the MCP deep-scan result: `buildDeepScanLayer1` asserts the layer-1 findings
+    (`src/mcp-server.ts:205`), but the structural findings and discovered files it is built
+    with (`src/mcp-server.ts:417-426`) are not asserted. Handing file content to the host
+    model is that tool's stated purpose, so this is a statement of scope, not a leak report;
+  - the registry publish builder asserts its input (`src/registry/publish.ts:175`), then
+    derives an attack result's `message` from the response text
+    (`src/registry/publish.ts:211`), which never crosses that read;
+  - the narrative channel: `grep -rn assertRedactionProvenance src/narrative/` prints nothing
+    and exits 1.
+  Nothing about what those paths emit changes here; the sentence stops outrunning the code.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
