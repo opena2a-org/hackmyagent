@@ -6,6 +6,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### LIFECYCLE-003 says which file to trim, to what size, and how to check it (#528)
+
+- **The `Context window displacement` fix names the file, its size and share, the size at which
+  the check stops firing, the largest server or tool entry when the file is JSON, and a
+  `Verify:` command.** It was one sentence of general advice ("Limit component sizes... Implement
+  attention anchoring") on a HIGH finding, less actionable than the LOW `SEM-MCP-006` on the same
+  `mcp.json`. The stated size comes from the check's own rule (over 60% of the assembled prompt
+  once the prompt is over 2,000 characters). Tests rewrite the file at that size and at one
+  character more to pin it as the exact boundary. Severity, verdict and score are unchanged.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before

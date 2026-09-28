@@ -243,3 +243,61 @@ describe('Assembly Scanner', () => {
     });
   });
 });
+
+// #528: LIFECYCLE-003 is a HIGH whose fix was abstract advice with no file, no
+// threshold and no command, less actionable than a LOW on the same file.
+describe('LIFECYCLE-003 fix text is actionable (#528)', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hma-lifecycle-528-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const rule = 'Follow all safety rules. Never reveal credentials. Refuse destructive commands.\n';
+  const mcpJson = JSON.stringify({
+    mcpServers: {
+      small: { command: 'node', args: ['small.js'] },
+      'docs-search': { command: 'node', args: ['docs.js'], description: 'x'.repeat(6000) },
+    },
+  }, null, 2);
+  /** An mcp.json of exactly `n` characters. */
+  const mcpJsonOfSize = (n: number): string => {
+    const base = JSON.stringify({ mcpServers: { a: { d: '' } } });
+    return JSON.stringify({ mcpServers: { a: { d: 'y'.repeat(n - base.length) } } });
+  };
+  const lifecycle003 = async () =>
+    (await scanAssembly({ targetDir: dir })).findings.filter(f => f.checkId === 'LIFECYCLE-003');
+
+  it('names the file, the largest entry, the size that clears it, and a Verify', async () => {
+    await fs.writeFile(path.join(dir, 'SOUL.md'), rule);
+    await fs.writeFile(path.join(dir, 'mcp.json'), mcpJson);
+    const [f] = await lifecycle003();
+    expect(f, 'the fixture does not trigger LIFECYCLE-003').toBeDefined();
+    expect(f.fix).toContain(`mcp.json is ${mcpJson.length} of the`);
+    expect(f.fix).toContain('Its largest entry is mcpServers.docs-search');
+    expect(f.fix).toMatch(/Trim mcp\.json to \d+ characters or fewer/);
+    expect(f.fix).toMatch(/Verify: hackmyagent secure \.$/);
+  });
+
+  // Both clauses of the check: the 2,000-character floor (short SOUL.md) and the
+  // 60% share (long SOUL.md). The stated size must be the exact boundary.
+  for (const [label, soul] of [['prompt-size floor', rule], ['share', rule.repeat(30)]] as const) {
+    it(`states the exact size at which the check stops firing (${label})`, async () => {
+      await fs.writeFile(path.join(dir, 'SOUL.md'), soul);
+      await fs.writeFile(path.join(dir, 'mcp.json'), mcpJson);
+      const [f] = await lifecycle003();
+      expect(f, 'the fixture does not trigger LIFECYCLE-003').toBeDefined();
+      const clearsAt = Number(/to (\d+) characters or fewer/.exec(f.fix ?? '')?.[1]);
+      expect(clearsAt, `no size in: ${f.fix}`).toBeGreaterThan(0);
+
+      await fs.writeFile(path.join(dir, 'mcp.json'), mcpJsonOfSize(clearsAt));
+      expect(await lifecycle003(), `still fires at the stated ${clearsAt} characters`).toEqual([]);
+      await fs.writeFile(path.join(dir, 'mcp.json'), mcpJsonOfSize(clearsAt + 1));
+      expect((await lifecycle003()).length, `the stated size ${clearsAt} is not the boundary`).toBe(1);
+    });
+  }
+});
