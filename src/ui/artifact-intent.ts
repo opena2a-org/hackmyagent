@@ -25,9 +25,14 @@
  * rather than `benign`, because asserting benign over evidence nothing
  * evaluated is the #200 mistake pointed the other way.
  *
- * `benign` and `unknown` pass through untouched. The model's failure mode is
- * over-flagging, so a negative prediction from it does not need corroborating,
- * and there is nothing alarming to reconcile.
+ * `unknown` passes through untouched. `benign` does too, unless this scan
+ * attributes a HIGH or CRITICAL finding to the same artifact: then the label
+ * contradicts the verdict printed two lines below it, and it renders `unknown`
+ * as well (#391). A benign label needs no corroboration, since the model's
+ * failure mode is over-flagging, but it must not be printed against the
+ * scan's own evidence. Measured before this rule on a SOUL.md that tells the
+ * agent to do whatever a user asks, to hide adjustments to the numbers and to
+ * skip confirmations: `soul · benign ·` above four HIGH findings on that file.
  *
  * Trade-off, stated plainly: a genuinely malicious artifact that no static or
  * semantic check fires on now reads `unknown` on this line instead of
@@ -55,8 +60,14 @@ const CORROBORATING_SEVERITIES: ReadonlySet<string> = new Set(['high', 'critical
 export interface SuppressedIntent {
   /** Artifact path, as rendered on the Artifacts line. */
   path: string;
-  /** The raw classifier label that was not corroborated. */
+  /** The raw classifier label that was withheld. */
   rawIntent: ArtifactIntent;
+  /**
+   * Set only when a `benign` label was withheld because this scan raised HIGH
+   * or CRITICAL findings on the same artifact (#391): how many. Absent when a
+   * concerning label was withheld for lack of corroboration.
+   */
+  contradictedBy?: number;
 }
 
 /**
@@ -94,8 +105,9 @@ export interface ReconcileResult<T> {
 }
 
 /**
- * Rewrite uncorroborated concerning intent labels to `unknown` and report
- * what was withheld. Pure; returns copies and never mutates its input.
+ * Rewrite uncorroborated concerning intent labels, and benign labels this
+ * scan contradicts, to `unknown`, and report what was withheld. Pure; returns
+ * copies and never mutates its input.
  */
 export function reconcileArtifactIntents<T extends { path: string; intent: ArtifactIntent }>(
   artifacts: readonly T[],
@@ -103,15 +115,20 @@ export function reconcileArtifactIntents<T extends { path: string; intent: Artif
 ): ReconcileResult<T> {
   const suppressed: SuppressedIntent[] = [];
 
-  const corroboratingFiles = findings
+  const highOrCriticalFiles = findings
     .filter(f => typeof f.file === 'string' && f.file.length > 0)
     .filter(f => CORROBORATING_SEVERITIES.has((f.severity ?? '').toLowerCase()))
     .map(f => f.file as string);
 
   const reconciled = artifacts.map(a => {
+    const onArtifact = highOrCriticalFiles.filter(file => isSameArtifact(file, a.path)).length;
+    if (a.intent === 'benign') {
+      if (onArtifact === 0) return a;
+      suppressed.push({ path: a.path, rawIntent: a.intent, contradictedBy: onArtifact });
+      return { ...a, intent: 'unknown' as ArtifactIntent };
+    }
     if (!CONCERNING_INTENTS.has(a.intent)) return a;
-    const corroborated = corroboratingFiles.some(file => isSameArtifact(file, a.path));
-    if (corroborated) return a;
+    if (onArtifact > 0) return a;
     suppressed.push({ path: a.path, rawIntent: a.intent });
     return { ...a, intent: 'unknown' as ArtifactIntent };
   });
@@ -129,6 +146,8 @@ export function rawIntentDisclosureLines(suppressed: readonly SuppressedIntent[]
   if (suppressed.length === 0) return [];
   return [
     'raw NanoMind classifier affinity (over-flags benign input — advisory, not a verdict):',
-    ...suppressed.map(s => `  ${s.path} -> ${s.rawIntent}, not corroborated by any high/critical finding`),
+    ...suppressed.map(s => (s.contradictedBy
+      ? `  ${s.path} -> ${s.rawIntent}, contradicted by ${s.contradictedBy} high/critical finding${s.contradictedBy === 1 ? '' : 's'} on this artifact`
+      : `  ${s.path} -> ${s.rawIntent}, not corroborated by any high/critical finding`)),
   ];
 }
