@@ -394,6 +394,7 @@ import { gateSet, deepScanIncomplete, unreadInputCount, settledOutcome, settleSe
 import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
+import { guidanceAfterDemotion } from './ui/demoted-guidance';
 import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
@@ -13508,8 +13509,12 @@ function filterLocalOnlyFindings(
   // not runtime attack surfaces for the end user.
   for (const f of result.findings) {
     if (f.file && (f.severity === 'critical' || f.severity === 'high')) {
-      if (isTestFile(f.file) || isBuildOrCiFile(f.file)) {
+      const reason = isTestFile(f.file) ? 'test' : isBuildOrCiFile(f.file) ? 'build' : undefined;
+      if (reason) {
         (f as any).originalSeverity = f.severity;
+        // #287 — the guidance was written at the detected severity and could
+        // open "Critical in this context because…" under a LOW header.
+        f.guidance = guidanceAfterDemotion(f.guidance, f.severity, reason);
         f.severity = 'low';
       }
     }

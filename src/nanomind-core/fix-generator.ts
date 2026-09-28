@@ -660,7 +660,10 @@ function generateGuidance(finding: ASTFinding, ast: SecurityAST, projectConstrai
         `resolve to ${matched.destination ?? 'an unresolved destination'}${at(matched.destinationLine)}.`,
       );
     } else {
-      parts.push(`Critical in this context because this ${ast.artifactType} ${artifactRiskContext(ast)}.`);
+      // #287 — `unknown` is the classifier's "no type", not a noun: it rendered
+      // as "because this unknown may influence…". Name what it is — a file.
+      const noun = ast.artifactType === 'unknown' ? 'file' : ast.artifactType;
+      parts.push(`Critical in this context because this ${noun} ${artifactRiskContext(ast)}.`);
     }
   }
 
