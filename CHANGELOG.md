@@ -6,6 +6,22 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### `secure --deep` no longer sends a previous run's backup archive to the LLM (#385)
+
+- **Layer 3 withholds the tree's `.hackmyagent-backup` archive on every deep scan, not only
+  inside a `--fix` run.** The exclusion keyed on the current run's backup context, which exists
+  only during `--fix`. A plain `secure --deep` on a tree that an earlier `secure --fix` had
+  archived therefore sent the archived pre-fix copies, which hold the plaintext credentials the
+  live files no longer contain, to the Anthropic API. Measured on main with a fixture holding a
+  GitHub token in `config.json` and `.claude/settings.json`: one `secure --fix`, then one
+  `secure --deep`, put both archived copies on the wire. The archive is recognised by filesystem
+  identity at `<target>/.hackmyagent-backup`, the same way the fix write gate recognises it, so a
+  directory that only carries the name elsewhere in the tree (`vendor/.hackmyagent-backup/`) is
+  still analysed. Layers 1 and 2 still read the archive and still report the plaintext in it,
+  so scores do not change on scans without an API key. With an API key, the score `--fix --deep`
+  announces now equals the next `--deep` scan's (measured on main: 50 against 45).
+  Regression tests: `__tests__/hardening/deep-scan-never-transmits-archive.test.ts`.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
