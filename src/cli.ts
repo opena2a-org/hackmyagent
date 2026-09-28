@@ -400,6 +400,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
+import { collapsedLocation } from './ui/collapse-label';
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
@@ -2860,19 +2861,21 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // Collapse similar
         if (!verbose) {
           const dir = f.file?.split('/').slice(0, -1).join('/') || '';
-          const artifactName = f.file ? (f.file.split('/').pop() ?? '') : '';
-          let similarCount = 0;
+          // #360 — the files of the FOLDED findings, not the printed one's.
+          // Grouping is by directory, so they can sit in sibling files.
+          const collapsedFiles: Array<string | undefined> = [];
           for (let j = i + 1; j < failed.length; j++) {
             if (skipped.has(j)) continue;
             const other = failed[j];
             if (other.name === f.name) {
               const otherDir = other.file?.split('/').slice(0, -1).join('/') || '';
-              if (otherDir === dir) { skipped.add(j); similarCount++; }
+              if (otherDir === dir) { skipped.add(j); collapsedFiles.push(other.file); }
             }
           }
+          const similarCount = collapsedFiles.length;
           if (similarCount > 0) {
             const sevColor = SEVERITY_DISPLAY[f.severity]?.color() ?? colors.dim;
-            const collapseCtx = artifactName ? ` in ${escapePathForDisplay(artifactName)}` : (dir ? ` in ${escapePathForDisplay(dir)}` : '');
+            const collapseCtx = collapsedLocation(collapsedFiles);
             console.log(`  ${borderColor}│${RESET()} ${colors.dim}+ ${similarCount} more ${RESET()}${sevColor}${f.severity}${collapseCtx ? `${RESET()}${colors.dim}${collapseCtx}` : ''}${RESET()}${colors.dim}  (run with --verbose to see all)${RESET()}`);
           }
         }
