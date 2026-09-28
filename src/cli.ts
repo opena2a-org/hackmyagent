@@ -12,6 +12,7 @@ import {
   calculateSecurityScore,
   ExternalScanner,
   resolvePorts,
+  type PublisherInfo,
   type RiskLevel,
   type Severity,
   type SecurityFinding,
@@ -649,6 +650,32 @@ const RISK_DISPLAY: Record<RiskLevel, { symbol: string; color: () => string }> =
 };
 const RESET = () => colors.reset;
 
+/** The publisher's DNS verification record, as `check <skill identifier>` prints it. */
+function printSkillPublisher(publisher: PublisherInfo, options: { verbose?: boolean; offline?: boolean }): void {
+  console.log(`Publisher: @${publisher.name}`);
+  if (publisher.verified) {
+    console.log(`├─ [+] Verified via DNS`);
+    if (publisher.domain) {
+      console.log(`├─ Domain: ${publisher.domain}`);
+    }
+    if (publisher.verifiedAt && options.verbose) {
+      console.log(`└─ Verified at: ${publisher.verifiedAt.toISOString()}`);
+    } else {
+      console.log(`└─ Method: DNS TXT record`);
+    }
+  } else {
+    console.log(`├─ [-] Not verified`);
+    if (publisher.failureReason && options.verbose) {
+      console.log(`└─ Reason: ${publisher.failureReason}`);
+    } else if (options.offline) {
+      console.log(`└─ (DNS verification skipped - offline mode)`);
+    } else {
+      console.log(`└─ No valid DNS TXT record found`);
+    }
+  }
+  console.log();
+}
+
 program
   .command('check')
   .description(`Check whether a package, repo, skill or local directory is safe before you use it
@@ -1076,6 +1103,7 @@ Examples:
       // Bare names are not valid skill identifiers — emit canonical npm
       // not-found via buildNotFoundOutput so the `--json` shape matches the
       // scoped/git-style miss path. Closes F3 in opena2a-parity.
+      let scopedNpmMiss = false;
       if (looksLikeNpmPackage(skill)) {
         try {
           await checkNpmPackage(skill, options);
@@ -1104,8 +1132,9 @@ Examples:
               await exitRecorded(EXIT_UNMEASURED, 'unmeasured');
             }
             // Scoped name — fall through to skill check
+            scopedNpmMiss = true;
             if (!options.json && !globalCiMode) {
-              console.error(`Package "${skill}" not found on npm. Trying as skill identifier...`);
+              console.error(`Package "${skill}" not found on npm. Checking the publisher's DNS record...`);
             }
           } else {
             throw npmErr; // Re-throw non-404 errors
@@ -1129,6 +1158,34 @@ Try: ${getCheckCommand()} ${skill} --offline`), 10000)
       );
       const result = await Promise.race([checkPromise, timeoutPromise]);
 
+      // #761 — a scoped name npm does not have reaches this lookup, which
+      // fetches nothing about the skill: it reads the publisher's DNS TXT
+      // record and a local blocklist. It reported a risk band (MEDIUM for any
+      // unverified publisher) and exit 0, which says the target was measured.
+      // Unless the blocklist names it, nothing was measured: the npm
+      // not-found block with its verify URL, exit 2 — the same as a bare-name
+      // miss — plus the publisher record, which docs/dns-verification.md
+      // tells a publisher to read with this command.
+      if (scopedNpmMiss && !result.revocation.revoked) {
+        const errorHint = `Verify the URL: https://www.npmjs.com/package/${skill}`;
+        if (options.json) {
+          writeJsonStdout({
+            ...buildNotFoundOutput({
+              name: skill,
+              ecosystem: 'npm',
+              error: `Package "${skill}" not found on npm.`,
+              errorHint,
+            }),
+            coverage: notFoundCoverage(skill, 'npm'),
+            publisher: result.publisher,
+          });
+        } else {
+          printNotFoundBlock({ pkg: skill, ecosystem: 'npm', errorHint });
+          printSkillPublisher(result.publisher, options);
+        }
+        await exitRecorded(EXIT_UNMEASURED, 'unmeasured');
+      }
+
       if (options.json) {
         writeJsonStdout(result);
         return;
@@ -1137,29 +1194,7 @@ Try: ${getCheckCommand()} ${skill} --offline`), 10000)
       const risk = RISK_DISPLAY[result.risk];
       console.log(`\n${risk.color()}${risk.symbol} ${result.risk.toUpperCase()} RISK${RESET()}\n`);
 
-      // Publisher info
-      console.log(`Publisher: @${result.publisher.name}`);
-      if (result.publisher.verified) {
-        console.log(`├─ [+] Verified via DNS`);
-        if (result.publisher.domain) {
-          console.log(`├─ Domain: ${result.publisher.domain}`);
-        }
-        if (result.publisher.verifiedAt && options.verbose) {
-          console.log(`└─ Verified at: ${result.publisher.verifiedAt.toISOString()}`);
-        } else {
-          console.log(`└─ Method: DNS TXT record`);
-        }
-      } else {
-        console.log(`├─ [-] Not verified`);
-        if (result.publisher.failureReason && options.verbose) {
-          console.log(`└─ Reason: ${result.publisher.failureReason}`);
-        } else if (options.offline) {
-          console.log(`└─ (DNS verification skipped - offline mode)`);
-        } else {
-          console.log(`└─ No valid DNS TXT record found`);
-        }
-      }
-      console.log();
+      printSkillPublisher(result.publisher, options);
 
       // Permissions
       console.log('Permissions:');
