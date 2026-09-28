@@ -6,6 +6,18 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### `scan-soul` quotes its target once in the method-scope disclosure line (#273)
+
+- **The `Semantic pass: hackmyagent scan-soul <dir> --deep` line quoted a target that needs
+  quoting twice.** `src/cli.ts` applied the citation form before handing the directory to
+  `soulScopeDisclosureLines`, which applies it again, so a directory named `a; b` printed as
+  `scan-soul ''\''a; b'\''' --deep`: the `;` sat outside every quote and pasting the line ran
+  `b`. The call site now passes the directory as typed. The same double application in the
+  quick-scan render path (`displayUnifiedCheck`, whose two consumers already quote the
+  target) is removed. A new CLI-level test runs `scan-soul` on a directory named with a
+  space, `$(…)` and `;` and asks `sh`, `bash` and `zsh` that every printed `scan-soul` and
+  `harden-soul` target is one argument naming that directory.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before

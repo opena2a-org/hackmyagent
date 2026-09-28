@@ -1716,13 +1716,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   const { name, sourceLabel, projectType, scanRoot, localScan, registry, verbose, version, nanomindScan, usedAnalm } = opts;
 
   // #328 — `fullAuditTarget` is a path out of the scanned tree and it is spliced
-  // into `Run \`secure <target>\``. Sanitised ONCE here, where it enters the
-  // renderer, because it has two consumers below (the follow-up line and the
-  // scope disclosure) and fixing the one that was noticed is how a raw ESC byte
-  // survived the first pass of this change.
-  const quickScan = opts.quickScan
-    ? { ...opts.quickScan, fullAuditTarget: citationTarget(opts.quickScan.fullAuditTarget) }
-    : undefined;
+  // into `Run \`secure <target>\``. Both of its consumers below
+  // (`quickScanFollowupText` and `quickScanScopeDisclosure`) apply
+  // `citationTarget` themselves (#273), so it is passed through RAW: applying
+  // the citation form here as well quoted a target that needs quoting twice,
+  // and a doubly quoted `a; b` leaves the `;` outside every quote.
+  const quickScan = opts.quickScan;
 
   // ── Registry-only render path (cli-ui 0.3.0 renderCheckBlock) ────────
   // When we have registry trust data and nothing scanned locally, delegate
@@ -10254,8 +10253,12 @@ Examples:
           upgraded: (result.deepAnalysisResults ?? []).filter((e) => e.llmPassed).length,
           prefix,
           // #339 — this line splices the target into `scan-soul <dir> --deep`,
-          // so it is a citation and takes the citation form.
-          directory: citationTarget(directory),
+          // so it is a citation and takes the citation form. That form is
+          // applied INSIDE `soulScopeDisclosureLines` (#273), which takes the
+          // directory as the user typed it. Applying it here as well quoted
+          // the target twice: `a; b` printed as `''\''a; b'\'''`, which leaves
+          // the `;` outside every quote, so the pasted line ran `b`.
+          directory,
         });
         for (const line of disclosureLines) {
           console.log(`  ${colors.dim}${line}${RESET()}`);
