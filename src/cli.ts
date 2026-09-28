@@ -7205,8 +7205,18 @@ Examples:
           timeout: timeoutMs,
         });
 
+        // Exit 1 on a critical or high finding, whichever channel reports it
+        // (`--help`: "Exit code 1 if critical/high issues found"). #445 — the
+        // JSON branch returned before this was checked, so `scan --json` exited
+        // 0 on a body holding criticals while `scan` exited 1 on the same run,
+        // and a CI job piping the JSON never failed.
+        const criticalOrHigh = result.findings.some(
+          (f) => f.severity === 'critical' || f.severity === 'high'
+        );
+
         if (options.json) {
           writeJsonStdout(result);
+          if (criticalOrHigh) await finishWithFindings(1);
           return;
         }
 
@@ -7282,11 +7292,7 @@ Examples:
           console.log();
         }
 
-        // Exit with non-zero if critical/high issues found
-        const criticalOrHigh = result.findings.filter(
-          (f) => f.severity === 'critical' || f.severity === 'high'
-        );
-        if (criticalOrHigh.length > 0) {
+        if (criticalOrHigh) {
           await finishWithFindings(1);
           return;
         }
