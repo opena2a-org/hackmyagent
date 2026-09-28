@@ -187,8 +187,9 @@ describe('HMA-38 declaredPurpose never surfaces an armored key body line', () =>
 
   it('HMA-38.AC3 enrichFindings executes every purpose-interpolating fix branch and renders no key window', async () => {
     // Attack classes chosen so generateFix reads ast.declaredPurpose:
-    // CRED-EXPOSURE, SKILL-EXFIL (skill artifact), PERSISTENCE, SOUL-MISSING,
-    // and SEMANTIC-MISMATCH with no analyzer fix (fixScopeMismatch).
+    // SKILL-EXFIL (skill artifact), PERSISTENCE, SOUL-MISSING, and
+    // SEMANTIC-MISMATCH with no analyzer fix (fixScopeMismatch). CRED-EXPOSURE
+    // read it until #493 and stays in the set to pin that it no longer does.
     const purposeBranches = [
       draftFinding('CRED-EXPOSURE', 'PROBE-CRED'),
       draftFinding('SKILL-EXFIL', 'PROBE-EXFIL'),
@@ -208,14 +209,14 @@ describe('HMA-38 declaredPurpose never surfaces an armored key body line', () =>
       for (const f of enriched) {
         for (const s of renderedStrings(f)) expectNoKeyWindows(s);
       }
-      // The CRED-EXPOSURE branch interpolates the purpose whenever it is
-      // truthy — prove the branch ran by finding the purpose (marker or
-      // prose) inside the generated fix text.
+      // #493 — the CRED-EXPOSURE branch no longer interpolates the purpose
+      // (it quoted the first content line, not the line the finding cites).
+      // Prove the branch ran by its own sentence, and that the purpose, in
+      // either form (marker or prose), no longer reaches its fix text.
       const credFix = enriched.find(f => f.checkId === 'PROBE-CRED')?.fix ?? '';
       expect(credFix).toContain('are exposed in version control');
-      expect(
-        credFix.includes('[REDACTED') || credFix.includes('deploy analytics reporting'),
-      ).toBe(true);
+      expect(credFix).not.toContain('[REDACTED');
+      expect(credFix).not.toContain('deploy analytics reporting');
     }
   });
 
