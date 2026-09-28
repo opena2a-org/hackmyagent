@@ -6,6 +6,15 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### `secure -b` refuses the publish and contribute flags instead of dropping them (#646)
+
+- **`--publish`, `--ci-publish`, `--registry-report`, `--version-id` and `--contribute` exit 1
+  with `-b oasb-1` or `-b oasb-2`.** Both benchmark arms return before the publish and
+  contribute steps run, so these flags were accepted and dropped: no attempt, no `publish` key
+  in `--format json`, nothing on stderr. The refusal names every dropped flag and is raised
+  before any scan runs, at the same site as the `-b` format refusal. `--no-contribute` stays
+  allowed. The five option descriptions in `secure --help` now say `not with -b`.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
