@@ -35,10 +35,10 @@ const TAXONOMY_MAP: Record<string, string> = {
   'SOUL-HO-002': 'SOUL-HIJACK',
 
   // Harm avoidance
-  'SOUL-HV-001': 'SOUL-HV-001',
-  'SOUL-HV-002': 'SOUL-HV-002',
-  'SOUL-HV-003': 'SOUL-HV-003',
-  'SOUL-HV-004': 'SOUL-HV-004',
+  'SOUL-HV-001': 'SOUL-HV',
+  'SOUL-HV-002': 'SOUL-HV',
+  'SOUL-HV-003': 'SOUL-HV',
+  'SOUL-HV-004': 'SOUL-HV',
 
   // Credential exposure
   'CRED-001': 'RETROACTIVE-PRIV',
