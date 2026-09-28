@@ -18,11 +18,12 @@ AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric sec
   `{hackmyagentVersion, target, verdict: null, exitCode: 2, measured: false, coverage}`, where
   `coverage` is the same block `check` emits (`reason: "target-not-found"`); text mode prints
   `NOT MEASURED — <path> does not exist, so nothing was scanned.` and a `Verify: ls -ld <path>`
-  line. The ending settles through the telemetry funnel, so a missing-target `secure` now emits
-  one command event with `success: false` (it emitted none), and the exit-surface ratchet loses
-  `S002`. `secure --help` lists a missing target under exit 2. Regression:
+  line. The ending stays a registered pre-work refusal (`S002`) and still emits no telemetry
+  event; #525 converts the refusal exits once the event carries a reason. `secure --help` lists
+  a missing target under exit 2. Regression:
   `__tests__/cli/secure-not-found-unmeasured.test.ts` (JSON document, `--format json`, text
-  banner, `secure` and `check` agree) and a cell in `__tests__/cli/exit-event-emission.test.ts`.
+  banner, `secure` and `check` agree) and a cell in `__tests__/cli/exit-event-emission.test.ts`
+  (exit 2, no event).
 
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 

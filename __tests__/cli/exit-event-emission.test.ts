@@ -125,16 +125,15 @@ describe('#350 endings emit their command event', { timeout: 300_000 }, () => {
     expect(r.events[0].success).toBe(false);
   });
 
-  it('RED-ON-BASE: an unmeasured secure (missing target) emits its event and exits 2', () => {
-    // #481 — this was the exit-surface ratchet's S002, a bare `process.exit(1)`
-    // ahead of the postAction hook: zero events, and an exit code that claimed
-    // a critical/high finding. It now settles through the funnel like check's
-    // local-path arm above.
+  it('PIN: secure on a missing target is a dark refusal with exit 2', () => {
+    // #481 moved this ending from exit 1 (which claimed a critical/high
+    // finding) to exit 2, not measured. It is still the ratchet's S002, a
+    // registered pre-work refusal, so it deliberately emits NO event: an event
+    // that cannot say "refused" would land in the failed bucket. #525 flips
+    // this cell to one event carrying the refusal reason.
     const r = run(['secure', `./no-such-dir-${ARGV_MARKER}`], tmp('hma-481-secure-'));
     expect(r.status).toBe(2);
-    expect(r.events, r.raw.join('\n')).toHaveLength(1);
-    expect(r.events[0].name).toBe('secure');
-    expect(r.events[0].success).toBe(false);
+    expect(r.events, r.raw.join('\n')).toHaveLength(0);
   });
 
   it('PIN: a UsageError refusal is dark — it never lands in the crash bucket', () => {

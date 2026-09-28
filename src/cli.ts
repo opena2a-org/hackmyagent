@@ -4990,19 +4990,24 @@ Examples:
         if (options.contribute === undefined) options.contribute = false;
       }
 
-      // #481 — a missing target was measured by nothing, so it settles as
-      // unmeasured (exit 2) through the same funnel as `check`'s local-path
-      // arm. It used to print plain text under `--json` (a CI step's
+      // #481 — a missing target was measured by nothing, so it reports
+      // unmeasured (exit 2) with the same verdict `check`'s local-path arm
+      // builds. It used to print plain text under `--json` (a CI step's
       // `JSON.parse` threw on the report file) and exit 1, which asserts the
       // scan ran and found a critical/high issue. The document carries the
       // settled record's top-level keys (`verdict`, `exitCode`, `measured`)
       // and `check`'s `coverage` block, so one reader parses both commands.
+      //
+      // The ending stays a registered pre-work refusal and emits no event:
+      // an event that cannot say "refused" would land in the failed bucket,
+      // and #525 converts these sites together once the schema carries the
+      // reason. `writeJsonStdout` writes synchronously, so the hard exit
+      // cannot cut the document short on a pipe.
       if (!require('fs').existsSync(originalTarget)) {
         const verdict = unmeasured(
           'target-not-found',
           `${escapePathForDisplay(String(originalTarget))} does not exist, so nothing was scanned.`,
         );
-        await finishWithFindings(verdict.exitCode);
         if (options.json || options.format === 'json') {
           writeJsonStdout({
             hackmyagentVersion: VERSION,
@@ -5019,7 +5024,7 @@ Examples:
           const verify = commandNaming(directory, cited => `  Verify: ls -ld ${cited}`);
           if (verify) console.error(verify);
         }
-        return;
+        process.exit(verdict.exitCode); // exit-unsettled(#350/S002): pre-work refusal; events await the schema reason field (#525)
       }
 
       // Single-FILE target handling.

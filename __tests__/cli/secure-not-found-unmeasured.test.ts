@@ -8,9 +8,9 @@
  * critical/high issue was found". `check <missing>` already exited 2 with
  * `coverage.measured: false`.
  *
- * The site used to be the exit-surface ratchet's S002 (a bare `process.exit`);
- * it now settles through `finishWithFindings`, so a revert reintroduces a
- * bare, unregistered exit and also fails `__tests__/telemetry/exit-surface`.
+ * The site is still the exit-surface ratchet's S002, a registered pre-work
+ * refusal that emits no telemetry event until #525; that half is pinned in
+ * `__tests__/cli/exit-event-emission.test.ts`.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
