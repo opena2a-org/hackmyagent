@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getCheckCounts, getTaxonomyMap } from '../../src/hardening/taxonomy';
 
@@ -50,6 +50,48 @@ describe('check-count single source of truth', () => {
     expect(counts.semantic).toBe(45);
     expect(counts.totalCategories).toBe(89);
     expect(counts.staticCategories).toBe(74);
+  });
+
+  // #482: the golden values above are pinned to the taxonomy, but the README
+  // and docs/SECURITY_CHECKS.md were only asked to follow them, and the README
+  // explained its semantic figure against the scan `Checks` line but not
+  // against `check-metadata`. Two numbers, two sources: the README's 29 is the
+  // distinct check ids the seven analyzers emit (the published definition),
+  // `check-metadata`'s semanticChecks is every AST-/SEM- taxonomy id. Hold each
+  // published sentence to the source it names.
+  it('README and docs/SECURITY_CHECKS.md state the counts their sources produce', () => {
+    const root = join(__dirname, '../..');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    const checksDoc = readFileSync(join(root, 'docs/SECURITY_CHECKS.md'), 'utf8');
+    const figures = (text: string, pattern: RegExp): number[] => {
+      const m = pattern.exec(text);
+      expect(m, `expected ${pattern} to match`).not.toBeNull();
+      return m!.slice(1).map(Number);
+    };
+
+    const analyzerDir = join(root, 'src/nanomind-core/analyzers');
+    const emitted = new Set<string>();
+    for (const file of readdirSync(analyzerDir).filter(f => f.endsWith('-analyzer.ts'))) {
+      for (const m of readFileSync(join(analyzerDir, file), 'utf8').matchAll(/checkId:\s*['"`]([A-Z][A-Z0-9-]*-\d+)['"`]/g)) {
+        emitted.add(m[1]);
+      }
+    }
+    const ids = Object.keys(getTaxonomyMap());
+    const sem = ids.filter(id => id.startsWith('SEM-'));
+    const sharedWithStatic = [...emitted].filter(id => !id.startsWith('AST-'));
+
+    expect(figures(readme, /\*\*(\d+) static checks across (\d+) categories\*\* \((\d+) checks across (\d+) categories including the NanoMind semantic layer\)/))
+      .toEqual([counts.static, counts.staticCategories, counts.total, counts.totalCategories]);
+    expect(figures(readme, /\*\*(\d+) NanoMind semantic checks\.\*\*/)).toEqual([emitted.size]);
+    expect(figures(readme, /\(This (\d+) is the fixed catalog of check ids the seven analyzers emit\./)).toEqual([emitted.size]);
+    expect(figures(readme, /reports `semanticChecks: (\d+)`/)).toEqual([counts.semantic]);
+    expect(figures(readme, /the structural layer's (\d+) `SEM-` checks/)).toEqual([sem.length]);
+    expect(figures(readme, /leaves out the (\d+) `UNICODE-STEGO` ids/)).toEqual([sharedWithStatic.length]);
+    expect(sharedWithStatic.every(id => id.startsWith('UNICODE-STEGO-') && ids.includes(id))).toBe(true);
+    expect(emitted.size - sharedWithStatic.length + sem.length).toBe(counts.semantic);
+
+    expect(figures(checksDoc, /performs (\d+) security checks across (\d+) categories \((\d+) static checks/))
+      .toEqual([counts.total, counts.totalCategories, counts.static]);
   });
 
   it('the scan display no longer hardcodes a static-check count (teeth)', () => {
