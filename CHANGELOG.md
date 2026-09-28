@@ -271,6 +271,20 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
   2026-09-20. The README's Install section now carries the two switches that skip the
   download and the reason `--ignore-scripts` is safe for a CI install of this package.
 
+### A clean result over a capped scan no longer heads the report with "No security issues found" (#358)
+
+- **The headline now reads the coverage measurement the Verdict line already reads.**
+  The semantic pass compiles at most 200 files per scan, so on a large tree a directory
+  such as `.github` can fall past the cap while a scan of that directory alone reads it.
+  `secure` and `check` already said so lower down ("No issues in what was examined — but
+  N stopped at a file cap. This is not a clean bill of health for the whole target."), but
+  the headline above the score still printed the green `No security issues found`.
+  Measured on a clean tree of 208 files: header `semantic capped at 200`, headline
+  `No security issues found`, Verdict line qualified. The headline now prints
+  `No issues in what was examined`, in amber, whenever a cap stopped a category short or
+  this scan depth skipped checks. Under the cap the all-clear is unchanged. The score, the
+  findings, the exit code and `--json` are unchanged; this is the text headline only.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path

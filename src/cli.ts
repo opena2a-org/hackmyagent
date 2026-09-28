@@ -2005,6 +2005,59 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  ${colors.dim}${line}${RESET()}`);
   }
 
+  // #358 — computed ahead of the headline so the headline and the
+  // Observations verdict below read the same coverage measurement.
+  // Measured coverage for this run. `undefined` when the caller supplied no
+  // ledger (the `check` quick-scan path, and any embedder calling the
+  // display helper directly) — in that case the lines below fall back to
+  // their previous behaviour rather than assert a coverage claim built from
+  // nothing.
+  const coverageCategories = localScan?.coverage
+    ? summarizeCoverage(
+        localScan.coverage.executions,
+        // A capped semantic pass truncates every category it credits. This
+        // is the case that matters most: the semantic layer is the only one
+        // that reads arbitrary source, so when its 200-file walk stops
+        // early, `credentials` is examined for the files it reached and
+        // blind to the rest — and a planted key in file 201 goes unseen
+        // while the category still reports clear. Registering the cap here
+        // is what turns those categories into `partial`.
+        nanomindScan?.compileSetTruncated
+          ? [
+              ...localScan.coverage.truncations,
+              {
+                layer: 'semantic',
+                cap: nanomindScan?.compiledArtifacts ?? 0,
+                prefixes: [...SEMANTIC_PREFIXES],
+                reason:
+                  `semantic pass capped at ${nanomindScan?.compiledArtifacts ?? 0} files — source beyond the cap was not compiled`,
+              },
+            ]
+          : localScan.coverage.truncations,
+        {
+          // A reported finding proves its category was examined.
+          observedCheckIds: failed.map(f => f.checkId).filter(Boolean),
+          filesReadByCategory: localScan.coverage.filesReadByCategory,
+        },
+      )
+    : undefined;
+  // Categories a cap stopped short of the whole tree.
+  const partiallyExamined = (coverageCategories ?? []).filter(c => c.state === 'truncated');
+
+  // What qualifies the verdict is only ever POSITIVELY measured: a cap that
+  // fired, or a check the orchestration explicitly skipped. A category that
+  // simply read nothing is reported in the inventory but does not warn —
+  // a repo with no MCP config has nothing for the MCP checks to read, and
+  // flagging that would be the shame-shaped inverse of the bug being fixed
+  // here. Two earlier cuts tried to tell "absent" from "not attributed" by
+  // inference; both were wrong in both directions, so neither claim is made.
+  const explicitlySkipped = (coverageCategories ?? []).filter(c =>
+    (localScan?.coverage?.executions ?? []).some(
+      e => e.skipReason && (CHECK_METHOD_PREFIXES[e.method] ?? [])
+        .some(p => categoryForPrefix(p) === c.category),
+    ),
+  );
+
   // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
     let verdictText: string;
@@ -2025,6 +2078,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // headline names the matrix it actually cleared and stays amber.
       verdictColor = colors.yellow;
       verdictText = 'No issues in the quick-scan matrix';
+    } else if (partiallyExamined.length > 0 || explicitlySkipped.length > 0) {
+      // #358 — nothing found is not "No security issues found" when a cap
+      // stopped the run short of the tree, or this scan depth skipped checks:
+      // the files past the cap were never read. Same measurement and tone as
+      // the Verdict line below, which names the gap.
+      verdictColor = colors.yellow;
+      verdictText = 'No issues in what was examined';
     } else {
       verdictColor = colors.green;
       verdictText = 'No security issues found';
@@ -2110,59 +2170,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const semanticCount = nanomindScan?.compiledArtifacts ?? 0;
     const filesScanned = localScan?.filesScanned;
 
-    // Measured coverage for this run. `undefined` when the caller supplied no
-    // ledger (the `check` quick-scan path, and any embedder calling the
-    // display helper directly) — in that case the lines below fall back to
-    // their previous behaviour rather than assert a coverage claim built from
-    // nothing.
-    const coverageCategories = localScan?.coverage
-      ? summarizeCoverage(
-          localScan.coverage.executions,
-          // A capped semantic pass truncates every category it credits. This
-          // is the case that matters most: the semantic layer is the only one
-          // that reads arbitrary source, so when its 200-file walk stops
-          // early, `credentials` is examined for the files it reached and
-          // blind to the rest — and a planted key in file 201 goes unseen
-          // while the category still reports clear. Registering the cap here
-          // is what turns those categories into `partial`.
-          nanomindScan?.compileSetTruncated
-            ? [
-                ...localScan.coverage.truncations,
-                {
-                  layer: 'semantic',
-                  cap: semanticCount,
-                  prefixes: [...SEMANTIC_PREFIXES],
-                  reason:
-                    `semantic pass capped at ${semanticCount} files — source beyond the cap was not compiled`,
-                },
-              ]
-            : localScan.coverage.truncations,
-          {
-            // A reported finding proves its category was examined.
-            observedCheckIds: failed.map(f => f.checkId).filter(Boolean),
-            filesReadByCategory: localScan.coverage.filesReadByCategory,
-          },
-        )
-      : undefined;
     // Categories with no executed check. These are what used to print inside
     // "(all clear)"; they now print as `not examined`, each with its reason.
     const notExamined = (coverageCategories ?? []).filter(c => c.state === 'not-examined');
-    // Categories a cap stopped short of the whole tree.
-    const partiallyExamined = (coverageCategories ?? []).filter(c => c.state === 'truncated');
 
-    // What qualifies the verdict is only ever POSITIVELY measured: a cap that
-    // fired, or a check the orchestration explicitly skipped. A category that
-    // simply read nothing is reported in the inventory but does not warn —
-    // a repo with no MCP config has nothing for the MCP checks to read, and
-    // flagging that would be the shame-shaped inverse of the bug being fixed
-    // here. Two earlier cuts tried to tell "absent" from "not attributed" by
-    // inference; both were wrong in both directions, so neither claim is made.
-    const explicitlySkipped = (coverageCategories ?? []).filter(c =>
-      (localScan?.coverage?.executions ?? []).some(
-        e => e.skipReason && (CHECK_METHOD_PREFIXES[e.method] ?? [])
-          .some(p => categoryForPrefix(p) === c.category),
-      ),
-    );
     // HMA-2: prefer registry.packageType (authoritative) over the local
     // project-type heuristic. Fixes "Surfaces: cli" (HMA local heuristic)
     // disagreeing with "library" (ai-trust → registry packageType) on
