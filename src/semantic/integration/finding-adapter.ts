@@ -85,8 +85,10 @@ const CATEGORY_LABELS: Record<string, string> = {
  * (`structural/credential-context.ts`) is the only site that sets `evidence`
  * at all, and it always sets a valid `line` AND `evidence.lines[0].n`, so
  * `resolveFindingLine` returns at step 1 without consulting `rawContent`.
- * Every semantic finding that LACKS a line — `SEM-MCP-001..008`,
- * `SEM-INST-003/004`, `SEM-PERM-001/002/003`, `SEM-CRED-004` — sets no
+ * Every semantic finding that LACKS a line — `SEM-MCP-005/006` (cross-server
+ * and whole-file), the other `SEM-MCP-*` checks when their search of the raw
+ * text finds no line (#644), `SEM-INST-003/004`, `SEM-PERM-001/002/003`,
+ * `SEM-CRED-004` — sets no
  * `evidence`, so there is no verbatim trigger to locate and the result is
  * undefined whatever the caller passes.
  *

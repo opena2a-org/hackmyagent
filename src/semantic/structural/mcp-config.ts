@@ -111,6 +111,10 @@ export class McpConfigAnalyzer {
       }
 
       const allCapabilities = new Map<string, Capability[]>();
+      // Built on the first finding that cites a line, then shared by every
+      // finding in this file: one pass over the text, not one per finding.
+      let located: Map<string, ServerLocation | null> | undefined;
+      const locate = () => (located ??= locateServerEntries(file.content));
 
       for (const [serverName, serverConfig] of Object.entries(servers)) {
         if (!serverConfig || typeof serverConfig !== 'object') continue;
@@ -129,13 +133,13 @@ export class McpConfigAnalyzer {
         findings.push(...this.checkSecretsInArgs(serverName, serverConfig, file));
 
         // Check wildcard permissions
-        findings.push(...this.checkWildcardPermissions(serverName, serverConfig, file));
+        findings.push(...this.checkWildcardPermissions(serverName, serverConfig, file, locate));
 
         // Check typosquatted packages
-        findings.push(...this.checkTyposquatPackages(serverName, serverConfig, file));
+        findings.push(...this.checkTyposquatPackages(serverName, serverConfig, file, locate));
 
         // Check bootstrap/remote-code execution in args
-        findings.push(...this.checkBootstrapScript(serverName, serverConfig, file));
+        findings.push(...this.checkBootstrapScript(serverName, serverConfig, file, locate));
       }
 
       // Check attack chains across servers
@@ -297,7 +301,8 @@ export class McpConfigAnalyzer {
   private checkWildcardPermissions(
     serverName: string,
     config: McpServerConfig,
-    file: AnalysisFile
+    file: AnalysisFile,
+    locate: () => Map<string, ServerLocation | null>
   ): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
 
@@ -316,6 +321,7 @@ export class McpConfigAnalyzer {
           category: 'mcp-config',
           severity: 'high',
           file: file.path,
+          line: serverFieldLine(locate(), serverName, fieldName),
           recommendation: `Replace wildcard with specific allowed ${fieldName}: ["tool1", "tool2"].`,
           layer: 2,
           autoFixable: false,
@@ -410,12 +416,17 @@ export class McpConfigAnalyzer {
   private checkTyposquatPackages(
     serverName: string,
     config: McpServerConfig,
-    file: AnalysisFile
+    file: AnalysisFile,
+    locate: () => Map<string, ServerLocation | null>
   ): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
     const args = config.args || [];
 
+    // A counter rather than `args.entries()`: `args` is whatever the file holds,
+    // and iterating it is what this check already did with a non-array value.
+    let argIndex = -1;
     for (const arg of args) {
+      argIndex++;
       if (!arg.startsWith('@modelcontextprotocol/')) continue;
       const suffix = arg.slice('@modelcontextprotocol/'.length);
       // Exact match is legitimate
@@ -438,6 +449,7 @@ export class McpConfigAnalyzer {
         category: 'mcp-config',
         severity: 'critical',
         file: file.path,
+        line: serverArgLine(locate(), serverName, argIndex),
         recommendation: `Replace "${arg}" with the correct package name. Verify: npm view ${arg} to see if it exists and who publishes it.`,
         layer: 2,
         autoFixable: false,
@@ -451,7 +463,8 @@ export class McpConfigAnalyzer {
   private checkBootstrapScript(
     serverName: string,
     config: McpServerConfig,
-    file: AnalysisFile
+    file: AnalysisFile,
+    locate: () => Map<string, ServerLocation | null>
   ): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
     const allArgs = [config.command, ...(config.args || [])].join(' ');
@@ -468,6 +481,7 @@ export class McpConfigAnalyzer {
         category: 'mcp-config',
         severity: 'critical',
         file: file.path,
+        line: serverKeyLine(locate(), serverName),
         recommendation:
           `Remove the bootstrap script. Install the MCP package via a verified package manager with a pinned version and hash. Never use curl|sh in an MCP server command.`,
         layer: 2,
@@ -488,4 +502,191 @@ export class McpConfigAnalyzer {
     }
     return undefined;
   }
+}
+
+/**
+ * Where one member of a server entry sits in the raw JSON (#644): the line of
+ * its key, the key as written, and, for an array value, the line each element
+ * starts on.
+ */
+interface MemberLocation {
+  line: number;
+  spelling: string;
+  elementLines: number[];
+}
+
+/** Where one server entry sits in the raw JSON: its key's line, the key as written, its members. */
+interface ServerLocation {
+  line: number;
+  spelling: string;
+  members: Map<string, MemberLocation>;
+}
+
+/**
+ * Every server entry under the top-level server-map keys, located in one pass
+ * over the raw JSON (#644).
+ *
+ * Structural rather than textual: a key counts only at its depth, so a server
+ * named `command` is not found at the first `"command":` in the file, and an
+ * `env` holding a key named like a later server is not that server. Duplicate
+ * keys resolve as `JSON.parse` resolves them (the last one wins), and the maps
+ * merge in `MCP_SERVER_MAP_KEYS` order as `analyze` merges them, so each
+ * location belongs to the entry the findings were computed from. A later value
+ * that is not an object is kept as `null`, because it replaced the entry.
+ *
+ * One pass for the whole file, not one per finding: this analyzer can report
+ * every server in a file, and a lookup that rescans the text per finding (as
+ * `lineOfJsonValue` in `scanner/json-locate.ts` does, by design, for the one
+ * grant it is asked about) makes a half-megabyte file of wildcard servers take
+ * seconds instead of milliseconds.
+ *
+ * Iterative, with an explicit stack: a file nested deeper than the call stack
+ * still parses with `JSON.parse`, and must not throw here. Called only on text
+ * `JSON.parse` accepted; anything unexpected returns what was found so far.
+ */
+function locateServerEntries(content: string): Map<string, ServerLocation | null> {
+  type Role = 'root' | 'map' | 'server' | 'args' | 'other';
+  interface Frame {
+    role: Role;
+    isObject: boolean;
+    awaitingKey: boolean;
+    key: string;
+    keySpelling: string;
+    keyLine: number;
+    map?: Map<string, ServerLocation | null>;
+    server?: ServerLocation;
+    elements?: number[];
+  }
+  const maps = new Map<string, Map<string, ServerLocation | null>>();
+  const stack: Frame[] = [];
+  let line = 1;
+  let i = 0;
+  const n = content.length;
+
+  const frame = (role: Role, isObject: boolean): Frame =>
+    ({ role, isObject, awaitingKey: isObject, key: '', keySpelling: '', keyLine: 0 });
+
+  /** Records what a value at this position is, and returns the frame of the container it opens. */
+  const beginValue = (opens: 'object' | 'array' | 'none'): Frame | undefined => {
+    const top = stack[stack.length - 1];
+    let child = opens === 'none' ? undefined : frame('other', opens === 'object');
+    if (!top) {
+      if (child && opens === 'object') child.role = 'root';
+    } else if (!top.isObject) {
+      if (top.role === 'args') top.elements!.push(line);
+    } else if (top.role === 'root') {
+      if (MCP_SERVER_MAP_KEYS.includes(top.key)) {
+        if (child && opens === 'object') {
+          child.role = 'map';
+          child.map = new Map();
+          maps.set(top.key, child.map);
+        } else {
+          maps.delete(top.key);
+        }
+      }
+    } else if (top.role === 'map') {
+      if (child && opens === 'object') {
+        const server: ServerLocation = { line: top.keyLine, spelling: top.keySpelling, members: new Map() };
+        top.map!.set(top.key, server);
+        child.role = 'server';
+        child.server = server;
+      } else {
+        top.map!.set(top.key, null);
+      }
+    } else if (top.role === 'server') {
+      const member: MemberLocation = { line: top.keyLine, spelling: top.keySpelling, elementLines: [] };
+      top.server!.members.set(top.key, member);
+      if (child && opens === 'array' && top.key === 'args') {
+        child.role = 'args';
+        child.elements = member.elementLines;
+      }
+    }
+    return child;
+  };
+
+  try {
+    while (i < n) {
+      const c = content.charCodeAt(i);
+      if (c === 0x0a) {
+        line++;
+        i++;
+      } else if (c === 0x20 || c === 0x09 || c === 0x0d || c === 0x3a /* : */) {
+        i++;
+      } else if (c === 0x2c /* , */) {
+        const top = stack[stack.length - 1];
+        if (top?.isObject) top.awaitingKey = true;
+        i++;
+      } else if (c === 0x7b /* { */ || c === 0x5b /* [ */) {
+        stack.push(beginValue(c === 0x7b ? 'object' : 'array')!);
+        i++;
+      } else if (c === 0x7d /* } */ || c === 0x5d /* ] */) {
+        stack.pop();
+        i++;
+      } else if (c === 0x22 /* " */) {
+        let j = i + 1;
+        while (j < n) {
+          const d = content.charCodeAt(j);
+          if (d === 0x5c /* \ */) j += 2;
+          else if (d === 0x22) break;
+          else j++;
+        }
+        const top = stack[stack.length - 1];
+        if (top?.isObject && top.awaitingKey) {
+          top.awaitingKey = false;
+          if (top.role === 'root' || top.role === 'map' || top.role === 'server') {
+            top.keySpelling = content.slice(i, j + 1);
+            top.key = JSON.parse(top.keySpelling) as string;
+            top.keyLine = line;
+          }
+        } else {
+          beginValue('none');
+        }
+        i = j + 1;
+      } else {
+        // A number, true, false or null: runs to the next delimiter.
+        beginValue('none');
+        while (i < n && !/[\s,\]}:]/.test(content[i])) i++;
+      }
+    }
+  } catch {
+    // Unreachable on text JSON.parse accepted; keep what was located.
+  }
+
+  const servers = new Map<string, ServerLocation | null>();
+  for (const mapKey of MCP_SERVER_MAP_KEYS) {
+    for (const [name, location] of maps.get(mapKey) ?? []) servers.set(name, location);
+  }
+  return servers;
+}
+
+/**
+ * The line of the server's key, or undefined (#644). The key must be written
+ * as `JSON.stringify` writes the name: a key spelled another way (a `\u`
+ * escape) is left without a line, as a line nobody can find the name on is no
+ * help.
+ */
+function serverKeyLine(servers: Map<string, ServerLocation | null>, serverName: string): number | undefined {
+  const server = servers.get(serverName);
+  return server && server.spelling === JSON.stringify(serverName) ? server.line : undefined;
+}
+
+/** The line of the server's `field` key, else the server's key line (#644). */
+function serverFieldLine(
+  servers: Map<string, ServerLocation | null>,
+  serverName: string,
+  field: string,
+): number | undefined {
+  const keyLine = serverKeyLine(servers, serverName);
+  if (keyLine === undefined) return undefined;
+  const member = servers.get(serverName)?.members.get(field);
+  return member && member.spelling === JSON.stringify(field) ? member.line : keyLine;
+}
+
+/** The line of the server's `args[index]`, else the server's key line (#644). */
+function serverArgLine(
+  servers: Map<string, ServerLocation | null>,
+  serverName: string,
+  index: number,
+): number | undefined {
+  return servers.get(serverName)?.members.get('args')?.elementLines[index] ?? serverKeyLine(servers, serverName);
 }
