@@ -100,6 +100,8 @@ describe('HMA-21.AC3 — the hmaignore disclosure', { timeout: 900_000 }, () => 
         checkId: 'NEMO-009',
         reason: 'fp on fixture',
         matched: 1,
+        // #465 — which findings the rule excluded, one entry per `matched`.
+        excluded: [{ checkId: 'NEMO-009', severity: 'critical', file: 'danger.py' }],
       },
       {
         line: 2,
@@ -108,6 +110,7 @@ describe('HMA-21.AC3 — the hmaignore disclosure', { timeout: 900_000 }, () => 
         checkId: 'GIT-001',
         expires: '2099-12-31',
         matched: 1,
+        excluded: [{ checkId: 'GIT-001', severity: 'low', file: '.gitignore' }],
       },
       {
         line: 3,

@@ -6,6 +6,25 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### SARIF, HTML and ASFF reports disclose suppressed and out-of-scope findings (#465)
+
+- **The report files paired a corrected score and exit code with an uncorrected list.** After
+  #450, `--ignore` and `.hmaignore` findings still count toward the score and the exit code,
+  and the terminal report names them, but the file writers were never handed the two
+  records. With `.hmaignore` holding `vendor/` and `!DEP-001`, `-f sarif` had no
+  `run.properties`, `-f html` no suppression text, and `-f asff` nothing at all.
+  - SARIF: `runs[0].properties.suppressed` and `runs[0].properties.outOfScope`, the same
+    identity-only rows `secure --json` carries.
+  - HTML: a "Suppressed and out of scope" section, in the terminal report's wording, with
+    one row per check.
+  - ASFF: the format is a bare array of findings, so the disclosure goes to stderr beside
+    the import instructions; stdout stays importable.
+- **Each `.hmaignore` rule in `--json` names the findings it excluded.** `hmaignore.rules[]`
+  entries gain `excluded: [{ checkId, severity, file }]`, one per matched finding, so a
+  reviewer can tell which rule excluded which critical. The `outOfScope` rows stay
+  identity-only, because they travel with a published result; the per-rule record is local
+  and never rides a wire.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before

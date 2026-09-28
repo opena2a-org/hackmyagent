@@ -3112,9 +3112,41 @@ export function matchHmaIgnore(
  * whole-path rule carries `redundantTo` (and, the tiers being what they are,
  * `matched: 0`) — reported redundant, never silently swallowed.
  */
+/**
+ * Per-rule match counts for the `.hmaignore` disclosure, and the findings
+ * behind them (#465): identity plus the cited file, never message or evidence.
+ *
+ * Shared by the scan pass and `reapplyIgnoreFilters`, which count over
+ * different arrays through their own gates; `include` is that gate, so Σ
+ * matched per rule stays equal to the Row counts each site discloses.
+ */
+export function tallyHmaIgnoreMatches<T extends SecurityFindingDraft>(
+  findings: Iterable<T>,
+  attribution: ReadonlyMap<T, number>,
+  include: (f: T) => boolean,
+): {
+  matchedByLine: Map<number, number>;
+  excludedByLine: Map<number, Array<{ checkId: string; severity: string; file?: string }>>;
+} {
+  const matchedByLine = new Map<number, number>();
+  const excludedByLine = new Map<number, Array<{ checkId: string; severity: string; file?: string }>>();
+  for (const f of findings) {
+    if (!include(f)) continue;
+    const line = attribution.get(f);
+    if (line === undefined) continue;
+    matchedByLine.set(line, (matchedByLine.get(line) ?? 0) + 1);
+    const excluded = excludedByLine.get(line) ?? [];
+    // `|| 'info'`, as `summarizeSuppressed` does, so the two records agree.
+    excluded.push({ checkId: f.checkId, severity: f.severity || 'info', ...(f.file ? { file: f.file } : {}) });
+    excludedByLine.set(line, excluded);
+  }
+  return { matchedByLine, excludedByLine };
+}
+
 export function buildHmaIgnoreDisclosure(
   parsed: ParsedHmaIgnore,
   matchedByLine: ReadonlyMap<number, number>,
+  excludedByLine: ReadonlyMap<number, ReadonlyArray<{ checkId: string; severity: string; file?: string }>> = new Map(),
 ): HmaIgnoreDisclosure | undefined {
   if (!parsed.present) return undefined;
   const wholePathRules = parsed.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL);
@@ -3133,6 +3165,7 @@ export function buildHmaIgnoreDisclosure(
         ...(r.reason !== undefined ? { reason: r.reason } : {}),
         ...(r.expires !== undefined ? { expires: r.expires } : {}),
         matched: matchedByLine.get(r.line) ?? 0,
+        ...(excludedByLine.get(r.line)?.length ? { excluded: [...excludedByLine.get(r.line)!] } : {}),
         ...(absorbedBy ? { redundantTo: absorbedBy.line } : {}),
       };
     }),
@@ -3991,13 +4024,12 @@ export class HardeningScanner {
     this.lastSuppressed = summarizeSuppressed(checkSuppressed.filter(reportable));
     // Σ matched per rule ≡ the Row counts above: counted over the same arrays,
     // through the same reportable + countsAgainstScore gates the summaries use.
-    const matchedByLine = new Map<number, number>();
-    for (const f of [...pathExcluded, ...checkSuppressed]) {
-      if (!reportable(f) || !countsAgainstScore(f)) continue;
-      const line = attribution.get(f);
-      if (line !== undefined) matchedByLine.set(line, (matchedByLine.get(line) ?? 0) + 1);
-    }
-    this.lastHmaIgnore = buildHmaIgnoreDisclosure(parsed, matchedByLine);
+    const tally = tallyHmaIgnoreMatches(
+      [...pathExcluded, ...checkSuppressed],
+      attribution,
+      (f) => reportable(f) && countsAgainstScore(f),
+    );
+    this.lastHmaIgnore = buildHmaIgnoreDisclosure(parsed, tally.matchedByLine, tally.excludedByLine);
     if (pathExcluded.length === 0 && checkSuppressed.length === 0) return findings;
     const removed = new Set([...pathExcluded, ...checkSuppressed]);
     return findings.filter((f) => !removed.has(f));
@@ -5337,13 +5369,12 @@ export class HardeningScanner {
     // findings, through the same `countsAgainstScore` gate, as the two Row
     // summaries above, so Σ matched per (checkId, channel) equals the Row
     // count (the cross-check the tests hold).
-    const hmaMatchedByLine = new Map<number, number>();
-    for (const f of filteredFindings) {
-      if (!f.suppressed || !countsAgainstScore(f)) continue;
-      const line = hmaAttribution.get(f);
-      if (line !== undefined) hmaMatchedByLine.set(line, (hmaMatchedByLine.get(line) ?? 0) + 1);
-    }
-    const hmaignoreDisclosure = buildHmaIgnoreDisclosure(hmaIgnore, hmaMatchedByLine);
+    const hmaTally = tallyHmaIgnoreMatches(
+      filteredFindings,
+      hmaAttribution,
+      (f) => !!f.suppressed && countsAgainstScore(f),
+    );
+    const hmaignoreDisclosure = buildHmaIgnoreDisclosure(hmaIgnore, hmaTally.matchedByLine, hmaTally.excludedByLine);
 
     filteredFindings = filteredFindings.filter((f) => !f.suppressed);
 
