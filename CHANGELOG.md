@@ -6,6 +6,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### `harden-soul --profile` refuses a value that is not a profile (#611)
+
+- **`harden-soul --profile <value>` exits 1 and writes nothing when the value is not one of
+  `conversational`, `code-assistant`, `tool-agent`, `autonomous`, `orchestrator` or `custom`.**
+  It named the accepted set in `--help` but cast whatever it was given and wrote it into the
+  generated file's `<!-- soul:profile=… -->` marker: `harden-soul --profile bogus <dir>` exited 0
+  and left `soul:profile=bogus`, a marker `scan-soul` then trusts to decide which governance
+  domains apply. The check is in the writer, so the library and the MCP server refuse the same
+  values. Accepted profiles are unchanged, case-insensitive as before.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
