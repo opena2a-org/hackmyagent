@@ -10,7 +10,7 @@
 This workflow combines two approaches:
 
 1. **Static analysis** (`secure`) -- checks MCP config files for misconfigurations
-2. **Adversarial testing** (`attack`) -- sends 75 attack payloads against your agent or MCP server
+2. **Adversarial testing** (`attack`) -- sends attack payloads against your agent or MCP server (111 at the default `active` intensity, 164 at `aggressive`)
 
 ## Step 1: Check MCP configurations
 
@@ -18,37 +18,48 @@ This workflow combines two approaches:
 npx hackmyagent secure
 ```
 
-HMA auto-detects MCP configuration files in standard locations:
+HMA reads the MCP configuration files a project carries:
 
+- `mcp.json` and `.mcp.json` at the project root
 - `.cursor/mcp.json`
 - `.vscode/mcp.json`
-- `claude_desktop_config.json`
-- `~/.config/claude/claude_desktop_config.json`
 
-**Expected output (MCP-related findings):**
+User-scope files such as `~/.claude.json` are outside a repository scan.
+
+**Example output** from hackmyagent 0.33.2, on a project whose `.cursor/mcp.json` grants a filesystem server `/` and passes a GitHub token in a server's `env`. `[...]` marks omitted lines:
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
+  mcp-agent  v1.0.0 · mcp · 1 file analyzed
+  3 critical issues found
 
-Scanning: /home/user/my-agent
+  Security  ━━━━━━━━━━━━━━━━━━━━ 53/100
 
-  HIGH      MCP-001   Root filesystem access in MCP server
-            Found: server-filesystem allowed path: /
-            Fix:   Scope to project directory only
+  ── Observations ────────────────────────────────────────────
+  Surfaces    mcp · 1 semantic artifact · no analyzer family examined it
+  Checks      320 static declared · 63 of 63 check groups ran · 3 unreachable · 1 semantic (NanoMind AST, 0 of 7 analyzer families) · 3 files read by static checks
+  Coverage    16 of 25 categories examined · 9 unexamined (read no file) · 21 checks reported an absent mitigation (not shown)
+  Unexamined  A2A, capabilities, governance, heartbeat, lifecycle, memory, prompt, sandbox-escape + 1 more (--verbose)
+  Categories  credentials (2 critical) · MCP (1 critical) · sandbox (1 medium) · supply-chain (1 medium) · git hygiene (1 low) · 11 others clear
+  Verdict     Not safe to ship. Exposed Credential in .cursor/mcp.json:1 + 5 more. Fix before using in production.
 
-  HIGH      MCP-003   MCP server bound to 0.0.0.0
-            Found: everything server in .cursor/mcp.json
-            Fix:   Bind to 127.0.0.1
+  ── Findings ────────────────────────────────────────────────
+  3 critical  2 medium  1 low
 
-  MEDIUM    MCP-005   MCP server with unrestricted tool access
-            Found: 14 tools enabled, no allowlist configured
-            Fix:   Define an explicit tool allowlist
+  │ CRITICAL  Exposed Credential
+  │ .cursor/mcp.json:1
+  │ Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.
+  │ Verify: sed -n '1p' /home/user/mcp-agent/.cursor/mcp.json
+  │ →  hackmyagent secure --fix
 
-  MEDIUM    MCP-007   No authentication on MCP server
-            Found: stdio transport with no auth token
-            Fix:   Add bearer token authentication
+  [...]
+  │ CRITICAL  Overprivileged MCP server scope
+  │ .cursor/mcp.json:1
+  │ Overprivileged filesystem access allows the agent (or an attacker via prompt injection) to read sensitive files like SSH keys, credentials, and system configs.
+  │ Verify: sed -n '1p' /home/user/mcp-agent/.cursor/mcp.json
+  │ Fix: Scope "filesystem" to the project directory: replace "/" with "./" or a specific subdirectory.
 
-Summary: 0 critical, 2 high, 2 medium, 0 low
+  [...]
+  Path forward: 53 -> 98 by fixing 3 critical
 ```
 
 Fix configuration issues before proceeding to adversarial testing.
@@ -95,13 +106,14 @@ npx hackmyagent attack http://localhost:3010 --target-type mcp --category mcp-ex
 ```
 
 This is the step that measures your server. Findings depend on what your server
-answers, so the report below is illustrative of the shape, not of your results:
+answers, so the report below is illustrative of the shape, not of your results
+(the `mcp-exploitation` category sends 7 payloads at the default intensity):
 
 ```
 Risk Score: 55/100 (HIGH)
 Duration: 8420ms
 
-Attacks: 10 sent | 10 answered | 3 successful | 5 blocked | 2 inconclusive
+Attacks: 7 sent | 7 answered | 2 successful | 4 blocked | 1 inconclusive
 ```
 
 `attack` probes the endpoint once before sending any payload. If nothing is
