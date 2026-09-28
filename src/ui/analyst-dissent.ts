@@ -133,9 +133,9 @@ export function analystDissentSuffix(
 /**
  * WHERE THIS GETS APPENDED, and why it is not obvious.
  *
- * `cli.ts` applies this to the RENDERED `verdictDisplay.value`, as the last
- * mutation before the line is printed — not to `buildVerdict`'s `message`,
- * which is the intuitive place and is wrong.
+ * `composeVerdictLine` below applies it to the RENDERED Verdict line, after
+ * the two disclosure verdicts — not to `buildVerdict`'s `message`, which is
+ * the intuitive place and is wrong.
  *
  * `renderObservationsBlock` copies `verdict.message` into the `Verdict` line's
  * `value`, and two branches downstream then ASSIGN that value outright rather
@@ -159,3 +159,43 @@ export function analystDissentSuffix(
  *   co-occur. Do not cite it as evidence the ordering is needed; it is here
  *   because wiring escalations into `check` would silently re-open the hole.
  */
+export type VerdictTone = 'default' | 'good' | 'warning' | 'critical';
+
+export interface VerdictLineInput {
+  /** The `Verdict` line as `renderObservationsBlock` built it. */
+  base: { value: string; tone: VerdictTone };
+  /** #200 — the quick-scan disclosure for a zero-finding quick scan. Replaces the value. */
+  quickScanVerdict?: string;
+  /** The coverage-gap disclosure for a zero-finding scan over incomplete coverage. Replaces the value. */
+  coverageGapVerdict?: string;
+  escalations: readonly DissentingEscalation[] | undefined;
+}
+
+/**
+ * #560 — the Verdict line's final text and tone, composed in one pure step so
+ * the ORDER above is a property a test can call rather than a comment in
+ * `cli.ts`. The two disclosures assign (coverage-gap wins when both apply, as
+ * it ran second), then the dissent clause is appended, then the tone comes
+ * off green if a clause was added.
+ *
+ * The tone rule only DOWNGRADES, and only from `good`: the advisory channel may
+ * withdraw an all-clear it disagrees with, never soften a `warning` or
+ * `critical` verdict into something calmer.
+ *
+ * Neither score nor exit code reads the result.
+ */
+export function composeVerdictLine(input: VerdictLineInput): { value: string; tone: VerdictTone } {
+  let { value, tone } = input.base;
+  if (input.quickScanVerdict !== undefined) {
+    value = input.quickScanVerdict;
+    tone = 'warning';
+  }
+  if (input.coverageGapVerdict !== undefined) {
+    value = input.coverageGapVerdict;
+    tone = 'warning';
+  }
+  const dissent = analystDissentSuffix(input.escalations);
+  value += dissent;
+  if (dissent !== '' && tone === 'good') tone = 'warning';
+  return { value, tone };
+}
