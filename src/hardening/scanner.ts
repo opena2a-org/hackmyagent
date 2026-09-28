@@ -1206,6 +1206,40 @@ const CONFIG_DIR_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.toml', '.ini'
 const BACKUP_DIR_NAME = '.hackmyagent-backup';
 
 /**
+ * #384 — the remediation for a credential whose finding sits inside a backup
+ * archive. Every live-tree fix is a dead end there: `secure --fix` never
+ * rewrites an archive (the copy is what `rollback` restores from) and
+ * `opena2a protect` migrates the live files, not the copies. CRED-001 carried
+ * this text alone, so the Layer-2 detector on the SAME archived file still
+ * printed `opena2a protect <target>`. One definition, so every producer that
+ * reaches an archive copy says the same thing.
+ */
+const ARCHIVED_CREDENTIAL_FIX = 'Rotate the credential, then remove this plaintext copy by hand';
+
+function archivedCredentialGuidance(cliName: string): string {
+  return 'Rotate the credential: it has been on disk in plaintext. Clearing the copy is yours to do — this file sits '
+    + `inside \`${BACKUP_DIR_NAME}\`, the directory HackMyAgent stores this tree's backups in, which it never `
+    + 'auto-edits (rewriting a backup would destroy what `rollback` restores from) and never offers to delete, '
+    + 'because it cannot tell which run wrote a given copy. Check the live file first: '
+    + `\`${cliName} secure\` should report no credential outside this directory.`;
+}
+
+/**
+ * Whether a finding reports a credential, across the producers that name it
+ * differently: Layer 1 (`credentials`, `secrets`), Layer 2 (`Credential
+ * Protection`, from `credential`), and any check whose fix is the live-tree
+ * credential migration (`opena2a protect`).
+ */
+function isCredentialFinding(f: SecurityFindingDraft): boolean {
+  const category = (f.category ?? '').toLowerCase();
+  if (category === 'credentials' || category === 'credential' || category === 'credential protection'
+    || category === 'secrets') {
+    return true;
+  }
+  return /\bopena2a\s+protect\b/i.test(f.fix ?? '');
+}
+
+/**
  * A directory named by its filesystem IDENTITY rather than by any spelling of
  * its path.
  *
@@ -5239,6 +5273,12 @@ export class HardeningScanner {
       }
     }
 
+    // #384 — a credential finding inside a backup archive gets the archive
+    // remediation whichever detector produced it. Runs after the adoption
+    // above; the verify scan passed its own findings through this same step,
+    // so adopted findings arrive already aligned.
+    await this.alignArchivedCredentialFixes(findings, targetDir);
+
     // Filter findings to only show real, actionable issues:
     // 1. Only failed checks (passed: false)
     // 2. Only checks with a file path (concrete findings, not generic advice)
@@ -6072,16 +6112,12 @@ export class HardeningScanner {
             fixable: !isEnvFile && !inArchive,
             fixed: fileModified,
             fix: inArchive
-              ? 'Rotate the credential, then remove this plaintext copy by hand'
+              ? ARCHIVED_CREDENTIAL_FIX
               : isEnvFile
                 ? 'Add .env to .gitignore to prevent committing secrets'
                 : `${this.cliName} secure --fix`,
             guidance: inArchive
-              ? 'Rotate the credential: it has been on disk in plaintext. Clearing the copy is yours to do — this file sits '
-                + `inside \`${BACKUP_DIR_NAME}\`, the directory HackMyAgent stores this tree's backups in, which it never `
-                + 'auto-edits (rewriting a backup would destroy what `rollback` restores from) and never offers to delete, '
-                + 'because it cannot tell which run wrote a given copy. Check the live file first: '
-                + `\`${this.cliName} secure\` should report no credential outside this directory.`
+              ? archivedCredentialGuidance(this.cliName)
               : isEnvFile
                 ? 'Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.'
                 : 'Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.',
@@ -6534,6 +6570,32 @@ export class HardeningScanner {
     // the level that could not be read.
     if (answer !== 'unknown') for (const d of asked) this.archiveDirAnswers.set(d, answer);
     return answer;
+  }
+
+  /**
+   * #384 — give every failing credential finding that sits inside a backup
+   * archive the archive remediation, replacing a live-tree fix that cannot move
+   * it. Only the advice changes: check, severity, verdict and score are the
+   * detector's, so the finding counts exactly as before.
+   *
+   * `inOwnArchive` is proof on its own (the #374 adoption set it by identity).
+   * Otherwise only a proven `yes` rewrites; `unknown` leaves the detector's
+   * text, which is the state before this change rather than a new claim.
+   */
+  private async alignArchivedCredentialFixes(
+    findings: SecurityFindingDraft[],
+    targetDir: string,
+  ): Promise<void> {
+    for (const f of findings) {
+      if (!f.file || f.passed !== false || f.fixed || f.notApplicable) continue;
+      if (f.fix === ARCHIVED_CREDENTIAL_FIX || !isCredentialFinding(f)) continue;
+      const inArchive = f.inOwnArchive
+        || (await this.isInsideArchiveBase(path.resolve(targetDir, f.file), targetDir)) === 'yes';
+      if (!inArchive) continue;
+      f.fix = ARCHIVED_CREDENTIAL_FIX;
+      f.guidance = archivedCredentialGuidance(this.cliName);
+      f.fixable = false;
+    }
   }
 
   /**
