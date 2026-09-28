@@ -145,6 +145,52 @@ describe('artifact intent reconciliation (deterministic — #252 contract gate)'
     expect(suppressed).toEqual([]);
   });
 
+  // #391: a benign label printed next to a HIGH on the same artifact
+  // contradicts the verdict two lines below it.
+  it('withholds a benign label this scan contradicts with high or critical findings', () => {
+    const { artifacts, suppressed } = reconcileArtifactIntents(
+      [artifact('SOUL.md', 'benign')],
+      [
+        { file: 'SOUL.md', severity: 'high' },
+        { file: '/tmp/hma-scan-abc/SOUL.md', severity: 'critical' },
+        { file: 'SOUL.md', severity: 'medium' },
+      ],
+    );
+
+    expect(artifacts[0].intent).toBe('unknown');
+    expect(suppressed).toEqual([{ path: 'SOUL.md', rawIntent: 'benign', contradictedBy: 2 }]);
+  });
+
+  it('keeps a benign label when nothing high or critical is on that artifact', () => {
+    const { artifacts, suppressed } = reconcileArtifactIntents(
+      [artifact('SOUL.md', 'benign'), artifact('SKILL.md', 'benign')],
+      [
+        { file: 'SOUL.md', severity: 'medium' },
+        { file: 'nested/SKILL.md', severity: 'high' },
+        { file: 'config.json', severity: 'critical' },
+      ],
+    );
+
+    expect(artifacts.map(a => a.intent)).toEqual(['benign', 'benign']);
+    expect(suppressed).toEqual([]);
+  });
+
+  it('leaves unknown as unknown whatever the findings', () => {
+    const { artifacts, suppressed } = reconcileArtifactIntents(
+      [artifact('SOUL.md', 'unknown')],
+      [{ file: 'SOUL.md', severity: 'high' }],
+    );
+    expect(artifacts[0].intent).toBe('unknown');
+    expect(suppressed).toEqual([]);
+  });
+
+  it('says a withheld benign label was contradicted, not uncorroborated', () => {
+    const one = rawIntentDisclosureLines([{ path: 'SOUL.md', rawIntent: 'benign', contradictedBy: 1 }]);
+    expect(one[1]).toBe('  SOUL.md -> benign, contradicted by 1 high/critical finding on this artifact');
+    const many = rawIntentDisclosureLines([{ path: 'SOUL.md', rawIntent: 'benign', contradictedBy: 4 }]);
+    expect(many[1]).toBe('  SOUL.md -> benign, contradicted by 4 high/critical findings on this artifact');
+  });
+
   it('never mutates its input', () => {
     const input = [artifact('SOUL.md', 'malicious')];
     reconcileArtifactIntents(input, []);

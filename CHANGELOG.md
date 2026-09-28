@@ -6,6 +6,18 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### The `Artifacts` line no longer calls a file `benign` above a HIGH finding on it (#391)
+
+- **A `benign` intent label on an artifact the same scan raised a HIGH or CRITICAL finding on
+  now reads `unknown`.** Measured on main with `check --nanomind` on a `SOUL.md` that tells the
+  agent to do whatever a user asks, to hide adjustments to the numbers and to skip
+  confirmations: `Artifacts   SOUL.md  soul · benign · no inferred capabilities`, then
+  `Not safe as-is` and four HIGH findings on that file. `--verbose` names the withheld label and
+  the count: `SOUL.md -> benign, contradicted by 4 high/critical findings on this artifact`.
+  This is the counterpart of the #252 rule, which already withholds an uncorroborated
+  `malicious` or `suspicious` label. Findings, severities, scores, verdicts and exit codes are
+  unchanged; only the label on the `Artifacts` line and the `--verbose` disclosure change.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
