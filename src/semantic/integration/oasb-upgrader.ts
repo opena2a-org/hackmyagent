@@ -1,9 +1,14 @@
 /**
  * OASB Upgrader
  *
- * Maps semantic check IDs to OASB benchmark controls.
- * When semantic checks are active, these IDs are added to the controls'
- * checkIds arrays, improving benchmark coverage.
+ * Maps OASB-1 controls to the semantic check IDs that verify them.
+ *
+ * Documentation, not configuration (#645). The assessor reads the catalogue in
+ * `src/benchmarks/oasb-1.ts`, where these mappings were folded into each
+ * control's `checkIds`; nothing in the tool reads this map. It is kept because
+ * it is library API, and it may only restate the catalogue: every entry must be
+ * a subset of that control's `checkIds`, which
+ * `__tests__/semantic/oasb-upgrader-catalogue-subset.test.ts` holds.
  */
 
 /**
@@ -26,8 +31,9 @@ export const SEMANTIC_OASB_MAPPINGS: Record<string, string[]> = {
   // Context-aware detection catches credentials regex misses
   '5.1': ['SEM-CRED-001', 'SEM-CRED-002', 'SEM-CRED-003', 'SEM-CRED-004'],
 
-  // 5.2 Credential Rotation (structural detection of static credentials)
-  '5.2': ['SEM-CRED-002'],
+  // 5.2 Credential Rotation carries no semantic check: the catalogue verifies
+  // it with MCP-006 and MCP-009. The `'5.2': ['SEM-CRED-002']` entry this map
+  // used to hold was never read by the assessor and disagreed with it (#645).
 
   // 2.2 Least Privilege Principle
   // Permission model + MCP scope analysis
