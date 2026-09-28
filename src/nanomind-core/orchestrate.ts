@@ -306,6 +306,7 @@ export async function orchestrateNanoMind(
           classifyArtifactForCoverage,
           silent,
           options.findingVisible,
+          nmResult.rereadArtifact,
         );
         result.coverageSweep = sweep.stats;
         if (sweep.escalations.length > 0) {
@@ -523,6 +524,7 @@ export async function runCoverageSweep(
   classify: (content: string) => Promise<ArtifactCoverageVerdict | null>,
   silent = false,
   findingVisible?: (finding: SecurityFindingDraft) => boolean,
+  reread?: (file: string) => string | undefined,
 ): Promise<CoverageSweepOutcome> {
   // Files already carrying a high/critical structural ATTACK finding are
   // covered by the per-finding analyst stage; the sweep targets the misses.
@@ -556,6 +558,15 @@ export async function runCoverageSweep(
   // of the scan target, so a failure is a lost input and must reach the ledger.
   // The `catch { continue }` below stays: skipping the artifact is right, but it
   // must no longer be the only record that the read happened.
+  //
+  // #520 — that holds for `sweep-only` candidates alone, whose read here is the
+  // first. A `compiled` candidate was read (tracked) by the compile loop before
+  // it became a candidate, so reading it again here is a RE-read: a failure in
+  // the window between the two would record an unread input no later read can
+  // subtract (the sweep runs outside any `coverage.run()` frame), exit 2 with a
+  // `chmod` remedy for a file the run read. Those go through `reread`, the
+  // bridge's off-ledger citation re-read; without one they are skipped, never
+  // tracked.
   const { fs: { readFile } } = await import('../hardening/tracked-fs.js');
   const { join } = await import('node:path');
 
@@ -579,10 +590,16 @@ export async function runCoverageSweep(
     }
 
     let content: string;
-    try {
-      content = await readFile(join(targetDir, candidate.path), 'utf-8');
-    } catch {
-      continue; // file vanished between scan and sweep — skip, never block
+    if (candidate.provenance === 'compiled') {
+      const bytes = reread?.(candidate.path);
+      if (bytes === undefined) continue; // changed since the compile read — skip, never record
+      content = bytes;
+    } else {
+      try {
+        content = await readFile(join(targetDir, candidate.path), 'utf-8');
+      } catch {
+        continue; // file vanished between scan and sweep — skip, never block
+      }
     }
 
     const verdict = await classify(content);

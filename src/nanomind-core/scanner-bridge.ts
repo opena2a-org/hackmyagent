@@ -175,6 +175,14 @@ export interface CoverageCandidate {
   /** Compiler-assigned artifact type (skill, mcp_config, soul, source_code,
    *  ...), or SWEEP_ONLY_ARTIFACT_TYPE for uncompiled sweep-only files. */
   artifactType: string;
+  /**
+   * #520 — whether this run has already read the file. `compiled` candidates
+   * are pushed only after the compile loop's tracked read resolved, so the
+   * sweep's read of them is a RE-read and must stay off the coverage ledger
+   * (`rereadArtifact`). `sweep-only` candidates were never opened before the
+   * sweep, so the sweep's read IS the discovery read and stays tracked.
+   */
+  provenance: 'compiled' | 'sweep-only';
 }
 
 /**
@@ -246,6 +254,13 @@ export interface NanoMindScanResult {
    * what let a 529-file repo report "200 files analyzed" beside "(all clear)".
    */
   compileSetTruncated: boolean;
+  /**
+   * #520 — the off-ledger, site-confined re-read of a file this run already
+   * read (`readArtifact` below). The coverage sweep reads `compiled`
+   * candidates through it: a tracked re-read that failed would record an
+   * unread input no later read can subtract. Absent when nothing was compiled.
+   */
+  rereadArtifact?: (file: string) => string | undefined;
 }
 
 /**
@@ -371,7 +386,7 @@ export async function runNanoMindScan(
 
       const result = await compiler.compile(content, relativePath);
       compiledCount++;
-      coverageCandidates.push({ path: relativePath, artifactType: result.ast.artifactType });
+      coverageCandidates.push({ path: relativePath, artifactType: result.ast.artifactType, provenance: 'compiled' });
       const familyCoverage = {
         path: relativePath,
         artifactType: result.ast.artifactType,
@@ -473,6 +488,7 @@ export async function runNanoMindScan(
     coverageCandidates.push({
       path: relative(targetDir, filePath),
       artifactType: SWEEP_ONLY_ARTIFACT_TYPE,
+      provenance: 'sweep-only',
     });
   }
 
@@ -517,6 +533,7 @@ export async function runNanoMindScan(
     coverageCandidates,
     semanticFamilyCoverage: rollUpFamilyCoverage(familyCoverageRows),
     compileSetTruncated,
+    rereadArtifact: readArtifact,
   };
 }
 
