@@ -6,6 +6,15 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### `explain` answers every id `scan-soul` prints (#760)
+
+- `scan-soul` printed `SOUL-PROFILE-MISMATCH` as a HIGH while `explain SOUL-PROFILE-MISMATCH`
+  answered `Unknown check ID` and exited 1. The same held for `SOUL-PROFILE-MARKER-INVALID`,
+  the six `SOUL-VIOLATION-*` classes and the `SOUL-CONFORMANCE NONE` line. `explain` now answers
+  each of them with exit 0; the violation entries are built from the scanner's own catalog, so a
+  new violation class is explainable when it ships. A test collects every `SOUL-*` id from
+  `scan-soul`'s text output on two fixtures and runs `explain` on each.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before

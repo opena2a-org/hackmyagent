@@ -477,7 +477,7 @@ import { CLI_PREFIX, RAW_CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, s
 // The explain command's knowledge lives in src/explain-registry.ts: the
 // static explanations and category labels moved there so the unknown-id
 // refusal predicate and the known-id sweep test share one inventory.
-import { STATIC_EXPLANATIONS, PREFIX_DESCRIPTIONS, isKnownExplainId, suggestExplainIds } from './explain-registry';
+import { STATIC_EXPLANATIONS, SOUL_SCAN_EXPLANATIONS, PREFIX_DESCRIPTIONS, isKnownExplainId, suggestExplainIds } from './explain-registry';
 
 let nanomindDeprecationWarned = false;
 /**
@@ -11518,8 +11518,8 @@ program
       return exitRecorded(1, 'refused');
     }
 
-    // An id outside the check inventory (static explanations,
-    // scan-soul CONTROL_DEFS, TAXONOMY_MAP) is refused, not stubbed:
+    // An id outside the check inventory (static explanations, scan-soul
+    // findings, scan-soul CONTROL_DEFS, TAXONOMY_MAP) is refused, not stubbed:
     // `explain NEMO-999` used to print "Static analysis pattern finding."
     // — the prefix-label branch below, reached by every hyphenated unknown
     // whose prefix has a category label — and exit 0. Checked before the
@@ -11555,7 +11555,9 @@ program
     const attackClass = getAttackClass(checkId);
     const explainPrefix = checkId.split('-')[0];
     const categoryLabel = prefixDescriptions[explainPrefix] || 'security check';
-    const staticExplanation = staticExplanations[checkId];
+    // scan-soul's own findings (SOUL-PROFILE-MISMATCH, SOUL-VIOLATION-*)
+    // render like the hand-written table (#760).
+    const staticExplanation = staticExplanations[checkId] ?? SOUL_SCAN_EXPLANATIONS[checkId];
 
     // Per-control lookup for governance catalog IDs (SOUL-TH-001, SOUL-IH-003,
     // …). Without this, `explain SOUL-IH-003` falls through to the generic
