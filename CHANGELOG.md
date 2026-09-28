@@ -271,6 +271,12 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
   2026-09-20. The README's Install section now carries the two switches that skip the
   download and the reason `--ignore-scripts` is safe for a CI install of this package.
 
+### `hackmyagent_benchmark` names a failing checkId once (#671)
+
+The MCP benchmark text listed a checkId once per failing record, so a check that failed in
+both `mcp.json` and `.mcp.json` read `(TOOL-004, TOOL-004)`. The id list beside `[FAIL]` is
+now de-duplicated; control statuses, counts and compliance are unchanged.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path
