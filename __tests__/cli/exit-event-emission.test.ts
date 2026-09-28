@@ -125,6 +125,18 @@ describe('#350 endings emit their command event', { timeout: 300_000 }, () => {
     expect(r.events[0].success).toBe(false);
   });
 
+  it('RED-ON-BASE: an unmeasured secure (missing target) emits its event and exits 2', () => {
+    // #481 — this was the exit-surface ratchet's S002, a bare `process.exit(1)`
+    // ahead of the postAction hook: zero events, and an exit code that claimed
+    // a critical/high finding. It now settles through the funnel like check's
+    // local-path arm above.
+    const r = run(['secure', `./no-such-dir-${ARGV_MARKER}`], tmp('hma-481-secure-'));
+    expect(r.status).toBe(2);
+    expect(r.events, r.raw.join('\n')).toHaveLength(1);
+    expect(r.events[0].name).toBe('secure');
+    expect(r.events[0].success).toBe(false);
+  });
+
   it('PIN: a UsageError refusal is dark — it never lands in the crash bucket', () => {
     // `check skill:###bad###` is refused by the identifier parser before any
     // work (deterministic, offline). An adversarial round measured the first

@@ -4917,8 +4917,10 @@ Exit codes:
   1  measured, and a critical/high issue was found
      (or non-compliant in benchmark mode, or a score below --fail-below)
   2  the run did not examine everything it found, so it reaches no pass:
-     an input was discovered and could not be read, a --deep analysis
-     did not complete, or (benchmark mode) no scored L1 control produced
+     the target does not exist (nothing was scanned; --json still writes
+     a document with measured: false), an input was discovered and could
+     not be read, a --deep analysis did not complete, or (benchmark
+     mode) no scored L1 control produced
      a result and the rating is Not Assessed. What DID run is still
      reported and scored above, and the score is an upper bound rather
      than a measurement of the tree.
@@ -4988,10 +4990,36 @@ Examples:
         if (options.contribute === undefined) options.contribute = false;
       }
 
-      // Check if the target exists
+      // #481 — a missing target was measured by nothing, so it settles as
+      // unmeasured (exit 2) through the same funnel as `check`'s local-path
+      // arm. It used to print plain text under `--json` (a CI step's
+      // `JSON.parse` threw on the report file) and exit 1, which asserts the
+      // scan ran and found a critical/high issue. The document carries the
+      // settled record's top-level keys (`verdict`, `exitCode`, `measured`)
+      // and `check`'s `coverage` block, so one reader parses both commands.
       if (!require('fs').existsSync(originalTarget)) {
-        console.error(`Error: Directory '${escapePathForDisplay(String(originalTarget))}' does not exist.`);
-        process.exit(1); // exit-unsettled(#350/S002): pre-work refusal; events await the schema reason field (#525)
+        const verdict = unmeasured(
+          'target-not-found',
+          `${escapePathForDisplay(String(originalTarget))} does not exist, so nothing was scanned.`,
+        );
+        await finishWithFindings(verdict.exitCode);
+        if (options.json || options.format === 'json') {
+          writeJsonStdout({
+            hackmyagentVersion: VERSION,
+            target: originalTarget,
+            verdict: null,
+            exitCode: verdict.exitCode,
+            measured: false,
+            coverage: coverageJson(verdict),
+          });
+        } else {
+          console.error(unmeasuredBanner(verdict));
+          // Omitted rather than printed when the path cannot be cited
+          // truthfully in a runnable command (#273).
+          const verify = commandNaming(directory, cited => `  Verify: ls -ld ${cited}`);
+          if (verify) console.error(verify);
+        }
+        return;
       }
 
       // Single-FILE target handling.
