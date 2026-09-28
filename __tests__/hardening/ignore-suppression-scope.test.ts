@@ -409,7 +409,21 @@ describe('#450 — user suppression narrows the list, never the score', () => {
         expect(plain.out).toContain(target);
 
         const ignored = run(['secure', dir, '--format', format, '--ignore', target]);
-        expect(ignored.out).not.toContain(target);
+        // #465 — SARIF and HTML now DISCLOSE the suppression by check id (the
+        // terminal report always did), so "withheld" means not listed as a
+        // result, and named only in the disclosure. ASFF discloses on stderr.
+        if (format === 'sarif') {
+          const run0 = JSON.parse(ignored.out).runs[0];
+          expect(run0.results.map((r: { ruleId: string }) => r.ruleId)).not.toContain(target);
+          expect(run0.tool.driver.rules.map((r: { id: string }) => r.id)).not.toContain(target);
+          expect(run0.properties.suppressed.map((r: { checkId: string }) => r.checkId)).toContain(target);
+        } else if (format === 'html') {
+          const [listed, disclosure] = ignored.out.split('<h2>Suppressed and out of scope</h2>');
+          expect(listed).not.toContain(target);
+          expect(disclosure).toContain(target);
+        } else {
+          expect(ignored.out).not.toContain(target);
+        }
         expect(ignored.exitCode).toBe(plain.exitCode);
       },
       240_000,
