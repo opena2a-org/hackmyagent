@@ -94,6 +94,15 @@ export interface UnboundedGrant {
    * text — a JSON unicode escape parses to a value the file does not contain.
    */
   key: string;
+  /**
+   * Where the judged value sits in the PARSED document (#379): the keys and
+   * array indices `walkConfigForGrants` followed from the root, and the
+   * primitive it judged there. `lineOfJsonValue` follows exactly this path
+   * through the raw text, so a citation is produced by the same walk that
+   * produced the grant and cannot land on a deny entry holding the same text.
+   * Set by the walker only.
+   */
+  at?: { path: ReadonlyArray<string | number>; value: string | boolean };
 }
 
 /**
@@ -573,6 +582,7 @@ export function walkConfigForGrants(
   onProseEntry?: (entry: string, key: string) => UnboundedGrant | undefined,
   depth = 0,
   seen: Set<object> = new Set(),
+  trail: Array<string | number> = [],
 ): UnboundedGrant | undefined {
   if (depth > 12 || doc === null || typeof doc !== 'object') return undefined;
   // YAML aliases resolve to SHARED references, not copies, so a 471-byte file
@@ -585,12 +595,19 @@ export function walkConfigForGrants(
   seen.add(doc);
 
   if (Array.isArray(doc)) {
-    for (const item of doc) {
-      const found = walkConfigForGrants(item, onProseEntry, depth + 1, seen);
+    for (let index = 0; index < doc.length; index++) {
+      trail.push(index);
+      const found = walkConfigForGrants(doc[index], onProseEntry, depth + 1, seen, trail);
+      trail.pop();
       if (found) return found;
     }
     return undefined;
   }
+
+  // #379 — the grant carries the path to the value it was judged on, so a
+  // citation can follow the structure instead of searching the text.
+  const located = (grant: UnboundedGrant, sub: ReadonlyArray<string | number>, value: string | boolean): UnboundedGrant =>
+    ({ ...grant, at: { path: [...trail, ...sub], value } });
 
   for (const [rawKey, value] of Object.entries(doc as Record<string, unknown>)) {
     const key = normKey(rawKey);
@@ -598,26 +615,26 @@ export function walkConfigForGrants(
 
     const booleanReason = BOOLEAN_GRANT_KEYS.get(key);
     if (booleanReason && value === true) {
-      return makeGrant(`${rawKey}: true`, booleanReason, `set "${rawKey}" to false in this file, or remove the key`, rawKey);
+      return located(makeGrant(`${rawKey}: true`, booleanReason, `set "${rawKey}" to false in this file, or remove the key`, rawKey), [rawKey], true);
     }
 
     if (key === normKey('defaultMode') && typeof value === 'string') {
       const reason = PERMISSIVE_MODES.get(normKey(value));
       if (reason) {
-        return makeGrant(`${rawKey}: ${value}`, reason, `set "${rawKey}" to "default" so each tool call is asked for`, rawKey);
+        return located(makeGrant(`${rawKey}: ${value}`, reason, `set "${rawKey}" to "default" so each tool call is asked for`, rawKey), [rawKey], value);
       }
     }
 
     if (COMMAND_VALUE_KEYS.has(key)) {
-      for (const arg of asStringList(value)) {
+      for (const { entry: arg, sub } of listEntries(value)) {
         const flag = dangerousFlag(arg);
         if (flag) {
-          return makeGrant(
+          return located(makeGrant(
             arg,
             'runs every tool call without a permission prompt',
             `remove "${flag}" from "${rawKey}" in this file`,
             rawKey,
-          );
+          ), [rawKey, ...sub], arg);
         }
       }
       // No `continue`: a command key can hold nested structure too, and the
@@ -625,29 +642,30 @@ export function walkConfigForGrants(
     }
 
     if (DIRECTORY_KEYS.has(key)) {
-      for (const dir of asStringList(value)) {
+      for (const { entry: dir, sub } of listEntries(value)) {
         if (isUnboundedPath(dir)) {
-          return makeGrant(dir, 'adds a directory no prefix bounds to the agent scope', `replace "${dir}" with the project directory this agent works in`, rawKey);
+          return located(makeGrant(dir, 'adds a directory no prefix bounds to the agent scope', `replace "${dir}" with the project directory this agent works in`, rawKey), [rawKey, ...sub], dir);
         }
       }
       continue;
     }
 
     if (GRANT_LIST_KEYS.has(key)) {
-      const entries = asStringList(value);
-      for (const entry of entries) {
+      for (const { entry, sub } of listEntries(value)) {
         if (WHOLESALE_VALUES.has(entry.trim().toLowerCase())) {
-          return makeGrant(entry, 'grants every tool without restriction', `replace "${entry}" with one scoped entry per tool the agent needs (e.g. "Bash(npm test)", "Read(src/**)")`, rawKey);
+          return located(makeGrant(entry, 'grants every tool without restriction', `replace "${entry}" with one scoped entry per tool the agent needs (e.g. "Bash(npm test)", "Read(src/**)")`, rawKey), [rawKey, ...sub], entry);
         }
         const found = isPermissionSyntax(entry)
           ? classifyPermissionEntry(entry, rawKey, PERMISSION_SYNTAX_KEYS.has(key))
           : onProseEntry?.(entry, rawKey);
-        if (found) return found;
+        if (found) return located(found, [rawKey, ...sub], entry);
       }
       // `permissions` is also the object that HOLDS allow/deny, so keep walking.
     }
 
-    const found = walkConfigForGrants(value, onProseEntry, depth + 1, seen);
+    trail.push(rawKey);
+    const found = walkConfigForGrants(value, onProseEntry, depth + 1, seen, trail);
+    trail.pop();
     if (found) return found;
   }
   return undefined;
@@ -666,14 +684,11 @@ export function walkConfigForGrants(
  * was shared.
  */
 /**
- * There is NO line locator here, and that is the design.
+ * A structured citation is never found by searching the text (#379).
  *
- * A citation for a structured config used to be found by searching the raw text
- * for the offending entry. That cannot be made safe, and the reason is the same
- * one this whole module exists for: `allow` and `deny` hold textually IDENTICAL
- * values, so the text does not carry the polarity — only the structure does, and
- * a text search has no structure. Three attempts are recorded rather than
- * repeated:
+ * `allow` and `deny` hold textually IDENTICAL values, so the text does not
+ * carry the polarity — only the structure does. Three text searches were tried
+ * and each failed:
  *
  * 1. Search from the grant key's line. Beaten by an earlier bounded `allow`
  *    key, by a `// allow:` comment, and by a JSON-escaped key.
@@ -682,27 +697,46 @@ export function walkConfigForGrants(
  *    one array per line (fatal OOM in `secure` at 3.8MB), and still cited a deny
  *    entry when an array element was indented less than its own key.
  * 3. Emit a line only when the document declares no restriction key at all.
- *    The premise is about the FILE; the implementation could only answer for
+ *    The premise was about the FILE; the implementation could only answer for
  *    the first 13 levels of the PARSED object, while the text search it gated
- *    had no depth bound — so a `deny` nested deeper, or reached through a YAML
- *    alias that poisoned the visited set, put the citation back on the deny
- *    line.
+ *    had no depth bound.
  *
- * Each attempt was smaller and sharper than the last and each still failed, so
- * the answer is not a fourth: a structured finding names the FILE, and the
- * reader gets the entry, why it is a grant, and what to replace it with. The
- * prose half keeps its line, because a prose match has no key to be wrong about
- * — the line cited is the line the pattern matched.
- *
- * The real fix gives the grant its own offset from the parse. It is #379, which
- * carries the acceptance criteria all three attempts produced.
+ * So the grant carries its own position instead: `walkConfigForGrants` records
+ * the path it followed (`UnboundedGrant.at`), and `lineOfJsonValue`
+ * (`json-locate.ts`) follows that path through the raw JSON and checks the
+ * value it lands on. YAML carries no line: `js-yaml` exposes no per-node
+ * positions through `load`, and a guessed line is worse than none.
  */
 
-/** The string entries of a value that may be one string or a list of them. */
-function asStringList(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  // Flattened: `allow: [["Bash(*)"]]` loses its key context once the recursive
-  // walk descends into the inner array, so the entries are collected here.
-  if (Array.isArray(value)) return value.flat(4).filter((v): v is string => typeof v === 'string');
-  return [];
+/**
+ * The string entries of a value that may be one string or a list of them, each
+ * with its index path inside `value` (#379).
+ *
+ * Same entries, same order as `value.flat(4).filter(isString)`, which this
+ * replaced: arrays nested up to four deep are entered, deeper ones and every
+ * non-string are skipped. Flattened because `allow: [["Bash(*)"]]` loses its
+ * key context once the recursive walk descends into the inner array.
+ *
+ * Lazy, and the yielded object is reused: read `entry` and copy `sub` before
+ * advancing.
+ */
+function* listEntries(value: unknown): Generator<{ entry: string; sub: readonly number[] }> {
+  // One cursor and one index stack, reused for every entry: a list can hold
+  // hundreds of thousands of entries and none of them needs its own path
+  // unless it is the one reported, and `located` copies `sub` at that moment.
+  const cursor: { entry: string; sub: number[] } = { entry: '', sub: [] };
+  if (typeof value === 'string') { cursor.entry = value; yield cursor; return; }
+  if (!Array.isArray(value)) return;
+  function* visit(arr: unknown[], depthLeft: number): Generator<{ entry: string; sub: readonly number[] }> {
+    for (let i = 0; i < arr.length; i++) {
+      if (!(i in arr)) continue; // a hole, which `flat` also skips
+      const v = arr[i];
+      cursor.sub.push(i);
+      if (Array.isArray(v) && depthLeft > 0) yield* visit(v, depthLeft - 1);
+      else if (typeof v === 'string') { cursor.entry = v; yield cursor; }
+      cursor.sub.pop();
+    }
+  }
+  yield* visit(value, 4);
 }
+
