@@ -6,6 +6,17 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### SEM-MCP-004, SEM-MCP-007 and SEM-MCP-008 findings carry a line (#644)
+
+- **The MCP findings that name a server entry now say where it is.** `SEM-MCP-004` (wildcard
+  `allowedTools` / `allowedCommands`) cites the wildcard field inside that server's entry,
+  `SEM-MCP-007` (typosquatted package) the package argument, and `SEM-MCP-008` (curl|sh
+  bootstrap) the server's key. They were located by file only, in the terminal, in SARIF and in
+  an IDE. The server name is matched in its JSON-encoded form. A key written differently in
+  the raw text (a `\u` escape) gets no line rather than a wrong one. Scores, severities and
+  finding counts are unchanged; measured on a three-server fixture, `secure --json` gave 44/100
+  with 11 failing findings before and after.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
