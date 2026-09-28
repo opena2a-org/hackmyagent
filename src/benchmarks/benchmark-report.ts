@@ -245,6 +245,10 @@ export function generateBenchmarkReport(
         status: r.status,
         findings: r.findings,
         remediation: r.remediation,
+        // #418 — the catalogue's verification procedure had no reader on any
+        // channel. It is the answer for exactly the controls the scan leaves
+        // open, so it rides on those records and nowhere else.
+        ...(r.status === 'unverified' && r.control.audit ? { audit: r.control.audit } : {}),
         ...(r.status === 'not-applicable' && r.naSubjects?.length ? { notApplicableSubjects: r.naSubjects } : {}),
       })),
     });
