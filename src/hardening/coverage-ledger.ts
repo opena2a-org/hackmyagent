@@ -343,6 +343,11 @@ const PREFIX_TO_CATEGORY: Readonly<Record<string, string>> = {
 /** Every category label the ledger can speak about. */
 const ALL_CATEGORIES = new Set(Object.values(PREFIX_TO_CATEGORY));
 
+/** Whether `label` is one of the category labels the ledger reports on. */
+export function isCoverageCategory(label: string): boolean {
+  return ALL_CATEGORIES.has(label);
+}
+
 /** Category label for a check-ID prefix, or null when unmapped. */
 export function categoryForPrefix(prefix: string): string | null {
   return PREFIX_TO_CATEGORY[prefix] ?? null;
