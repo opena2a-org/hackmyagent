@@ -2644,3 +2644,11 @@ export class SoulScanner {
 
 // Export control definitions for testing
 export { CONTROL_DEFS, DOMAIN_ORDER, GOVERNANCE_FILES, PROFILE_DOMAINS };
+
+/**
+ * The SOUL-VIOLATION-* classes scan-soul can report, without their
+ * matchers. `explain` answers from this list (#760), so a violation id
+ * scan-soul prints is always one `explain` knows.
+ */
+export const VIOLATION_CATALOG: ReadonlyArray<Omit<ViolationPattern, 'matches'>> =
+  VIOLATION_PATTERNS.map(({ id, name, controlId, domain, fix }) => ({ id, name, controlId, domain, fix }));

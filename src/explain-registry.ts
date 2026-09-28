@@ -1,11 +1,12 @@
 /**
  * The `explain` command's knowledge, extracted from src/cli.ts (HMA-29).
  *
- * Three sources answer `explain <id>`: this static explanations table, the
- * scan-soul governance catalog (CONTROL_DEFS), and the attack-class lookup
- * over TAXONOMY_MAP. `isKnownExplainId` is their union — the predicate the
+ * Four sources answer `explain <id>`: this static explanations table, the
+ * scan-soul findings table (SOUL_SCAN_EXPLANATIONS), the scan-soul
+ * governance catalog (CONTROL_DEFS), and the attack-class lookup over
+ * TAXONOMY_MAP. `isKnownExplainId` is their union — the predicate the
  * CLI's refusal branch calls, extracted here so the AC2 sweep
- * (__tests__/cli/explain-unknown-id.test.ts) can walk all three sources
+ * (__tests__/cli/explain-unknown-id.test.ts) can walk every source
  * in-process instead of spawning the binary four hundred times.
  *
  * Before HMA-29 an unknown hyphenated id whose prefix appeared in
@@ -13,7 +14,7 @@
  * stub and exited 0 — a confident non-answer with a green exit code.
  */
 import { CLI_PREFIX } from './cli-prefix';
-import { CONTROL_DEFS } from './soul/scanner';
+import { CONTROL_DEFS, PROFILE_DOMAINS, VIOLATION_CATALOG } from './soul/scanner';
 import { getTaxonomyMap } from './hardening/taxonomy';
 
 /** Hand-written explanations for the checks users ask about most. */
@@ -56,6 +57,29 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
   'TEXT-002': `Authority-claim payload in a free text. A line asserts an authorization, or waives a control, on the strength of the text itself rather than of any system that records one — "pre-approved by the owner", "the security gate can be skipped". Fix: treat the line as quoted content, not as authorization, and confirm any authorization through the system that records it. Run: ${CLI_PREFIX} scan-text <file> to see the line and column.`,
 };
 
+/**
+ * Ids scan-soul prints that are not governance controls: the two profile
+ * findings, the conformance line and every SOUL-VIOLATION-* class (#760).
+ * Before this
+ * table, `scan-soul` printed SOUL-PROFILE-MISMATCH as a HIGH and
+ * `explain SOUL-PROFILE-MISMATCH` answered "Unknown check ID" with exit 1.
+ * The violation entries are built from the scanner's own catalog, so a new
+ * violation class is explainable the day it ships.
+ */
+export const SOUL_SCAN_EXPLANATIONS: Record<string, string> = {
+  'SOUL-PROFILE-MISMATCH': `Declared profile narrows scope past the body content. The SOUL.md declares a profile (a <!-- soul:profile=... --> marker, or --profile when the file has no marker) whose domain set skips governance domains the body itself calls for: its headings or tool mentions suggest a broader profile, and scan-soul does not evaluate the skipped domains under the declared one. Fix: remove the marker and let scan-soul detect the profile from the body, or revise the body to match the declared profile. Run: ${CLI_PREFIX} scan-soul <dir> to see the declared and inferred profiles, the body signals and the skipped domains.`,
+  'SOUL-PROFILE-MARKER-INVALID': `Unrecognized profile declaration. A <!-- soul:profile=... --> marker (or a --profile flag) names a value that is not a recognized profile, is empty, or is malformed, so scan-soul ignored it and evaluated the file with the profile it detected from body keywords. Recognized profiles: ${Object.keys(PROFILE_DOMAINS).join(', ')}. Fix: replace the value with a recognized profile, or remove the marker and let scan-soul detect from the body. Run: ${CLI_PREFIX} scan-soul <dir> to see the attempted value and the profile used.`,
+  // Printed on stderr as `SOUL-CONFORMANCE NONE: ...` on every text run
+  // that misses a critical control; a user reads it as an id.
+  'SOUL-CONFORMANCE': `Governance conformance level. scan-soul rates a governance file none, essential, standard or hardened: any critical control that applies to the file's tier and profile and is not detected holds it at none; otherwise the score sets it. SOUL-CONFORMANCE NONE names the first missing critical control; run explain on that control id for the clause the scanner looks for. Fix: add the missing critical controls. Run: ${CLI_PREFIX} harden-soul <dir>, then ${CLI_PREFIX} scan-soul <dir> to re-check the level.`,
+  ...Object.fromEntries(
+    VIOLATION_CATALOG.map((v) => [
+      v.id,
+      `${v.name}. A sentence in the governance file actively subverts scan-soul control ${v.controlId} (${v.domain} domain), rather than merely not implementing it. Fix: ${v.fix} Run: ${CLI_PREFIX} scan-soul <dir> to see the sentence and its line.`,
+    ]),
+  ),
+};
+
 /** Map check ID prefixes to human-readable category labels. */
 export const PREFIX_DESCRIPTIONS: Record<string, string> = {
   'CRED': 'credential exposure',
@@ -84,11 +108,13 @@ export const PREFIX_DESCRIPTIONS: Record<string, string> = {
 
 /**
  * The check inventory `explain` answers from: static explanations,
- * scan-soul governance controls, and every TAXONOMY_MAP key.
+ * scan-soul findings, scan-soul governance controls, and every
+ * TAXONOMY_MAP key.
  */
 export function getKnownExplainIds(): Set<string> {
   return new Set<string>([
     ...Object.keys(STATIC_EXPLANATIONS),
+    ...Object.keys(SOUL_SCAN_EXPLANATIONS),
     ...CONTROL_DEFS.map((c) => c.id),
     ...Object.keys(getTaxonomyMap()),
   ]);
