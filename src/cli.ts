@@ -63,6 +63,7 @@ import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { extractArchiveInto, type ArchiveFormat } from './hardening/extract-archive';
 import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolved-categories';
 import { composeVerdictLine, dissentingFiles } from './ui/analyst-dissent';
+import { incompleteVerdictLead } from './ui/incomplete-verdict';
 import { WildScanner, type WildScanReport } from './wild';
 import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
@@ -2514,6 +2515,26 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         `This is not a clean bill of health for the whole target.`;
     }
 
+    // #568 — over a tree holding an input the run could not read, the line a
+    // reader anchors on leads with that, not with the band sentence: exit 2
+    // and an upper-bound score used to sit under `Usable with caveats. ...`.
+    // PREPENDED by `composeVerdictLine` below, after the two disclosure
+    // verdicts above assign the value and before the analyst-dissent clause,
+    // which stays the last mutation.
+    // Skipped for a fail-direction band, whose own lead is already stronger.
+    // Text channel only: the score, the exit code and `--json` do not read it.
+    let incompleteLead: string | undefined;
+    if (verdictLine.status !== 'unsafe') {
+      incompleteLead = incompleteVerdictLead(
+        failed,
+        Math.max(
+          localScan?.coverage?.unreadableInputs?.count ?? 0,
+          nanomindScan?.unreadInputs?.paths?.length ?? 0,
+        ),
+        escapePathForDisplay,
+      ) ?? undefined;
+    }
+
     // Rewrite the Checks line from what RAN. The renderer sizes it from
     // `getCheckCounts()`, i.e. the configured taxonomy, so `310 static · 0
     // skipped` was printed identically whether the checks reached the tree or
@@ -2768,6 +2789,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       base: verdictDisplay,
       quickScanVerdict,
       coverageGapVerdict,
+      incompleteLead,
       escalations: opts.analystEscalations,
     });
     verdictDisplay.value = composedVerdict.value;
