@@ -418,6 +418,7 @@ import { generateVerifyCommand, rebaseOwnFileCitation } from './ui/verify-comman
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { collapsedLocation } from './ui/collapse-label';
+import { SARIF_SCHEMA_URL } from './output/sarif-schema';
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
@@ -3441,7 +3442,7 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
   }
 
   const sarif = {
-    $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+    $schema: SARIF_SCHEMA_URL,
     version: '2.1.0' as const,
     runs: [{
       tool: {
@@ -4249,7 +4250,7 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string): stri
   }));
 
   return JSON.stringify({
-    $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+    $schema: SARIF_SCHEMA_URL,
     version: '2.1.0',
     runs: [{
       tool: {
@@ -8373,7 +8374,7 @@ function generateAttackSarif(report: AttackReport): string {
     }));
 
   return JSON.stringify({
-    $schema: 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json',
+    $schema: SARIF_SCHEMA_URL,
     version: '2.1.0',
     runs: [{
       tool: {
