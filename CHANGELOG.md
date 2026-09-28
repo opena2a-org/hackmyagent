@@ -6,6 +6,16 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### `-b oasb-1 --json` carries the verification procedure for each control the scan leaves open
+
+- **An `unverified` control record now includes `audit`, the catalogue's numbered
+  procedure for checking that control by hand (#418).** The field was populated on most
+  OASB-1 controls and read by nothing: not the text report, not `--json`, not SARIF, not
+  `explain`. It rides only on `unverified` records, because those are the controls the scan
+  could not settle and a manual check is the next step; `passed`, `failed` and
+  `not-applicable` records are unchanged. Verify:
+  `hackmyagent secure <dir> -b oasb-1 --format json | jq '[.categories[].controls[] | select(.audit)] | length'`.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
