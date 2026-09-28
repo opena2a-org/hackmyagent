@@ -251,9 +251,12 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string[] {
     parts.push('  3. Ensure credentials never appear in request bodies or logs.');
   } else if (finding.attackClass === 'CRED-EXPOSURE') {
     parts.push('opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.');
-    if (ast.declaredPurpose) {
-      parts.push(`Credentials in this ${ast.artifactType} ("${truncate(ast.declaredPurpose, 60)}") are exposed in version control.`);
-    }
+    // #493 — no quoted context. This quoted `ast.declaredPurpose`, which on a
+    // source file is the first content line and is usually NOT the line the
+    // finding cites: a reader matching the fix against the file found a build
+    // digest from line 2 described as the credential on line 5. The finding's
+    // own `file:line` and evidence already say which line holds the secret.
+    parts.push(`Credentials in this ${ast.artifactType} are exposed in version control.`);
     parts.push('After encrypting: rotate any credentials that were previously exposed.');
   } else {
     // CRED-HARVEST
