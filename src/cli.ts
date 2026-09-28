@@ -3223,7 +3223,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 
   // ── Next steps ──────────────────────────────────────────────────────
   const hasGovIssues = failed.some(f => f.category === 'governance' || f.category === 'Governance' || f.checkId?.startsWith('AST-GOV') || f.checkId?.startsWith('AST-PROMPT'));
-  const hasCredIssues = failed.some(f => f.checkId?.startsWith('CRED-') || f.name?.toLowerCase().includes('credential') || f.name?.toLowerCase().includes('api key') || f.name?.toLowerCase().includes('hardcoded') || f.category === 'credential');
+  // #384 — a finding inside the backup THIS `--fix` run created is moved by
+  // rotating the credential and removing the copy (its own `Fix:` line says
+  // so), never by `opena2a protect` or another `secure --fix`: both act on the
+  // live tree only. Those two steps are offered for the live-tree findings.
+  const liveTreeFailed = failed.filter(f => !f.inOwnArchive);
+  const hasCredIssues = liveTreeFailed.some(f => f.checkId?.startsWith('CRED-') || f.name?.toLowerCase().includes('credential') || f.name?.toLowerCase().includes('api key') || f.name?.toLowerCase().includes('hardcoded') || f.category === 'credential');
   const hasMcpIssues = failed.some(f =>
     f.category === 'mcp-config' ||
     f.checkId?.startsWith('SEM-MCP') ||
@@ -3231,7 +3236,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     f.file?.toLowerCase().includes('mcp') ||
     f.checkId?.startsWith('AST-MCP')
   );
-  const hasCodeVulns = failed.some(f => {
+  const hasCodeVulns = liveTreeFailed.some(f => {
     const cat = (f.category || '').toLowerCase();
     return cat !== 'governance' && cat !== 'injection-hardening' && cat !== 'trust-hierarchy'
       && !f.checkId?.startsWith('AST-GOV') && !f.checkId?.startsWith('AST-GOVERN')
@@ -6147,7 +6152,9 @@ Examples:
         console.log();
 
         // Remaining issues with fix guidance (not yet auto-fixed)
-        const remainingWithFix = issues.filter((f: SecurityFinding) => !f.fixed && (f.fix || f.fixable));
+        // #384 — copies inside this run's own backup are not something `fix-all`
+        // can move (it never edits an archive); their `Fix:` line names the step.
+        const remainingWithFix = issues.filter((f: SecurityFinding) => !f.fixed && !f.inOwnArchive && (f.fix || f.fixable));
         if (remainingWithFix.length > 0) {
           console.log(`${remainingWithFix.length} remaining issue${remainingWithFix.length === 1 ? '' : 's'} ${remainingWithFix.length === 1 ? 'has' : 'have'} fix guidance. Run \`${CLI_PREFIX} fix-all\` to apply all available fixes.\n`);
         }
