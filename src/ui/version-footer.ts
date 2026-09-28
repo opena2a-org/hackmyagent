@@ -73,3 +73,24 @@ export function shouldPrintVersionFooter(ctx: VersionFooterContext): boolean {
   if (ctx.ciMode) return false;
   return resolveOutputFormat(ctx) === 'text';
 }
+
+/**
+ * Whether anything has been written to `stream` since this was called (#648).
+ *
+ * The footer is registered on 'exit' so it survives the `process.exit(1)` a
+ * scan with findings ends on. A pre-work refusal (`secure -b bogus`,
+ * `secure -l L9`, `secure --fail-below 200`) exits the same way before any
+ * report is rendered, so the footer was the only line on stdout: a trailer
+ * under no report, in the stream a script captures. The footer closes a
+ * report, so it follows only a run that wrote one to the stream.
+ */
+export function watchStreamWrites(stream: NodeJS.WritableStream): () => boolean {
+  let wrote = false;
+  const write = stream.write;
+  stream.write = function (this: unknown, ...args: unknown[]): boolean {
+    const chunk = args[0] as { length?: number } | null | undefined;
+    if (chunk !== null && chunk !== undefined && chunk.length !== 0) wrote = true;
+    return (write as (...a: unknown[]) => boolean).apply(this, args);
+  } as typeof stream.write;
+  return () => wrote;
+}

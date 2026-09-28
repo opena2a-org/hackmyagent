@@ -391,7 +391,7 @@ import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed, type MeasuredFinding } from './ui/verdict-band';
 import { gateSet, deepScanIncomplete, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
-import { shouldPrintVersionFooter } from './ui/version-footer';
+import { shouldPrintVersionFooter, watchStreamWrites } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
 import { shouldShowDeepProgress } from './ui/progress-gate';
@@ -5068,8 +5068,26 @@ Examples:
       const validLevels = ['L1', 'L2', 'L3'];
       // Presence, not truthiness (#632's class): `-l ''` fell to L1 silently.
       const level = (options.level === undefined ? 'L1' : options.level.toUpperCase()) as BenchmarkLevel;
-      if (options.benchmark !== undefined && !validLevels.includes(level)) {
-        console.error(`Error: Invalid level '${escapeForDisplay(String(options.level))}'. Use: L1, L2, or L3`);
+      // #648 — `-l` and `-c` are read only by the benchmark arms: without
+      // `-b`, `-l L9` or `-c anything` exited 0 with the ordinary report.
+      // With `-b`, an unknown category was caught only inside the report
+      // generator, after the scan had run and printed its header. Both are
+      // refused here with the level error, one site, so the exit-surface
+      // baseline holds. `-l` has a Commander default, so its source decides.
+      const levelInvalid = options.benchmark !== undefined && !validLevels.includes(level);
+      const categoryUnknown = options.benchmark !== undefined
+        && options.category !== undefined
+        && getControlsForCategory(options.category).length === 0;
+      const benchmarkOnlyFlags = options.benchmark !== undefined ? [] : [
+        cmd.getOptionValueSource('level') === 'cli' && '-l/--level',
+        options.category !== undefined && '-c/--category',
+      ].filter((f): f is string => typeof f === 'string');
+      if (levelInvalid || categoryUnknown || benchmarkOnlyFlags.length > 0) {
+        console.error(levelInvalid
+          ? `Error: Invalid level '${escapeForDisplay(String(options.level))}'. Use: L1, L2, or L3`
+          : categoryUnknown
+            ? `Error: Unknown category '${escapeForDisplay(String(options.category))}'.\nAvailable categories: ${OASB_1_CATEGORIES.map((c: BenchmarkCategory) => c.name).join(', ')}`
+            : `Error: ${benchmarkOnlyFlags.join(', ')} ${benchmarkOnlyFlags.length === 1 ? 'is' : 'are'} read only in benchmark mode. Add -b oasb-1 or -b oasb-2, or drop ${benchmarkOnlyFlags.length === 1 ? 'the flag' : 'them'}.`);
         process.exit(1); // exit-unsettled(#350/S005): pre-work refusal; events await the schema reason field (#525)
       }
 
@@ -5102,8 +5120,17 @@ Examples:
       // printed, so a CI job that asked for a machine format got a human one
       // with nothing in the exit code to say so. Refuse it where the other
       // format errors are raised, and name the flag it needs.
-      if (format === 'asp' && options.benchmark !== 'oasb-1') {
-        console.error('Error: --format asp is the Agent Security Profile of an OASB-1 benchmark run. Use it with -b oasb-1.');
+      // #648 — `--aws-account-id` / `--aws-region` fill fields of the asff
+      // report and nothing else reads them; with any other format they were
+      // dropped without a word. Refused on this site (exit-surface baseline).
+      const awsFlagsDropped = format === 'asff' ? [] : [
+        (options as { awsAccountId?: string }).awsAccountId !== undefined && '--aws-account-id',
+        (options as { awsRegion?: string }).awsRegion !== undefined && '--aws-region',
+      ].filter((f): f is string => typeof f === 'string');
+      if ((format === 'asp' && options.benchmark !== 'oasb-1') || awsFlagsDropped.length > 0) {
+        console.error(format === 'asp' && options.benchmark !== 'oasb-1'
+          ? 'Error: --format asp is the Agent Security Profile of an OASB-1 benchmark run. Use it with -b oasb-1.'
+          : `Error: ${awsFlagsDropped.join(', ')} ${awsFlagsDropped.length === 1 ? 'fills a field' : 'fill fields'} of the asff report only. Use --format asff (without -b), or drop ${awsFlagsDropped.length === 1 ? 'the flag' : 'them'}.`);
         process.exit(1); // exit-unsettled(#350/S007): pre-work refusal; events await the schema reason field (#525)
       }
       // #633 — each benchmark arm renders a fixed set of formats and fell to
@@ -15000,7 +15027,11 @@ async function checkNpmPackage(
           format: footerOpts.format,
         })
       ) {
+        // #648 — only under a report: a pre-work refusal wrote nothing to
+        // stdout, and the footer was left there alone.
+        const reportWritten = watchStreamWrites(process.stdout);
         process.on('exit', () => {
+          if (!reportWritten()) return;
           console.log(`  ${colors.dim}Scanned with hackmyagent v${VERSION}${RESET()}`);
         });
       }
