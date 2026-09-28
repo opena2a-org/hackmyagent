@@ -236,6 +236,22 @@ async function settleCheckVerdict(verdict: CheckVerdict): Promise<void> {
 }
 
 /**
+ * The remote `check` arms' catch, for a throw AFTER the run settled its
+ * verdict (#658): a render helper, or the post-report pending-scan I/O.
+ *
+ * Each arm's catch spans the whole arm, so such a throw used to land in the
+ * fetch-failure handling: the exit raised 1→2 (or 0→2), a "NOT MEASURED"
+ * banner (or a not-found block) printed under a fully rendered measured
+ * report, and the telemetry event — once-only, already posted at the settle —
+ * carried the pre-raise code. One run settles one verdict: the late error is
+ * printed as what it is and the settled exit code stands.
+ */
+function reportErrorAfterSettledVerdict(err: unknown, verdict: CheckVerdict): void {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`Error after the verdict was settled (exit ${verdict.exitCode} stands): ${escapeForDisplay(message)}`);
+}
+
+/**
  * The `coverage` object a not-found target reports.
  *
  * #416/#417 — the not-found arms emitted no `coverage` key at all, so
@@ -13919,6 +13935,9 @@ async function checkGitHubRepo(
   }
 
   const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-gh-'));
+  // The verdict this run settled, if any: a throw after it is a late error,
+  // not a fetch failure, and must not re-settle the run (#658).
+  let settled: CheckVerdict | undefined;
 
   try {
     // Shallow clone — fast, minimal disk
@@ -13979,6 +13998,7 @@ async function checkGitHubRepo(
     // #416 — over the files the clone actually had read.
     const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, displayName);
     await settleCheckVerdict(verdict);
+    settled = verdict;
 
     if (options.json) {
       writeJsonStdout({
@@ -14062,6 +14082,10 @@ async function checkGitHubRepo(
     // scanner container. See `finally { await rm(tempDir, ...) }` below.
   } catch (err: unknown) {
     rethrowIfRedactionProvenance(err);
+    if (settled) {
+      reportErrorAfterSettledVerdict(err, settled);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       const errorHint = `Verify the URL: https://github.com/${displayName}`;
@@ -14208,6 +14232,9 @@ async function checkPyPiPackage(
   // What the catch below may truthfully claim (#602, adversarial round 2):
   // false until the distribution's bytes have fully arrived.
   let fetched = false;
+  // The verdict this run settled, if any: a throw after it is a late error,
+  // not a fetch failure, and must not re-settle the run (#658).
+  let settled: CheckVerdict | undefined;
 
   try {
     // Fetch package metadata from PyPI JSON API
@@ -14259,6 +14286,7 @@ async function checkPyPiPackage(
         `${escapeForDisplay(String(name))} has no downloadable distribution on PyPI, so nothing was scanned.`,
       );
       await settleCheckVerdict(verdict);
+      settled = verdict;
       if (options.json) {
         writeJsonStdout({ hackmyagentVersion: VERSION, target: name, type: 'pypi-package', coverage: coverageJson(verdict) });
       } else {
@@ -14344,6 +14372,7 @@ async function checkPyPiPackage(
     // #416 — over the files the download actually had read.
     const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, name);
     await settleCheckVerdict(verdict);
+    settled = verdict;
 
     if (options.json) {
       writeJsonStdout({
@@ -14394,6 +14423,10 @@ async function checkPyPiPackage(
     // problem — never relabel it as a network error (adversarial round 2;
     // the URL arm's catch already had this guard).
     rethrowIfRedactionProvenance(err);
+    if (settled) {
+      reportErrorAfterSettledVerdict(err, settled);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('not found on PyPI')) {
       console.error(`Error: ${escapeForDisplay(String(message))}`);
@@ -14446,6 +14479,9 @@ async function checkRawUrl(
   // an analysis failure, not a fetch failure — the two are different
   // sentences for the user and different reasons on the wire.
   let fetched = false;
+  // The verdict this run settled, if any: a throw after it is a late error,
+  // not a fetch failure, and must not re-settle the run (#658).
+  let settled: CheckVerdict | undefined;
 
   try {
     // Git clone for known forge URLs and .git suffix
@@ -14483,6 +14519,7 @@ async function checkRawUrl(
           `HTTP ${headRes.status} fetching ${escapeForDisplay(String(url))}, so nothing was scanned.`,
         );
         await settleCheckVerdict(verdict);
+        settled = verdict;
         if (options.json) {
           writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
         } else {
@@ -14510,6 +14547,7 @@ async function checkRawUrl(
           `Failed to download ${escapeForDisplay(String(url))} (HTTP ${bodyRes.status}), so nothing was scanned.`,
         );
         await settleCheckVerdict(verdict);
+        settled = verdict;
         if (options.json) {
           writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
         } else {
@@ -14616,6 +14654,7 @@ async function checkRawUrl(
     // #416 — over the files the fetch actually had read.
     const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, displayName);
     await settleCheckVerdict(verdict);
+    settled = verdict;
 
     if (options.json) {
       const jsonOut: Record<string, any> = {
@@ -14668,6 +14707,10 @@ async function checkRawUrl(
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
     rethrowIfRedactionProvenance(err);
+    if (settled) {
+      reportErrorAfterSettledVerdict(err, settled);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
@@ -14766,6 +14809,9 @@ async function checkNpmPackage(
   }
 
   const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-'));
+  // The verdict this run settled, if any: a throw after it is a late error,
+  // not a fetch failure, and must not re-settle the run (#658).
+  let settled: CheckVerdict | undefined;
 
   try {
     // Download and extract
@@ -14851,6 +14897,7 @@ async function checkNpmPackage(
     // #416 — over the files the download actually had read.
     const verdict = scanResultVerdict(result, { critical: critical.length, high: high.length }, name);
     await settleCheckVerdict(verdict);
+    settled = verdict;
 
     if (options.json) {
       writeJsonStdout({
@@ -14930,6 +14977,10 @@ async function checkNpmPackage(
     // Exit code settled above, before the `--json` branch.
   } catch (err: unknown) {
     rethrowIfRedactionProvenance(err);
+    if (settled) {
+      reportErrorAfterSettledVerdict(err, settled);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     // Clean npm error messages
     if (message.includes('404') || message.includes('Not Found')) {
