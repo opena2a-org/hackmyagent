@@ -6,6 +6,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+`attack` settles an unconnectable target with its one liveness request (#444). The known issue noted under 0.27.0 used `http://127.0.0.1:9/x` as its reproduction; port 9 is a port the Fetch standard blocks, so `fetch` refused every payload before opening a socket and the run took ~112 s to reach `NOT MEASURED`. The probe now reads that refusal as definitive and names it, and treats `EHOSTUNREACH` and `ENETUNREACH` like `ECONNREFUSED` and `ENOTFOUND`; a reset or a timeout on the probe still runs the suite, so a live endpoint that drops the probe is measured. `attack --delay 0` now means no delay; it was read as unset and slept a second per payload.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
