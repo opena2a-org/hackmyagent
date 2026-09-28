@@ -271,6 +271,22 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
   2026-09-20. The README's Install section now carries the two switches that skip the
   download and the reason `--ignore-scripts` is safe for a CI install of this package.
 
+### The JS-family extension guard reads every hand-written list, in any order (#548)
+
+- **The regression guard for #414 could be evaded by reordering a list.** It matched one
+  line at a time, and only an array whose first element was `'.ts'`. So
+  `walkDirectory(dir, ['.js', '.ts'])` or a call wrapped across lines passed it, and it
+  never looked at lists outside a `walkDirectory(` call. The guard in
+  `static-check-source-extensions.test.ts` now reads every bracketed list in `scanner.ts`
+  that names two or more JS-family extensions, in any order and across lines, skipping
+  comments. Self-tests pin the shapes that evaded it.
+- **Two hand-written copies of the family now use `JS_FAMILY_EXTENSIONS`:** `findSourceFiles`
+  and the `checkUnicodeSteganography` extension list. Their membership was already
+  identical, so no scan reads anything different.
+- Lists that are a different set on purpose (`SKILL_BUNDLE_EXTENSIONS`, and the web-asset
+  lists in `createBackup` and `checkWebServedCredentials`) are exempt by name, with the
+  reason in the test.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path
