@@ -62,6 +62,7 @@ import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { extractArchiveInto, type ArchiveFormat } from './hardening/extract-archive';
 import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolved-categories';
 import { analystDissentSuffix, dissentingFiles } from './ui/analyst-dissent';
+import { incompleteVerdictLead } from './ui/incomplete-verdict';
 import { WildScanner, type WildScanReport } from './wild';
 import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
@@ -2430,6 +2431,28 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         `No issues in what was examined — but ${gaps.join(' and ')}. ` +
         `This is not a clean bill of health for the whole target.`;
       verdictDisplay.tone = 'warning';
+    }
+
+    // #568 — over a tree holding an input the run could not read, the line a
+    // reader anchors on leads with that, not with the band sentence: exit 2
+    // and an upper-bound score used to sit under `Usable with caveats. ...`.
+    // PREPENDED, after the two branches above that assign the value outright
+    // and before the analyst-dissent clause, which stays the last mutation.
+    // Skipped for a fail-direction band, whose own lead is already stronger.
+    // Text channel only: the score, the exit code and `--json` do not read it.
+    if (verdictLine.status !== 'unsafe') {
+      const incompleteLead = incompleteVerdictLead(
+        failed,
+        Math.max(
+          localScan?.coverage?.unreadableInputs?.count ?? 0,
+          nanomindScan?.unreadInputs?.paths?.length ?? 0,
+        ),
+        escapePathForDisplay,
+      );
+      if (incompleteLead !== null) {
+        verdictDisplay.value = `${incompleteLead} ${verdictDisplay.value}`;
+        if (verdictDisplay.tone === 'good') verdictDisplay.tone = 'warning';
+      }
     }
 
     // Rewrite the Checks line from what RAN. The renderer sizes it from
