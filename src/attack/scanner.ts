@@ -17,6 +17,17 @@ import { getPayloads, getPayloadById, ALL_PAYLOADS } from './payloads';
 import { deriveCheckVerdict, unmeasured, type UnmeasuredVerdict } from '../check/verdict';
 import { escapeForDisplay } from '../ui/display-safe';
 
+/**
+ * Connection-level errors that settle the liveness probe (#444): the target
+ * cannot be connected to at all, so no payload could reach it either.
+ */
+const DEFINITELY_DOWN_CODES: ReadonlySet<string> = new Set([
+  'ENOTFOUND',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+]);
+
 export class AttackScanner {
   private options: AttackOptions;
 
@@ -26,7 +37,10 @@ export class AttackScanner {
       intensity: options.intensity || 'active',
       categories: options.categories,
       timeout: options.timeout || 30000,
-      delay: options.delay || 1000,
+      // `--delay 0` is a request for no delay. `|| 1000` read it as unset and
+      // slept a second per payload anyway; a non-finite or negative value
+      // still falls back to the default.
+      delay: Number.isFinite(options.delay) && (options.delay as number) >= 0 ? (options.delay as number) : 1000,
       concurrency: options.concurrency || 1,
       stopOnSuccess: options.stopOnSuccess || false,
       verbose: options.verbose || false,
@@ -98,11 +112,27 @@ export class AttackScanner {
       await response.body?.cancel().catch(() => { /* already closed */ });
       return { reachable: true };
     } catch (error) {
-      const cause = (error as { cause?: { code?: string } })?.cause;
+      const cause = (error as { cause?: { code?: string; message?: string } })?.cause;
       const code = cause?.code ?? (error as NodeJS.ErrnoException)?.code;
-      // The only two answers that mean "nothing is listening there", as
-      // opposed to "it did not answer THIS request quickly enough".
-      const definitelyDown = code === 'ECONNREFUSED' || code === 'ENOTFOUND';
+      // #444 — a port the Fetch standard blocks (9, 25, 6667, ...) is refused
+      // by `fetch` itself before any socket opens, with no errno at all. The
+      // payloads go through the same `fetch`, so every one of them would be
+      // refused the same way: the run was ~112 s of `bad port` ending in the
+      // answered-count gate's NOT MEASURED. The signal is fetch's own answer
+      // for THIS url, not a port list of ours that could drift from it; if
+      // its wording ever changes this falls back to inconclusive, which is
+      // slow but never a false veto.
+      if (cause?.message === 'bad port' && code === undefined) {
+        return {
+          reachable: false,
+          detail: `${escapeForDisplay(url)} uses a port that fetch refuses to connect to (a blocked port under the Fetch standard), so no payload was sent and no risk level can be reported. Serve the agent on another port.`,
+        };
+      }
+      // The only answers that mean "nothing is listening there", as opposed
+      // to "it did not answer THIS request quickly enough": no such host, a
+      // refused connection, or no route to the host or its network. A reset
+      // or a timeout is NOT here — a live endpoint can drop one request.
+      const definitelyDown = code !== undefined && DEFINITELY_DOWN_CODES.has(code);
       if (!definitelyDown) return { inconclusive: true };
       return {
         reachable: false,
