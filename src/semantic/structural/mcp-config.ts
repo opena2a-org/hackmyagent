@@ -316,6 +316,7 @@ export class McpConfigAnalyzer {
           category: 'mcp-config',
           severity: 'high',
           file: file.path,
+          line: this.findServerFieldLine(file.content, serverName, fieldName),
           recommendation: `Replace wildcard with specific allowed ${fieldName}: ["tool1", "tool2"].`,
           layer: 2,
           autoFixable: false,
@@ -438,6 +439,7 @@ export class McpConfigAnalyzer {
         category: 'mcp-config',
         severity: 'critical',
         file: file.path,
+        line: this.findLineNumber(file.content, arg) ?? this.findServerKeyLine(file.content, serverName),
         recommendation: `Replace "${arg}" with the correct package name. Verify: npm view ${arg} to see if it exists and who publishes it.`,
         layer: 2,
         autoFixable: false,
@@ -468,6 +470,7 @@ export class McpConfigAnalyzer {
         category: 'mcp-config',
         severity: 'critical',
         file: file.path,
+        line: this.findServerKeyLine(file.content, serverName),
         recommendation:
           `Remove the bootstrap script. Install the MCP package via a verified package manager with a pinned version and hash. Never use curl|sh in an MCP server command.`,
         layer: 2,
@@ -488,4 +491,40 @@ export class McpConfigAnalyzer {
     }
     return undefined;
   }
+
+  /**
+   * The line of the server's `"<name>":` key in the raw JSON, or undefined (#644).
+   *
+   * First occurrence, as `findLineNumber` is for args. The name is matched in
+   * its JSON-encoded form, so a quote or backslash in it matches only itself.
+   */
+  private findServerKeyLine(content: string, serverName: string): number | undefined {
+    const key = new RegExp(`${escapeRegExp(JSON.stringify(serverName))}\\s*:`);
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (key.test(lines[i])) return i + 1;
+    }
+    return undefined;
+  }
+
+  /**
+   * The line of `"<field>":` at or after the server's key, else the key's own
+   * line (#644). The finding that asks has already read the field from this
+   * server's entry, and an object's members are contiguous, so the first
+   * occurrence from the key on is this entry's.
+   */
+  private findServerFieldLine(content: string, serverName: string, field: string): number | undefined {
+    const start = this.findServerKeyLine(content, serverName);
+    if (start === undefined) return undefined;
+    const key = new RegExp(`${escapeRegExp(JSON.stringify(field))}\\s*:`);
+    const lines = content.split('\n');
+    for (let i = start - 1; i < lines.length; i++) {
+      if (key.test(lines[i])) return i + 1;
+    }
+    return start;
+  }
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
