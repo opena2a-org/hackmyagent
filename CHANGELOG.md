@@ -6,6 +6,8 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+Over a tree holding an input the run could not read, the Verdict line of `secure` and `check` now leads with it (#568): `Verdict  Incomplete: src/secrets.js could not be read (EACCES). The score is an upper bound over what was read. Usable with caveats. ...`. It used to open with `Usable with caveats.` above an exit 2. Only the order of the text line moves; the score, the exit code and `--json` are unchanged, and a `Not safe` verdict keeps its own lead.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
