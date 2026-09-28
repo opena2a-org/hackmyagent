@@ -6,6 +6,15 @@ All notable changes to HackMyAgent are documented in this file.
 
 AST-CRED-003 now fires on a name-gated AWS-shaped 40+-character alphanumeric secret in a markdown or skill document on the value alone; 0.32.0 reported it only when harvesting prose was present in the same document, and rendered characters of it when it did.
 
+### The MCP `hackmyagent_benchmark` tool refuses a level outside L1-L3 (#650)
+
+- **A `level` other than L1, L2 or L3 returns `Error: Invalid level 'L9'. Use: L1, L2, or L3`,
+  the line the CLI prints for `-b … -l L9`, before any scan runs.** The MCP server does not
+  enforce the tool schema's enum, so `L9` reached the rating ladder and returned
+  `RATING_LADDER[level] is not iterable`. An explicit empty level is refused rather than read as
+  L1, as the CLI refuses `-l ''`. The exported `assessBenchmarkFindings` refuses an invalid level
+  on its own. Valid levels, in either case, and the L1 default are unchanged.
+
 ### `scan-text <file|->` scans ONE text for instruction-override and authority-claim payloads
 
 - **New command: `hackmyagent scan-text <file>`, where `-` reads standard input.** Before
