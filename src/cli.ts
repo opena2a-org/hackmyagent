@@ -398,7 +398,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
-import { generateBenchmarkReport } from './benchmarks/benchmark-report';
+import { generateBenchmarkReport, failingRecordsForControl } from './benchmarks/benchmark-report';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
@@ -3336,8 +3336,8 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
           },
         });
 
-        // Find related findings for locations
-        const relatedFindings = findings.filter(f => ctrl.findings.some(cf => cf.startsWith(`${f.checkId}: `)));
+        // The records this control cited, by exact evidence line (#670).
+        const relatedFindings = failingRecordsForControl(ctrl.findings, findings);
 
         if (relatedFindings.length > 0) {
           for (const finding of relatedFindings) {
@@ -5691,7 +5691,10 @@ Examples:
             );
             break;
           case 'sarif':
-            output = generateSarifOutput(benchmarkResult, result.findings, targetDir);
+            // The record set the assessor read above, not `result.findings`
+            // (#670): a failing record the plain scan does not list still
+            // failed its control and gets its own SARIF result.
+            output = generateSarifOutput(benchmarkResult, result.allFindings || result.findings, targetDir);
             break;
           case 'html':
             output = generateHtmlReport(benchmarkResult, targetDir, benchmarkRunFlags);
