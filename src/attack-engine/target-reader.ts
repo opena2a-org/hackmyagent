@@ -198,11 +198,41 @@ function extractCapabilities(content: string): string[] {
  * Callers may use this to enumerate attack surface — a stated norm is something
  * an attacker can try to talk the agent out of, whichever way it points. No
  * caller may read it as evidence that a defence exists.
+ *
+ * ## Linear by construction (#402)
+ *
+ * This was `content.match(/(?:must|...|restricted)[^.]+\./gi)`. `[^.]+\.` is a
+ * greedy run that must end on a literal `.`, so every keyword with no `.` after
+ * it consumed the rest of the input and backtracked to its own start: O(n²) on
+ * a modal-dense artifact with no terminator, 16 min 49 s at 4 MB. `red-team`
+ * reads an untrusted artifact with no size cap and no timeout.
+ *
+ * The loop below returns exactly what that match returned. A match ran from a
+ * keyword to the first `.` after it, provided at least one character sits
+ * between them; `indexOf` finds that `.` once instead of once per backtrack,
+ * and a keyword with no `.` after it means no later keyword has one either,
+ * so the scan stops there instead of retrying every remaining position.
  */
+const MODAL_KEYWORD = /must|should|never|always|cannot|will not|forbidden|shall not|restricted/gi;
+
 function extractModalStatements(content: string): string[] {
-  const patterns = /(?:must|should|never|always|cannot|will not|forbidden|shall not|restricted)[^.]+\./gi;
-  const matches = content.match(patterns);
-  return matches ? [...new Set(matches.map(m => m.trim()))] : [];
+  const matches: string[] = [];
+  const keyword = new RegExp(MODAL_KEYWORD.source, MODAL_KEYWORD.flags);
+  let hit: RegExpExecArray | null;
+  while ((hit = keyword.exec(content)) !== null) {
+    const bodyStart = hit.index + hit[0].length;
+    const terminator = content.indexOf('.', bodyStart);
+    if (terminator === -1) break;
+    if (terminator === bodyStart) {
+      // `[^.]+` needs one character: no statement starts here. Resume one
+      // position on, where the old global match resumed after a failed start.
+      keyword.lastIndex = hit.index + 1;
+      continue;
+    }
+    matches.push(content.slice(hit.index, terminator + 1));
+    keyword.lastIndex = terminator + 1;
+  }
+  return [...new Set(matches.map(m => m.trim()))];
 }
 
 /**
