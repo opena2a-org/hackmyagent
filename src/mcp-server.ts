@@ -243,6 +243,13 @@ export interface BenchmarkAssessment {
   text: string;
 }
 
+const BENCHMARK_LEVELS: readonly string[] = ['L1', 'L2', 'L3'];
+
+/** The refusal the CLI prints for `-b … -l <level>` outside L1-L3, word for word (#650). */
+function invalidLevelMessage(raw: unknown): string {
+  return `Invalid level '${escapeForDisplay(String(raw))}'. Use: L1, L2, or L3`;
+}
+
 export function assessBenchmarkFindings(
   allFindings: ReadonlyArray<SecurityFinding>,
   level: BenchmarkLevel,
@@ -256,6 +263,9 @@ export function assessBenchmarkFindings(
    */
   coverage?: { filesExamined: number; directory?: string },
 ): BenchmarkAssessment {
+  // #650 — exported, so it validates its own input. `L9` reached the rating
+  // ladder and surfaced `RATING_LADDER[level] is not iterable` to the caller.
+  if (!BENCHMARK_LEVELS.includes(level)) throw new Error(invalidLevelMessage(level));
   const measured = generateBenchmarkReport(allFindings, level);
   const zeroRead = coverage?.filesExamined === 0;
   const result = zeroRead ? { ...measured, rating: 'Not Assessed' as const, compliance: null } : measured;
@@ -459,11 +469,18 @@ export async function handleToolCall(
         }
 
       case 'hackmyagent_benchmark': {
+        // #650 — the low-level Server does not enforce the schema's enum, so the
+        // level is checked here, before any scan runs. Presence, not truthiness:
+        // an explicit empty level is refused, as the CLI refuses `-l ''`.
+        const rawLevel = args?.level === undefined ? 'L1' : args.level;
+        const level = String(rawLevel).toUpperCase() as BenchmarkLevel;
+        if (!BENCHMARK_LEVELS.includes(level)) {
+          return { content: [{ type: 'text', text: `Error: ${invalidLevelMessage(rawLevel)}` }], isError: true };
+        }
         const requested = (args?.directory as string) || '.';
         const resolvedDir = await resolveWithinRoots(roots, requested);
         if (!resolvedDir.ok) return refuse(resolvedDir.refusal);
         const dir = resolvedDir.path;
-          const level = ((args?.level as string) || 'L1').toUpperCase() as BenchmarkLevel;
 
           const scanner = new HardeningScanner();
           const result = await scanner.scan({ targetDir: dir, confineRoots: roots });
