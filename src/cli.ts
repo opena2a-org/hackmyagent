@@ -7823,7 +7823,10 @@ Examples:
   .option('--mcp-tool <tool>', 'Default MCP tool name (for mcp targets)')
   .option('--a2a-sender <name>', 'A2A sender identity (for a2a targets)', 'attacker-agent')
   .option('--a2a-recipient <name>', 'A2A recipient identity (for a2a targets)', 'target-agent')
-  .option('-H, --header <headers>', 'Headers in format "Key: Value" (can be used multiple times)')
+  // #660 — the collector is what makes "can be used multiple times" true:
+  // registered without one, a repeated -H overwrote the previous value, so
+  // only the last header reached the target.
+  .option('-H, --header <headers>', 'Headers in format "Key: Value" (can be used multiple times)', (value: string, previous: string[] = []) => previous.concat(value))
   .option('--timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('--delay <ms>', 'Delay between requests in milliseconds', '1000')
   .option('--stop-on-success', 'Stop after first successful attack')
@@ -7850,7 +7853,7 @@ Examples:
     mcpTool?: string;
     a2aSender?: string;
     a2aRecipient?: string;
-    header?: string | string[];
+    header?: string[];
     timeout?: string;
     delay?: string;
     stopOnSuccess?: boolean;
@@ -7897,8 +7900,7 @@ Examples:
       // Parse headers
       const headers: Record<string, string> = {};
       if (options.header) {
-        const headerList = Array.isArray(options.header) ? options.header : [options.header];
-        for (const h of headerList) {
+        for (const h of options.header) {
           const [key, ...valueParts] = h.split(':');
           if (key && valueParts.length > 0) {
             headers[key.trim()] = valueParts.join(':').trim();
