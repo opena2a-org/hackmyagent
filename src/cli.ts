@@ -64,7 +64,7 @@ import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolv
 import { formatCategoriesLine } from './ui/categories-line';
 import { composeVerdictLine, dissentingFiles } from './ui/analyst-dissent';
 import { incompleteVerdictLead } from './ui/incomplete-verdict';
-import { WildScanner, type WildScanReport } from './wild';
+import { WildScanner, WILD_MAX_TIER, parseWildTier, parseWildTimeout, parseWildDelay, type WildScanReport } from './wild';
 import { assertKnownProfile } from './soul/scanner';
 import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
@@ -12469,7 +12469,7 @@ Examples:
   $ ${CLI_PREFIX} wild -v -o report.json`)
   .argument('[url]', 'Target URL to scan', 'https://agentpwn.com')
   .option('-c, --category <category>', 'Filter by attack category')
-  .option('-t, --tier <tier>', 'Filter by specific difficulty tier')
+  .option('-t, --tier <tier>', `Filter by specific difficulty tier (1-${WILD_MAX_TIER})`)
   .option('--timeout <ms>', 'Request timeout in milliseconds', '15000')
   .option('--delay <ms>', 'Delay between requests in milliseconds', '500')
   .option('--json', 'Output as JSON')
@@ -12485,12 +12485,15 @@ Examples:
     verbose?: boolean;
   }) => {
     try {
+      // #480: validated before any request, so a bad value is a refusal that
+      // did no work rather than a scan of nothing that exits 0.
+      const tier = parseWildTier(options.tier);
       const scanner = new WildScanner({
         url: url || 'https://agentpwn.com',
         category: options.category,
-        tier: options.tier ? parseInt(options.tier, 10) : undefined,
-        timeout: parseInt(options.timeout || '15000', 10),
-        delay: parseInt(options.delay || '500', 10),
+        tier,
+        timeout: parseWildTimeout(options.timeout ?? '15000'),
+        delay: parseWildDelay(options.delay ?? '500'),
         verbose: options.verbose || false,
         json: options.json || false,
       });
@@ -12502,8 +12505,8 @@ Examples:
         // out of the tree, so the header takes the path escaping like every other
         // rendered path. Display, not a command.
         console.log(`Target: ${escapePathForDisplay(url || 'https://agentpwn.com')}`);
-        if (options.category) console.log(`Category: ${options.category}`);
-        if (options.tier) console.log(`Tier: ${options.tier}`);
+        if (options.category) console.log(`Category: ${escapeForDisplay(options.category)}`);
+        if (tier !== undefined) console.log(`Tier: ${tier}`);
         console.log('');
       }
 
