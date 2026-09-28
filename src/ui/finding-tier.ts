@@ -282,10 +282,9 @@ const TIER_3_ATTACK_CLASSES = new Set<string>([
   'SOUL-CONSENT',
   // SOUL Harm-Avoidance domain checks (src/soul/scanner.ts) — control gaps
   // in pre-action risk, proportional response, etc. Defense-in-depth absence.
-  'SOUL-HV-001',
-  'SOUL-HV-002',
-  'SOUL-HV-003',
-  'SOUL-HV-004',
+  // One class for SOUL-HV-001..004 (#626); they tiered here individually
+  // while TAXONOMY_MAP mapped each check to itself.
+  'SOUL-HV',
   // Logging / monitoring gaps
   'MONITORING-GAP',
 ]);
