@@ -23,6 +23,7 @@
 // 'no such surface here' — an instrumentation hole rendered as reassurance.
 import { fs } from '../hardening/tracked-fs';
 import * as path from 'path';
+import { isPathWithinDirectory } from '../hardening/contain';
 import type {
   SecurityFindingDraft,
   AssemblyComponent,
@@ -93,6 +94,11 @@ async function discoverComponents(targetDir: string): Promise<AssemblyComponent[
   // `-->` in the second copy and fire LIFECYCLE-001 every time, even on a
   // freshly hardened skill.
   const seenRealPaths = new Set<string>();
+  // Every read below is held to the target's REAL location (#622). A committed
+  // symlink can point anywhere, and the assembly being scanned is the files in
+  // this tree, not whatever a link in it names. Comparing two realpaths makes
+  // the lexical check sound here.
+  const realTargetDir = await fs.realpath(targetDir).catch(() => path.resolve(targetDir));
   const pushUnique = async (
     filePath: string,
     source: string,
@@ -100,6 +106,7 @@ async function discoverComponents(targetDir: string): Promise<AssemblyComponent[
   ) => {
     try {
       const realPath = await fs.realpath(filePath);
+      if (!isPathWithinDirectory(realPath, realTargetDir)) return;
       if (seenRealPaths.has(realPath)) return;
       seenRealPaths.add(realPath);
       const content = await fs.readFile(filePath, 'utf-8');
@@ -146,12 +153,20 @@ async function discoverComponents(targetDir: string): Promise<AssemblyComponent[
   try {
     const srcExists = await fs.access(srcDir).then(() => true).catch(() => false);
     if (srcExists) {
-      const entries = await fs.readdir(srcDir, { recursive: true }) as string[];
+      // Dirent mode, not names mode (#622): a names-mode recursive `readdir`
+      // descends through a symlinked directory, so a committed `src/link ->
+      // ../../elsewhere` made this read files outside the target. Dirent mode
+      // reports the link without following it, and links are skipped, as the
+      // other input walkers skip them. The realpath check covers what is left.
+      const entries = await fs.readdir(srcDir, { recursive: true, withFileTypes: true });
       for (const entry of entries) {
-        const entryStr = String(entry);
-        if (!/\.(ts|js|py|mjs)$/.test(entryStr)) continue;
-        const filePath = path.join(srcDir, entryStr);
+        if (entry.isSymbolicLink() || !entry.isFile()) continue;
+        if (!/\.(ts|js|py|mjs)$/.test(entry.name)) continue;
+        // `parentPath` is `path` before Node 18.20 / 20.12.
+        const parent = entry.parentPath ?? (entry as { path?: string }).path ?? srcDir;
+        const filePath = path.join(parent, entry.name);
         try {
+          if (!isPathWithinDirectory(await fs.realpath(filePath), realTargetDir)) continue;
           const stat = await fs.stat(filePath);
           if (!stat.isFile() || stat.size > 100_000) continue;
           const content = await fs.readFile(filePath, 'utf-8');

@@ -271,6 +271,19 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
   2026-09-20. The README's Install section now carries the two switches that skip the
   download and the reason `--ignore-scripts` is safe for a CI install of this package.
 
+### The assembly scanner reads only files inside the target (#622)
+
+- **A committed symlink no longer makes the assembly scanner read files outside the scanned
+  tree.** At standard depth it listed `src/` with a names-mode recursive `readdir`, which
+  descends through a symlinked directory, and it read every fixed-path component (`SOUL.md`,
+  `.claude/memory/*.md`, and the rest) through whatever link stood there. So `src/link ->
+  ../../elsewhere` put an outside file's system prompt into the assembled prompt and its
+  findings, cited as `src/link/<file>`. The `src/` walk now lists in dirent mode and skips
+  links, as the other input walkers do, and every component read is held to the target's
+  real location. A link that stays inside the tree still resolves. Tests:
+  `__tests__/lifecycle/assembly-scanner-symlink-containment.test.ts` (four out-of-tree cases
+  fail on the previous code; the in-tree case passes on both).
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path
