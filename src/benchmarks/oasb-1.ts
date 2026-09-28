@@ -138,6 +138,12 @@ export interface BenchmarkControlResult {
   findings: string[];
   /** Fix instructions if failed */
   remediation?: string;
+  /**
+   * The control's own verification procedure (`BenchmarkControl.audit`), when
+   * status is `unverified` (#418): the scan could not settle the control, so
+   * this is how a person checks it. Absent on every other status.
+   */
+  audit?: string;
   /** The absent subject artifacts, when status is `not-applicable` (#458). */
   notApplicableSubjects?: string[];
 }
