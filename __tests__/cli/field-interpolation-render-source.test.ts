@@ -62,7 +62,7 @@ const AUTHORED_ALLOW: ReadonlyArray<readonly [string, string]> = [
   ["if (r.description) console.log(`  ${r.description}`);", "llm: analyst description = sanitized analysis (unreachable default branch aside)"],
   ["console.log(`     [-] ${ctrl.controlId}: ${ctrl.name}`);", "authored: OASB control.name"],
   ["console.log(`     [+] ${ctrl.controlId}: ${ctrl.name}`);", "authored: OASB control.name"],
-  ["console.log(`     [?] ${ctrl.controlId}: ${ctrl.name} (${reason})`);", "authored: OASB control.name"],
+  ["console.log(`     [?] ${ctrl.controlId}: ${ctrl.name} (${unverifiedReason(ctrl.controlId)})`);", "authored: OASB control.name; unverifiedReason returns one of two literals"],
   ["console.log(`  ${verifyIcon} [${finding.checkId}] ${location} - ${finding.name}`);", "authored: scanner check-def name"],
   ["console.log(`${risk.description}\\n`);", "authored: assessRiskLevel templates + counts"],
   ["console.log(`   ${finding.description}`);", "authored: openclaw check description constants"],

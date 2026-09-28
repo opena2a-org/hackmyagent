@@ -112,7 +112,8 @@ export interface BenchmarkResult {
 
 export interface BenchmarkCategoryResult {
   category: string;
-  compliance: number;
+  /** `null` when no control in the category produced a result (#615). */
+  compliance: number | null;
   passed: number;
   failed: number;
   unverified: number;
