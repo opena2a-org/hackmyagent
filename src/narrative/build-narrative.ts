@@ -207,6 +207,9 @@ export function synthesizeSummary(
  * `agent-credential`, or any finding whose `attackClass` starts with
  * `CRED-` / `AST-CRED-` / `WEBCRED-` / `SEM-CRED-` / `AGENT-CRED-`.
  */
+/** Credential attack classes that describe what code DOES with a credential. */
+const BEHAVIOUR_CRED_CLASSES = new Set(["CRED-EXFIL", "CRED-HARVEST"]);
+
 function extractHardcodedSecrets(findings: SecurityFinding[]): HardcodedSecret[] {
   const credentialCategories = new Set([
     "credentials",
@@ -230,6 +233,12 @@ function extractHardcodedSecrets(findings: SecurityFinding[]): HardcodedSecret[]
       (typeof f.attackClass === "string" &&
         credentialAttackPrefixes.some((p) => f.attackClass!.startsWith(p)));
     if (!isCredFinding) continue;
+    // #586 — forwarding and harvesting are behaviours, not secrets stored in
+    // the artifact. `AST-CRED-002` and `SHELL-EXFIL-001` (`CRED-EXFIL`) carry
+    // no value and no "Hardcoded <label>" name, so reshaping them produced a
+    // phantom `unknown` secret with an empty masked value at critical. One that
+    // does carry a value still names a real secret and is kept.
+    if (BEHAVIOUR_CRED_CLASSES.has(f.attackClass ?? "") && !extractRawValue(f)) continue;
     const label = extractLabelFromFinding(f);
     const type = label
       ? CREDENTIAL_LABEL_TO_TYPE[label] ?? "unknown"
