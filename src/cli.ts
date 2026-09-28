@@ -4933,7 +4933,7 @@ Examples:
   $ ${CLI_PREFIX} secure -b oasb-1 -f html -o report.html
   $ ${CLI_PREFIX} secure -b oasb-1 --fail-below 80 CI threshold
   $ ${CLI_PREFIX} secure -b oasb-2               OASB composite (infra + governance)
-  $ ${CLI_PREFIX} secure ./my-agent --publish    Scan and publish results to registry`)
+  $ ${CLI_PREFIX} secure ./my-agent --publish    Scan and publish results to registry (not with -b)`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
@@ -4961,14 +4961,14 @@ Examples:
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
-  .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env)')
-  .option('--publish', 'Push scan results to the OpenA2A Registry')
-  .option('--registry-report', 'Post results to OpenA2A Registry')
+  .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env; not with -b)')
+  .option('--publish', 'Push scan results to the OpenA2A Registry (not with -b)')
+  .option('--registry-report', 'Post results to OpenA2A Registry (not with -b)')
   .option('--no-registry', 'Skip auto-publishing results to OpenA2A Registry')
-  .option('--version-id <id>', 'Registry version ID to report against')
+  .option('--version-id <id>', 'Registry version ID to report against (not with -b)')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))
   .option('--registry-key <key>', 'Registry API key (default: REGISTRY_API_KEY env)')
-  .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config)')
+  .option('--contribute', 'Share anonymized scan findings with OpenA2A Registry (overrides config; not with -b)')
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Does not change the exit code')
   .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
@@ -5113,8 +5113,25 @@ Examples:
       // as #563: refuse where the other format errors are raised, and list
       // what the arm renders. `asp` outside OASB-1 keeps #563's line above.
       const benchmarkFormats = isOasb2 ? ['text', 'json'] : ['text', 'json', 'sarif', 'html', 'asp'];
-      if (options.benchmark !== undefined && !benchmarkFormats.includes(format)) {
-        console.error(`Error: --format ${format} is not available with -b ${escapeForDisplay(String(benchmarkAsGiven))}. Use: ${benchmarkFormats.join(', ')}`);
+      // #646 — both benchmark arms return before the publish and contribute
+      // steps run, so these flags were accepted with `-b` and dropped: no
+      // attempt, no `publish` key in the json document, nothing on stderr.
+      // Refused until a benchmark publish payload exists. `--no-contribute`
+      // asks for what a benchmark run already does and stays allowed. Same
+      // site as the format refusal so the exit-surface baseline holds.
+      const benchmarkDroppedFlags = options.benchmark === undefined ? [] : [
+        options.publish && '--publish',
+        options.ciPublish && '--ci-publish',
+        options.registryReport && '--registry-report',
+        options.versionId !== undefined && '--version-id',
+        options.contribute === true && cmd.getOptionValueSource('contribute') === 'cli' && '--contribute',
+      ].filter((f): f is string => typeof f === 'string');
+      const benchmarkFormatRefused = options.benchmark !== undefined && !benchmarkFormats.includes(format);
+      if (benchmarkFormatRefused || benchmarkDroppedFlags.length > 0) {
+        const benchmarkShown = escapeForDisplay(String(benchmarkAsGiven));
+        console.error(benchmarkFormatRefused
+          ? `Error: --format ${format} is not available with -b ${benchmarkShown}. Use: ${benchmarkFormats.join(', ')}`
+          : `Error: ${benchmarkDroppedFlags.join(', ')} ${benchmarkDroppedFlags.length === 1 ? 'is' : 'are'} not available with -b ${benchmarkShown}: a benchmark run sends nothing to the Registry. Run secure without -b to publish or share findings.`);
         process.exit(1); // exit-unsettled(#350/S008): pre-work refusal; events await the schema reason field (#525)
       }
 
