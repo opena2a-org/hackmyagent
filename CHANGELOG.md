@@ -271,6 +271,15 @@ hackmyagent check <dir> --json | jq -c '{score, unit: .coverage.unit, mode: .cov
   2026-09-20. The README's Install section now carries the two switches that skip the
   download and the reason `--ignore-scripts` is safe for a CI install of this package.
 
+### `atomicFix` is false when a fix in the same run was disproved (#608)
+
+- **`secure --fix --format json` reported `atomicFix: true` on a run whose verification
+  pass disproved one of its fixes** (`fixed: true, fixVerified: false` on a finding in the
+  same document). The flag is documented as "True if all fixes completed atomically", but
+  it read the bare attempt flag. It now counts only confirmed fixes (`confirmedFix`, the
+  predicate the #274 counts use) and is false when any attempt was disproved. Scores,
+  findings and exit codes are unchanged.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path
