@@ -395,7 +395,7 @@ import { shouldPrintVersionFooter } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
 import { shouldShowDeepProgress } from './ui/progress-gate';
-import { generateVerifyCommand } from './ui/verify-command';
+import { generateVerifyCommand, rebaseOwnFileCitation } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { generateBenchmarkReport } from './benchmarks/benchmark-report';
@@ -2792,7 +2792,9 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           // escaped on its own printing line, so a newline inside a part (a
           // tree byte) is the two characters `\n` and only the generator's
           // boundaries become lines.
-          const parts = fixParts(f);
+          // #524 — a citation of the finding's own file is rebased onto the
+          // scan root, like the `Verify:` line above.
+          const parts = fixParts(f).map((p) => rebaseOwnFileCitation(p, f.file, scanRoot));
           console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(parts[0]), f.file))}`);
           for (const part of parts.slice(1)) {
             console.log(`  ${borderColor}│${RESET()}${part === '' ? '' : ` ${fixContinuationIndent(parts[0])}${escapeForDisplay(rebrandCommandCitations(part))}`}`);
@@ -2833,8 +2835,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         }
         if (f.fix) {
           // #367 — see the Top Issues site above: parts one per line, each
-          // escaped on its own printing line.
-          const parts = fixParts(f);
+          // escaped on its own printing line. #524 — own-file citations rebased.
+          const parts = fixParts(f).map((p) => rebaseOwnFileCitation(p, f.file, scanRoot));
           console.log(`  ${borderColor}│${RESET()} ${formatFixLine(cleanFixText(escapeForDisplay(parts[0]), f.file))}`);
           for (const part of parts.slice(1)) {
             console.log(`  ${borderColor}│${RESET()}${part === '' ? '' : ` ${fixContinuationIndent(parts[0])}${escapeForDisplay(rebrandCommandCitations(part))}`}`);
