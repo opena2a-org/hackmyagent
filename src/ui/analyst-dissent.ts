@@ -168,6 +168,13 @@ export interface VerdictLineInput {
   quickScanVerdict?: string;
   /** The coverage-gap disclosure for a zero-finding scan over incomplete coverage. Replaces the value. */
   coverageGapVerdict?: string;
+  /**
+   * #568 — the clause naming an input the run could not read. PREPENDED to
+   * whichever sentence the two disclosures leave, so the line leads with it.
+   * The caller leaves it unset for a fail-direction band, whose own lead is
+   * already stronger.
+   */
+  incompleteLead?: string;
   escalations: readonly DissentingEscalation[] | undefined;
 }
 
@@ -175,8 +182,9 @@ export interface VerdictLineInput {
  * #560 — the Verdict line's final text and tone, composed in one pure step so
  * the ORDER above is a property a test can call rather than a comment in
  * `cli.ts`. The two disclosures assign (coverage-gap wins when both apply, as
- * it ran second), then the dissent clause is appended, then the tone comes
- * off green if a clause was added.
+ * it ran second), then the #568 incomplete-input lead is prepended, then the
+ * dissent clause is appended, then the tone comes off green if a lead or a
+ * clause was added.
  *
  * The tone rule only DOWNGRADES, and only from `good`: the advisory channel may
  * withdraw an all-clear it disagrees with, never soften a `warning` or
@@ -193,6 +201,10 @@ export function composeVerdictLine(input: VerdictLineInput): { value: string; to
   if (input.coverageGapVerdict !== undefined) {
     value = input.coverageGapVerdict;
     tone = 'warning';
+  }
+  if (input.incompleteLead !== undefined) {
+    value = `${input.incompleteLead} ${value}`;
+    if (tone === 'good') tone = 'warning';
   }
   const dissent = analystDissentSuffix(input.escalations);
   value += dissent;
