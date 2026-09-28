@@ -85,30 +85,33 @@ describe('structured config is parsed, and the key decides (#364)', () => {
   // attempts to locate a line by text are recorded in the vocabulary module;
   // each was smaller than the last and each still put a citation on a deny
   // entry. The entry is what the reader acts on, and it is exact.
-  it('names the offending entry, and cites no line', () => {
+  // #379 — the line comes from the walk's own path through the parse, so it is
+  // the line of the judged entry, and a structured finding still quotes no
+  // file line (`text`): the entry is already quoted as `token`.
+  it('names the offending entry, and cites its line from the parse', () => {
     const doc = settings({ permissions: { allow: ['Bash(npm test)', 'Bash(*)'] } });
     const grant = findPermissionGrant(doc, SETTINGS);
     expect(grant!.token).toBe('Bash(*)');
-    expect(grant!.line).toBeUndefined();
+    expect(doc.split('\n')[grant!.line! - 1].trim()).toBe('"Bash(*)"');
+    expect(grant!.line).toBe(5);
     expect(grant!.text).toBeUndefined();
   });
 
-  // …and the SAME file with a deny key present gets no line at all, however
-  // empty that key is. The rule is deliberately blunt — any restriction key
-  // anywhere — because two attempts at a sharp one both shipped a defect, the
-  // second worse than the first. The entry, the reason and the fix are
-  // unchanged; only the line and its `Verify:` are withheld.
+  // The same file with a restriction key present used to get no line at all
+  // (#364's blunt rule). Following the structure, the key no longer matters:
+  // the citation is the allow entry's own line, before or after the deny list.
   it.each([
-    ['an empty deny list', { allow: ['Bash(*)'], deny: [] }],
-    ['a populated deny list', { allow: ['Bash(*)'], deny: ['Read(./.env)'] }],
-    ['an ask list', { allow: ['Bash(*)'], ask: ['Bash(rm:*)'] }],
-  ])('withholds the line when the file declares %s', (_name, permissions) => {
+    ['an empty deny list', { allow: ['Bash(*)'], deny: [] }, 4],
+    ['a populated deny list', { allow: ['Bash(*)'], deny: ['Read(./.env)'] }, 4],
+    ['an ask list', { allow: ['Bash(*)'], ask: ['Bash(rm:*)'] }, 4],
+    ['a deny list first, holding the same entry', { deny: ['Bash(*)'], allow: ['Bash(*)'] }, 7],
+  ])('cites the allow entry when the file declares %s', (_name, permissions, line) => {
     const grant = findPermissionGrant(settings({ permissions }), SETTINGS);
     expect(grant, 'the grant is still reported').toBeDefined();
     expect(grant!.token).toBe('Bash(*)');
     expect(grant!.reason).toBeTruthy();
     expect(grant!.fix).toBeTruthy();
-    expect(grant!.line, 'a line was cited on a file holding a restriction key').toBeUndefined();
+    expect(grant!.line, 'the citation is not the allow entry').toBe(line);
     expect(grant!.text).toBeUndefined();
   });
 
@@ -179,11 +182,13 @@ describe('structured config is parsed, and the key decides (#364)', () => {
     });
     const grant = findPermissionGrant(doc, SETTINGS);
     expect(grant).toBeDefined();
-    // The strongest form of "never cites a deny line": on a file that holds
-    // one, no line is cited at all. A text search cannot tell the two apart —
-    // the values are identical and only structure separates them — so the
-    // citation is withheld rather than guessed.
-    expect(grant!.line, 'cited a line on a file holding a deny list').toBeUndefined();
+    // A text search cannot tell the two apart — the values are identical and
+    // only structure separates them. The walk's path can (#379): the deny list
+    // comes first here, so the whole-file search this replaced lands on line 5.
+    const lines = doc.split('\n');
+    expect(lines.findIndex((l) => l.includes('"Bash(*)"')) + 1, 'fixture: the first textual match is the deny entry').toBe(5);
+    expect(grant!.line, 'cited the deny entry').toBe(9);
+    expect(lines[grant!.line! - 1].trim()).toBe('"Bash(*)"');
     expect(grant!.token).toBe('Bash(*)');
   });
 
@@ -668,6 +673,7 @@ describe('the citation contract holds across generated configs (#364)', () => {
   }) {
     const lines: string[] = [];
     const denyLines = new Set<number>();
+    let allowLine = -1; // 0-indexed line of the allow entry, known by construction
     const push = (t: string, isDeny = false) => {
       if (isDeny) denyLines.add(lines.length);
       lines.push(t);
@@ -681,6 +687,7 @@ describe('the citation contract holds across generated configs (#364)', () => {
     };
     const emitAllow = () => {
       push(`${o.keyInd}${o.keyInd}${o.allowKey}: [`);
+      allowLine = lines.length;
       push(`${o.entryInd}"${o.escapedValue ? 'Bash(\\u002a)' : ENTRY}"`);
       push(`${o.keyInd}${o.keyInd}],`);
     };
@@ -690,7 +697,7 @@ describe('the citation contract holds across generated configs (#364)', () => {
     lines[lines.length - 1] = lines[lines.length - 1].replace(/,\s*$/, '');
     push(`${o.keyInd}}`);
     push('}');
-    return { text: lines.join('\n'), denyLines, hasDeny: o.denyKey !== null, escapedValue: o.escapedValue };
+    return { text: lines.join('\n'), denyLines, allowLine, hasDeny: o.denyKey !== null, escapedValue: o.escapedValue };
   }
 
   const CASES = (() => {
@@ -740,13 +747,15 @@ describe('the citation contract holds across generated configs (#364)', () => {
     expect(bad.length, bad.length ? `first:\n${bad[0].text}` : '').toBe(0);
   });
 
-  // The TOTAL form, which is the point of the final design: no structured
-  // config carries a line, so there is no premise about nesting depth, aliases
-  // or indentation left for an input to defeat. The three attempts that DID
-  // carry a premise each shipped a defect.
-  it('no structured config carries a line, whatever it contains', () => {
-    const leaked = CASES.filter((c) => findPermissionGrant(c.text, SETTINGS)?.line !== undefined);
-    expect(leaked.length, leaked.length ? `first:\n${leaked[0].text}` : '').toBe(0);
+  // #379 — the TOTAL form of the new contract: every generated config is cited,
+  // and at exactly the allow entry's line, across every axis the corpus varies
+  // (entry and key indentation, deny key spelling and position, escaped keys
+  // and values, a `// allow:` comment inside the deny list). The line comes
+  // from the walk's path, so there is no text premise left for an input to
+  // defeat; the three attempts that searched the text each shipped a defect.
+  it('cites exactly the allow entry\'s line on every generated config', () => {
+    const wrong = CASES.filter((c) => findPermissionGrant(c.text, SETTINGS)?.line !== c.allowLine + 1);
+    expect(wrong.length, wrong.length ? `first (expected ${wrong[0].allowLine + 1}):\n${wrong[0].text}` : '').toBe(0);
   });
 
   // The two shapes an adversarial review used to defeat the previous gate,
@@ -760,7 +769,9 @@ describe('the citation contract holds across generated configs (#364)', () => {
     const deep = `{\n  "permissions": {\n    "allow": ["Read(**/*.ke\\u0079)"]\n  },\n  "nest": ${inner}\n}`;
     const a = findPermissionGrant(deep, SETTINGS);
     expect(a, 'the allow entry is still classified').toBeDefined();
-    expect(a!.line, 'cited a line on a file whose deny sits past the depth bound').toBeUndefined();
+    // #379: the citation follows the walk's path, so the deny past the depth
+    // bound is never reached by it — the allow entry's own line is cited.
+    expect(a!.line, 'did not cite the allow entry on line 3').toBe(3);
 
     // (b) a YAML alias that reaches a deny through a shorter path than the one
     //     that first visited it — the visited-set poisoning case.
@@ -921,4 +932,29 @@ describe('scanAiConfigs carries the evidence through (#299)', () => {
     expect(config?.evidence?.text).toBeUndefined();
     expect(JSON.stringify(config)).not.toContain('NOTREAL');
   });
+});
+
+// #379 criterion 6 — `secure`'s CLAUDE-002 had no line, so `generateVerifyCommand`
+// produced no `Verify:` for it while `detect` cited the same file. It now takes
+// the line from the same walk, and a deny list holding the same text first
+// cannot pull the citation onto itself.
+describe('secure cites CLAUDE-002 from the parse (#379)', () => {
+  it('carries the allow entry line, not the identical deny entry above it', async () => {
+    const { HardeningScanner } = await import('../../src/hardening/scanner');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-379-'));
+    try {
+      fs.mkdirSync(path.join(dir, '.claude'));
+      const text = settings({ permissions: { deny: ['Bash(*)'], allow: ['Bash(npm test)', 'Bash(*)'] } });
+      fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), text);
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+      const f = result.findings.find((x) => x.checkId === 'CLAUDE-002');
+      expect(f, 'CLAUDE-002 did not fire on a wildcard allow entry').toBeDefined();
+      const lines = text.split('\n');
+      expect(lines.findIndex((l) => l.includes('"Bash(*)"')) + 1, 'fixture: first textual match is the deny entry').toBe(4);
+      expect(f!.line).toBe(8);
+      expect(lines[f!.line! - 1].trim()).toBe('"Bash(*)"');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
