@@ -14,10 +14,51 @@ import { fetchPage, fetchTextFile, extractContent, parseSitemap } from './browse
 import { computeResilienceScore } from './scorer';
 import type { WildScanOptions, WildScanReport, WildPageResult, FileFetchResult } from './types';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
+import { usageError } from '../checker/errors';
 
 export type { WildScanOptions, WildScanReport, WildPageResult, FileFetchResult };
 
 const DEFAULT_URL = 'https://agentpwn.com';
+
+/** Tiers each attack category publishes, used when the target has no sitemap. */
+const CATEGORY_MAX_TIER: Record<string, number> = {
+  'prompt-injection': 10, 'jailbreak': 5, 'data-exfiltration': 5,
+  'capability-abuse': 3, 'context-manipulation': 5, 'mcp-exploitation': 3,
+  'a2a-attack': 3, 'memory-weaponization': 3, 'context-window': 5,
+  'supply-chain': 3, 'tool-shadow': 3,
+};
+
+/** Highest tier any category publishes: the upper bound `--tier` accepts. */
+export const WILD_MAX_TIER = Math.max(...Object.values(CATEGORY_MAX_TIER));
+
+/** Largest delay a Node timer honours; above it `setTimeout` fires after 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * #480: parse an integer `wild` flag, refusing anything that is not a whole
+ * number in [min, max]. `parseInt` read `--tier abc` as NaN, which applied no
+ * filter and ran every tier, and read `--tier 99999` / `--tier -5` as a filter
+ * no page matches, which scored nothing 100/100 and exited 0: a typo turned a
+ * failing gate green. `--timeout` and `--delay` fell back to their defaults on
+ * a non-number the same way. Presence, not truthiness: `--tier ''` (a CI
+ * template over an unset variable) is refused, not read as "no filter".
+ */
+export function parseWildIntegerOption(flag: string, raw: string | undefined, min: number, max: number): number | undefined {
+  if (raw === undefined) return undefined;
+  const text = raw.trim();
+  const value = /^\d+$/.test(text) ? Number(text) : NaN;
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw usageError`${flag} must be a whole number between ${min} and ${max} (got '${raw}')`;
+  }
+  return value;
+}
+
+/** `--timeout` bounds in milliseconds; 0 would abort every fetch before it starts. */
+export const parseWildTimeout = (raw: string | undefined) => parseWildIntegerOption('--timeout', raw, 1, MAX_TIMER_MS);
+/** `--delay` bounds in milliseconds; 0 means no pause between requests. */
+export const parseWildDelay = (raw: string | undefined) => parseWildIntegerOption('--delay', raw, 0, MAX_TIMER_MS);
+/** `--tier` bounds: the tiers the attack catalogue publishes. */
+export const parseWildTier = (raw: string | undefined) => parseWildIntegerOption('--tier', raw, 1, WILD_MAX_TIER);
 
 export class WildScanner {
   private options: WildScanOptions;
@@ -28,7 +69,7 @@ export class WildScanner {
       category: options.category,
       tier: options.tier,
       timeout: options.timeout || 15000,
-      delay: options.delay || 500,
+      delay: options.delay ?? 500,
       verbose: options.verbose || false,
       json: options.json || false,
     };
@@ -87,21 +128,7 @@ export class WildScanner {
 
     // Fall back to known attack page patterns if sitemap unavailable
     if (attackUrls.length === 0) {
-      const categories = [
-        'prompt-injection', 'jailbreak', 'data-exfiltration',
-        'capability-abuse', 'context-manipulation', 'mcp-exploitation',
-        'a2a-attack', 'memory-weaponization', 'context-window',
-        'supply-chain', 'tool-shadow',
-      ];
-      const maxTiers: Record<string, number> = {
-        'prompt-injection': 10, 'jailbreak': 5, 'data-exfiltration': 5,
-        'capability-abuse': 3, 'context-manipulation': 5, 'mcp-exploitation': 3,
-        'a2a-attack': 3, 'memory-weaponization': 3, 'context-window': 5,
-        'supply-chain': 3, 'tool-shadow': 3,
-      };
-
-      for (const cat of categories) {
-        const max = maxTiers[cat] || 3;
+      for (const [cat, max] of Object.entries(CATEGORY_MAX_TIER)) {
         for (let t = 1; t <= max; t++) {
           attackUrls.push(`${baseUrl}/attacks/${cat}/${t}`);
         }
@@ -109,11 +136,24 @@ export class WildScanner {
     }
 
     // Apply filters
+    const pagesBeforeFilter = attackUrls.length;
     if (this.options.category) {
       attackUrls = attackUrls.filter(u => u.includes(`/${this.options.category}/`));
     }
-    if (this.options.tier) {
+    if (this.options.tier !== undefined) {
       attackUrls = attackUrls.filter(u => u.endsWith(`/${this.options.tier}`));
+    }
+    // #480: a filter that selects no page measured nothing. Scoring the empty
+    // set printed 100/100 and exited 0, so `--category jailbreak --tier 7`
+    // (jailbreak stops at tier 5) passed a gate it never ran.
+    if (attackUrls.length === 0 && pagesBeforeFilter > 0) {
+      const filters = [
+        this.options.category ? `--category ${this.options.category}` : '',
+        this.options.tier !== undefined ? `--tier ${this.options.tier}` : '',
+      ].filter(Boolean).join(' ');
+      throw new Error(
+        `No attack page matches ${filters} (${pagesBeforeFilter} pages before filtering); nothing was scanned`,
+      );
     }
 
     // 3. Scan each attack page
