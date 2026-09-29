@@ -5,7 +5,7 @@
 # Any pull request that changes a file under .github/ — or one of the named
 # credential-boundary paths: the credential analyzer, the semantic compiler,
 # the report-redaction module (defense-in-depth) and the stego analyzer —
-# must carry an approving review from a listed approver, given on the pull
+# or the changelog assembler (scripts/changelog.mjs), must carry an approving review from a listed approver, given on the pull
 # request's current head commit. Pull requests that touch no gate file pass
 # immediately, so ordinary changes stay gated by status checks alone.
 #
@@ -150,7 +150,9 @@ jobs:
           # extraction), the report-redaction module and the stego analyzer.
           # Weakening any of these changes what the scanner can see or say
           # about credentials, so changes to them require the same human
-          # approval as changes to the gate itself. Each file pattern is
+          # approval as changes to the gate itself. The changelog assembler
+          # is in the same class: it decides the changelog step of the test
+          # matrix and runs in the release workflow. Each file pattern is
           # anchored at both ends: a lookalike path above, below or beside a
           # gated one is not gated.
           gate_pattern='^\.github/'
@@ -158,6 +160,7 @@ jobs:
           gate_pattern="$gate_pattern|"'^src/nanomind-core/compiler/semantic-compiler\.ts$'
           gate_pattern="$gate_pattern|"'^src/nanomind-core/security/defense-in-depth\.ts$'
           gate_pattern="$gate_pattern|"'^src/nanomind-core/analyzers/stego-analyzer\.ts$'
+          gate_pattern="$gate_pattern|"'^scripts/changelog\.mjs$'
 
           # grep exit 1 means no match; anything above 1 is an execution error
           # and must abort rather than read as "no gate files" (fail closed).
@@ -170,7 +173,7 @@ jobs:
           if [ -z "$conclusion" ] && [ "$gate_rc" -eq 1 ]; then
             conclusion="success"
             title="No gate files touched"
-            summary="This pull request changes nothing under .github/ and none of the credential-boundary paths, so no gate-file approval is required."
+            summary="This pull request changes nothing under .github/, none of the credential-boundary paths and not scripts/changelog.mjs, so no gate-file approval is required."
           fi
 
           if [ -z "$conclusion" ] && [ "$workflow_modified" = "true" ]; then
@@ -206,7 +209,7 @@ jobs:
               # no failure email fires for a routine state.
               conclusion="action_required"
               title="Gate-file change needs approval"
-              summary="This pull request changes gate files: paths under .github/ or the credential-boundary sources. It requires an approving review from $approvers on the current head commit ($HEAD_SHA). Automation can author gate-file changes; it cannot approve them."
+              summary="This pull request changes gate files: paths under .github/, the credential-boundary sources or scripts/changelog.mjs. It requires an approving review from $approvers on the current head commit ($HEAD_SHA). Automation can author gate-file changes; it cannot approve them."
             fi
           fi
           # --- END VERDICT ---

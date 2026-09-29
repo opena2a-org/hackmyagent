@@ -21,7 +21,25 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Runs scripts/changelog.mjs in a job of its own, with a read-only token and
+  # no artifact, so the script never executes in the job that packs the
+  # published tarball. `build` needs it, so nothing is packed or published
+  # when fragments remain in changelog.d/ or the newest CHANGELOG.md heading
+  # is not this version.
+  verify-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Changelog assembled for this tag
+        run: node scripts/changelog.mjs verify-release --version "${GITHUB_REF_NAME#v}"
+
   build:
+    needs: verify-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -42,10 +60,6 @@ jobs:
             echo "::error::A tracked package-manager config file is in the tree; it can redirect or hook the install below. Remove it."
             exit 1
           fi
-      - name: Changelog assembled for this tag
-        # Fails before anything is packed or published when fragments remain in
-        # changelog.d/ or the newest CHANGELOG.md heading is not this version.
-        run: node scripts/changelog.mjs verify-release --version "${GITHUB_REF_NAME#v}"
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm test

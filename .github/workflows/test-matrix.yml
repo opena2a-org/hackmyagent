@@ -72,14 +72,17 @@ jobs:
         # scripts/changelog.mjs check: entries are fragments in changelog.d/, and
         # CHANGELOG.md changes only in the shapes the script admits. An ordinary
         # change is judged by the base commit's copy of the script, so a change
-        # cannot rewrite the rule that judges it; a change to the script itself
-        # (or the conversion change) runs its own copy, and R5 keeps such a change
-        # free of changelog data.
+        # cannot rewrite the rule that judges it. A change to the script itself
+        # (or the conversion change, whose base has no script) runs its own copy;
+        # R5 is then enforced here, in the workflow and not in the script under
+        # change: such a change may not touch any CHANGELOG.md, and may not
+        # modify, delete or rename a file under changelog.d/ other than an edit
+        # of changelog.d/README.md, which documents the script.
         #
         # The base is part of the tree under test, not a payload field: on a pull
         # request it is the first parent of the merge commit being tested, which
-        # the payload's base.sha can fall behind. Every event that should have a
-        # base and has none fails; only a manual run checks without one.
+        # the payload's base.sha can fall behind. A manual run is judged against
+        # its merge base with main. Every event without a resolvable base fails.
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
@@ -92,21 +95,48 @@ jobs:
               BASE=$(git rev-parse HEAD^1) ;;
             push)
               BASE="$BEFORE"
-              if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then node scripts/changelog.mjs check; exit $?; fi
+              if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+                echo "::error::push event without a previous commit; refusing a check with no base"; exit 1
+              fi
               git fetch --no-tags --depth=1 origin "$BASE" ;;
             merge_group)
               BASE="$MERGE_GROUP_BASE"
               [ -n "$BASE" ] || { echo "::error::merge_group event without merge_group.base_sha; refusing a check with no base"; exit 1; }
               git fetch --no-tags --depth=1 origin "$BASE" ;;
             workflow_dispatch)
-              node scripts/changelog.mjs check; exit $? ;;
+              deepen=""
+              [ "$(git rev-parse --is-shallow-repository)" = "true" ] && deepen="--unshallow"
+              git fetch --no-tags $deepen origin +refs/heads/main:refs/remotes/origin/main \
+                || { echo "::error::cannot fetch main to find this run's merge base"; exit 1; }
+              BASE=$(git merge-base HEAD refs/remotes/origin/main) && [ -n "$BASE" ] \
+                || { echo "::error::no merge base between HEAD and main; refusing a check with no base"; exit 1; } ;;
             *)
               echo "::error::no changelog base is defined for the $EVENT event"; exit 1 ;;
           esac
-          if git cat-file -e "$BASE:scripts/changelog.mjs" 2>/dev/null && git diff --quiet "$BASE" -- scripts/changelog.mjs; then
+          if git cat-file -e "$BASE:scripts/changelog.mjs" 2>/dev/null && git diff --quiet "$BASE" HEAD -- scripts/changelog.mjs; then
             git show "$BASE:scripts/changelog.mjs" > "$RUNNER_TEMP/changelog-base.mjs"
             node "$RUNNER_TEMP/changelog-base.mjs" check --base "$BASE"   # judged by the base's rules
           else
+            if git cat-file -e "$BASE:scripts/changelog.mjs" 2>/dev/null; then
+              # R5: the script changed, so this change carries no changelog record.
+              changes=$(git diff --name-status -M "$BASE" HEAD) \
+                || { echo "::error::cannot list the changes against $BASE"; exit 1; }
+              refused=$(printf '%s\n' "$changes" | awk -F '\t' '
+                function record(p) { return p ~ /(^|\/)CHANGELOG\.md"?$/ }
+                function fragdir(p) { return p ~ /^"?(.*\/)?changelog\.d\// }
+                function readme(p) { return p ~ /^"?(.*\/)?changelog\.d\/README\.md"?$/ }
+                NF == 0 { next }
+                substr($1, 1, 1) == "R" { if (record($2) || record($3) || fragdir($2) || fragdir($3)) print; next }
+                record($2) { print; next }
+                fragdir($2) && $1 == "M" && readme($2) { next }
+                fragdir($2) && $1 != "A" { print }
+              ') || { echo "::error::cannot classify the changes against $BASE"; exit 1; }
+              if [ -n "$refused" ]; then
+                echo "::error::R5: scripts/changelog.mjs changed, so no CHANGELOG.md may change and no file under changelog.d/ may be modified, deleted or renamed in the same change:"
+                printf '%s\n' "$refused"
+                exit 1
+              fi
+            fi
             node scripts/changelog.mjs check --base "$BASE"               # conversion PR or tooling-only PR
           fi
       - run: npm ci
