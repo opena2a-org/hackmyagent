@@ -12,7 +12,10 @@
  * cites itself as `hackmyagent` (or `opena2a scan` when invoked through that
  * wrapper's argv0), and `rebrandCommandCitations` is a no-op.
  */
+import * as fs from 'fs';
+import * as path from 'path';
 import { citationPath } from './ui/shell-quote';
+import { isPathWithinDirectory, readStaysInsideTree } from './hardening/contain';
 import { escapeForDisplay } from './ui/display-safe';
 
 /**
@@ -151,6 +154,18 @@ const TARGET_TAKING_VERBS = [
 const TARGET_VERB_ALT = [...TARGET_TAKING_VERBS].sort((a, b) => b.length - a.length).join('|');
 
 /**
+ * Verbs whose operand is a directory in the scanned tree (#491). `check` and
+ * `scan` are not: `check express` names a package and `scan host` a host, so a
+ * bare word after them is never re-read as a path.
+ */
+const TREE_OPERAND_VERBS: ReadonlySet<string> = new Set(
+  TARGET_TAKING_VERBS.filter((v) => v !== 'check' && v !== 'scan'),
+);
+
+/** A plain relative path: no quotes, placeholders, `~`, or leading `-`. */
+const PLAIN_RELATIVE_OPERAND = /^[A-Za-z0-9._@+][A-Za-z0-9._@+/-]*$/;
+
+/**
  * The tree the current scan is actually about, as the reader should type it.
  *
  * `undefined` means "no rewrite" — either nothing set it yet, or the scan
@@ -158,6 +173,13 @@ const TARGET_VERB_ALT = [...TARGET_TAKING_VERBS].sort((a, b) => b.length - a.len
  * correct and rewriting it would be noise.
  */
 let citationTarget: string | undefined;
+
+/**
+ * The target `citationTarget` was built from, as the caller passed it. Set only
+ * when `citationTarget` is a real path (not `<dir>`), and used only to resolve a
+ * nested operand against it (#491).
+ */
+let citationTargetRaw: string | undefined;
 
 /**
  * Set the scan target used to complete pathless command citations.
@@ -173,6 +195,7 @@ let citationTarget: string | undefined;
  * Pass `undefined` when the target is the working directory.
  */
 export function setCitationTarget(target: string | undefined, opts?: { remote?: boolean }): void {
+  citationTargetRaw = undefined;
   if (opts?.remote) {
     citationTarget = '<dir>';
     return;
@@ -196,12 +219,58 @@ export function setCitationTarget(target: string | undefined, opts?: { remote?: 
     citationTarget = undefined;
     return;
   }
-  citationTarget = citationPath(target) ?? '<dir>';
+  const cited = citationPath(target);
+  citationTarget = cited ?? '<dir>';
+  if (cited !== null) citationTargetRaw = target;
 }
 
 /** Test seam — reset module state between cases. */
 export function __resetCitationTargetForTests(): void {
   citationTarget = undefined;
+  citationTargetRaw = undefined;
+}
+
+/**
+ * The operand of a tree verb, re-based onto the scan target, or undefined (#491).
+ *
+ * `fix-generator` ends fix prose with `Verify: hackmyagent secure <dir>`, where
+ * `<dir>` is the artifact's directory RELATIVE TO THE SCAN TARGET, and keeps it
+ * relative on purpose: an absolute root there shipped the operator's path in
+ * `--json`, SARIF and HTML. A top-level artifact gives `.`, which the rewriter
+ * below already replaces. A nested one gives `app`, which from anywhere but the
+ * scan target is `Directory '<cwd>/app' does not exist`, a dead end.
+ *
+ * Only a proven case is rewritten, so every citation that is right today stays
+ * byte-identical:
+ *  - the verb takes a directory in the tree (never `check` or `scan`);
+ *  - there is exactly one operand, and it is a plain relative path;
+ *  - it does NOT resolve from the working directory, so it is not already
+ *    runnable as printed; and
+ *  - it DOES resolve under the scan target, and stays there: a `..` that
+ *    leaves the target lexically, or a link that resolves outside it
+ *    (`readStaysInsideTree`, the site-level check for raw `fs` readers), is
+ *    never re-based. The two `existsSync` probes read no content.
+ * The result goes through `citationPath` like the target itself, so a path that
+ * cannot be shown and pasted truthfully leaves the citation alone.
+ */
+function nestedOperand(verb: string, tokens: readonly string[]): { index: number; cited: string } | undefined {
+  if (citationTargetRaw === undefined || !TREE_OPERAND_VERBS.has(verb)) return undefined;
+  const operands = tokens
+    .map((token, index) => ({ token, index }))
+    .filter(({ token }) => !token.startsWith('-'));
+  if (operands.length !== 1) return undefined;
+  const { token, index } = operands[0];
+  if (!PLAIN_RELATIVE_OPERAND.test(token) || path.isAbsolute(token)) return undefined;
+  const rebased = path.join(citationTargetRaw, token);
+  if (!isPathWithinDirectory(rebased, citationTargetRaw)) return undefined;
+  try {
+    if (fs.existsSync(path.resolve(token)) || !fs.existsSync(path.resolve(rebased))) return undefined;
+  } catch {
+    return undefined;
+  }
+  if (!readStaysInsideTree(rebased, citationTargetRaw).ok) return undefined;
+  const cited = citationPath(rebased);
+  return cited === null ? undefined : { index, cited };
 }
 
 /**
@@ -226,11 +295,11 @@ function completeTargetlessCitations(text: string, prefix: string): string {
   if (!citationTarget) return text;
 
   const re = new RegExp(
-    `((?:npx ${OPENA2A_PACKAGE}|${escapeRegExp(prefix)})\\s+(?:${TARGET_VERB_ALT})(?![\\w-]))([^\\n\`]*)`,
+    `((?:npx ${OPENA2A_PACKAGE}|${escapeRegExp(prefix)})\\s+(${TARGET_VERB_ALT})(?![\\w-]))([^\\n\`]*)`,
     'g',
   );
 
-  return text.replace(re, (whole, head: string, tail: string) => {
+  return text.replace(re, (whole, head: string, verb: string, tail: string) => {
     // Trim the tail at the command/prose boundary so an explanation is never
     // parsed as arguments.
     const cut = tail.search(COMMAND_TAIL_END);
@@ -243,6 +312,13 @@ function completeTargetlessCitations(text: string, prefix: string): string {
     const dotIndex = tokens.indexOf('.');
     if (dotIndex !== -1) {
       tokens[dotIndex] = citationTarget!;
+      return head + ' ' + tokens.join(' ') + rest;
+    }
+
+    // A nested directory relative to the scan target is re-based onto it (#491).
+    const nested = nestedOperand(verb, tokens);
+    if (nested) {
+      tokens[nested.index] = nested.cited;
       return head + ' ' + tokens.join(' ') + rest;
     }
 
