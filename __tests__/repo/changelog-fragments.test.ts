@@ -25,6 +25,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync, existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import * as yaml from 'js-yaml';
 import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
@@ -1112,6 +1113,246 @@ describe('usage', () => {
       const r = run(dir, ['frobnicate']);
       expect(r.status).not.toBe(0);
       expect(r.stderr).toMatch(/usage/i);
+    } finally { cleanup(dir); }
+  });
+});
+
+/**
+ * The "Changelog fragments" step of .github/workflows/test-matrix.yml, lifted
+ * from the committed workflow and run with bash the way the runner runs it,
+ * against throwaway repositories. It chooses the base, chooses which copy of
+ * the script judges, and enforces R5 itself when the script under change is
+ * the judge.
+ */
+describe('CI step: base selection and R5 live in the workflow, not in the script under change', () => {
+  const STEP = (() => {
+    const wf = yaml.load(readFileSync(path.join(REPO_ROOT, '.github', 'workflows', 'test-matrix.yml'), 'utf8')) as {
+      jobs: { test: { steps: Array<{ name?: string; run?: string }> } };
+    };
+    const step = wf.jobs.test.steps.find(s => s.name === 'Changelog fragments');
+    if (!step?.run) throw new Error('no "Changelog fragments" step in test-matrix.yml');
+    return step.run;
+  })();
+
+  /** A script that accepts anything: what a change to the judge could ship. */
+  const PERMISSIVE = 'process.exit(0);\n';
+
+  function ciStep(dir: string, event: string, extra: Record<string, string> = {}): Run {
+    const runnerTemp = mkdtempSync(path.join(tmpdir(), 'hma-changelog-runner-'));
+    try {
+      const env = {
+        ...gitFreeEnv(),
+        PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ''}`,
+        EVENT: event,
+        BEFORE: '',
+        MERGE_GROUP_BASE: '',
+        GITHUB_SHA: git(dir, 'rev-parse', 'HEAD'),
+        RUNNER_TEMP: runnerTemp,
+        ...extra,
+      };
+      const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', STEP], { cwd: dir, env, encoding: 'utf8' });
+      return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+    } finally { rmSync(runnerTemp, { recursive: true, force: true }); }
+  }
+
+  /** Commit the working tree on `work`, then check out the merge of `work` into B, as a pull request runs. */
+  function mergeCommit(dir: string, base: string): void {
+    commitAll(dir, 'head');
+    git(dir, 'checkout', '-q', '--detach', base);
+    git(dir, 'merge', '-q', '--no-ff', '--no-edit', 'work');
+  }
+
+  const out = (r: Run) => r.stdout + r.stderr;
+
+  it('pull_request, script unchanged: a fragment add passes, judged by the base copy', () => {
+    const { dir, base } = convertedRepo();
+    try {
+      write(dir, 'changelog.d/fix-abc123.md', fragment('fixed', '- a fix'));
+      mergeCommit(dir, base);
+      const r = ciStep(dir, 'pull_request');
+      expect(r.status, out(r)).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('pull_request: a head that is not the two-parent merge commit fails closed', () => {
+    const { dir } = convertedRepo();
+    try {
+      write(dir, 'changelog.d/fix-abc123.md', fragment('fixed', '- a fix'));
+      commitAll(dir, 'head');
+      const r = ciStep(dir, 'pull_request');
+      expect(r.status).toBe(1);
+      expect(out(r)).toMatch(/expected the pull-request merge commit/);
+    } finally { cleanup(dir); }
+  });
+
+  it('R5 in the workflow: a script change that also changes CHANGELOG.md fails, even when the new script accepts everything', () => {
+    const { dir, base } = convertedRepo();
+    try {
+      write(dir, 'scripts/changelog.mjs', PERMISSIVE);
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace('Notable changes.', 'Notable changes, reworded.'));
+      mergeCommit(dir, base);
+      const r = ciStep(dir, 'pull_request');
+      expect(r.status).toBe(1);
+      expect(out(r)).toMatch(/R5: scripts\/changelog\.mjs changed/);
+      expect(out(r)).toMatch(/M\tCHANGELOG\.md/);
+    } finally { cleanup(dir); }
+  });
+
+  for (const [what, mutate, shown] of [
+    ['modified', (d: string) => write(d, 'changelog.d/old-fix-abc123.md', fragment('changed', '- an old fix')), /M\tchangelog\.d\/old-fix-abc123\.md/],
+    ['deleted', (d: string) => unlinkSync(path.join(d, 'changelog.d/old-fix-abc123.md')), /D\tchangelog\.d\/old-fix-abc123\.md/],
+    ['renamed', (d: string) => git(d, 'mv', 'changelog.d/old-fix-abc123.md', 'changelog.d/new-fix-def456.md'), /R\d*\tchangelog\.d\/old-fix-abc123\.md\tchangelog\.d\/new-fix-def456\.md/],
+    ['renamed out of changelog.d', (d: string) => git(d, 'mv', 'changelog.d/old-fix-abc123.md', 'docs/old-fix.md'), /R\d*\tchangelog\.d\/old-fix-abc123\.md\tdocs\/old-fix\.md/],
+  ] as const) {
+    it(`R5 in the workflow: a script change with a fragment ${what} fails, even when the new script accepts everything`, () => {
+      const { dir, base } = repoWithFragments({ 'old-fix-abc123.md': fragment('fixed', '- an old fix') });
+      try {
+        mkdirSync(path.join(dir, 'docs'), { recursive: true });
+        write(dir, 'scripts/changelog.mjs', PERMISSIVE);
+        mutate(dir);
+        mergeCommit(dir, base);
+        const r = ciStep(dir, 'pull_request');
+        expect(r.status).toBe(1);
+        expect(out(r)).toMatch(/R5: scripts\/changelog\.mjs changed/);
+        expect(out(r)).toMatch(shown);
+      } finally { cleanup(dir); }
+    });
+  }
+
+  it('R5 in the workflow admits a script change with a fragment add or an edit of changelog.d/README.md', () => {
+    const { dir, base } = convertedRepo();
+    try {
+      write(dir, 'scripts/changelog.mjs', PERMISSIVE);
+      write(dir, 'changelog.d/README.md', read(dir, 'changelog.d/README.md') + 'One more line.\n');
+      write(dir, 'changelog.d/fix-abc123.md', fragment('fixed', '- a fix'));
+      mergeCommit(dir, base);
+      const r = ciStep(dir, 'pull_request');
+      expect(r.status, out(r)).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  /** A repository whose origin is itself, with main at B, so a manual run can fetch main. */
+  function dispatchRepo(): { dir: string; base: string } {
+    const { dir, base } = convertedRepo();
+    git(dir, 'branch', '-f', 'main', base);
+    git(dir, 'remote', 'add', 'origin', dir);
+    return { dir, base };
+  }
+
+  it('workflow_dispatch is judged against its merge base with main: a version bump without assembly fails', () => {
+    const { dir } = dispatchRepo();
+    try {
+      bumpPackage(dir, '0.5.1');
+      commitAll(dir, 'head');
+      const r = ciStep(dir, 'workflow_dispatch');
+      expect(r.status).toBe(1);
+      expect(out(r)).toMatch(/R4: package\.json version changed/);
+    } finally { cleanup(dir); }
+  });
+
+  it('workflow_dispatch passes a head that only adds a fragment', () => {
+    const { dir } = dispatchRepo();
+    try {
+      write(dir, 'changelog.d/fix-abc123.md', fragment('fixed', '- a fix'));
+      commitAll(dir, 'head');
+      const r = ciStep(dir, 'workflow_dispatch');
+      expect(r.status, out(r)).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('workflow_dispatch applies R5 in the workflow when the head changes the script', () => {
+    const { dir } = dispatchRepo();
+    try {
+      write(dir, 'scripts/changelog.mjs', PERMISSIVE);
+      bumpPackage(dir, '0.5.1');
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace('Notable changes.', 'Notable changes, reworded.'));
+      commitAll(dir, 'head');
+      const r = ciStep(dir, 'workflow_dispatch');
+      expect(r.status).toBe(1);
+      expect(out(r)).toMatch(/R5: scripts\/changelog\.mjs changed/);
+    } finally { cleanup(dir); }
+  });
+
+  it('workflow_dispatch with no main to find a merge base against fails closed', () => {
+    const { dir } = convertedRepo();
+    try {
+      commitAll(dir, 'head');
+      const r = ciStep(dir, 'workflow_dispatch');
+      expect(r.status).toBe(1);
+      expect(out(r)).toMatch(/cannot fetch main/);
+    } finally { cleanup(dir); }
+  });
+
+  it('a push event with no previous commit fails closed instead of checking without a base', () => {
+    const { dir } = convertedRepo();
+    try {
+      const r = ciStep(dir, 'push', { BEFORE: '0000000000000000000000000000000000000000' });
+      expect(r.status).toBe(1);
+      expect(out(r)).toMatch(/push event without a previous commit/);
+    } finally { cleanup(dir); }
+  });
+});
+
+/**
+ * `changelog.d/README.md` shows a captured run of `new` and lists the types
+ * `--type` accepts. Both are re-derived from the script here, at every commit,
+ * so the README cannot drift from what the script does: a script change that
+ * alters either output turns these red, and the same change updates the README.
+ */
+describe('changelog.d/README.md matches the script it documents', () => {
+  const README = readFileSync(path.join(REPO_ROOT, 'changelog.d', 'README.md'), 'utf8');
+
+  /** The body of the one fenced block opened with ```<info>, without its trailing newline. */
+  function fenced(info: string): string {
+    const blocks = [...README.matchAll(new RegExp('^```' + info + '\\n([\\s\\S]*?)\\n```$', 'gm'))].map(m => m[1]);
+    expect(blocks, `exactly one \`\`\`${info} block in changelog.d/README.md`).toHaveLength(1);
+    return blocks[0];
+  }
+
+  it('the example: `new` run as the sh block shows, on the branch the label names, prints the path and writes the file shown', () => {
+    const sh = fenced('sh');
+    const m = /^node scripts\/changelog\.mjs (new(?: [^\s<]+)+) <<'EOF'\n([\s\S]*)\nEOF$/.exec(sh);
+    expect(m, 'the sh block is `node scripts/changelog.mjs new ... <<\'EOF\'`, an entry, and `EOF`').not.toBeNull();
+    const args = m![1].split(' ');
+    expect(args).toContain('--type');
+    expect(args).toContain('--issue');
+    const entry = m![2] + '\n';
+
+    const label = /on a branch named `([^`]+)`/.exec(README);
+    expect(label, 'the capture label names the branch').not.toBeNull();
+    const printed = fenced('text');
+    expect(printed).toMatch(/^changelog\.d\/761-example-[0-9a-f]{6}\.md$/);
+    const written = fenced('markdown') + '\n';
+
+    const { dir } = convertedRepo();
+    try {
+      write(dir, 'changelog.d/README.md', README);
+      commitAll(dir, 'the README as shipped');
+      git(dir, 'checkout', '-q', '-b', label![1]);
+      const r = run(dir, args, entry);
+      expect(r.status, r.stderr).toBe(0);
+      const out = r.stdout.trim();
+      // The six hex characters are random on each run; everything else is the capture.
+      const shape = new RegExp('^' + printed.replace(/[0-9a-f]{6}\.md$/, '').replace(/[.]/g, '\\.') + '[0-9a-f]{6}\\.md$');
+      expect(out).toMatch(shape);
+      expect(out).toMatch(/^changelog\.d\/761-example-[0-9a-f]{6}\.md$/);
+      expect(read(dir, out)).toBe(written);
+      expect(run(dir, ['check']).status).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('the `--type` bullet names the types the script accepts, in the order the script lists them', () => {
+    const bullet = /^- `--type` is one of ([^.]*)\./m.exec(README);
+    expect(bullet, 'the README has a `--type` bullet').not.toBeNull();
+    const documented = [...bullet![1].matchAll(/`([^`]+)`/g)].map(x => x[1]);
+
+    const { dir } = convertedRepo();
+    try {
+      const r = run(dir, ['new', '--type', 'x'], '- x\n');
+      expect(r.status).not.toBe(0);
+      const listed = /type "x" is not one of ([^\n]+)/.exec(r.stderr);
+      expect(listed, r.stderr).not.toBeNull();
+      expect(documented).toEqual(listed![1].trim().split(', '));
     } finally { cleanup(dir); }
   });
 });

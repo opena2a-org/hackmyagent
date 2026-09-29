@@ -46,9 +46,9 @@ const FRAGMENT_DIR = 'changelog.d';
 
 // The Unreleased block of every converted CHANGELOG.md holds this paragraph only.
 const POINTER =
-  'Entries for the next release are kept as one file per change in [`changelog.d/`](changelog.d/) ' +
-  'and are added to this file when the release is cut. ' +
-  '`node scripts/changelog.mjs preview --virtual` prints this file with them included.';
+  'Entries for the next release are kept in [`changelog.d/`](changelog.d/), one file per change. ' +
+  'The release moves them into this file, under its version heading. ' +
+  'To add an entry, follow [`changelog.d/README.md`](changelog.d/README.md).';
 
 class Refusal extends Error {
   constructor(lines) {
