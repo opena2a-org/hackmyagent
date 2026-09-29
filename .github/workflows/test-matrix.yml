@@ -54,6 +54,8 @@ jobs:
     continue-on-error: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # the pull-request merge commit and both parents
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -68,17 +70,39 @@ jobs:
           fi
       - name: Changelog fragments
         # scripts/changelog.mjs check: entries are fragments in changelog.d/, and
-        # CHANGELOG.md changes only by the release assembly or a released-section
-        # amendment. An ordinary change is judged by the base commit's copy of the
-        # script, so a change cannot rewrite the rule that judges it; a change to
-        # the script itself (or the conversion change) runs its own copy, and R5
-        # keeps such a change free of changelog data. The step fetches the base
-        # commit itself, so the default shallow checkout is enough.
+        # CHANGELOG.md changes only in the shapes the script admits. An ordinary
+        # change is judged by the base commit's copy of the script, so a change
+        # cannot rewrite the rule that judges it; a change to the script itself
+        # (or the conversion change) runs its own copy, and R5 keeps such a change
+        # free of changelog data.
+        #
+        # The base is part of the tree under test, not a payload field: on a pull
+        # request it is the first parent of the merge commit being tested, which
+        # the payload's base.sha can fall behind. Every event that should have a
+        # base and has none fails; only a manual run checks without one.
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then node scripts/changelog.mjs check; exit $?; fi
-          git fetch --no-tags --depth=1 origin "$BASE"
+          case "$EVENT" in
+            pull_request)
+              [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] && [ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ] \
+                || { echo "::error::expected the pull-request merge commit $GITHUB_SHA with two parents"; exit 1; }
+              BASE=$(git rev-parse HEAD^1) ;;
+            push)
+              BASE="$BEFORE"
+              if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then node scripts/changelog.mjs check; exit $?; fi
+              git fetch --no-tags --depth=1 origin "$BASE" ;;
+            merge_group)
+              BASE="$MERGE_GROUP_BASE"
+              [ -n "$BASE" ] || { echo "::error::merge_group event without merge_group.base_sha; refusing a check with no base"; exit 1; }
+              git fetch --no-tags --depth=1 origin "$BASE" ;;
+            workflow_dispatch)
+              node scripts/changelog.mjs check; exit $? ;;
+            *)
+              echo "::error::no changelog base is defined for the $EVENT event"; exit 1 ;;
+          esac
           if git cat-file -e "$BASE:scripts/changelog.mjs" 2>/dev/null && git diff --quiet "$BASE" -- scripts/changelog.mjs; then
             git show "$BASE:scripts/changelog.mjs" > "$RUNNER_TEMP/changelog-base.mjs"
             node "$RUNNER_TEMP/changelog-base.mjs" check --base "$BASE"   # judged by the base's rules
