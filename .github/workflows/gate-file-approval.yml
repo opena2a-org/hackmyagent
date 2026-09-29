@@ -5,8 +5,9 @@
 # Any pull request that changes a file under .github/ — or one of the named
 # credential-boundary paths: the credential analyzer, the semantic compiler,
 # the report-redaction module (defense-in-depth) and the stego analyzer —
-# or the changelog assembler (scripts/changelog.mjs), must carry an approving review from a listed approver, given on the pull
-# request's current head commit. Pull requests that touch no gate file pass
+# or the changelog assembler (scripts/changelog.mjs), must carry an
+# approving review from a listed approver, given on the pull request's
+# current head commit. Pull requests that touch no gate file pass
 # immediately, so ordinary changes stay gated by status checks alone.
 #
 # Why pull_request_target: the workflow definition is read from the BASE
