@@ -928,6 +928,12 @@ function parseArgs(argv) {
   return { command, opts };
 }
 
+// A reader that closes the pipe early (`preview --virtual | head`) is not an error.
+process.stdout.on('error', e => {
+  if (e.code === 'EPIPE') process.exit(0);
+  throw e;
+});
+
 try {
   const { command, opts } = parseArgs(process.argv.slice(2));
   const run = COMMANDS[command];
