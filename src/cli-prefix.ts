@@ -15,6 +15,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { citationPath } from './ui/shell-quote';
+import { isPathWithinDirectory, readStaysInsideTree } from './hardening/contain';
 import { escapeForDisplay } from './ui/display-safe';
 
 /**
@@ -245,7 +246,10 @@ export function __resetCitationTargetForTests(): void {
  *  - there is exactly one operand, and it is a plain relative path;
  *  - it does NOT resolve from the working directory, so it is not already
  *    runnable as printed; and
- *  - it DOES resolve under the scan target.
+ *  - it DOES resolve under the scan target, and stays there: a `..` that
+ *    leaves the target lexically, or a link that resolves outside it
+ *    (`readStaysInsideTree`, the site-level check for raw `fs` readers), is
+ *    never re-based. The two `existsSync` probes read no content.
  * The result goes through `citationPath` like the target itself, so a path that
  * cannot be shown and pasted truthfully leaves the citation alone.
  */
@@ -258,11 +262,13 @@ function nestedOperand(verb: string, tokens: readonly string[]): { index: number
   const { token, index } = operands[0];
   if (!PLAIN_RELATIVE_OPERAND.test(token) || path.isAbsolute(token)) return undefined;
   const rebased = path.join(citationTargetRaw, token);
+  if (!isPathWithinDirectory(rebased, citationTargetRaw)) return undefined;
   try {
     if (fs.existsSync(path.resolve(token)) || !fs.existsSync(path.resolve(rebased))) return undefined;
   } catch {
     return undefined;
   }
+  if (!readStaysInsideTree(rebased, citationTargetRaw).ok) return undefined;
   const cited = citationPath(rebased);
   return cited === null ? undefined : { index, cited };
 }

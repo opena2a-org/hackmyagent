@@ -56,6 +56,7 @@ const ALLOWLIST: Record<string, string> = {
   'telemetry/opt-in.ts': 'HMA\'s own opt-in record under the home directory',
   'store/project-store.ts': 'HMA\'s own project store under the home directory',
   'hardening/nemoclaw-scanner.ts': 'not constructed anywhere in src/ (0 `new NemoClawScanner` sites); off the scan path',
+  'cli-prefix.ts': 'existsSync only, on the two candidate spellings of one Verify-citation operand (#491); reads no content, and a candidate that leaves the scan target lexically or through a link (isPathWithinDirectory + readStaysInsideTree) is not re-based',
   // Off the scan path — other commands.
   'index.ts': 'library entry; re-exports only',
   'init-mcp.ts': 'writes the MCP client config the user names',

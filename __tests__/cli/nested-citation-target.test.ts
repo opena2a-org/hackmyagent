@@ -18,9 +18,9 @@
  * temp tree outside it, so no `chdir` is needed.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import {
   rebrandCommandCitations,
   setCitationTarget,
@@ -29,13 +29,18 @@ import {
 
 const NESTED = 'nested-app-491';
 
+const LINK_OUT = 'link-out-491';
+
 let target: string;
+let outside: string;
 
 beforeAll(() => {
   target = mkdtempSync(join(tmpdir(), 'hma-491-'));
+  outside = mkdtempSync(join(tmpdir(), 'hma-491-outside-'));
   mkdirSync(join(target, NESTED, 'deeper'), { recursive: true });
   mkdirSync(join(target, 'express'), { recursive: true });
   mkdirSync(join(target, 'src'), { recursive: true });
+  symlinkSync(outside, join(target, LINK_OUT), 'dir');
   // The premise of every case: the nested operand does not resolve from here.
   expect(existsSync(resolve(NESTED)), `${NESTED} exists in the working directory`).toBe(false);
   expect(existsSync(resolve('src')), 'the repository root has no src/').toBe(true);
@@ -43,6 +48,7 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(target, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
 });
 
 afterEach(() => {
@@ -110,6 +116,21 @@ describe('negative controls: citations that are right today do not change', () =
     ]) {
       expect(rebrandCommandCitations(text), text).toBe(text);
     }
+  });
+
+  it('leaves an operand that climbs out of the target with .. alone', () => {
+    setCitationTarget(target);
+    // `<target>/../<outside>` exists, but it is not under the scan target.
+    const text = `Verify: hackmyagent secure ../${basename(outside)}`;
+    expect(existsSync(join(target, '..', basename(outside)))).toBe(true);
+    expect(rebrandCommandCitations(text)).toBe(text);
+  });
+
+  it('leaves an operand that resolves outside the target through a link alone', () => {
+    setCitationTarget(target);
+    const text = `Verify: hackmyagent secure ${LINK_OUT}`;
+    expect(existsSync(join(target, LINK_OUT))).toBe(true);
+    expect(rebrandCommandCitations(text)).toBe(text);
   });
 
   it('does nothing when the target is the working directory or remote', () => {
