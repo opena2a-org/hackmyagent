@@ -1219,6 +1219,20 @@ describe('CI step: base selection and R5 live in the workflow, not in the script
     });
   }
 
+  it('R5 in the workflow: a script change with a file renamed into changelog.d fails, even when the new script accepts everything', () => {
+    const { dir } = convertedRepo();
+    try {
+      write(dir, 'docs/note.md', fragment('fixed', '- a note that becomes an entry'));
+      const base = commitAll(dir, 'a file outside changelog.d');
+      write(dir, 'scripts/changelog.mjs', PERMISSIVE);
+      git(dir, 'mv', 'docs/note.md', 'changelog.d/note-def456.md');
+      mergeCommit(dir, base);
+      const r = ciStep(dir, 'pull_request');
+      expect(r.status).toBe(1);
+      expect(out(r)).toMatch(/R\d*\tdocs\/note\.md\tchangelog\.d\/note-def456\.md/);
+    } finally { cleanup(dir); }
+  });
+
   it('R5 in the workflow admits a script change with a fragment add or an edit of changelog.d/README.md', () => {
     const { dir, base } = convertedRepo();
     try {
@@ -1331,6 +1345,9 @@ describe('changelog.d/README.md matches the script it documents', () => {
       git(dir, 'checkout', '-q', '-b', label![1]);
       const r = run(dir, args, entry);
       expect(r.status, r.stderr).toBe(0);
+      expect(r.stderr).toBe('');
+      const SIX = /-[0-9a-f]{6}\.md$/;
+      expect(r.stdout.replace(/-[0-9a-f]{6}\.md\n$/, '-HEX6.md\n')).toBe(printed.replace(SIX, '-HEX6.md') + '\n');
       const out = r.stdout.trim();
       // The six hex characters are random on each run; everything else is the capture.
       const shape = new RegExp('^' + printed.replace(/[0-9a-f]{6}\.md$/, '').replace(/[.]/g, '\\.') + '[0-9a-f]{6}\\.md$');
@@ -1354,5 +1371,70 @@ describe('changelog.d/README.md matches the script it documents', () => {
       expect(listed, r.stderr).not.toBeNull();
       expect(documented).toEqual(listed![1].trim().split(', '));
     } finally { cleanup(dir); }
+  });
+
+  /** A named set from the script's source: `const <name> = new Set([...])`. */
+  function scriptSet(src: string, name: string): Set<string> {
+    const m = new RegExp(`^const ${name} = new Set\\(\\[([^\\]]*)\\]\\);$`, 'm').exec(src);
+    if (!m) throw new Error(`no ${name} set in scripts/changelog.mjs`);
+    return new Set([...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]));
+  }
+
+  /**
+   * Inline options the README cites that belong to another tool, each with the
+   * reason it is cited. Anything else that starts with `--` must be an option
+   * of scripts/changelog.mjs.
+   */
+  const OTHER_TOOL_OPTIONS: ReadonlyMap<string, string> = new Map([
+    ['json', 'an option of the hackmyagent CLI, cited as an example of a breaking change'],
+  ]);
+
+  it('every command and option the README cites is registered in the script', () => {
+    const src = readFileSync(SCRIPT, 'utf8');
+    const options = new Set([...scriptSet(src, 'BOOLEAN'), ...scriptSet(src, 'VALUED')]);
+    const table = /^const COMMANDS = \{([^}]*)\};$/m.exec(src);
+    expect(table, 'no COMMANDS table in scripts/changelog.mjs').not.toBeNull();
+    const commands = new Set([...table![1].matchAll(/(?:^|,)\s*'?([a-z-]+)'?\s*:/g)].map(x => x[1]));
+    expect(commands.size).toBeGreaterThan(0);
+
+    const problems: string[] = [];
+    // Fenced or inline: the command word, then its arguments up to the end of
+    // the line, a closing backtick or a redirection.
+    const invocations = [...README.matchAll(/node scripts\/changelog\.mjs ([a-z-]+)([^\n`<]*)/g)];
+    expect(invocations.length, 'the README cites no command at all').toBeGreaterThan(0);
+    for (const [, command, rest] of invocations) {
+      if (!commands.has(command)) problems.push(`command "${command}" is not registered`);
+      for (const [, o] of rest.matchAll(/--([a-z][a-z-]*)/g)) {
+        if (!options.has(o)) problems.push(`"${command} --${o}" is not a registered option`);
+      }
+    }
+
+    const prose = README.replace(/^```[^\n]*\n[\s\S]*?^```$/gm, '');
+    let cited = 0;
+    for (const [, span] of prose.matchAll(/`([^`]+)`/g)) {
+      if (span.startsWith('node scripts/changelog.mjs ')) continue;
+      const m = /^--([a-z][a-z-]*)/.exec(span);
+      if (!m) continue;
+      cited++;
+      if (!options.has(m[1]) && !OTHER_TOOL_OPTIONS.has(m[1])) problems.push(`\`${span}\` names no registered option`);
+    }
+    expect(cited, 'the README cites no inline option at all').toBeGreaterThan(0);
+    expect(problems).toEqual([]);
+  });
+
+  it('the README example never enters the record: no fragment carries a line of its entry text', () => {
+    const sh = fenced('sh');
+    const m = /<<'EOF'\n([\s\S]*)\nEOF$/.exec(sh);
+    expect(m, 'the sh block carries a heredoc entry').not.toBeNull();
+    const exampleLines = m![1].split('\n').map(l => l.trim()).filter(Boolean);
+    expect(exampleLines.length).toBeGreaterThan(0);
+
+    const fragmentDir = path.join(REPO_ROOT, 'changelog.d');
+    const leaked: string[] = [];
+    for (const name of readdirSync(fragmentDir).filter(n => n !== 'README.md').sort()) {
+      const lines = new Set(readFileSync(path.join(fragmentDir, name), 'utf8').split('\n').map(l => l.trim()));
+      for (const l of exampleLines) if (lines.has(l)) leaked.push(`changelog.d/${name}: ${l}`);
+    }
+    expect(leaked).toEqual([]);
   });
 });

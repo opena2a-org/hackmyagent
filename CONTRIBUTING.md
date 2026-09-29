@@ -48,8 +48,8 @@ With write access to this repository, branch here. Without it, work from a fork 
 
 1. Branch from `main`: `git checkout -b fix/short-description`
 2. Make your changes
-3. Build and run the suite: `npm run build && npm test`
-4. For a user-visible change, add a changelog fragment as [`changelog.d/README.md`](changelog.d/README.md) describes
+3. For a user-visible change, add a changelog fragment as [`changelog.d/README.md`](changelog.d/README.md) describes
+4. Build and run the suite: `npm run build && npm test`
 5. Commit with a message that says what changed and why
 6. Open a pull request against `main`
 
