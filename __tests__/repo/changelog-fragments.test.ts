@@ -414,6 +414,204 @@ describe('check R3: CHANGELOG.md changes only by assembly or by amendment', () =
   });
 });
 
+describe('check R3(c): a rewording of the preamble or the pointer', () => {
+  const REWORDED = 'The next release is assembled from the files in `changelog.d/`.';
+
+  it('passes a rewording of the pointer paragraph alone', () => {
+    const { dir, base } = repoWithFragments({ 'a-111111.md': fragment('fixed', '- x') });
+    try {
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace(POINTER, REWORDED));
+      const r = run(dir, ['check', '--base', base]);
+      expect(r.status, r.stderr).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('passes a rewording of the preamble alone', () => {
+    const { dir, base } = convertedRepo();
+    try {
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace('Notable changes.', 'Every notable change.'));
+      expect(run(dir, ['check', '--base', base]).status).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when the new pointer is two paragraphs', () => {
+    const { dir, base } = convertedRepo();
+    try {
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace(POINTER, `${REWORDED}\n\nA second paragraph.`));
+      const r = run(dir, ['check', '--base', base]);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/pointer/);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when the new pointer no longer names changelog.d', () => {
+    const { dir, base } = convertedRepo();
+    try {
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace(POINTER, 'Nothing here yet.'));
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when a release section changes with the rewording', () => {
+    const { dir, base } = convertedRepo();
+    try {
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace(POINTER, REWORDED).replace('an old fix (#1)', 'an old fix (#2)'));
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when a fragment changes with the rewording', () => {
+    const { dir, base } = repoWithFragments({ 'a-111111.md': fragment('fixed', '- x') });
+    try {
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace(POINTER, REWORDED));
+      write(dir, 'changelog.d/a-111111.md', fragment('fixed', '- y'));
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+});
+
+describe('check R3(d): the import of a release cut on another branch', () => {
+  const S051 = '## [0.5.1] - 2026-02-01\n\n### Fixed\n\n- a patch fix cut on the release branch (#8)\n\n';
+  const OLDER = '## [0.4.0] - 2025-12-01\n\n### Fixed\n\n- an older fix (#0)\n';
+  const S041 = '## [0.4.1] - 2025-12-15\n\n### Fixed\n\n- a patch on the 0.4 line (#6)\n\n';
+
+  /**
+   * A converted repository whose main is at B, and a tag cut on a release branch
+   * from B whose CHANGELOG.md carries `section` inserted above `above`.
+   */
+  function taggedRepo(opts: { tag: string; section: string; above: string; changelog?: string; sub?: string }): { dir: string; base: string } {
+    const sub = opts.sub ?? '';
+    const dir = mkdtempSync(path.join(tmpdir(), 'hma-changelog-import-'));
+    initThrowawayRepo(dir);
+    const cl = opts.changelog ?? CONVERTED;
+    write(dir, `${sub}CHANGELOG.md`, cl);
+    write(dir, `${sub}changelog.d/README.md`, 'Add an entry with `node scripts/changelog.mjs new`.\n');
+    write(dir, `${sub}changelog.d/main-entry-abcdef.md`, fragment('fixed', '- an entry waiting on main'));
+    write(dir, `${sub}package.json`, JSON.stringify({ name: 'fx', version: '0.5.0' }, null, 2) + '\n');
+    const base = commitAll(dir, 'main');
+    git(dir, 'checkout', '-q', '-b', 'release/cut', base);
+    write(dir, `${sub}CHANGELOG.md`, cl.replace(opts.above, opts.section + opts.above));
+    commitAll(dir, 'release cut');
+    git(dir, 'tag', opts.tag);
+    git(dir, 'checkout', '-q', '-b', 'work', base);
+    return { dir, base };
+  }
+
+  const importInto = (dir: string, section: string, above: string, rel = 'CHANGELOG.md') =>
+    write(dir, rel, read(dir, rel).replace(above, section + above));
+
+  it('passes the byte-identical section of the release tag, placed above the newest release', () => {
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: S051, above: RELEASED });
+    try {
+      importInto(dir, S051, RELEASED);
+      const r = run(dir, ['check', '--base', base]);
+      expect(r.status, r.stderr).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('passes a section imported between two older releases, in descending order', () => {
+    const cl = CONVERTED + '\n' + OLDER;
+    const { dir, base } = taggedRepo({ tag: 'v0.4.1', section: S041, above: OLDER, changelog: cl });
+    try {
+      importInto(dir, S041, OLDER);
+      const r = run(dir, ['check', '--base', base]);
+      expect(r.status, r.stderr).toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fetches the tag from origin when it is not present locally', () => {
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: S051, above: RELEASED });
+    const origin = mkdtempSync(path.join(tmpdir(), 'hma-changelog-origin-'));
+    try {
+      execFileSync('git', ['init', '-q', '--bare', origin], { env: gitFreeEnv() });
+      git(dir, 'push', '-q', origin, 'refs/tags/v0.5.1');
+      git(dir, 'tag', '-d', 'v0.5.1');
+      git(dir, 'remote', 'add', 'origin', origin);
+      importInto(dir, S051, RELEASED);
+      const r = run(dir, ['check', '--base', base]);
+      expect(r.status, r.stderr).toBe(0);
+      expect(git(dir, 'tag', '--list', 'v0.5.1')).toBe('v0.5.1');
+    } finally { cleanup(dir); cleanup(origin); }
+  });
+
+  it('fails on a one-byte edit of the imported section', () => {
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: S051, above: RELEASED });
+    try {
+      importInto(dir, S051.replace('patch fix', 'patch fiX'), RELEASED);
+      const r = run(dir, ['check', '--base', base]);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/v0\.5\.1/);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails closed when the tag does not exist', () => {
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: S051, above: RELEASED });
+    try {
+      git(dir, 'tag', '-d', 'v0.5.1');
+      importInto(dir, S051, RELEASED);
+      const r = run(dir, ['check', '--base', base]);
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/tag v0\.5\.1 does not exist/);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when the imported section breaks the descending order', () => {
+    const cl = CONVERTED + '\n' + OLDER;
+    const { dir, base } = taggedRepo({ tag: 'v0.4.1', section: S041, above: OLDER, changelog: cl });
+    try {
+      importInto(dir, S041, RELEASED);
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when the pointer also changes', () => {
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: S051, above: RELEASED });
+    try {
+      importInto(dir, S051, RELEASED);
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace(POINTER, 'The next release is assembled from `changelog.d/`.'));
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when another release section also changes', () => {
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: S051, above: RELEASED });
+    try {
+      importInto(dir, S051, RELEASED);
+      write(dir, 'CHANGELOG.md', read(dir, 'CHANGELOG.md').replace('an old fix (#1)', 'an old fix (#2)'));
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when a fragment also changes', () => {
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: S051, above: RELEASED });
+    try {
+      importInto(dir, S051, RELEASED);
+      unlinkSync(path.join(dir, 'changelog.d', 'main-entry-abcdef.md'));
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('fails when the imported heading carries a placeholder date', () => {
+    const placeholder = S051.replace('2026-02-01', 'YYYY-MM-DD');
+    const { dir, base } = taggedRepo({ tag: 'v0.5.1', section: placeholder, above: RELEASED });
+    try {
+      importInto(dir, placeholder, RELEASED);
+      expect(run(dir, ['check', '--base', base]).status).not.toBe(0);
+    } finally { cleanup(dir); }
+  });
+
+  it('uses --tag-prefix for a changelog whose tags carry a package prefix', () => {
+    const { dir, base } = taggedRepo({ tag: 'pkg-v0.5.1', section: S051, above: RELEASED, sub: 'pkg/' });
+    try {
+      importInto(dir, S051, RELEASED, 'pkg/CHANGELOG.md');
+      const without = run(dir, ['check', '--base', base]);
+      expect(without.status, 'the import passed against a v0.5.1 tag that does not exist').not.toBe(0);
+      const r = run(dir, ['check', '--base', base, '--tag-prefix', 'pkg-v']);
+      expect(r.status, r.stderr).toBe(0);
+    } finally { cleanup(dir); }
+  });
+});
+
 describe('check R4: a version bump always assembles', () => {
   it('fails a package.json version change with no assembly', () => {
     const { dir, base } = repoWithFragments({ 'a-111111.md': fragment('fixed', '- x') });
@@ -666,6 +864,26 @@ describe('preview', () => {
     const { dir } = convertedRepo();
     try {
       expect(run(dir, ['preview', '--virtual']).stdout).toBe(CONVERTED);
+    } finally { cleanup(dir); }
+  });
+
+  it('--virtual never applies the release refusals: zero fragments and a stray entry still print, exit 0', () => {
+    const { dir } = convertedRepo();
+    try {
+      const stray = CONVERTED.replace(POINTER, `${POINTER}\n\n- a stray entry`);
+      write(dir, 'CHANGELOG.md', stray);
+      const r = run(dir, ['preview', '--virtual']);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toBe(stray);
+    } finally { cleanup(dir); }
+  });
+
+  it('--virtual with a breaking fragment needs no version and exits 0', () => {
+    const { dir } = repoWithFragments({ 'a-111111.md': fragment('removed', '- gone', ['breaking: true']) });
+    try {
+      const r = run(dir, ['preview', '--virtual']);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain('### Removed\n\n- gone\n');
     } finally { cleanup(dir); }
   });
 });

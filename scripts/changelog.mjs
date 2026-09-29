@@ -6,7 +6,7 @@
 // and `check --base` proves that assembly byte for byte. Node standard library only.
 //
 //   new --type <type> [--issue <n>[,<n>]] [--breaking] [--name <slug>] [--changelog <path>] < entry.md
-//   check [--changelog <path>] [--base <sha>]
+//   check [--changelog <path>] [--base <sha>] [--tag-prefix <prefix>]
 //   preview [--changelog <path>] [--virtual | --version X.Y.Z [--date YYYY-MM-DD]]
 //   release --version X.Y.Z [--date YYYY-MM-DD] [--changelog <path>]
 //   verify-release --version X.Y.Z [--changelog <path>]
@@ -766,7 +766,7 @@ function packageVersion(buf) {
   }
 }
 
-function checkOne(changelog, base) {
+function checkOne(changelog, base, tagPrefix = 'v') {
   const errs = [];
   const dir = fragmentDir(changelog);
   const head = treeReader();
@@ -822,9 +822,20 @@ function checkOne(changelog, base) {
       if (versionChanged) {
         errs.push(`R4: package.json version changed (${basePkgV} -> ${headPkgV}), so CHANGELOG.md must be an assembly:`, ...aErrs.map(e => `  ${e}`));
       } else if (bErrs.length) {
-        errs.push('R3: CHANGELOG.md changed, but not as an assembly or a released-section amendment.');
-        errs.push('  as an assembly:', ...aErrs.map(e => `    ${e}`));
-        errs.push('  as an amendment:', ...bErrs.map(e => `    ${e}`));
+        const cErrs = rewordingErrors({ baseText, headText, baseFr, headFr });
+        if (cErrs.length) {
+          const shape = importShape({ baseText, headText, baseFr, headFr });
+          if (!shape.errors.length) {
+            // R3(d): the shape holds, so the tag is read now, and only now.
+            errs.push(...importTagErrors(changelog, shape, tagPrefix).map(e => `R3: import of ${shape.version}: ${e}`));
+          } else {
+            errs.push('R3: CHANGELOG.md changed, but not in any admitted shape.');
+            errs.push('  (a) as an assembly:', ...aErrs.map(e => `    ${e}`));
+            errs.push('  (b) as a released-section amendment:', ...bErrs.map(e => `    ${e}`));
+            errs.push('  (c) as a preamble or pointer rewording:', ...cErrs.map(e => `    ${e}`));
+            errs.push('  (d) as the import of a release cut elsewhere:', ...shape.errors.map(e => `    ${e}`));
+          }
+        }
       }
     }
   } else if (versionChanged) {
@@ -889,6 +900,79 @@ function amendmentErrors({ baseText, headText, baseFr, headFr }) {
   return errs;
 }
 
+/** Every release section and changelog.d unchanged; the head's Unreleased block is the pointer only. */
+function rewordingErrors({ baseText, headText, baseFr, headFr }) {
+  const errs = [];
+  const b = parseChangelog(baseText);
+  const h = parseChangelog(headText);
+  const released = cl => (cl.releases.length ? cl.lines.slice(cl.releases[0].index).join('\n') : '');
+  if (released(b) !== released(h)) errs.push('a release section changed');
+  if (!sameFragments(baseFr, headFr)) errs.push(`${FRAGMENT_DIR}/ changed`);
+  errs.push(...pointerOnlyErrors(h));
+  return errs;
+}
+
+/**
+ * The R3(d) shape, read without the tag: exactly one dated release heading added in
+ * descending semver position, and the head minus that section equal to the base.
+ */
+function importShape({ baseText, headText, baseFr, headFr }) {
+  const b = parseChangelog(baseText);
+  const h = parseChangelog(headText);
+  const bv = b.releases.map(r => r.version);
+  const hv = h.releases.map(r => r.version);
+  if (hv.length !== bv.length + 1) return { errors: ['exactly one release heading must be added'] };
+  let k = 0;
+  while (k < bv.length && hv[k] === bv[k]) k++;
+  if (!hv.slice(k + 1).every((v, i) => v === bv[k + i])) return { errors: ['exactly one release heading must be added; the other headings must stay in place'] };
+  const errors = [];
+  const added = h.releases[k];
+  const m = DATED_HEADING_RE.exec(added.heading);
+  if (!m || !isRealDate(m[2])) errors.push(`the added heading "${added.heading}" is not "## [X.Y.Z] - YYYY-MM-DD" with a real date`);
+  const v = parseSemver(added.version);
+  const newer = k > 0 ? parseSemver(hv[k - 1]) : null;
+  const older = k < hv.length - 1 ? parseSemver(hv[k + 1]) : null;
+  if (!v || (k > 0 && !newer) || (k < hv.length - 1 && !older)) errors.push(`${added.version} and its neighbours must be semver to place it`);
+  else if ((newer && compareSemver(newer, v) <= 0) || (older && compareSemver(v, older) <= 0)) {
+    errors.push(`${added.version} is out of descending order between ${k > 0 ? hv[k - 1] : 'the top'} and ${k < hv.length - 1 ? hv[k + 1] : 'the end'}`);
+  }
+  const start = added.index;
+  const end = h.nextH2(start);
+  if ([...h.lines.slice(0, start), ...h.lines.slice(end)].join('\n') !== baseText) errors.push('something besides the added section changed');
+  if (!sameFragments(baseFr, headFr)) errors.push(`${FRAGMENT_DIR}/ changed`);
+  return { errors, version: added.version, section: h.lines.slice(start, end).join('\n') };
+}
+
+/** The added section must be byte-identical to the same path's section at the release tag. Fails closed. */
+function importTagErrors(changelog, { version, section }, prefix) {
+  const tag = `${prefix}${version}`;
+  const ref = `refs/tags/${tag}`;
+  const remotes = (git(['remote'], { allowFail: true }) ?? '').split('\n');
+  if (remotes.includes('origin')) {
+    const shallow = (git(['rev-parse', '--is-shallow-repository'], { allowFail: true }) ?? '').trim() === 'true';
+    const fetched = git(['fetch', '--no-tags', ...(shallow ? ['--depth=1'] : []), 'origin', `${ref}:${ref}`], { allowFail: true });
+    if (fetched === null) return [`tag ${tag} could not be fetched from origin; the section cannot be verified`];
+  }
+  if (git(['rev-parse', '--verify', '-q', `${ref}^{commit}`], { allowFail: true }) === null) return [`tag ${tag} does not exist; the section cannot be verified`];
+  const tagged = text(git(['cat-file', 'blob', `${ref}:${relTop(changelog)}`], { buffer: true, allowFail: true }));
+  if (tagged === null) return [`${relTop(changelog)} does not exist at tag ${tag}`];
+  const t = parseChangelog(tagged);
+  const at = t.releases.find(r => r.version === version);
+  if (!at) return [`tag ${tag} has no "## [${version}]" section in ${relTop(changelog)}`];
+  const want = t.lines.slice(at.index, t.nextH2(at.index)).join('\n');
+  if (want === section) return [];
+  const w = want.split('\n');
+  const g = section.split('\n');
+  let i = 0;
+  while (i < Math.max(w.length, g.length) && w[i] === g[i]) i++;
+  return [`the section differs from "## [${version}]" at tag ${tag}; first difference at line ${i + 1} of the section`];
+}
+
+function sameFragments(a, b) {
+  const names = [...new Set([...a.raw.keys(), ...b.raw.keys()])];
+  return names.every(n => sameBytes(a.raw.get(n) ?? null, b.raw.get(n) ?? null));
+}
+
 function cmdCheck(opts) {
   const base = opts.base ? git(['rev-parse', '--verify', `${opts.base}^{commit}`]).trim() : null;
   const targets = opts.changelog ? [changelogPath(opts)] : discoverChangelogs(base);
@@ -898,7 +982,7 @@ function cmdCheck(opts) {
   }
   const failures = [];
   for (const c of targets) {
-    const { errs, count } = checkOne(c, base);
+    const { errs, count } = checkOne(c, base, opts['tag-prefix'] ?? 'v');
     if (errs.length) failures.push(...errs.map(e => `${shown(c)}: ${e}`));
     else process.stdout.write(`ok: ${shown(c)} (${count} fragment${count === 1 ? '' : 's'})\n`);
   }
@@ -908,7 +992,7 @@ function cmdCheck(opts) {
 // ---------------------------------------------------------------- entry point
 
 const BOOLEAN = new Set(['virtual', 'breaking', 'legacy']);
-const VALUED = new Set(['type', 'issue', 'name', 'changelog', 'base', 'version', 'date']);
+const VALUED = new Set(['type', 'issue', 'name', 'changelog', 'base', 'version', 'date', 'tag-prefix']);
 const COMMANDS = { new: cmdNew, check: cmdCheck, preview: cmdPreview, release: cmdRelease, 'verify-release': cmdVerifyRelease, convert: cmdConvert };
 const USAGE = 'usage: changelog.mjs new|check|preview|release|verify-release|convert [options]  (see the header of scripts/changelog.mjs)';
 
