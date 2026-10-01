@@ -29,7 +29,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, countsAgainstScore, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, confirmedFix, countsAgainstScore, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
 import { shellQuote, citationTarget, citationPath, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -5484,9 +5484,13 @@ export class HardeningScanner {
       }
     }
 
-    // Determine if all fixes completed successfully (atomic)
-    const hasFixedFindings = filteredFindings.some((f) => f.fixed);
-    const atomicFix = shouldFix ? !fixFailed && hasFixedFindings : undefined;
+    // Determine if all fixes completed successfully (atomic). #608 — a fix the
+    // verification pass disproved did not complete, so it cannot count toward
+    // an all-completed claim, and the flag must agree with `fixVerified` on the
+    // findings in the same document.
+    const hasFixedFindings = filteredFindings.some((f) => confirmedFix(f));
+    const anyDisproved = filteredFindings.some((f) => f.fixed && f.fixVerified === false);
+    const atomicFix = shouldFix ? !fixFailed && hasFixedFindings && !anyDisproved : undefined;
 
     // Route point 4. Both returned arrays are filters of `findings`, so a draft
     // that survives both used to be THE SAME OBJECT in each — `filteredFindings`
