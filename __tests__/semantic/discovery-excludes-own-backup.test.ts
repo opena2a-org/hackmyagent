@@ -18,11 +18,12 @@
  * fails if `scanner.ts` stops passing `isOwnBackupDir`, which is exactly the
  * "good unit layer, unguarded consumer" gap #285 recorded against #260.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile, readdir } from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { StructuralAnalyzer } from '../../src/semantic';
 
 const CLAUDE_MD = [
   '# Agent instructions',
@@ -107,5 +108,61 @@ describe('#298 the semantic walk skips this run\'s own backup', () => {
     // each reported once; the same file must never appear twice.
     const keys = semantic.map(key);
     expect(keys, 'a semantic finding was reported twice for the same file').toEqual([...new Set(keys)]);
+  });
+  // #382 — the assertion above no longer guards the wiring this file exists
+  // for. After #374 the `--fix` run adopts the archive-located findings of its
+  // own verify scan, so the final findings are the same whether or not the main
+  // scan's Layer 2 was handed `isOwnBackupDir`: deleting `isExcludedDir` from
+  // the Layer-2 call in `scanner.ts` left this suite green. The guard therefore
+  // reads the Layer-2 call itself — what the main scan's structural pass was
+  // handed and what it returned — not the merged result.
+  it('hands the main scan\'s Layer 2 a predicate that excludes this run\'s backup (#382)', async () => {
+    const root = await realpath(dir);
+    const inBackup = (file: string | undefined) => (file ?? '').split(path.sep).includes('.hackmyagent-backup');
+    const calls: { root: string; excludesBackup: boolean | undefined; files: string[] }[] = [];
+    const original = StructuralAnalyzer.prototype.analyze;
+    const spy = vi
+      .spyOn(StructuralAnalyzer.prototype, 'analyze')
+      .mockImplementation(async function (this: StructuralAnalyzer, targetDir, opts = {}) {
+        // Probe the predicate WHILE the call is live: the scanner's backup
+        // context is only meaningful during the run that created the backup.
+        const backupRoot = path.join(targetDir, '.hackmyagent-backup');
+        const stamps = await readdir(backupRoot).catch(() => [] as string[]);
+        const excludesBackup = stamps.length === 0
+          ? undefined
+          : opts.isExcludedDir !== undefined && (await opts.isExcludedDir(path.join(backupRoot, stamps[0])));
+        const out = await original.call(this, targetDir, opts);
+        calls.push({
+          root: await realpath(targetDir).catch(() => targetDir),
+          excludesBackup,
+          files: out.map((f) => f.file),
+        });
+        return out;
+      });
+    try {
+      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const onTree = calls.filter((c) => c.root === root);
+    // The first Layer-2 pass over the tree is the main scan's; the later one is
+    // the fresh verify scanner #374 runs after the fixes, which has no backup
+    // context and so is expected to walk into the archive.
+    expect(onTree.length, 'expected the main scan and the post-fix verify scan to each run Layer 2').toBeGreaterThanOrEqual(2);
+    const [main, ...later] = onTree;
+
+    // Non-vacuity: the backup existed when the main scan's Layer 2 ran, and it
+    // holds artifacts Layer 2 reports when it is NOT excluded.
+    expect(main.excludesBackup, 'no backup existed when Layer 2 ran, so the exclusion was never exercised').not.toBeUndefined();
+    expect(
+      later.some((c) => c.files.some(inBackup)),
+      'no Layer-2 pass found anything inside the archive, so excluding it proves nothing',
+    ).toBe(true);
+
+    // The wiring: the main scan handed Layer 2 a predicate that answers yes for
+    // this run's backup directory, and Layer 2 accordingly reported nothing in it.
+    expect(main.excludesBackup, 'scanner.ts no longer hands Layer 2 the isOwnBackupDir exclusion').toBe(true);
+    expect(main.files.filter(inBackup), 'the main scan\'s Layer 2 walked into this run\'s own backup').toEqual([]);
   });
 });
