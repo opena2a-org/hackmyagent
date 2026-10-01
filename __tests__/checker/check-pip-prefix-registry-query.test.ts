@@ -27,6 +27,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { EXIT_UNMEASURED } from '../../src/check/verdict';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -38,6 +39,14 @@ const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 
 function canRunSpawn(): boolean {
   return existsSync(CLI);
+}
+
+function parseJsonOrNull(stdout: string | null | undefined): any {
+  try {
+    return JSON.parse((stdout ?? '').trim());
+  } catch {
+    return null;
+  }
 }
 
 describe('PyPI Registry-query key (lock-in: closes pip-prefix bug)', () => {
@@ -69,7 +78,7 @@ describe('PyPI Registry-query key (lock-in: closes pip-prefix bug)', () => {
 describe('PyPI Registry-query end-to-end (smoke, local-only)', () => {
   it.runIf(canRunSpawn())(
     'check pip:anthropic --no-scan returns Registry record (found:true)',
-    () => {
+    (ctx) => {
       // Live-Registry test. `anthropic` is stably indexed in the
       // OpenA2A Registry under its bare PyPI name. Pre-fix this would
       // return found:false because HMA queried `pip:anthropic`, a key
@@ -82,6 +91,28 @@ describe('PyPI Registry-query end-to-end (smoke, local-only)', () => {
         // which read as a failure on main (run 34797613495, 2026-09-14).
         { encoding: 'utf8', timeout: 30_000 },
       );
+
+      // #566 — exit 2 is EXIT_UNMEASURED: the CLI said the live Registry did
+      // not answer, which is the honest outcome when api.oa2a.org is slow or
+      // down, not a defect in the code under test. Reading it as a failure made
+      // this the one flake in a full `npm test` under load (twice in one
+      // evening, on branches that touched nothing near the checker). It is a
+      // SKIP with the reason named, and only for exactly that body: any other
+      // exit 2, and every found:false from a Registry that did answer (the
+      // pip:-prefix regression this suite exists for), still fails below.
+      if (res.status === EXIT_UNMEASURED) {
+        const body = parseJsonOrNull(res.stdout);
+        if (
+          body?.errorClass === 'registry-unreachable' &&
+          body?.coverage?.measured === false &&
+          body?.coverage?.reason === 'target-unreachable'
+        ) {
+          const why = `live Registry did not answer (${String(body.error ?? 'no detail')}); nothing was measured`;
+          console.warn(`[check-pip-prefix-registry-query] skipped: ${why}`);
+          ctx.skip(why);
+          return;
+        }
+      }
 
       // --no-scan + Registry hit = exit 0 (mirrors the npm path).
       expect(res.status, `unexpected exit ${res.status}; stderr: ${res.stderr}`).toBe(0);
