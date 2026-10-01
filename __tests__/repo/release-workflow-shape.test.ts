@@ -7,6 +7,9 @@
  * event. So its shape is pinned here, in a suite that
  * `.github/workflows/test-matrix.yml` runs on every pull request:
  *
+ *   verify-release — `contents: read` only; runs scripts/changelog.mjs
+ *             verify-release in a job of its own, uploads nothing; build
+ *             needs it, so the script never runs in the job that packs.
  *   build   — `contents: read` only, `npm ci --ignore-scripts`, build, test,
  *             pack; the tarball's sha256 recorded as a job output and the
  *             tarball uploaded as an artifact.
@@ -139,12 +142,29 @@ const PM_CONFIG_PATTERN = '(^|/)(\\.npmrc|\\.yarnrc(\\.yml)?|\\.pnpmfile\\.cjs|\
 const GUARD_COMMAND = `git ls-files | grep -E '${PM_CONFIG_PATTERN}'`;
 
 describe('HMA-40.AC1: release.yml holds the build → review → publish → verify shape', () => {
-  it('HMA-40.AC1 the four jobs exist in order, joined by needs', () => {
+  it('HMA-40.AC1 the five jobs exist in order, joined by needs', () => {
     const names = Object.keys(jobs);
-    expect(names.slice(0, 4)).toEqual(['build', 'review', 'publish', 'verify']);
+    expect(names.slice(0, 5)).toEqual(['verify-release', 'build', 'review', 'publish', 'verify']);
+    expect(needsOf(jobs.build)).toContain('verify-release');
     expect(needsOf(jobs.review)).toContain('build');
     expect(needsOf(jobs.publish)).toContain('review');
     expect(needsOf(jobs.verify)).toContain('publish');
+  });
+
+  it('the changelog script runs only in verify-release: contents: read, no artifact upload, and build needs it', () => {
+    expect(jobs['verify-release'].permissions).toEqual({ contents: 'read' });
+    const own = stepsOf(jobs['verify-release']);
+    expect(own.some((s) => /(^|\s)node scripts\/changelog\.mjs verify-release --version /.test(executableLines(s.run ?? '')))).toBe(true);
+    expect(own.some((s) => (s.uses ?? '').startsWith('actions/upload-artifact'))).toBe(false);
+    for (const s of own) {
+      expect(s['continue-on-error'], 'verify-release step is soft').toBeUndefined();
+      expect(s.if, 'verify-release step is conditional').toBeUndefined();
+    }
+    for (const [name, job] of Object.entries(jobs)) {
+      if (name === 'verify-release') continue;
+      expect(executableLines(runs(job)), `job ${name} runs scripts/changelog.mjs`).not.toMatch(/changelog\.mjs/);
+    }
+    expect(needsOf(jobs.build)).toContain('verify-release');
   });
 
   it('HMA-40.AC1 build holds contents: read only and runs guard, ci --ignore-scripts, build, test, pack in order', () => {
