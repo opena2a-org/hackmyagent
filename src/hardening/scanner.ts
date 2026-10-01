@@ -328,9 +328,9 @@ export function buildUnreadInputFinding(
   // internal verb, not a path operand. `${cited}`/`${citedAncestor}`/`${target}`
   // are citation-bound (`citationPath` quotes shell-significant names and
   // returns null for a display hazard, which falls through to the generic
-  // remedy) and `${cliName}` is a known non-path operand. The gate itself does
-  // not inspect `chmod` sites — its operand class has no `+` (#618) — so the
-  // binding, not the gate, is what protects these strings.
+  // remedy) and `${cliName}` is a known non-path operand. The gate inspects
+  // these `chmod` sites (#618): `${dir}`/`${file}` pass only because every call
+  // below hands the helper a citation-bound value.
   const chmodUx = (dir: string): string => (command === 'check'
     ? `chmod u+x ${dir} && ${cliName} check ${target}`
     : `chmod u+x ${dir} && ${cliName} secure ${target}`);
