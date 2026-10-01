@@ -16,10 +16,11 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { virtualChangelog } from '../helpers/changelog-record';
 
 const ROOT = join(__dirname, '..', '..');
 const README = readFileSync(join(ROOT, 'README.md'), 'utf-8');
-const CHANGELOG = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf-8');
+const CHANGELOG = virtualChangelog();
 const GATE = readFileSync(join(ROOT, '__tests__', 'gate', 'no-internal-attribution.test.ts'), 'utf-8');
 const LOCK = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf-8')) as {
   packages: Record<string, { dev?: boolean; hasInstallScript?: boolean }>;
