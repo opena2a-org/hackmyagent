@@ -201,3 +201,48 @@ describe.runIf(canRunSpawn())('#369 red-team CLI never reports an unmeasured all
     }
   });
 });
+
+// #392 — `--iterations 0` (and a negative value) used to generate zero payloads
+// and still print "No vulnerabilities found. All defenses held." at exit 0:
+// an affirmative verdict from a run that tested nothing. #369 removed the
+// all-clear and the score for every run; these cells pin that the out-of-range
+// iteration values get the same unmeasured result, and pin it to the payload
+// COUNT (generated > 0, executed 0) so the assertion cannot pass vacuously if
+// the wording changes. `--iterations` is inert until an execution path exists
+// (see its option text), which is why neither value changes what is generated.
+describe.runIf(canRunSpawn())('#392 red-team with out-of-range --iterations never reports an all-clear', () => {
+  function runWith(iterations: string, json = false): { code: number | null; stdout: string; out: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'hma-rt392-'));
+    const home = mkdtempSync(join(tmpdir(), 'hma-rt392-home-'));
+    const target = join(dir, 'SOUL.md');
+    writeFileSync(target, JAILBREAK);
+    const res = spawnSync(
+      process.execPath,
+      [CLI, 'red-team', target, `--iterations=${iterations}`, ...(json ? ['--json'] : [])],
+      { encoding: 'utf-8', env: { ...process.env, HOME: home, NO_COLOR: '1' } },
+    );
+    return { code: res.status, stdout: res.stdout ?? '', out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
+  }
+
+  for (const iterations of ['0', '-3']) {
+    it(`--iterations ${iterations}: exit 2, NOT MEASURED, payloads generated and none executed`, () => {
+      const { code, out } = runWith(iterations);
+      expect(out).not.toMatch(/All defenses held/i);
+      expect(out).not.toMatch(/No vulnerabilities found/i);
+      expect(out).not.toMatch(/Resilience score:\s*-?\d+%/i);
+      expect(out).toMatch(/Resilience:\s*NOT MEASURED/);
+      expect(out).toMatch(/Payloads generated:\s*[1-9]/);
+      expect(out).toMatch(/Payloads executed:\s*0/);
+      expect(code).toBe(2);
+    });
+
+    it(`--iterations ${iterations} --json: resilienceScore null, generated > 0, executed 0`, () => {
+      const { code, stdout } = runWith(iterations, true);
+      const parsed = JSON.parse(stdout);
+      expect(parsed.defenseMap.resilienceScore).toBeNull();
+      expect(parsed.evaluation.generated).toBeGreaterThan(0);
+      expect(parsed.evaluation.executed).toBe(0);
+      expect(code).toBe(2);
+    });
+  }
+});
