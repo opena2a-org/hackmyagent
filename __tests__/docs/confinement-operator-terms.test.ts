@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { sectionRecording } from '../helpers/changelog-record';
+import { sectionRecording, virtualChangelog } from '../helpers/changelog-record';
 import { retargetInstruction, withheldLinkLines } from '../../src/hardening/withheld-links';
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -33,7 +33,7 @@ describe('out-of-tree link confinement is stated in the operator\'s terms', () =
   });
 
   it('CHANGELOG says it in the recording section in one sentence containing the retarget phrase', () => {
-    const unreleased = sectionRecording(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'), /link out of the directory it scans/);
+    const unreleased = sectionRecording(virtualChangelog(), /link out of the directory it scans/);
     // A CHANGELOG paragraph is hard-wrapped; the sentence is contiguous once
     // the wrap is undone, and the phrase itself sits on one line.
     const unwrapped = unreleased.replace(/\n(?!\n)/g, ' ');
@@ -44,7 +44,7 @@ describe('out-of-tree link confinement is stated in the operator\'s terms', () =
   });
 
   it('CHANGELOG makes no from-version range claim (none was execution-confirmed)', () => {
-    const unreleased = sectionRecording(readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8'), /link out of the directory it scans/);
+    const unreleased = sectionRecording(virtualChangelog(), /link out of the directory it scans/);
     const section = unreleased.split(/^### /m).find((s) => /link out of the directory it scans/.test(s)) ?? '';
     expect(section.length).toBeGreaterThan(0);
     expect(section).not.toMatch(/versions? (before|since|from|through|up to) \d/i);

@@ -11,10 +11,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { sectionRecording, sectionsThroughRecording } from '../helpers/changelog-record';
+import { sectionRecording, sectionsThroughRecording, virtualChangelog } from '../helpers/changelog-record';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const CHANGELOG = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf-8');
+const CHANGELOG = virtualChangelog();
 const ENGINE = readFileSync(join(REPO_ROOT, 'src', 'simulation', 'engine.ts'), 'utf-8');
 
 const RECORD = /NOT MEASURED[^\n]*#446|#446[^\n]*NOT MEASURED/;
