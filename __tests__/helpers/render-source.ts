@@ -500,9 +500,13 @@ function literalTextBefore(ref: ts.Node): string | null {
  * named, and it is open work.
  *
  * The prefix also gives up on a quoted literal argument (`stat -f '%i' ${p}`),
- * since `[\w:.@-]+` does not admit a quote — so that shape is still unseen even
+ * since `[\w:.@+-]+` does not admit a quote — so that shape is still unseen even
  * with `stat` on the list. Do not read a green run here as "no unquoted command
  * interpolation exists".
+ *
+ * The `+` is there for `chmod u+x ${dir}` (#618). Without it the operand class
+ * stopped at `u+x`, the prefix never reached the interpolation, and every
+ * `chmod` remedy in the tree went uninspected while `chmod` sat on the list.
  */
 const COMMAND_PREFIX = new RegExp(
   '(?:\\$\\{(?:CLI_PREFIX|prefix|cliName|secureCmd)\\}|\\bhackmyagent\\b|\\bopena2a(?:-cli)?\\b'
@@ -513,7 +517,7 @@ const COMMAND_PREFIX = new RegExp(
   // `check` report. Anchored on the backtick so ordinary prose using the word
   // "secure" as a verb does not match.
   + '|`(?:secure|scan-soul|harden-soul|detect|check|protect|rollback|wild|trust)\\b)'
-  + '\\s+(?:--?[\\w-]+\\s+|[\\w:.@-]+\\s+)*$',
+  + '\\s+(?:--?[\\w-]+\\s+|[\\w:.@+-]+\\s+)*$',
 );
 
 function inCommandArgumentPosition(ref: ts.Node): boolean {
@@ -742,18 +746,101 @@ export function unquotedCommandSites(repoRoot: string): RenderSite[] {
     // question here is narrower and needs no name test: the initializer IS a
     // call to a helper whose entire contract is returning a citation.
     const citationBound = new Set<string>();
-    (function collect(n: ts.Node): void {
-      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
-        const init = ts.isBinaryExpression(n.initializer)
-          && n.initializer.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-          ? n.initializer.left
-          : n.initializer;
-        if (ts.isCallExpression(init) && CITATION_HELPERS.has(calleeName(init))) {
-          citationBound.add(n.name.text);
+    // Local helpers whose returned value is itself a citation (#618):
+    // `const citeOperand = (p) => (p === '.' ? target : citationPath(p))`.
+    const citationReturning = new Set<string>();
+    const isCitationValue = (x: ts.Expression, emptyAllowed: boolean): boolean => {
+      while (ts.isParenthesizedExpression(x)) x = x.expression;
+      if (ts.isCallExpression(x)) {
+        const callee = calleeName(x);
+        return CITATION_HELPERS.has(callee) || citationReturning.has(callee);
+      }
+      if (ts.isConditionalExpression(x)) {
+        return isCitationValue(x.whenTrue, true) && isCitationValue(x.whenFalse, true);
+      }
+      if (ts.isIdentifier(x) && citationBound.has(x.text)) return true;
+      // A branch that renders no operand at all (`a ? citationPath(a) : null`)
+      // carries no quoting hazard; it is only admitted as a BRANCH.
+      return emptyAllowed && (x.kind === ts.SyntaxKind.NullKeyword
+        || (ts.isIdentifier(x) && x.text === 'undefined') || ts.isStringLiteralLike(x));
+    };
+    // To a fixed point: `citeOperand` qualifies only once `target` is bound,
+    // and `cited = citeOperand(rel)` only once `citeOperand` qualifies.
+    for (let changed = true; changed;) {
+      changed = false;
+      (function collect(n: ts.Node): void {
+        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+          const name = n.name.text;
+          const init = ts.isBinaryExpression(n.initializer)
+            && n.initializer.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+            ? n.initializer.left
+            : n.initializer;
+          if (!citationBound.has(name) && (ts.isCallExpression(init) || ts.isConditionalExpression(init))
+            && isCitationValue(init, false)) {
+            citationBound.add(name);
+            changed = true;
+          }
+          if (!citationReturning.has(name) && ts.isArrowFunction(init) && !ts.isBlock(init.body)
+            && isCitationValue(init.body, false)) {
+            citationReturning.add(name);
+            changed = true;
+          }
+        }
+        ts.forEachChild(n, collect);
+      })(analysis.source);
+    }
+    /**
+     * A parameter of a local helper whose EVERY caller in this file passes a
+     * citation at that position (#618): `const chmodUx = (dir) =>
+     * \`chmod u+x ${dir} ...\``, called only as `chmodUx(citedAncestor)`.
+     * Resolved through the parameter's own declaration, not by name, so a `dir`
+     * elsewhere in the file gains nothing. Refused when the helper is ever used
+     * as a value rather than called (it could then be handed anything), when a
+     * nested declaration shadows the parameter, or when the parameter is a
+     * rest or defaulted one.
+     */
+    const isCitedParameter = (id: ts.Identifier): boolean => {
+      let fn: ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration | undefined;
+      let index = -1;
+      for (let cur: ts.Node | undefined = id.parent; cur && !fn; cur = cur.parent) {
+        if (ts.isArrowFunction(cur) || ts.isFunctionExpression(cur) || ts.isFunctionDeclaration(cur)) {
+          index = cur.parameters.findIndex((p) => ts.isIdentifier(p.name) && p.name.text === id.text);
+          if (index >= 0) fn = cur;
         }
       }
-      ts.forEachChild(n, collect);
-    })(analysis.source);
+      if (!fn || !fn.body) return false;
+      const param = fn.parameters[index];
+      if (param.dotDotDotToken || param.initializer) return false;
+      let shadowed = false;
+      (function find(n: ts.Node): void {
+        if ((ts.isVariableDeclaration(n) || ts.isParameter(n)) && ts.isIdentifier(n.name)
+          && n.name.text === id.text) shadowed = true;
+        if (!shadowed) ts.forEachChild(n, find);
+      })(fn.body);
+      if (shadowed) return false;
+      const declared = ts.isFunctionDeclaration(fn) ? fn.name
+        : ts.isVariableDeclaration(fn.parent) && ts.isIdentifier(fn.parent.name) ? fn.parent.name
+          : undefined;
+      if (!declared) return false;
+      // An exported helper has callers this file cannot see.
+      if (ts.getCombinedModifierFlags(ts.isFunctionDeclaration(fn) ? fn : fn.parent as ts.Declaration)
+        & ts.ModifierFlags.Export) return false;
+      let calls = 0;
+      let escapes = false;
+      (function refs(n: ts.Node): void {
+        if (ts.isIdentifier(n) && n !== declared && n.text === declared.text) {
+          const call = n.parent;
+          if (ts.isCallExpression(call) && call.expression === n
+            && call.arguments[index] !== undefined && isCitationValue(call.arguments[index], false)) {
+            calls++;
+          } else if (!(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n)) {
+            escapes = true;
+          }
+        }
+        if (!escapes) ts.forEachChild(n, refs);
+      })(analysis.source);
+      return !escapes && calls > 0;
+    };
     const walk = (n: ts.Node): void => {
       if (ts.isTemplateExpression(n)) {
         for (const span of n.templateSpans) {
@@ -782,6 +869,7 @@ export function unquotedCommandSites(repoRoot: string): RenderSite[] {
             && ts.isStringLiteralLike(e.right)) continue;
           // A call whose callee is a local helper returning a citation.
           if (ts.isCallExpression(e) && analysis.helpers.has(calleeName(e))) continue;
+          if (ts.isIdentifier(e) && isCitedParameter(e)) continue;
           const { line } = analysis.source.getLineAndCharacterOfPosition(e.getStart());
           sites.push({
             file: analysis.relative,
