@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { COMMAND_CLASSIFICATION } from '../helpers/render-safety';
-import { sectionRecording } from '../helpers/changelog-record';
+import { sectionRecording, virtualChangelog } from '../helpers/changelog-record';
 import {
   getTaxonomyMap,
   getCheckSeverity,
@@ -826,7 +826,7 @@ describe('HMA-70.AC13 the document goes through the JSON chokepoint and the reda
 
 describe('HMA-70.AC14 the tree documents the command', () => {
   it('HMA-70.AC14 CHANGELOG.md records scan-text under the Unreleased section', () => {
-    const changelog = readFileSync(path.join(REPO_ROOT, 'CHANGELOG.md'), 'utf8');
+    const changelog = virtualChangelog();
     const section = sectionRecording(changelog, 'scan-text');
     expect(section.startsWith('## [Unreleased]'), 'the record must sit under ## [Unreleased]').toBe(true);
   });

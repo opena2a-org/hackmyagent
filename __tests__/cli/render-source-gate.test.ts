@@ -279,3 +279,66 @@ describe('every command citation quotes its operands (#273)', () => {
     expect(unquotedCommandSites(root)).toEqual([]);
   });
 });
+
+describe('the command-argument gate inspects chmod remedies (#618)', () => {
+  // Each probe lives in a throwaway root for the reason given above: a `.ts`
+  // file written under this repo's `src/` would be newer than `dist/` while a
+  // spawn suite in another worker asserts the build is fresh.
+  const flagged = (body: string): string[] => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs') as typeof import('node:fs');
+    const { tmpdir } = require('node:os') as typeof import('node:os');
+    const root = mkdtempSync(path.join(tmpdir(), 'hma-618-probe-'));
+    mkdirSync(path.join(root, 'src'));
+    writeFileSync(path.join(root, 'src', 'probe.ts'),
+      "import { citationPath } from './shell-quote';\n" + body);
+    return unquotedCommandSites(root).map((s) => s.name);
+  };
+
+  it('flags a raw operand after a symbolic mode, so the operand class cannot lose its +', () => {
+    // Before #618 the class was `[\w:.@-]`: `u+x` stopped the prefix and this
+    // returned [] for every spelling below.
+    for (const mode of ['u+x', 'u+r', 'u+rx', 'go-w']) {
+      expect(flagged(`export function probe(dir: string): string {\n`
+        + `  return \`chmod ${mode} \${dir} && hackmyagent secure .\`;\n}\n`), mode).toEqual(['dir']);
+    }
+  });
+
+  it('accepts a helper parameter only while every caller passes a citation', () => {
+    const helper = 'const chmodUx = (dir: string): string => `chmod u+x ${dir} && hackmyagent secure .`;\n';
+    expect(flagged('function remedy(a: string): string {\n  ' + helper
+      + '  const cited = citationPath(a);\n  return cited ? chmodUx(cited) : "none";\n}\n')).toEqual([]);
+    // One raw caller is enough to make the parameter raw.
+    expect(flagged('function remedy(a: string, b: string): string {\n  ' + helper
+      + '  return chmodUx(citationPath(a)) + chmodUx(b);\n}\n')).toEqual(['dir']);
+    // Handed out as a value, it can be called with anything.
+    expect(flagged('function remedy(a: string[]): string[] {\n  ' + helper
+      + '  return a.map(chmodUx);\n}\n')).toEqual(['dir']);
+    // Never called: nothing vouches for the parameter.
+    expect(flagged('function remedy(): string {\n  ' + helper + '  return "none";\n}\n')).toEqual(['dir']);
+  });
+
+  it('resolves the parameter by its declaration, not by its name', () => {
+    // A nested declaration shadows the parameter the callers vouch for.
+    expect(flagged('function remedy(a: string, raw: string): string {\n'
+      + '  const chmodUx = (dir: string): string => { const f = (dir: string) => `chmod u+x ${dir}`; return f(raw); };\n'
+      + '  return chmodUx(citationPath(a));\n}\n')).toEqual(['dir']);
+    // An exported helper has callers outside this file.
+    expect(flagged('export function chmodUx(dir: string): string {\n  return `chmod u+x ${dir}`;\n}\n'
+      + 'export const ok = (a: string) => chmodUx(citationPath(a));\n')).toEqual(['dir']);
+  });
+
+  it('accepts a citation bound through a ternary or a citation-returning helper', () => {
+    // The two bindings the chmod sites in the unread-input remedy use.
+    expect(flagged('function remedy(a: string | undefined, target: string): string {\n'
+      + '  const citedAncestor = a ? citationPath(a) : null;\n'
+      + '  return `chmod u+x ${citedAncestor}`;\n}\n')).toEqual([]);
+    expect(flagged('function remedy(rel: string): string {\n'
+      + '  const citeOperand = (p: string): string | null => citationPath(p);\n'
+      + '  const cited = citeOperand(rel);\n'
+      + '  return `chmod u+r ${cited}`;\n}\n')).toEqual([]);
+    // A ternary with one raw branch is raw.
+    expect(flagged('function remedy(a: string): string {\n'
+      + '  const c = a.length ? citationPath(a) : a;\n'
+      + '  return `chmod u+x ${c}`;\n}\n')).toEqual(['c']);
+  });
+});
