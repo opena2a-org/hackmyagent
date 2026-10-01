@@ -6087,14 +6087,42 @@ export class HardeningScanner {
       }
     }
 
-    // Create .env.example if we fixed any credentials
+    // Create .env.example if we fixed any credentials, or add the missing
+    // names to the one the project already has (#282). This used to build the
+    // file from scratch and write it over whatever was there, so a hand-written
+    // template lost every entry and comment the run did not generate, and
+    // nothing in the output said the file had been rewritten. Its bytes stay;
+    // only names it does not already declare are appended.
     if (autoFix && envVarsToAdd.size > 0) {
       const envExamplePath = path.join(targetDir, '.env.example');
-      let envExampleContent = '# Environment variables\n\n';
-      for (const envVar of envVarsToAdd) {
-        envExampleContent += `${envVar}=\n`;
+      let existing: string | null = null;
+      try {
+        existing = await fs.readFile(envExamplePath, 'utf-8');
+      } catch {
+        // Absent (or unreadable, which the write below then reports): create it.
       }
-      await this.applyFixWrite(envExamplePath, envExampleContent);
+      if (existing === null) {
+        let envExampleContent = '# Environment variables\n\n';
+        for (const envVar of envVarsToAdd) {
+          envExampleContent += `${envVar}=\n`;
+        }
+        await this.applyFixWrite(envExamplePath, envExampleContent);
+      } else {
+        const declared = new Set<string>();
+        for (const line of existing.split(/\r?\n/)) {
+          const name = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
+          if (name) declared.add(name[1]);
+        }
+        const missing = [...envVarsToAdd].filter((envVar) => !declared.has(envVar));
+        if (missing.length > 0) {
+          const eol = existing.includes('\r\n') ? '\r\n' : '\n';
+          const separator = existing.length === 0 || existing.endsWith('\n') ? '' : eol;
+          await this.applyFixWrite(
+            envExamplePath,
+            existing + separator + missing.map((envVar) => `${envVar}=${eol}`).join(''),
+          );
+        }
+      }
     }
 
     return findings;
