@@ -4,8 +4,8 @@
 // error instead of passing while checking nothing. Continuous integration runs
 // Node 24 on Linux and macOS.
 //
-// This suite freezes, per file, the number of lines on the five public
-// surfaces (src, __tests__, docs, README.md, CHANGELOG.md) that match either
+// This suite freezes, per file, the number of lines on the six public
+// surfaces (src, __tests__, docs, README.md, CHANGELOG.md, changelog.d) that match either
 // expression below. It is green against the tree as delivered, turns red when
 // a matching line is added anywhere on those surfaces, and turns red when one
 // is removed without lowering the frozen entry here — the frozen maps are
@@ -22,7 +22,9 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 // are pinned separately by SELF_HITS below.
 const SELF_PATH = '__tests__/gate/no-internal-attribution.test.ts';
 
-const SURFACES = ['src', '__tests__', 'docs', 'README.md', 'CHANGELOG.md'];
+// changelog.d holds the pending CHANGELOG entries, one file per change; they
+// are public on main from the moment they merge, not only after a release.
+const SURFACES = ['src', '__tests__', 'docs', 'README.md', 'CHANGELOG.md', 'changelog.d'];
 
 // Both expression sources are pasted verbatim and must stay byte-identical to
 // their upstream definition, so they are built with String.raw: a
@@ -74,7 +76,7 @@ const ALLOWLIST: ReadonlyArray<{ file: string; line: string }> = [
 ];
 
 // One walker for both the tree assertions and the planted-shape cases: it
-// takes a root directory and one expression, visits whichever of the five
+// takes a root directory and one expression, visits whichever of the six
 // surfaces exist under that root, recurses every directory and reads every
 // regular file. Exactly two skips: a file whose first 8000 bytes contain a NUL
 // byte, and SELF_PATH. No extension filter, no other skip list, no ignore-file
@@ -288,7 +290,7 @@ describe('internal attribution stays off the public surfaces', () => {
     expect(VENDOR.flags).toBe('i');
   });
 
-  it('HMA-37.AC2 the tree walk covers the five surfaces and skips exactly the known image files', () => {
+  it('HMA-37.AC2 the tree walk covers the six surfaces and skips exactly the known image files', () => {
     const { binarySkipped } = scan(REPO_ROOT, PATTERN);
     expect([...binarySkipped].sort()).toEqual([
       'docs/hackmyagent-demo.gif',
@@ -305,6 +307,24 @@ describe('internal attribution stays off the public surfaces', () => {
     expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(116);
     const { hits } = scan(REPO_ROOT, PATTERN);
     expect(compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE)).toEqual([]);
+  });
+
+  it('changelog.d is walked and no frozen entry names a file under it: a fragment is fixed, never pinned', () => {
+    // Fragment names carry a random suffix and move into CHANGELOG.md at
+    // release, so a pin keyed on one cannot survive; every fragment's frozen
+    // count is exactly 0 for both expressions.
+    expect(SURFACES).toContain('changelog.d');
+    for (const key of [...Object.keys(PATTERN_BASELINE), ...Object.keys(VENDOR_BASELINE)]) {
+      expect(key.startsWith('changelog.d/'), `frozen entry ${key} names a changelog fragment`).toBe(false);
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-attr-fragments-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'changelog.d'));
+      fs.writeFileSync(path.join(dir, 'changelog.d', 'x-abc123.md'), `---\ntype: fixed\n---\n- ${CAUGHT_SHAPES[1]}\n`);
+      expect([...scan(dir, PATTERN).hits.keys()]).toEqual(['changelog.d/x-abc123.md']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('HMA-37.AC4 every exempted line still exists on disk with exactly the recorded content', () => {
