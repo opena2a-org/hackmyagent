@@ -27,10 +27,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { sectionRecording, sectionsThroughRecording } from '../helpers/changelog-record';
+import { sectionRecording, sectionsThroughRecording, virtualChangelog } from '../helpers/changelog-record';
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
-const CHANGELOG = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf-8');
+const CHANGELOG = virtualChangelog();
 const SCANNER = readFileSync(join(REPO_ROOT, 'src', 'hardening', 'scanner.ts'), 'utf-8');
 const PKG = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf-8')) as { version: string };
 
