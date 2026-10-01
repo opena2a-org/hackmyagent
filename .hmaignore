@@ -26,6 +26,7 @@ scripts/
 
 # Documentation files — contain security terminology that triggers false positives
 CHANGELOG.md
+changelog.d/
 CONTRIBUTING.md
 
 # Plugins use verify-then-act patterns on local files (not exploitable TOCTOU)
