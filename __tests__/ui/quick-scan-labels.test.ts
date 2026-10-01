@@ -12,6 +12,7 @@ import {
   shouldRenderPathForward,
   QUICK_SCAN_UNEVALUATED_CATEGORIES,
 } from "../../src/ui/quick-scan-labels";
+import { categoryForPrefix, isCoverageCategory } from "../../src/hardening/coverage-ledger";
 
 describe("scoreLineLabel (#136)", () => {
   it("returns 'Quick scan' under quickScan context", () => {
@@ -73,7 +74,7 @@ describe("quickScanFollowupText (#136)", () => {
       fullAuditTarget: "/Users/me/.opena2a/corpus/skill/malicious/exfil-skill",
     });
     expect(text).toBe(
-      "Run `secure /Users/me/.opena2a/corpus/skill/malicious/exfil-skill` for the full audit (adds credentials, git hygiene, MCP config, file permissions).",
+      "Run `secure /Users/me/.opena2a/corpus/skill/malicious/exfil-skill` for the full audit (adds credentials, git hygiene, MCP, sandbox).",
     );
   });
 
@@ -104,5 +105,27 @@ describe("quickScanFollowupText (#136)", () => {
     }
     // Credentials lead — highest consequence, and the #200 root cause.
     expect(text).toContain("(adds credentials,");
+  });
+});
+
+describe("quick-scan categories speak the coverage ledger's vocabulary (#419)", () => {
+  it("names every unevaluated category by the ledger's own label", () => {
+    // Equality, not a translation table: the sentence, the Categories line
+    // and `coverage.categories` in --json name a category the same way.
+    for (const category of QUICK_SCAN_UNEVALUATED_CATEGORIES) {
+      expect(isCoverageCategory(category), `${category} is not a coverage-ledger category`).toBe(true);
+    }
+  });
+
+  it("files the check families the sentence stands for under those labels", () => {
+    expect(categoryForPrefix("CRED")).toBe("credentials");
+    expect(categoryForPrefix("GIT")).toBe("git hygiene");
+    expect(categoryForPrefix("MCP")).toBe("MCP");
+    expect(categoryForPrefix("PERM")).toBe("sandbox");
+  });
+
+  it("rejects the old spellings, which the ledger never printed", () => {
+    expect(isCoverageCategory("MCP config")).toBe(false);
+    expect(isCoverageCategory("file permissions")).toBe(false);
   });
 });
