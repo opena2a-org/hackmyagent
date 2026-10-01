@@ -6797,7 +6797,7 @@ Examples:
   $ ${CLI_PREFIX} secure-openclaw ~/.openclaw      Scan specific directory
   $ ${CLI_PREFIX} secure-openclaw --fix            Auto-fix issues
   $ ${CLI_PREFIX} secure-openclaw --json           JSON output for CI`)
-  .argument('[directory]', 'Directory to scan (default: ~/.openclaw or ~/.moltbot)', '')
+  .argument('[directory]', 'Directory to scan (default: the first of ~/.openclaw, ~/.moltbot, ~/.clawdbot that exists)', '')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
   .option('--json', 'Output as JSON (for scripting/CI)')
