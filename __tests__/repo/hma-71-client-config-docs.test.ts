@@ -10,9 +10,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { virtualChangelog } from '../helpers/changelog-record';
 
 const README = readFileSync(join(__dirname, '../../README.md'), 'utf-8');
-const CHANGELOG = readFileSync(join(__dirname, '../../CHANGELOG.md'), 'utf-8');
+const CHANGELOG = virtualChangelog();
 
 /** The body of a `## ` section, up to the next `## ` heading. */
 function section(source: string, heading: string): string {
@@ -47,7 +48,8 @@ describe('HMA-71.AC6: README and CHANGELOG name the files init-mcp writes', () =
   const unreleased = section(CHANGELOG, '\n## [Unreleased]\n');
 
   it('HMA-71.AC6 the Unreleased section carries an entry for the key each client reads', () => {
-    const entry = unreleased.split(/\n### /).find((e) => e.includes('--tool vscode'));
+    // Entries are `#### <title>` under a `### <Type>` heading in the virtual reading.
+    const entry = unreleased.split(/\n####? /).find((e) => e.includes('--tool vscode'));
     expect(entry, 'no [Unreleased] entry names the `--tool vscode` spelling').toBeDefined();
 
     for (const token of ['init-mcp', '.vscode/mcp.json', '`servers`', '--tool vscode', 'MCP-001', 'mcpServers', '.mcp.json']) {
