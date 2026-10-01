@@ -55,6 +55,10 @@ const BOUNDARY_PATHS = [
   'src/nanomind-core/analyzers/stego-analyzer.ts',
 ] as const;
 
+/** The changelog assembler: it decides the changelog step of the test matrix
+ * and runs in the release workflow, so it is gated like the workflows are. */
+const CHANGELOG_SCRIPT = 'scripts/changelog.mjs';
+
 interface Workflow {
   jobs: { evaluate: { steps: Array<Record<string, unknown>> } };
 }
@@ -226,6 +230,33 @@ describe('gate-file verdict: AC1 — boundary paths require approval on the curr
       reviewCommit: STALE,
     });
     expect(r.conclusion).toBe('action_required');
+  });
+});
+
+describe('gate-file verdict: the changelog assembler is a gate file', () => {
+  it("the workflow's own text names scripts/changelog.mjs, anchored at both ends", () => {
+    expect(verdictBlock()).toContain("'^scripts/changelog\\.mjs$'");
+  });
+
+  it('scripts/changelog.mjs in the changed-file list with no approving review evaluates to action_required', () => {
+    const r = runVerdict({ files: [...INNOCUOUS, CHANGELOG_SCRIPT] });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.conclusion).toBe('action_required');
+    expect(r.title).toBe('Gate-file change needs approval');
+  });
+
+  it('lookalikes of scripts/changelog.mjs and changelog fragments do not gate', () => {
+    const r = runVerdict({
+      files: [
+        'a/scripts/changelog.mjs',
+        'scripts/changelog.mjs.orig',
+        'scripts/changelogXmjs',
+        'changelog.d/fix-761-example-6a80ff.md',
+        'CHANGELOG.md',
+      ],
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.conclusion).toBe('success');
   });
 });
 

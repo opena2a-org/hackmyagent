@@ -5,9 +5,11 @@
  * plus a `[user]` section reading `test <test@example.com>` — leaving every
  * later `git status` failing with "this operation must be run in a work tree".
  *
- * The `[user]` half is reproducible and is this suite's own doing. Git exports
- * `GIT_DIR` to every hook, this project's pre-push hook runs `npm test`, and a
- * fixture helper ran:
+ * Both halves are reproducible and are this suite's own doing; the `bare = true`
+ * half is the same leak from a linked worktree, and has its own case below.
+ *
+ * The `[user]` half: git exports `GIT_DIR` to every hook, this project's
+ * pre-push hook runs `npm test`, and a fixture helper ran:
  *
  *     git -C <fixture> init -q
  *     git -C <fixture> config user.email test@example.com
@@ -193,6 +195,80 @@ describe('#348 every fixture repository is created with git isolated from this o
         if (saved[key] === undefined) delete process.env[key];
         else process.env[key] = saved[key];
       }
+    }
+  });
+
+  it('the `bare = true` half: a hook run from a linked worktree, and the scrub that stops it', async () => {
+    // The mechanism the five earlier variants missed. `git init` with GIT_DIR
+    // set and no work tree GUESSES whether the repository is bare
+    // (`guess_repository_type` in git's builtin/init-db.c): a GIT_DIR of `.`,
+    // of the cwd, of `.git` or of `…/.git` is not bare, and ANY OTHER path is
+    // guessed bare. A linked worktree's git dir is `<repo>/.git/worktrees/<name>`,
+    // and that is what a hook fired inside a linked worktree exports. So under
+    // a push from a worktree, `git -C <fixture> init` creates nothing in the
+    // fixture, re-initialises the developer's repository, and writes
+    // `core.bare = true` into the config every worktree shares. The earlier
+    // variants all used `<repo>/.git`, which is the one spelling guessed not bare.
+    const { initThrowawayRepo, gitFreeEnv } = await import('../helpers/throwaway-repo');
+    const { mkdtempSync, mkdirSync, existsSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { execFileSync } = await import('node:child_process');
+
+    const root = mkdtempSync(path.join(tmpdir(), 'hma-348-bare-'));
+    /** A repository with a linked worktree; returns the paths a hook would see. */
+    const repoWithWorktree = (name: string): { config: string; worktreeGitDir: string } => {
+      const repo = path.join(root, name);
+      const wt = path.join(root, `${name}-wt`);
+      mkdirSync(repo);
+      initThrowawayRepo(repo);
+      const git = (cwd: string, args: string[]): string =>
+        execFileSync('git', ['-C', cwd, ...args], { env: gitFreeEnv(), encoding: 'utf8' }).trim();
+      git(repo, ['commit', '-q', '--allow-empty', '-m', 'init']);
+      git(repo, ['worktree', 'add', '-q', wt, '-b', `${name}-branch`]);
+      return { config: path.join(repo, '.git', 'config'), worktreeGitDir: git(wt, ['rev-parse', '--absolute-git-dir']) };
+    };
+    const bareIn = (config: string): string =>
+      execFileSync('git', ['config', '--file', config, '--get', 'core.bare'], { env: gitFreeEnv(), encoding: 'utf8' }).trim();
+
+    try {
+      // 1. The reproduction: the environment a pre-push hook in a linked
+      //    worktree hands the suite, and the command the fixtures used to run.
+      const exposed = repoWithWorktree('exposed');
+      expect(bareIn(exposed.config)).toBe('false');
+      const fixture = mkdtempSync(path.join(root, 'fixture-'));
+      execFileSync('git', ['-C', fixture, 'init', '-q'], {
+        env: { ...gitFreeEnv(), GIT_DIR: exposed.worktreeGitDir },
+        stdio: 'ignore',
+      });
+      expect(
+        existsSync(path.join(fixture, '.git')),
+        'this case assumes git creates nothing in the fixture under a worktree GIT_DIR',
+      ).toBe(false);
+      expect(
+        bareIn(exposed.config),
+        'the reproduction no longer sets core.bare; git changed its guess and '
+        + 'this case needs re-measuring before it can prove anything',
+      ).toBe('true');
+
+      // 2. The guard: the same poisoned GIT_DIR in the AMBIENT environment,
+      //    which is where a hook puts it, and the helper every fixture uses.
+      const guarded = repoWithWorktree('guarded');
+      const saved = process.env.GIT_DIR;
+      process.env.GIT_DIR = guarded.worktreeGitDir;
+      const fixture2 = mkdtempSync(path.join(root, 'fixture-'));
+      try {
+        initThrowawayRepo(fixture2);
+      } finally {
+        if (saved === undefined) delete process.env.GIT_DIR;
+        else process.env.GIT_DIR = saved;
+      }
+      expect(existsSync(path.join(fixture2, '.git')), 'the helper created no fixture repository').toBe(true);
+      expect(
+        bareIn(guarded.config),
+        'initThrowawayRepo let an inherited worktree GIT_DIR reach another repository and mark it bare',
+      ).toBe('false');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
