@@ -21,7 +21,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sectionRecording } from '../helpers/changelog-record';
+import { sectionRecording, virtualChangelog } from '../helpers/changelog-record';
 import {
   SemanticCompiler,
   findCredentialHarvestClauses,
@@ -301,7 +301,7 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
     // names the fixture.
     expect(checkIdsOf(GOLDEN_CARRIERS[0])).not.toContain('AST-CRED-001');
 
-    const section = sectionRecording(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8'), /CRED-HARVEST prose rule is clause-scoped/);
+    const section = sectionRecording(virtualChangelog(), /CRED-HARVEST prose rule is clause-scoped/);
     expect(section, 'the recording section must record the exfil-skill removal').toContain('exfil-skill');
   });
 
@@ -326,14 +326,14 @@ describe('HMA-41 the false-negative cost is measured, not silently paid', () => 
 describe('HMA-41 delivery invariants', () => {
   it('HMA-41.AC7 package.json names a released version: a fix leg bumps nothing, the release seat cuts the release', () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    const changelog = readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8');
+    const changelog = virtualChangelog();
     const newestDated = /^## \[(\d+\.\d+\.\d+)\] - /m.exec(changelog);
     expect(newestDated, 'the changelog carries no dated release heading').not.toBeNull();
     expect(pkg.version, 'a version bump with no dated changelog section rode along').toBe(newestDated![1]);
   });
 
   it('HMA-41.AC7 CHANGELOG.md describes the clause-scoping in the section that records it', () => {
-    const section = sectionRecording(readFileSync(join(REPO_ROOT, 'CHANGELOG.md'), 'utf8'), /CRED-HARVEST prose rule is clause-scoped/).toLowerCase();
+    const section = sectionRecording(virtualChangelog(), /CRED-HARVEST prose rule is clause-scoped/).toLowerCase();
     expect(section).toContain('cred-harvest');
     expect(section).toContain('clause');
   });
