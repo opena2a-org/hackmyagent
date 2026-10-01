@@ -26,12 +26,22 @@ export interface QuickScanContext {
  * leads because it is what made #200 dangerous rather than merely
  * imprecise: a `check`-only user with an un-ignored `.env` was told the
  * directory looked safe.
+ *
+ * #419 — each entry is the coverage ledger's own label for the category
+ * (`PREFIX_TO_CATEGORY` in `src/hardening/coverage-ledger.ts`), the one the
+ * Categories line and `--json`'s `coverage.categories` print. This list said
+ * `MCP config` and `file permissions` where the ledger says `MCP` and
+ * `sandbox` (the `PERM` checks roll up under `sandbox`), so a reader told the
+ * scan "did NOT evaluate file permissions" then found `sandbox: not-examined`
+ * in the payload with nothing connecting the two. One vocabulary now:
+ * `__tests__/ui/quick-scan-labels.test.ts` fails on any entry the ledger
+ * does not speak.
  */
 export const QUICK_SCAN_UNEVALUATED_CATEGORIES = [
   'credentials',
   'git hygiene',
-  'MCP config',
-  'file permissions',
+  'MCP',
+  'sandbox',
 ] as const;
 
 /** Display values for the Observations block under a narrowed quick scan. */
