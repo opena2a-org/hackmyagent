@@ -95,6 +95,6 @@
     "url": "https://github.com/opena2a-org/hackmyagent/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "^20.19.0 || >=22.12.0"
   }
 }
