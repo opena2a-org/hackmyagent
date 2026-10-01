@@ -4136,26 +4136,49 @@ function escapeHtml(str: string): string {
 function generateScanSarif(findings: SecurityFinding[], targetDir: string): string {
   assertRedactionProvenance(findings, 'sarif-scan');
   const issues = findings.filter(f => countsAgainstScore(f));
-  const rules = issues.map(f => ({
-    id: f.checkId,
-    name: f.name.replace(/\s+/g, ''),
-    shortDescription: { text: f.name },
-    fullDescription: { text: f.description },
-    help: { text: f.fix || `Fix the ${f.name} issue.` },
-    defaultConfiguration: {
-      level: (f.severity === 'critical' || f.severity === 'high' ? 'error' :
-             f.severity === 'medium' ? 'warning' : 'note') as 'error' | 'warning' | 'note',
-    },
-    properties: {
-      'security-severity': f.severity === 'critical' ? '9.0' :
-                          f.severity === 'high' ? '7.0' :
-                          f.severity === 'medium' ? '5.0' : '3.0',
-      tags: ['security', 'ai-agent', f.category],
-    },
-  }));
+  // #452 — `tool.driver.rules` holds one descriptor per RULE. It was built
+  // one per RESULT, so a check that fired twice emitted two identical
+  // descriptors, and SARIF 2.1.0 declares `rules` `uniqueItems`: the document
+  // validated on a target where every check fired once and failed on a real
+  // one (67 duplicates on the malicious corpus fixture), which GitHub's SARIF
+  // upload rejects. The descriptor is the first finding's for that check, at
+  // the highest severity any of its findings carries; each result keeps its
+  // own level and message and points at its rule by `ruleIndex`.
+  const severityRank = (s: string | undefined): number => ['low', 'medium', 'high', 'critical'].indexOf(s ?? '');
+  const ruleSeverity = new Map<string, SecurityFinding['severity']>();
+  for (const f of issues) {
+    const current = ruleSeverity.get(f.checkId);
+    if (current === undefined || severityRank(f.severity) > severityRank(current)) ruleSeverity.set(f.checkId, f.severity);
+  }
+  const ruleIndexById = new Map<string, number>();
+  const rules = issues.filter(f => {
+    if (ruleIndexById.has(f.checkId)) return false;
+    ruleIndexById.set(f.checkId, ruleIndexById.size);
+    return true;
+  }).map(f => {
+    const severity = ruleSeverity.get(f.checkId) ?? f.severity;
+    return {
+      id: f.checkId,
+      name: f.name.replace(/\s+/g, ''),
+      shortDescription: { text: f.name },
+      fullDescription: { text: f.description },
+      help: { text: f.fix || `Fix the ${f.name} issue.` },
+      defaultConfiguration: {
+        level: (severity === 'critical' || severity === 'high' ? 'error' :
+               severity === 'medium' ? 'warning' : 'note') as 'error' | 'warning' | 'note',
+      },
+      properties: {
+        'security-severity': severity === 'critical' ? '9.0' :
+                            severity === 'high' ? '7.0' :
+                            severity === 'medium' ? '5.0' : '3.0',
+        tags: ['security', 'ai-agent', f.category],
+      },
+    };
+  });
 
   const results = issues.map(f => ({
     ruleId: f.checkId,
+    ruleIndex: ruleIndexById.get(f.checkId),
     level: (f.severity === 'critical' || f.severity === 'high' ? 'error' :
            f.severity === 'medium' ? 'warning' : 'note') as 'error' | 'warning' | 'note',
     message: { text: f.description },
