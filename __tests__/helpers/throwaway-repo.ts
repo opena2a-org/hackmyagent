@@ -33,10 +33,18 @@
  * And it ASSERTS the repository exists afterwards, so a fixture that silently
  * is not a repository fails its own test instead of quietly measuring nothing.
  *
- * Not covered here: the `bare = true` half. Five variants of the commands above
- * were run against git 2.53.0 and none of them set it, so its cause is not
- * established and it is NOT claimed to be fixed. What is fixed is the write
- * that reaches another repository at all.
+ * The `bare = true` half is the same leak through a linked worktree. `git init`
+ * with `GIT_DIR` set GUESSES whether the repository is bare: `<repo>/.git` (the
+ * spelling the five earlier variants used) is guessed not bare, and any path
+ * not ending in `/.git` is guessed bare. A hook fired inside a linked worktree
+ * exports that worktree's git dir, `<repo>/.git/worktrees/<name>`, so
+ *
+ *     $ env GIT_DIR=<repo>/.git/worktrees/<name> git -C <fixture> init -q
+ *
+ * creates nothing in the fixture and writes `core.bare = true` into the config
+ * every worktree of `<repo>` shares. The scrub above removes that `GIT_DIR` too;
+ * `__tests__/hardening/git-fixture-isolation.test.ts` reproduces the write and
+ * pins that this helper does not make it.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

@@ -40,6 +40,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HardeningScanner, isMatchInsideStringLiteral } from '../../src/hardening/scanner';
 import type { SecurityFinding } from '../../src/hardening/security-check';
 import * as fs from 'fs/promises';
+import { virtualChangelog } from '../helpers/changelog-record';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -563,10 +564,7 @@ describe('HMA-31.AC6: nothing outside the ruling moves', () => {
     // The N1 disclosure that called the newline spelling undetected is gone
     // from the scanner and from the changelog.
     expect(source).not.toContain('is not detected any more');
-    const changelog = await fs.readFile(
-      path.join(__dirname, '..', '..', 'CHANGELOG.md'),
-      'utf-8'
-    );
+    const changelog = virtualChangelog();
     expect(changelog).not.toMatch(/newline no longer match/);
   });
 });

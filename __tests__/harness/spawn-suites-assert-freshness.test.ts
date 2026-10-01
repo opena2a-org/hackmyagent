@@ -18,6 +18,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 const TESTS_ROOT = path.resolve(__dirname, '..');
 
@@ -32,20 +33,54 @@ function allTestFiles(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * A suite spawns the built CLI if it names `dist/cli.js`, however the path is
- * assembled — `'dist/cli.js'`, `join(root, 'dist', 'cli.js')`, or the
- * `BUILT_CLI` export.
+ * `src` with every comment blanked out, string and regex literals intact.
+ *
+ * #561 — both predicates below ran over the whole file, so a suite that only
+ * MENTIONED `dist/cli.js` in a comment was reported as a spawn suite, and the
+ * only way out was to reword the comment (evading the text gate) or to add a
+ * freshness check to a suite that never runs the binary (a false statement).
+ * The mirror hole closes with it: a comment naming `assertDistFresh` no longer
+ * counts as the check. The parser finds the comments, not a regex, because a
+ * quote or `//` inside a string or regex literal is not a comment boundary.
+ * Blanking keeps offsets and line breaks, so nothing else shifts.
+ */
+function withoutComments(src: string): string {
+  const source = ts.createSourceFile('suite.ts', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const chars = src.split('');
+  const blank = (pos: number, end: number): void => {
+    for (let i = pos; i < end; i++) if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
+  };
+  // Every comment is trivia in front of some token, so reading the leading
+  // comment ranges at each token's full start reaches all of them, including
+  // the ones before the end-of-file token.
+  const visit = (node: ts.Node): void => {
+    const children = node.getChildren(source);
+    if (children.length === 0) {
+      for (const r of ts.getLeadingCommentRanges(src, node.pos) ?? []) blank(r.pos, r.end);
+      return;
+    }
+    children.forEach(visit);
+  };
+  visit(source);
+  return chars.join('');
+}
+
+/**
+ * A suite spawns the built CLI if its CODE names `dist/cli.js`, however the
+ * path is assembled — `'dist/cli.js'`, `join(root, 'dist', 'cli.js')`, or the
+ * `BUILT_CLI` export. A mention inside a comment is not a spawn.
  */
 function spawnsBuiltCli(src: string): boolean {
+  const code = withoutComments(src);
   return (
-    /dist\/cli\.js/.test(src)
-    || /['"]dist['"]\s*,\s*['"]cli\.js['"]/.test(src)
-    || /\bBUILT_CLI\b/.test(src)
+    /dist\/cli\.js/.test(code)
+    || /['"]dist['"]\s*,\s*['"]cli\.js['"]/.test(code)
+    || /\bBUILT_CLI\b/.test(code)
   );
 }
 
 function assertsFreshness(src: string): boolean {
-  return /assertDistFresh(IfPresent)?\b/.test(src);
+  return /assertDistFresh(IfPresent)?\b/.test(withoutComments(src));
 }
 
 describe('#285 spawn suites assert dist freshness', () => {
@@ -84,6 +119,17 @@ describe('#285 spawn suites assert dist freshness', () => {
     expect(spawnsBuiltCli(`const CLI = join(REPO_ROOT, "dist", "cli.js");`)).toBe(true);
     expect(spawnsBuiltCli(`import { BUILT_CLI } from '../helpers/dist-freshness';`)).toBe(true);
     expect(spawnsBuiltCli(`const x = 'src/cli.ts';`)).toBe(false);
+
+    // #561 — a mention inside a comment is not a spawn, in either comment form,
+    // while the same path in code still is, including on the same line.
+    expect(spawnsBuiltCli(`// a follow-up spawns dist/cli.js (#560)\nimport { f } from '../../src/ui/x';`)).toBe(false);
+    expect(spawnsBuiltCli(`/* drive dist/cli.js with join('dist', 'cli.js') and BUILT_CLI */\nconst y = 1;`)).toBe(false);
+    expect(spawnsBuiltCli(`const CLI = 'dist/cli.js'; // spawns dist/cli.js`)).toBe(true);
+    // A `//` or quote inside a string or regex literal is not a comment boundary.
+    expect(spawnsBuiltCli(`const u = 'https://x'; const CLI = 'dist/cli.js';`)).toBe(true);
+    expect(spawnsBuiltCli(`const re = /['"]x\\/\\//; const CLI = join(ROOT, 'dist', 'cli.js');`)).toBe(true);
+    // And the mirror: a comment naming the check is not the check.
+    expect(assertsFreshness('// TODO: beforeAll(assertDistFreshIfPresent);')).toBe(false);
 
     expect(assertsFreshness('beforeAll(assertDistFresh);')).toBe(true);
     expect(assertsFreshness('beforeAll(assertDistFreshIfPresent);')).toBe(true);
