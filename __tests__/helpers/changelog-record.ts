@@ -1,4 +1,30 @@
 import { expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+
+const REPO_ROOT = path.join(__dirname, '..', '..');
+let virtualCache: string | undefined;
+
+/**
+ * CHANGELOG.md as a reader sees it with the pending entries included: the output
+ * of `node scripts/changelog.mjs preview --virtual`.
+ *
+ * Unreleased entries are files under `changelog.d/` and CHANGELOG.md itself holds
+ * only a pointer paragraph under `## [Unreleased]` until the release cut assembles
+ * them. The virtual reading renders those files inside `## [Unreleased]`, so a
+ * record is found by the same content before and after the cut. A failing script
+ * (an invalid fragment, for one) fails every caller rather than reading as empty.
+ */
+export function virtualChangelog(): string {
+  if (virtualCache === undefined) {
+    virtualCache = execFileSync(
+      process.execPath,
+      [path.join(REPO_ROOT, 'scripts', 'changelog.mjs'), 'preview', '--virtual', '--changelog', path.join(REPO_ROOT, 'CHANGELOG.md')],
+      { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1 << 26 },
+    );
+  }
+  return virtualCache;
+}
 
 /**
  * The CHANGELOG.md section that records a change, found by its content.
