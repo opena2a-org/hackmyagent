@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { isMatchInsideStringLiteral } from '../../src/hardening/scanner';
 import * as fs from 'fs/promises';
+import { virtualChangelog } from '../helpers/changelog-record';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -171,10 +172,7 @@ describe('NEMO-009 multi-line template-literal gating', () => {
   });
 
   it('HMA-65.AC5 the CHANGELOG names the false-positive class without internal artifact paths or governance tags', async () => {
-    const changelog = await fs.readFile(
-      path.join(__dirname, '..', '..', 'CHANGELOG.md'),
-      'utf-8',
-    );
+    const changelog = virtualChangelog();
     // The entry may sit under [Unreleased] or under a version cut above 0.32.0.
     const sections = changelog.split(/^## /m).filter((s) => {
       const heading = s.slice(0, s.indexOf('\n'));
