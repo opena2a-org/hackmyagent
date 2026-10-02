@@ -4097,7 +4097,7 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
 }
 
 function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return str;
 }
 
 // SARIF output for non-benchmark secure scans
