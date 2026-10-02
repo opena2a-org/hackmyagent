@@ -63,7 +63,8 @@ npm install -g hackmyagent      # global install
 npm install --save-dev hackmyagent
 ```
 
-Requires Node.js 18 or later.
+Requires Node.js 20.19 or later on the 20 line, or 22.12 or later: the first releases that
+load ES modules through `require()`, which the CLI does at startup.
 
 ### Homebrew
 
