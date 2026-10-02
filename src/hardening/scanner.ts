@@ -328,9 +328,9 @@ export function buildUnreadInputFinding(
   // internal verb, not a path operand. `${cited}`/`${citedAncestor}`/`${target}`
   // are citation-bound (`citationPath` quotes shell-significant names and
   // returns null for a display hazard, which falls through to the generic
-  // remedy) and `${cliName}` is a known non-path operand. The gate itself does
-  // not inspect `chmod` sites — its operand class has no `+` (#618) — so the
-  // binding, not the gate, is what protects these strings.
+  // remedy) and `${cliName}` is a known non-path operand. The gate inspects
+  // these `chmod` sites (#618): `${dir}`/`${file}` pass only because every call
+  // below hands the helper a citation-bound value.
   const chmodUx = (dir: string): string => (command === 'check'
     ? `chmod u+x ${dir} && ${cliName} check ${target}`
     : `chmod u+x ${dir} && ${cliName} secure ${target}`);
@@ -5223,7 +5223,11 @@ export class HardeningScanner {
           // every sensitive name and `BACKUP_FILES` shape (35 findings, 17 flagged,
           // 0 hits), and reverting this branch entirely (all 5 suite tests still
           // pass). It is kept as the correct behaviour for the day the Layer-2
-          // wiring changes — which nothing guards (#382) — not because it fires.
+          // wiring changes, not because it fires. That wiring is guarded at the
+          // `StructuralAnalyzer.analyze` seam by
+          // `__tests__/semantic/layer2-handed-own-backup-exclusion.test.ts`
+          // (#382): deleting `isExcludedDir` from the Layer-2 call above makes
+          // this branch fire for every archive copy and turns that suite red.
           const held = alreadyHeld.get(key);
           if (held) { held.inOwnArchive = true; continue; }
           alreadyHeld.set(key, f);

@@ -61,7 +61,7 @@ import {
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { extractArchiveInto, type ArchiveFormat } from './hardening/extract-archive';
 import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolved-categories';
-import { analystDissentSuffix, dissentingFiles } from './ui/analyst-dissent';
+import { composeVerdictLine, dissentingFiles } from './ui/analyst-dissent';
 import { WildScanner, type WildScanReport } from './wild';
 import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
@@ -2297,7 +2297,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     );
     // NOTE: the analyst-dissent clause is NOT composed onto this object. It is
     // appended to the rendered `verdictDisplay.value` below, after the two
-    // branches that assign that value outright. See `analystDissentSuffix`.
+    // branches that assign that value outright. See `composeVerdictLine`.
 
     // Artifact-intent honesty pass (#252). The classifier over-flags benign
     // and OOD input at max confidence, so its raw label is only printed when
@@ -2360,6 +2360,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const checksLine = lines.find(l => l.label === 'Checks')!;
     const categoriesLine = lines.find(l => l.label === 'Categories')!;
     const verdictDisplay = lines.find(l => l.label === 'Verdict')!;
+    // #560 — the two disclosures below record their verdict text here instead
+    // of assigning `verdictDisplay`; `composeVerdictLine` applies them, then
+    // the analyst-dissent clause, in that order.
+    let quickScanVerdict: string | undefined;
+    let coverageGapVerdict: string | undefined;
 
     // Quick-scan honesty pass (#200). The renderer sizes these lines from
     // the advertised suite, which is correct for `secure` but overstates
@@ -2377,8 +2382,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // Not 'good': a narrow matrix finding nothing is not a clean bill,
         // and green here is what made the pre-fix output read as an
         // all-clear. Warning tone matches the disclosure it now carries.
-        verdictDisplay.value = quickScanDisclosure.cleanVerdict;
-        verdictDisplay.tone = 'warning';
+        quickScanVerdict = quickScanDisclosure.cleanVerdict;
       }
     }
 
@@ -2439,10 +2443,9 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
           `${unresolvedCategories.length} had a check match that does not apply to a ${kind} project`,
         );
       }
-      verdictDisplay.value =
+      coverageGapVerdict =
         `No issues in what was examined — but ${gaps.join(' and ')}. ` +
         `This is not a clean bill of health for the whole target.`;
-      verdictDisplay.tone = 'warning';
     }
 
     // Rewrite the Checks line from what RAN. The renderer sizes it from
@@ -2685,37 +2688,24 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // severity, mentioned only in the footer far below. Rationale and the
     // attack-only rule: `ui/analyst-dissent.ts`.
     //
-    // LAST mutation of `verdictDisplay.value`, deliberately. The two
-    // disclosure branches above ASSIGN this value rather than appending to it,
-    // and both are gated on `totalFindings === 0` — exactly when a dissent is
-    // the only adverse signal in the output. Composed any earlier, the clause
-    // is silently deleted in the one case it exists for. Anything added below
-    // that rewrites this value has to append, not assign.
-    //
-    // The coverage-gap branch is the live one: it fires on hackmyagent's own
-    // self-scan. The #200 quick-scan branch is defensive — its only call site
-    // passes no escalations today, so it cannot co-occur with a dissent yet.
+    // #560 — composed by one pure function, which holds the order: the two
+    // disclosure verdicts above ASSIGN the value and both are gated on
+    // `totalFindings === 0`, exactly when a dissent is the only adverse signal,
+    // so the clause is appended after them, and the tone comes off green only.
+    // `__tests__/ui/analyst-dissent.test.ts` drives that order behaviourally.
+    // Anything added below that rewrites this value has to append, not assign.
     //
     // Neither score nor exit code reads this object, so neither can move.
-    // Empty when there is no attack-routed escalation, so the line — tone
+    // With no attack-routed escalation and neither disclosure, the line — tone
     // included — stays byte-identical.
-    const dissentSuffix = analystDissentSuffix(opts.analystEscalations);
-    verdictDisplay.value += dissentSuffix;
-    // ...and it comes off the green, for the reason the two branches above
-    // already give in their own words: "green here is what made the pre-fix
-    // output read as an all-clear". Painting a disclosure of a named attack
-    // class at HIGH/CRITICAL in bold green would leave half this defect open —
-    // the module opens by saying `98/100` is what a user reads as safe, and
-    // colour is read faster than the sentence.
-    //
-    // Only DOWNGRADES, and only from `good`. A verdict already `critical` or
-    // `warning` keeps its tone: the advisory channel is allowed to withdraw an
-    // all-clear it disagrees with, never to soften a fail-direction verdict
-    // into something calmer. That asymmetry is the whole of what makes this
-    // not a repaint.
-    if (dissentSuffix !== '' && verdictDisplay.tone === 'good') {
-      verdictDisplay.tone = 'warning';
-    }
+    const composedVerdict = composeVerdictLine({
+      base: verdictDisplay,
+      quickScanVerdict,
+      coverageGapVerdict,
+      escalations: opts.analystEscalations,
+    });
+    verdictDisplay.value = composedVerdict.value;
+    verdictDisplay.tone = composedVerdict.tone;
 
     for (const line of [categoriesLine, verdictDisplay]) {
       const labelPad = line.label.padEnd(LABEL_WIDTH, ' ');
