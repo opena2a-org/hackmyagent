@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
 
@@ -26,18 +27,31 @@ const SELF_PATH = '__tests__/gate/no-internal-attribution.test.ts';
 
 // Runs one git command in `cwd` and returns its standard output. The walk uses
 // it to read the tree's top-level paths; the planted-shape fixtures use it to
-// build the one-commit repositories the walk runs over.
+// build the one-commit repositories the walk runs over. The environment is
+// scrubbed of every GIT_ variable through the isolating helper, so a GIT_DIR
+// exported by a hook cannot redirect the read to another repository (#348).
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  return execFileSync('git', args, {
+    cwd,
+    env: gitFreeEnv(),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 }
 
+// The six surfaces the walk named by hand before it took its roots from the
+// tree. They are not a source of roots — treeRoots below is the only one —
+// but the frozen maps were measured over exactly these, and the frozen-map
+// boundary case asserts that widening the walk added no entry outside them.
+// Other suites read this declaration to learn where the gate was measured.
+// changelog.d holds the pending CHANGELOG entries, one file per change; they
+// are public on main from the moment they merge, not only after a release.
+const SURFACES = ['src', '__tests__', 'docs', 'README.md', 'CHANGELOG.md', 'changelog.d'];
+
 // The top-level paths of the committed tree at `root`, exactly as git lists
-// them. This is the walk's only source of roots: no list of surfaces is kept
-// in this file, so every tracked top-level path — src, __tests__, docs,
-// scripts, .github, changelog.d, the root files and any directory added later
-// — is walked. changelog.d holds the pending CHANGELOG entries, one file per
-// change; they are public on main from the moment they merge, not only after
-// a release.
+// them. This is the walk's only source of roots: no hand list is consulted,
+// so every tracked top-level path — src, __tests__, docs, scripts, .github,
+// changelog.d, the root files and any directory added later — is walked.
 function treeRoots(root: string): string[] {
   return git(root, 'ls-tree', '--name-only', 'HEAD')
     .split('\n')
@@ -322,11 +336,13 @@ function commitAll(root: string): void {
 
 // A fresh temporary git repository with one commit carrying `files`, laid out
 // like the repository, so a planted shape travels the same code path as a
-// real hit: the walk reads its roots from this repository's tree.
+// real hit: the walk reads its roots from this repository's tree. The
+// repository is created through the isolating helper, which asserts it exists
+// afterwards, so a fixture that is silently not a repository fails here.
 function plantRepo(files: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attribution-gate-'));
   plantedRoots.push(root);
-  git(root, 'init', '-q');
+  initThrowawayRepo(root);
   writeFiles(root, files);
   commitAll(root);
   return root;
@@ -362,8 +378,10 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-79.AC1 the walk roots for the repository root are exactly the tracked top-level paths git lists', () => {
+    // Read independently of the walker's own helper, with the same scrub.
     const listed = execFileSync('git', ['ls-tree', '--name-only', 'HEAD'], {
       cwd: REPO_ROOT,
+      env: gitFreeEnv(),
       encoding: 'utf8',
     })
       .split('\n')
@@ -373,7 +391,7 @@ describe('internal attribution stays off the public surfaces', () => {
     expect(new Set(roots).size).toBe(roots.length);
     // The six surfaces the walk once named by hand are a strict subset: the
     // tree carries scripts, the CI directory and the root files as well.
-    for (const entry of ['src', '__tests__', 'docs', 'README.md', 'CHANGELOG.md', 'changelog.d']) {
+    for (const entry of SURFACES) {
       expect(roots).toContain(entry);
     }
     expect(roots).toContain('scripts');
@@ -433,9 +451,7 @@ describe('internal attribution stays off the public surfaces', () => {
     // line outside those surfaces is either rewritten or exempted by an
     // exact-line entry, so a new one anywhere in the tree is reported.
     const inside = (key: string): boolean =>
-      ['src/', '__tests__/', 'docs/', 'changelog.d/'].some((p) => key.startsWith(p)) ||
-      key === 'README.md' ||
-      key === 'CHANGELOG.md';
+      SURFACES.some((surface) => key === surface || key.startsWith(`${surface}/`));
     for (const key of [...Object.keys(PATTERN_BASELINE), ...Object.keys(VENDOR_BASELINE)]) {
       expect(inside(key), `frozen entry ${key} lies outside the six surfaces`).toBe(true);
     }
