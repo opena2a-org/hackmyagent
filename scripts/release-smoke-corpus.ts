@@ -11,11 +11,10 @@
  *      (matched by checkId)
  *   3. no entry in manifest.expected.hma.mustNotFind appears
  *
- * Per [CHIEF-CSR-019] this drift surfaces here, before publish.
- * Per [CHIEF-CDS-028] OPENA2A_CORPUS_DETERMINISTIC=1 is set so output is
- * stable across runs.
- * Per [CHIEF-CA-044] this script lives in this consumer; ai-trust and
- * opena2a-cli ship their own.
+ * Corpus drift surfaces in this harness, before publish.
+ * OPENA2A_CORPUS_DETERMINISTIC=1 is set so the output is stable across runs.
+ * This harness lives in this repository; ai-trust and opena2a-cli ship their
+ * own.
  *
  * Exit code 0 = green, 1 = drift, 2 = setup error.
  */

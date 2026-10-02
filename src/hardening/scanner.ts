@@ -5223,7 +5223,11 @@ export class HardeningScanner {
           // every sensitive name and `BACKUP_FILES` shape (35 findings, 17 flagged,
           // 0 hits), and reverting this branch entirely (all 5 suite tests still
           // pass). It is kept as the correct behaviour for the day the Layer-2
-          // wiring changes — which nothing guards (#382) — not because it fires.
+          // wiring changes, not because it fires. That wiring is guarded at the
+          // `StructuralAnalyzer.analyze` seam by
+          // `__tests__/semantic/layer2-handed-own-backup-exclusion.test.ts`
+          // (#382): deleting `isExcludedDir` from the Layer-2 call above makes
+          // this branch fire for every archive copy and turns that suite red.
           const held = alreadyHeld.get(key);
           if (held) { held.inOwnArchive = true; continue; }
           alreadyHeld.set(key, f);
@@ -5454,6 +5458,21 @@ export class HardeningScanner {
     // is rotated and deleted, and the report names it so a post-fix number that
     // went DOWN is attributable rather than mysterious.
     const scoreExcludingArchive = scoreExcludingOwnArchive(filteredFindings);
+
+    // #383 — attribute every finding inside the target's archive base, not only
+    // the ones this run's archive produced. A second `--fix` run's own archive
+    // holds only redacted copies, so nothing in it is a finding and
+    // `scoreExcludingArchive` is unset; the plaintext lives in the FIRST run's
+    // archive, and without this the report left that run's number unexplained.
+    // Attribution only: nothing here moves the score, the verdict or a finding,
+    // and `isInsideArchiveBase` answers `yes` only for the target's own base, so
+    // a directory named `.hackmyagent-backup` elsewhere in the tree is untouched.
+    for (const f of findings) {
+      if (!f.file) continue;
+      if (f.inOwnArchive || (await this.isInsideArchiveBase(path.resolve(targetDir, f.file), targetDir)) === 'yes') {
+        f.inArchive = true;
+      }
+    }
 
     // In dry-run mode, mark fixable failed findings with wouldFix
     if (dryRun && autoFix) {

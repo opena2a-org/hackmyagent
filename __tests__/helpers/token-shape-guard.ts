@@ -1,5 +1,5 @@
 /**
- * The provider-token-shape guard (HMA-16).
+ * The provider-token-shape guard (HMA-16; hardened in HMA-80).
  *
  * Walks the repository from the repo root and reports every line whose bytes
  * match the provider-token shape set — the same seven alternates the
@@ -13,8 +13,35 @@
  * matched value — this file, its test and the registry are themselves inside
  * the walk and are scanned with the same pattern set.
  *
+ * What the walk covers, and what it does not:
+ *
+ * - The skip names in `SKIP_DIRS` (`.git`, `node_modules`, `dist`, …) apply
+ *   at the repository root only. A directory with one of those names below
+ *   the root (`src/dist/`, `packages/x/build/`) is walked like any other, so
+ *   a token-shape line in a new directory anywhere below the root is caught.
+ *   The one depth-independent skip is a subdirectory carrying its own `.git`
+ *   entry: that is another checkout, not this repository, and is not walked.
+ * - A file with a NUL byte in its first 8 KiB is treated as binary (the
+ *   `grep -I` rule) and is not scanned. A NUL beyond that window does not
+ *   exempt the file.
+ * - Symbolic links, to files and to directories, are not followed: the walk
+ *   reads directory-entry types, and a link is neither a file nor a
+ *   directory to it. A link's target is scanned only where it also sits
+ *   under the root as a regular path.
+ *
+ * What a registry entry pins, and what it does not: a path and a count,
+ * never content. Replacing a matched value inside a registered file with a
+ * different token-shape value, count unchanged, keeps the guard green. The
+ * registry is therefore not a content allowlist: it stops the number of
+ * token-shape lines in a registered file from growing, and a value swap
+ * inside one of those lines is for review to catch, not this guard. A
+ * per-file discriminator of the matched spans is deliberately not part of
+ * the guard, because it would put a value derived from matched text into
+ * the registry, which is the surface the registry refuses to carry.
+ *
  * The registry cannot be used to register a convertible file out of the
- * drain: an entry whose path ends in `.ts`/`.js`/`.mjs`/`.tsx` is rejected
+ * drain: an entry whose path ends in `.ts`, `.js`, `.mjs`, `.tsx`, `.cjs`,
+ * `.cts`, `.mts` or `.jsx` is rejected
  * unless it carries reason `escalated` with a `decisionRef` naming a public
  * issue or pull request in this repository,
  * because a source line in those languages can always be rebuilt with the
@@ -47,11 +74,13 @@ export const TOKEN_SHAPE_PATTERN_SOURCE =
 export const REGISTRY_PATH = 'security/credential-shape-exemptions.json';
 
 /**
- * Directory names never walked. Exclusions only — the walk itself starts at
- * the repo root, never at a hardcoded subdirectory list, so a token-shape
- * line in a NEW directory is caught. `dist`/`build`/`coverage` are untracked
- * build artifacts (CI runs `npm run build` before `npm test`, so `dist`
- * exists when this guard runs there).
+ * Directory names never walked AT THE REPOSITORY ROOT. Exclusions only — the
+ * walk itself starts at the repo root, never at a hardcoded subdirectory
+ * list, and these names are not matched below the root, so a token-shape
+ * line in a NEW directory anywhere under the root is caught, `src/dist/`
+ * included. `dist`/`build`/`coverage` are untracked root-level build
+ * artifacts (CI runs `npm run build` before `npm test`, so `dist` exists
+ * when this guard runs there).
  */
 const SKIP_DIRS = new Set([
   '.git',
@@ -120,7 +149,12 @@ export interface ScanResult {
   readonly violations: readonly ScanViolation[];
 }
 
-const CONVERTIBLE_EXT = /\.(ts|js|mjs|tsx)$/;
+/**
+ * Every source extension in which a token-shape literal can be rebuilt with
+ * the runtime-assembly idiom. Held to escalation as a set: a `.cjs` preload
+ * or a `.mts` module can `join('')` exactly as a `.ts` file can.
+ */
+const CONVERTIBLE_EXT = /\.(ts|js|mjs|tsx|cjs|cts|mts|jsx)$/;
 
 const DECISION_REF_PATTERN = /^https:\/\/github\.com\/opena2a-org\/hackmyagent\/(issues|pull)\/\d+$/;
 
@@ -174,18 +208,25 @@ export function loadRegistry(rootDir: string): ExemptionRegistry {
   return JSON.parse(readFileSync(file, 'utf8')) as ExemptionRegistry;
 }
 
-function walk(dir: string, out: string[]): void {
+/**
+ * Collect every regular file under `dir` into `out`. `isRoot` is true for the
+ * repository root only: the `SKIP_DIRS` names are matched there and nowhere
+ * deeper. Directory-entry types come from `readdirSync`, so a symbolic link
+ * is neither a directory nor a file here and is not followed.
+ */
+function walk(dir: string, out: string[], isRoot: boolean): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      // Root only: `src/dist/` is a directory like any other and is walked.
+      if (isRoot && SKIP_DIRS.has(entry.name)) continue;
       // A subdirectory carrying its own `.git` (a worktree's gitfile or a
       // nested clone) is another checkout, not this repository: its lines
       // belong to whatever branch it has checked out, and it is ignored by
       // git here. Measured 2026-09-14: a peer session's `.worktrees/lane-f`
       // put 10 of its fixture lines into this guard's verdict on the laptop.
       if (existsSync(join(full, '.git'))) continue;
-      walk(full, out);
+      walk(full, out, false);
       continue;
     }
     if (entry.isFile()) out.push(full);
@@ -209,7 +250,7 @@ export function scanRepository(rootDir: string, registry: ExemptionRegistry): Sc
   }
 
   const files: string[] = [];
-  walk(rootDir, files);
+  walk(rootDir, files, true);
 
   const hits = new Map<string, number[]>();
   // No `g` flag: `test` is then stateless, and one compiled regex serves the

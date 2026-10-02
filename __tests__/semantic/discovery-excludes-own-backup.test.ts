@@ -13,10 +13,16 @@
  * `.hackmyagent-backup/` — and the score fell 35 -> 27 purely because HMA
  * scanned its own artifact.
  *
- * This guards the WIRING, not the predicate. `structural-discovery-depth`
- * already covers `walkForArtifacts`'s exclusion hook as a unit; nothing there
- * fails if `scanner.ts` stops passing `isOwnBackupDir`, which is exactly the
- * "good unit layer, unguarded consumer" gap #285 recorded against #260.
+ * This file's first case guards the MERGED RESULT of a `--fix` run, not the
+ * wiring. `structural-discovery-depth` covers `walkForArtifacts`'s exclusion
+ * hook as a unit, and since #374 the key-set assertion below stays green when
+ * `scanner.ts` stops passing `isOwnBackupDir` (the archive copies arrive from
+ * the verify scan instead) — the "good unit layer, unguarded consumer" gap
+ * #285 recorded against #260. The wiring itself — that the fixing scan hands
+ * `StructuralAnalyzer.analyze` a predicate true for this run's own backup and
+ * false for everything else — is guarded at that seam by
+ * `__tests__/semantic/layer2-handed-own-backup-exclusion.test.ts` (#382), and
+ * the second case in this file observes the same call.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile, readdir, realpath } from 'node:fs/promises';
