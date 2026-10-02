@@ -134,7 +134,8 @@ describe('#374 the score --fix announces is the score the next scan produces', (
       // scan's Layer-2 walk excludes the archive, so no such finding arrives and
       // this passes on the pre-fix code too. It pins the invariant; it does not
       // red-proof the repair. The wiring it depends on — Layer 2 being handed
-      // `isOwnBackupDir` — has no guard of its own (#382).
+      // `isOwnBackupDir` — is guarded at the `StructuralAnalyzer.analyze` seam
+      // by `__tests__/semantic/layer2-handed-own-backup-exclusion.test.ts` (#382).
       const unflagged = fixed.findings.filter(
         (f) => (f.file ?? '').includes('.hackmyagent-backup') && !f.inOwnArchive,
       );
