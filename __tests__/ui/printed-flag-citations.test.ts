@@ -185,6 +185,30 @@ describe('#372 the walker sees what it claims to see', () => {
     expect(inline.find((f) => f.flag === '--not-a-real-flag')?.command).toBe('check');
   });
 
+  it('attributes flags on a backslash-continued line to the invocation it continues', () => {
+    // #762 — docs/REGISTRY_INTEGRATION.md wrote `npx hackmyagent attack \` and put
+    // `--target` on the next line; read line by line, that flag belonged to no
+    // command and the dead citation passed.
+    const found = printedFlagsInMarkdown({
+      src: [
+        '```bash',
+        'npx hackmyagent attack \\',
+        '  --not-a-real-flag http://localhost:3000 \\',
+        '  --also-not-real',
+        'git diff --stat',
+        '```',
+      ].join('\n'),
+      file: 'planted.md',
+      verbs,
+    });
+    const first = found.find((f) => f.flag === '--not-a-real-flag');
+    expect(first?.command).toBe('attack');
+    expect(first?.line, 'the continued flag must report its own line').toBe(3);
+    expect(found.find((f) => f.flag === '--also-not-real')?.line).toBe(4);
+    // The continuation ends where the backslash does: `git diff` is not `attack`.
+    expect(found.some((f) => f.flag === '--stat')).toBe(false);
+  });
+
   it('does not read markdown prose as an invocation', () => {
     // The over-correction direction. A hyphenated phrase in a sentence, and a
     // flag belonging to another program in a pipeline, must not be attributed
