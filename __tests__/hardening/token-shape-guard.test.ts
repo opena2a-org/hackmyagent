@@ -4,7 +4,9 @@
  * Runs the token-shape guard (`__tests__/helpers/token-shape-guard.ts`) over
  * the whole repository on every `npm test`, and proves the guard non-vacuous
  * by planting in both polarities. Leaf test names carry their
- * acceptance-criterion id (HMA-16.ACn) as their first token.
+ * acceptance-criterion id (HMA-16.ACn, HMA-80.ACn for the hardening that
+ * anchored the skip names to the root and widened the convertible set) as
+ * their first token.
  *
  * NOTHING in this file spells a token-shape value as a source literal: every
  * planted value is assembled at runtime by concatenation, so this file passes
@@ -211,6 +213,122 @@ describe('token-shape guard (HMA-16)', () => {
     };
     walk(path.join(REPO_ROOT, 'docs'));
     expect(offenders).toEqual([]);
+  });
+
+  it('HMA-80.AC1 a build-named directory below the root is walked: src/dist, src/build, src/coverage and src/.cache each surface their token-shape line', () => {
+    for (const name of ['dist', 'build', 'coverage', '.cache']) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hma80-nested-skipname-'));
+      try {
+        const nested = path.join(tmp, 'src', name);
+        fs.mkdirSync(nested, { recursive: true });
+        fs.writeFileSync(path.join(nested, 'leak.json'), `{"token": "${assembledPlantValue()}"}\n`);
+        const result = scanRepository(tmp, EMPTY_REGISTRY);
+        expect(result.unregisteredLineCount, `src/${name}/leak.json must be reported`).toBe(1);
+        expect(result.violations.map((v) => v.path)).toEqual([`src/${name}/leak.json`]);
+        expect(result.violations[0].kind).toBe('unregistered');
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('HMA-80.AC2 the root-level skips and the nested-checkout skip still hold, and a root-level src/ line is still reported', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hma80-root-skips-'));
+    try {
+      const line = `{"token": "${assembledPlantValue()}"}\n`;
+      // Root-level skip names: never walked.
+      for (const rel of [['dist'], ['node_modules', 'pkg'], ['coverage']]) {
+        fs.mkdirSync(path.join(tmp, ...rel), { recursive: true });
+        fs.writeFileSync(path.join(tmp, ...rel, 'leak.json'), line);
+      }
+      // A subdirectory carrying its own `.git` entry is another checkout.
+      fs.mkdirSync(path.join(tmp, 'vendor-checkout'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'vendor-checkout', '.git'), 'gitdir: /elsewhere\n');
+      fs.writeFileSync(path.join(tmp, 'vendor-checkout', 'leak.json'), line);
+      // The control: the same line under src/ IS reported, so this case
+      // cannot pass on an empty walk.
+      fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmp, 'src', 'leak.json'), line);
+
+      const result = scanRepository(tmp, EMPTY_REGISTRY);
+      expect(result.matchedLineCount).toBe(1);
+      expect(result.unregisteredLineCount).toBe(1);
+      expect(result.violations.map((v) => v.path)).toEqual(['src/leak.json']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('HMA-80.AC3 the registry rejects a convertible .cjs/.cts/.mts/.jsx entry unless escalated with a public decision reference', () => {
+    for (const ext of ['cjs', 'cts', 'mts', 'jsx']) {
+      const errors = validateRegistry({
+        entries: [{ path: `some/new/file.${ext}`, expectedHits: 1, reason: 'byte-literal-fixture' }],
+      });
+      expect(errors.length, `.${ext} entry must be rejected`).toBeGreaterThan(0);
+      const escalated = validateRegistry({
+        entries: [
+          {
+            path: `some/new/file.${ext}`,
+            expectedHits: 1,
+            reason: 'escalated',
+            // Lexically valid; GitHub issue numbers start at 1, so /issues/0
+            // can never name a real issue.
+            decisionRef: 'https://github.com/opena2a-org/hackmyagent/issues/0',
+          },
+        ],
+      });
+      expect(escalated, `escalated .${ext} entry with a decisionRef must be accepted`).toEqual([]);
+    }
+  });
+
+  it('HMA-80.AC4 the repository stays clean under the hardened guard: 0 unregistered lines, a valid registry, and no entry for any of the eight script extensions', () => {
+    const registry = loadRegistry(REPO_ROOT);
+    expect(validateRegistry(registry)).toEqual([]);
+    const result = scanRepository(REPO_ROOT, registry);
+    expect(formatViolations(result)).toEqual([]);
+    expect(result.unregisteredLineCount).toBe(0);
+    expect(result.ok).toBe(true);
+    const scriptExt = /\.(ts|js|mjs|tsx|cjs|cts|mts|jsx)$/;
+    expect(registry.entries.filter((e) => scriptExt.test(e.path))).toEqual([]);
+  });
+
+  it('HMA-80.AC5 a file with a NUL byte in its first 8 KiB is binary and not scanned; a NUL beyond 8 KiB does not hide a line', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hma80-binary-'));
+    try {
+      const line = `token: ${assembledPlantValue()}\n`;
+      // NUL at byte 0: binary, skipped despite the token-shape line after it.
+      fs.writeFileSync(path.join(tmp, 'early-nul.bin'), Buffer.concat([Buffer.from([0]), Buffer.from(line)]));
+      // NUL only after the first 8 KiB: text as far as the guard is
+      // concerned, so the token-shape line before it is reported.
+      const padding = ('a'.repeat(79) + '\n').repeat(110); // 8800 bytes, past the 8192-byte window
+      fs.writeFileSync(path.join(tmp, 'late-nul.txt'), Buffer.concat([Buffer.from(line), Buffer.from(padding), Buffer.from([0])]));
+      const result = scanRepository(tmp, EMPTY_REGISTRY);
+      expect(result.matchedLineCount).toBe(1);
+      expect(result.violations.map((v) => v.path)).toEqual(['late-nul.txt']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('HMA-80.AC5 symbolic links to a file and to a directory are not followed', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'hma80-symlink-target-'));
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hma80-symlink-root-'));
+    try {
+      const line = `token: ${assembledPlantValue()}\n`;
+      fs.writeFileSync(path.join(outside, 'leak.json'), line);
+      fs.mkdirSync(path.join(outside, 'leakdir'));
+      fs.writeFileSync(path.join(outside, 'leakdir', 'leak.json'), line);
+      fs.symlinkSync(path.join(outside, 'leak.json'), path.join(tmp, 'file-link.json'));
+      fs.symlinkSync(path.join(outside, 'leakdir'), path.join(tmp, 'dir-link'), 'dir');
+      // The control: a regular file with the same line is reported.
+      fs.writeFileSync(path.join(tmp, 'regular.json'), line);
+      const result = scanRepository(tmp, EMPTY_REGISTRY);
+      expect(result.matchedLineCount).toBe(1);
+      expect(result.violations.map((v) => v.path)).toEqual(['regular.json']);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('HMA-16.AC8 the pattern set is exactly the seven provider-token alternates the repository push gate enforces: URL-userinfo and private-key alternates stay deferred', () => {
