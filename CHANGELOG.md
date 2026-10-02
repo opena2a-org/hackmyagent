@@ -6,6 +6,17 @@ All notable changes to HackMyAgent will be documented in this file.
 
 Entries for the next release are kept in [`changelog.d/`](changelog.d/), one file per change. The release moves them into this file, under its version heading. To add an entry, follow [`changelog.d/README.md`](changelog.d/README.md).
 
+### `red-team --iterations` refuses a value below 1 (#392)
+
+- **`--iterations` is validated at parse time.** It took `0`, negatives and non-numbers
+  without a word and handed `parseInt`'s result to the engine (`--iterations abc` became
+  `NaN`). The flag is inert today, so the value reached nothing, but a value the command
+  could never honour is now a usage error at exit 1, before any payload is generated:
+  `error: option '--iterations <n>' argument '0' is invalid. Must be a whole number of 1 or
+  more.` The false all-clear the issue reported (`All defenses held` over zero payloads) was
+  already gone: since #369 every run reports Resilience NOT MEASURED at exit 2. Tests:
+  `__tests__/cli/red-team-iterations-validation.test.ts`.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path
