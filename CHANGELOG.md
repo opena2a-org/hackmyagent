@@ -6,6 +6,12 @@ All notable changes to HackMyAgent will be documented in this file.
 
 Entries for the next release are kept in [`changelog.d/`](changelog.d/), one file per change. The release moves them into this file, under its version heading. To add an entry, follow [`changelog.d/README.md`](changelog.d/README.md).
 
+### `hackmyagent_benchmark` names a failing checkId once (#671)
+
+The MCP benchmark text listed a checkId once per failing record, so a check that failed in
+both `mcp.json` and `.mcp.json` read `(TOOL-004, TOOL-004)`. The id list beside `[FAIL]` is
+now de-duplicated; control statuses, counts and compliance are unchanged.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path

@@ -263,7 +263,9 @@ export function assessBenchmarkFindings(
   for (const cat of result.categories) {
     for (const ctrl of cat.controls) {
       if (ctrl.status === 'failed') {
-        const ids = ctrl.findings.map((f) => f.split(':')[0]).join(', ');
+        // One evidence line per failing record (#668), so a checkId failing in
+        // two files appears twice in `findings`; the id list names it once (#671).
+        const ids = [...new Set(ctrl.findings.map((f) => f.split(':')[0]))].join(', ');
         lines.push(`[FAIL] ${ctrl.controlId} ${ctrl.name}${ids ? ` (${ids})` : ''}`);
       } else if (ctrl.status === 'passed') {
         lines.push(`[PASS] ${ctrl.controlId} ${ctrl.name}`);
