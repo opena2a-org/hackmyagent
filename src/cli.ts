@@ -2078,6 +2078,19 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       }
       console.log(`  ${colors.dim}Those are the pre-fix copies, kept so \`${CLI_PREFIX} rollback\` can undo this run. Rotate what was exposed, then delete that directory once you no longer need to roll back.${RESET()}`);
     }
+    // #383 — the same attribution for a backup this run did NOT create. A second
+    // `--fix` run archives only redacted copies, so `liveTreeScore` is unset and
+    // the block above is silent, while the first run's plaintext copies still
+    // hold the score down. No second number is printed: which run wrote a copy
+    // under the archive base cannot be proven, so the line says what is true
+    // either way — where the findings sit, that they count, and what moves them.
+    const earlierArchiveCount = (localScan?.findings ?? []).filter((f) => f.inArchive && !f.inOwnArchive).length;
+    if (earlierArchiveCount > 0) {
+      const noun = `${earlierArchiveCount} finding${earlierArchiveCount === 1 ? '' : 's'}`;
+      const verb = earlierArchiveCount === 1 ? 'sits' : 'sit';
+      console.log(`  ${colors.dim}${noun} above ${verb} inside .hackmyagent-backup, where HackMyAgent keeps this tree's --fix backups, in a copy this run did not create. ${earlierArchiveCount === 1 ? 'It counts' : 'They count'} toward this score.${RESET()}`);
+      console.log(`  ${colors.dim}\`${CLI_PREFIX} secure --fix\` and \`${CLI_PREFIX} fix-all\` never edit a backup, so these points move only when that copy goes: rotate what was exposed, check the live file, then delete the backup once you no longer need \`${CLI_PREFIX} rollback\`.${RESET()}`);
+    }
   } else if (registry?.found) {
     const normalized = normalizeTrustVerdict(registry.verdict);
     let verdictText: string;
@@ -3212,16 +3225,20 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   }
 
   // ── Next steps ──────────────────────────────────────────────────────
-  const hasGovIssues = failed.some(f => f.category === 'governance' || f.category === 'Governance' || f.checkId?.startsWith('AST-GOV') || f.checkId?.startsWith('AST-PROMPT'));
-  const hasCredIssues = failed.some(f => f.checkId?.startsWith('CRED-') || f.name?.toLowerCase().includes('credential') || f.name?.toLowerCase().includes('api key') || f.name?.toLowerCase().includes('hardcoded') || f.category === 'credential');
-  const hasMcpIssues = failed.some(f =>
+  // #383 — the commands below edit the live tree; none of them edits a backup
+  // under `.hackmyagent-backup`, so a finding there must not summon them. The
+  // backup's own remedy is printed under the score line.
+  const liveFailed = failed.filter(f => !f.inArchive);
+  const hasGovIssues = liveFailed.some(f => f.category === 'governance' || f.category === 'Governance' || f.checkId?.startsWith('AST-GOV') || f.checkId?.startsWith('AST-PROMPT'));
+  const hasCredIssues = liveFailed.some(f => f.checkId?.startsWith('CRED-') || f.name?.toLowerCase().includes('credential') || f.name?.toLowerCase().includes('api key') || f.name?.toLowerCase().includes('hardcoded') || f.category === 'credential');
+  const hasMcpIssues = liveFailed.some(f =>
     f.category === 'mcp-config' ||
     f.checkId?.startsWith('SEM-MCP') ||
     f.name?.toLowerCase().includes('mcp') ||
     f.file?.toLowerCase().includes('mcp') ||
     f.checkId?.startsWith('AST-MCP')
   );
-  const hasCodeVulns = failed.some(f => {
+  const hasCodeVulns = liveFailed.some(f => {
     const cat = (f.category || '').toLowerCase();
     return cat !== 'governance' && cat !== 'injection-hardening' && cat !== 'trust-hierarchy'
       && !f.checkId?.startsWith('AST-GOV') && !f.checkId?.startsWith('AST-GOVERN')
