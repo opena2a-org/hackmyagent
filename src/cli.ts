@@ -1389,6 +1389,12 @@ interface UnifiedCheckDisplayOptions {
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
   nextStepsTarget?: string;
   /**
+   * `secure --fix` already ran harden-soul on this tree in this run (#294), so
+   * Next Steps must not tell the reader to run it: the governance findings in
+   * the report were measured before that write.
+   */
+  governanceHardened?: boolean;
+  /**
    * When set, the score line is labeled "Quick scan" instead of "Security",
    * a follow-up "Run `secure <target>` for the full audit" line is appended,
    * and the "Path forward: N -> M" recovery-math line is suppressed. Used by
@@ -3228,7 +3234,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       && !f.checkId?.startsWith('AST-PROMPT') && !f.checkId?.startsWith('AST-HEARTBEAT');
   });
   printCheckNextSteps(opts.nextStepsTarget ?? name, {
-    hasGovernanceIssues: hasGovIssues,
+    hasGovernanceIssues: hasGovIssues && !opts.governanceHardened,
     hasFindings: totalFindings > 0,
     hasCredentialFindings: hasCredIssues,
     hasMcpFindings: hasMcpIssues,
@@ -5941,6 +5947,9 @@ Examples:
       const gatedIssues = gateSet(result).filter((f: any) => countsAgainstScore(f));
       const fixedFindings = result.findings.filter((f) => f.fixed);
 
+      // What the governance auto-fix below wrote, for the fix summary (#294).
+      let governanceWrite: { file: string; sections: number; controls?: number } | null = null;
+
       // Governance auto-fix: when --fix is active and governance findings exist, run harden-soul
       const govFindings = issues.filter((f: SecurityFinding) =>
         f.category === 'governance' || f.category === 'Governance' ||
@@ -5985,6 +5994,11 @@ Examples:
             );
           }
           if (hardenResult.sectionsAdded && hardenResult.sectionsAdded.length > 0) {
+            governanceWrite = {
+              file: hardenResult.file ?? 'SOUL.md',
+              sections: hardenResult.sectionsAdded.length,
+              controls: typeof hardenResult.controlsAdded === 'number' ? hardenResult.controlsAdded : undefined,
+            };
             process.stderr.write(`\nGovernance auto-fix: harden-soul applied\n`);
             process.stderr.write(`  + ${hardenResult.sectionsAdded.length} section(s) added to ${escapePathForDisplay(hardenResult.file ?? 'SOUL.md')}`);
             if (typeof hardenResult.controlsAdded === 'number') {
@@ -6099,6 +6113,7 @@ Examples:
         machinePosture: result.machinePosture,
         withheldLinks: result.withheldLinks,
         nextStepsTarget: directory,
+        governanceHardened: governanceWrite !== null,
       });
 
       // Dry-run summary (shown after findings when --dry-run is active)
@@ -6110,17 +6125,24 @@ Examples:
         console.log(`  No changes were made.\n`);
       }
 
-      // Print fixed findings with detailed summary
-      if (fixedFindings.length > 0) {
+      // Print fixed findings with detailed summary.
+      // #294 — and the governance file harden-soul rewrote above. That write
+      // is a change to a user file, and it was reported on stderr only, so the
+      // summary read "Fixed 1 issue: [GIT-001] .gitignore" over a SOUL.md that
+      // had grown from 7 to 413 lines. It is listed apart from the findings
+      // because it is not one, and the report above was measured before it.
+      if (fixedFindings.length > 0 || governanceWrite) {
         const verifiedCount = fixedFindings.filter((f: SecurityFinding) => (f as any).fixVerified).length;
         const unverifiedCount = fixedFindings.filter((f: SecurityFinding) => (f as any).fixVerified === false).length;
-        // "Fixed N issues" counted every ATTEMPT, so a run whose only fix was
-        // proven not to have landed still opened in green with "Fixed 1
-        // issue:". Lead with what was confirmed; a run with nothing confirmed
-        // does not get to claim a repair.
-        const summary = fixSummaryLine(fixedFindings.length, verifiedCount, unverifiedCount);
-        const summaryColor = summary.tone === 'confirmed' ? colors.green : colors.yellow;
-        console.log(`${summaryColor}${summary.text}${RESET()}`);
+        if (fixedFindings.length > 0) {
+          // "Fixed N issues" counted every ATTEMPT, so a run whose only fix was
+          // proven not to have landed still opened in green with "Fixed 1
+          // issue:". Lead with what was confirmed; a run with nothing confirmed
+          // does not get to claim a repair.
+          const summary = fixSummaryLine(fixedFindings.length, verifiedCount, unverifiedCount);
+          const summaryColor = summary.tone === 'confirmed' ? colors.green : colors.yellow;
+          console.log(`${summaryColor}${summary.text}${RESET()}`);
+        }
         for (const finding of fixedFindings) {
           // #324 — every rendered path is scanned-tree data.
           const location = escapeForDisplay(finding.file ? (finding.line ? `${finding.file}:${finding.line}` : finding.file) : '');
@@ -6130,6 +6152,11 @@ Examples:
           if (finding.fixMessage) {
             console.log(`    ${colors.cyan}→${RESET()} ${escapeForDisplay(finding.fixMessage)}`);
           }
+        }
+        if (governanceWrite) {
+          const controls = governanceWrite.controls !== undefined ? ` (+${governanceWrite.controls} controls)` : '';
+          console.log(`${colors.green}Governance file rewritten:${RESET()} ${escapePathForDisplay(governanceWrite.file)} - harden-soul added ${governanceWrite.sections} section${governanceWrite.sections === 1 ? '' : 's'}${controls}`);
+          console.log(`    ${colors.cyan}→${RESET()} The findings and score above were measured before this write. Run \`${CLI_PREFIX} secure ${citationTarget(directory)}\` to score the hardened file.`);
         }
         if (unverifiedCount > 0) {
           console.log(`\n  ${colors.yellow}${unverifiedCount} fix${unverifiedCount === 1 ? '' : 'es'} could not be verified. Review these manually.${RESET()}`);
