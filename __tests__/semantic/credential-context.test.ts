@@ -593,9 +593,11 @@ describe('CredentialContextAnalyzer', () => {
     });
 
     it('QGF-256.AC2 STILL flags every true positive, including under an AUTH-named key (control)', () => {
-      // The `auth` alternative of SECRET_KEY_PATTERN must stay: dropping it
-      // would silence the two AUTH-named cells below. The change is a value
-      // gate, and it must not reach the all-letters passphrases either.
+      // The change is a value gate, and it must not reach the all-letters
+      // passphrases. The two AUTH-named keys below also match the `token`
+      // alternative of SECRET_KEY_PATTERN, so they pin the value gate, not the
+      // `auth` trigger; the AC8 cell pins that trigger on keys that match
+      // through `auth` alone.
       const ghp = ['ghp', '_', 'a'.repeat(36)].join('');
       const sk = ['sk', '-ant-api03-', 'realKeyValue1234567890'].join('');
       for (const [key, value] of [
@@ -627,6 +629,22 @@ describe('CredentialContextAnalyzer', () => {
       expect(long, 'a 21-character value under a name-matched key is still SEM-CRED-002').toHaveLength(1);
       expect(long[0].id).toBe('SEM-CRED-002');
       expect(long[0].severity).toBe('high');
+    });
+
+    it('QGF-256.AC8 STILL flags a real secret under a key that SECRET_KEY_PATTERN matches only through its auth alternative', () => {
+      // `GITHUB_AUTH` and `AZURE_DEVOPS_AUTH` carry no other trigger word, so
+      // removing the `auth` alternative from the key match the SEM-CRED-004
+      // gate reads silences exactly these two cells.
+      const ghp = ['ghp', '_', 'a'.repeat(36)].join('');
+      const sk = ['sk', '-ant-api03-', 'realKeyValue1234567890'].join('');
+      for (const [key, value] of [
+        ['GITHUB_AUTH', ghp],
+        ['AZURE_DEVOPS_AUTH', sk],
+      ] as Array<[string, string]>) {
+        const findings = semCred004(mcpEnv(key, value));
+        expect(findings, `"${key}" with a real secret value must still fire exactly once`).toHaveLength(1);
+        expect(findings[0].severity, `"${key}" with a real secret value is critical`).toBe('critical');
+      }
     });
   });
 });
