@@ -4,13 +4,15 @@
 // error instead of passing while checking nothing. Continuous integration runs
 // Node 24 on Linux and macOS.
 //
-// This suite freezes, per file, the number of lines on the six public
-// surfaces (src, __tests__, docs, README.md, CHANGELOG.md, changelog.d) that match either
-// expression below. It is green against the tree as delivered, turns red when
-// a matching line is added anywhere on those surfaces, and turns red when one
-// is removed without lowering the frozen entry here — the frozen maps are
-// exact, not ceilings.
+// This suite freezes, per file, the number of lines anywhere in the tracked
+// tree that match either expression below. The walk's roots are the top-level
+// paths of the committed tree, read from git, so a new top-level directory is
+// walked from the commit that adds it. The suite is green against the tree as
+// delivered, turns red when a matching line is added anywhere in the tree, and
+// turns red when one is removed without lowering the frozen entry here — the
+// frozen maps are exact, not ceilings.
 import { describe, it, expect, afterAll } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -22,9 +24,25 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 // are pinned separately by SELF_HITS below.
 const SELF_PATH = '__tests__/gate/no-internal-attribution.test.ts';
 
-// changelog.d holds the pending CHANGELOG entries, one file per change; they
-// are public on main from the moment they merge, not only after a release.
-const SURFACES = ['src', '__tests__', 'docs', 'README.md', 'CHANGELOG.md', 'changelog.d'];
+// Runs one git command in `cwd` and returns its standard output. The walk uses
+// it to read the tree's top-level paths; the planted-shape fixtures use it to
+// build the one-commit repositories the walk runs over.
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+// The top-level paths of the committed tree at `root`, exactly as git lists
+// them. This is the walk's only source of roots: no list of surfaces is kept
+// in this file, so every tracked top-level path — src, __tests__, docs,
+// scripts, .github, changelog.d, the root files and any directory added later
+// — is walked. changelog.d holds the pending CHANGELOG entries, one file per
+// change; they are public on main from the moment they merge, not only after
+// a release.
+function treeRoots(root: string): string[] {
+  return git(root, 'ls-tree', '--name-only', 'HEAD')
+    .split('\n')
+    .filter((entry) => entry.length > 0);
+}
 
 // Both expression sources are pasted verbatim and must stay byte-identical to
 // their upstream definition, so they are built with String.raw: a
@@ -44,6 +62,14 @@ const ALLOWLIST: ReadonlyArray<{ file: string; line: string }> = [
     // statement false.
     file: '__tests__/gate/pr-review-partition.test.ts',
     line: 'expect(uses).toBe(`opena2a-org/.github/actions/claude-review@${EXPECTED_PIN}`);',
+  },
+  {
+    // The vendor name is the grammatical object of the line — the pinned
+    // action path the review workflow runs — and the line stays because the
+    // workflow is a gate file under the code owner's review path; the pin it
+    // carries is the one the case above asserts.
+    file: '.github/workflows/pr-review.yml',
+    line: 'uses: opena2a-org/.github/actions/claude-review@dcb77137b11cb33c11e76cf6435b7676bd568d01',
   },
   {
     // The vendor name is the grammatical object of the line — a corpus file
@@ -76,17 +102,19 @@ const ALLOWLIST: ReadonlyArray<{ file: string; line: string }> = [
 ];
 
 // One walker for both the tree assertions and the planted-shape cases: it
-// takes a root directory and one expression, visits whichever of the six
-// surfaces exist under that root, recurses every directory and reads every
-// regular file. Exactly two skips: a file whose first 8000 bytes contain a NUL
-// byte, and SELF_PATH. No extension filter, no other skip list, no ignore-file
-// reading — the measured condition is a clean clone.
+// takes the root of a git repository and one expression, visits every
+// top-level path of the committed tree at that root, recurses every directory
+// and reads every regular file. Exactly two skips: a file whose first 8000
+// bytes contain a NUL byte, and SELF_PATH. No extension filter, no other skip
+// list, no ignore-file reading — the measured condition is a clean clone, and
+// the roots it returns are the top-level paths it visited.
 function scan(
   root: string,
   expression: RegExp,
-): { hits: Map<string, number[]>; binarySkipped: string[] } {
+): { hits: Map<string, number[]>; binarySkipped: string[]; roots: string[] } {
   const hits = new Map<string, number[]>();
   const binarySkipped: string[] = [];
+  const roots: string[] = [];
   const visit = (p: string): void => {
     const stat = fs.statSync(p);
     if (stat.isDirectory()) {
@@ -112,11 +140,11 @@ function scan(
         hits.set(rel, found);
       });
   };
-  for (const surface of SURFACES) {
-    const p = path.join(root, surface);
-    if (fs.existsSync(p)) visit(p);
+  for (const entry of treeRoots(root)) {
+    roots.push(entry);
+    visit(path.join(root, entry));
   }
-  return { hits, binarySkipped };
+  return { hits, binarySkipped, roots };
 }
 
 // Frozen per-file counts of lines matching the first expression, measured on
@@ -243,32 +271,75 @@ const BENIGN_SHAPES: readonly string[] = [
 const OTHER_PIN_LINE =
   'expect(uses).toBe(`opena2a-org/.github/actions/claude-review@dcb77137b11cb33c11e76cf6435b7676bd568d01`);';
 
+// The workflow's pinned action line with a different pin, for the same reason.
+const OTHER_PIN_WORKFLOW_LINE =
+  'uses: opena2a-org/.github/actions/claude-review@0123456789abcdef0123456789abcdef01234567';
+
 // The number of lines of this very file on which either expression matches,
 // measured on the file as delivered: the two expression sources (2), the ten
-// planted shapes above (10), the five exempted line contents (5) and the
-// different-pin line (1). Any new matching line here — in a comment, a leaf
+// planted shapes above (10), the six exempted line contents (6) and the two
+// different-pin lines (2). Any new matching line here — in a comment, a leaf
 // name or a message — moves this number and fails the suite.
-const SELF_HITS = 18;
+const SELF_HITS = 20;
 
 const plantedRoots: string[] = [];
 afterAll(() => {
   for (const root of plantedRoots) fs.rmSync(root, { recursive: true, force: true });
 });
 
-// Writes one line into a file under a fresh temporary directory laid out like
-// the repository, then runs the shared walker over it, so a planted shape
-// travels the same code path as a real hit.
+// Writes each file of `files` (repository-relative path to content) under
+// `root`, creating directories as needed.
+function writeFiles(root: string, files: Record<string, string>): void {
+  for (const [rel, content] of Object.entries(files)) {
+    const target = path.join(root, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  }
+}
+
+// Stages everything under `root` and commits it, so the committed tree the
+// walk reads its roots from matches the files on disk. Identity and signing
+// are fixed on the command line: the fixture must not depend on the
+// developer's configuration.
+function commitAll(root: string): void {
+  git(root, 'add', '-A', '-f');
+  git(
+    root,
+    '-c',
+    'user.name=attribution-gate',
+    '-c',
+    'user.email=attribution-gate@example.invalid',
+    '-c',
+    'commit.gpgsign=false',
+    'commit',
+    '-q',
+    '--no-verify',
+    '--allow-empty',
+    '-m',
+    'planted',
+  );
+}
+
+// A fresh temporary git repository with one commit carrying `files`, laid out
+// like the repository, so a planted shape travels the same code path as a
+// real hit: the walk reads its roots from this repository's tree.
+function plantRepo(files: Record<string, string>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attribution-gate-'));
+  plantedRoots.push(root);
+  git(root, 'init', '-q');
+  writeFiles(root, files);
+  commitAll(root);
+  return root;
+}
+
+// Writes one line into a file of a fresh one-commit repository, then runs the
+// shared walker over it.
 function plantedHits(
   content: string,
   expression: RegExp,
   rel = 'src/planted.txt',
 ): Map<string, number[]> {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'attribution-gate-'));
-  plantedRoots.push(root);
-  const target = path.join(root, rel);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, `${content}\n`);
-  return scan(root, expression).hits;
+  return scan(plantRepo({ [rel]: `${content}\n` }), expression).hits;
 }
 
 function expectCaughtOnce(shape: string, catches: RegExp, misses: RegExp): void {
@@ -290,7 +361,43 @@ describe('internal attribution stays off the public surfaces', () => {
     expect(VENDOR.flags).toBe('i');
   });
 
-  it('HMA-37.AC2 the tree walk covers the six surfaces and skips exactly the known image files', () => {
+  it('HMA-79.AC1 the walk roots for the repository root are exactly the tracked top-level paths git lists', () => {
+    const listed = execFileSync('git', ['ls-tree', '--name-only', 'HEAD'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .filter((entry) => entry.length > 0);
+    const { roots } = scan(REPO_ROOT, PATTERN);
+    expect([...roots].sort()).toEqual([...listed].sort());
+    expect(new Set(roots).size).toBe(roots.length);
+    // The six surfaces the walk once named by hand are a strict subset: the
+    // tree carries scripts, the CI directory and the root files as well.
+    for (const entry of ['src', '__tests__', 'docs', 'README.md', 'CHANGELOG.md', 'changelog.d']) {
+      expect(roots).toContain(entry);
+    }
+    expect(roots).toContain('scripts');
+    expect(roots).toContain('.github');
+    expect(roots).toContain('package.json');
+  });
+
+  it('HMA-79.AC2 a matching line under a brand-new top-level directory and under scripts is reported, and no longer once removed', () => {
+    const files = { 'tooling/notes.md': `${CAUGHT_SHAPES[1]}\n`, 'scripts/run.sh': `${CAUGHT_SHAPES[1]}\n` };
+    const root = plantRepo(files);
+    const planted = scan(root, PATTERN);
+    expect([...planted.roots].sort()).toEqual(['scripts', 'tooling']);
+    expect([...planted.hits.entries()].sort()).toEqual([
+      ['scripts/run.sh', [1]],
+      ['tooling/notes.md', [1]],
+    ]);
+    writeFiles(root, { 'tooling/notes.md': '', 'scripts/run.sh': '' });
+    commitAll(root);
+    const cleaned = scan(root, PATTERN);
+    expect([...cleaned.roots].sort()).toEqual(['scripts', 'tooling']);
+    expect(cleaned.hits.size).toBe(0);
+  });
+
+  it('HMA-37.AC2 the tree walk covers every tracked top-level path and skips exactly the known image files', () => {
     const { binarySkipped } = scan(REPO_ROOT, PATTERN);
     expect([...binarySkipped].sort()).toEqual([
       'docs/hackmyagent-demo.gif',
@@ -313,17 +420,24 @@ describe('internal attribution stays off the public surfaces', () => {
     // Fragment names carry a random suffix and move into CHANGELOG.md at
     // release, so a pin keyed on one cannot survive; every fragment's frozen
     // count is exactly 0 for both expressions.
-    expect(SURFACES).toContain('changelog.d');
+    expect(treeRoots(REPO_ROOT)).toContain('changelog.d');
     for (const key of [...Object.keys(PATTERN_BASELINE), ...Object.keys(VENDOR_BASELINE)]) {
       expect(key.startsWith('changelog.d/'), `frozen entry ${key} names a changelog fragment`).toBe(false);
     }
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-attr-fragments-'));
-    try {
-      fs.mkdirSync(path.join(dir, 'changelog.d'));
-      fs.writeFileSync(path.join(dir, 'changelog.d', 'x-abc123.md'), `---\ntype: fixed\n---\n- ${CAUGHT_SHAPES[1]}\n`);
-      expect([...scan(dir, PATTERN).hits.keys()]).toEqual(['changelog.d/x-abc123.md']);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+    const dir = plantRepo({ 'changelog.d/x-abc123.md': `---\ntype: fixed\n---\n- ${CAUGHT_SHAPES[1]}\n` });
+    expect([...scan(dir, PATTERN).hits.keys()]).toEqual(['changelog.d/x-abc123.md']);
+  });
+
+  it('HMA-79.AC5 no frozen entry names a path outside the six surfaces the walk once named by hand', () => {
+    // Widening the walk added nothing to either frozen map: every matching
+    // line outside those surfaces is either rewritten or exempted by an
+    // exact-line entry, so a new one anywhere in the tree is reported.
+    const inside = (key: string): boolean =>
+      ['src/', '__tests__/', 'docs/', 'changelog.d/'].some((p) => key.startsWith(p)) ||
+      key === 'README.md' ||
+      key === 'CHANGELOG.md';
+    for (const key of [...Object.keys(PATTERN_BASELINE), ...Object.keys(VENDOR_BASELINE)]) {
+      expect(inside(key), `frozen entry ${key} lies outside the six surfaces`).toBe(true);
     }
   });
 
@@ -427,5 +541,22 @@ describe('internal attribution stays off the public surfaces', () => {
     expect(plantedHits(ALLOWLIST[0].line, VENDOR, 'src/planted.txt').get('src/planted.txt')).toEqual(
       [1],
     );
+  });
+
+  it('HMA-79.AC5 the workflow action line at its recorded path with its recorded content is not counted', () => {
+    expect(ALLOWLIST[1].file).toBe('.github/workflows/pr-review.yml');
+    expect(plantedHits(ALLOWLIST[1].line, VENDOR, ALLOWLIST[1].file).size).toBe(0);
+  });
+
+  it('HMA-79.AC5 the workflow path with a different pin is counted', () => {
+    expect(plantedHits(OTHER_PIN_WORKFLOW_LINE, VENDOR, ALLOWLIST[1].file).get(ALLOWLIST[1].file)).toEqual([
+      1,
+    ]);
+  });
+
+  it('HMA-79.AC5 the workflow action line at any other path is counted', () => {
+    expect(plantedHits(ALLOWLIST[1].line, VENDOR, 'src/planted.txt').get('src/planted.txt')).toEqual([
+      1,
+    ]);
   });
 });
