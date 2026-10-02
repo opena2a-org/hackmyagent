@@ -562,4 +562,89 @@ describe('CredentialContextAnalyzer', () => {
       expect(findings.filter((f) => f.id === 'SEM-CRED-004')).toHaveLength(0);
     });
   });
+
+  // A name-matched configuration enum in an MCP env block. `SECRET_KEY_PATTERN`
+  // matches `AZURE_DEVOPS_AUTH_METHOD` on its `auth` token, and no value test on
+  // the SEM-CRED-004 path reached `pat` or `oauth`, so a documented
+  // authentication-method choice scored CRITICAL on the key name alone.
+  describe('MCP env config enums', () => {
+    const mcpEnv = (key: string, value: string) =>
+      makeFile('.mcp.json', JSON.stringify({ mcpServers: { srv: { env: { [key]: value } } } }, null, 2), 'mcp_config');
+    const semCred004 = (file: AnalysisFile) => analyzer.analyze([file]).filter((f) => f.id === 'SEM-CRED-004');
+
+    it('QGF-256.AC1 does not flag a short lowercase configuration enum under a name-matched MCP env key', () => {
+      for (const [key, value] of [
+        ['AZURE_DEVOPS_AUTH_METHOD', 'pat'],
+        ['AZURE_DEVOPS_AUTH_METHOD', 'oauth'],
+        ['AUTH_METHOD', 'oauth'],
+        ['AZURE_DEVOPS_METHOD', 'pat'],
+        ['HARMLESS_MODE', 'pat'],
+        ['AUTH_METHOD', 'x'],
+        ['AUTH_METHOD', ''],
+        ['LOG_LEVEL', 'debug'],
+        ['AZURE_DEVOPS_PAT', '${AZURE_DEVOPS_PAT}'],
+      ] as Array<[string, string]>) {
+        const findings = semCred004(mcpEnv(key, value));
+        expect(
+          findings,
+          `"${key}": "${value}" is a configuration enum, not a secret. Got: ${findings.map((f) => `${f.severity} ${f.title}`).join(', ')}`,
+        ).toHaveLength(0);
+      }
+    });
+
+    it('QGF-256.AC2 STILL flags every true positive, including under an AUTH-named key (control)', () => {
+      // The change is a value gate, and it must not reach the all-letters
+      // passphrases. The two AUTH-named keys below also match the `token`
+      // alternative of SECRET_KEY_PATTERN, so they pin the value gate, not the
+      // `auth` trigger; the AC8 cell pins that trigger on keys that match
+      // through `auth` alone.
+      const ghp = ['ghp', '_', 'a'.repeat(36)].join('');
+      const sk = ['sk', '-ant-api03-', 'realKeyValue1234567890'].join('');
+      for (const [key, value] of [
+        ['DB_PASSWORD', ghp],
+        ['DB_PASSWORD', 'dev_pass'],
+        ['DB_PASSWORD', 'supersecretpassword'],
+        ['DB_PASSWORD', 'correcthorsebatterystaple'],
+        ['DB_PASSWORD', 'hunt3r'],
+        ['API_KEY', sk],
+        ['AUTH_TOKEN', ghp],
+        ['AZURE_DEVOPS_AUTH_TOKEN', sk],
+      ] as Array<[string, string]>) {
+        const findings = semCred004(mcpEnv(key, value));
+        expect(findings, `"${key}" with a real secret value must still fire exactly once`).toHaveLength(1);
+        expect(findings[0].severity, `"${key}" with a real secret value is critical`).toBe('critical');
+      }
+    });
+
+    it('QGF-256.AC3 leaves the SEM-CRED-002 shapes on the same enum unmoved', () => {
+      // The SEM-CRED-002 call sites reach these values through
+      // `looksLikeSecretValue` and its 8-character floor. A suppression written
+      // into the shared `isNonSecretValue` instead of the SEM-CRED-004 gate
+      // would silence the fourth cell.
+      const semCred = (file: AnalysisFile) => analyzer.analyze([file]).filter((f) => f.id.startsWith('SEM-CRED-'));
+      expect(semCred(makeFile('config.json', '{"AZURE_DEVOPS_AUTH_METHOD": "pat"}', 'config_file'))).toHaveLength(0);
+      expect(semCred(makeFile('config.json', '{"AZURE_DEVOPS_AUTH_METHOD": "oauth"}', 'config_file'))).toHaveLength(0);
+      expect(semCred(makeFile('.env', 'AZURE_DEVOPS_AUTH_METHOD=pat', 'env_file'))).toHaveLength(0);
+      const long = semCred(makeFile('.env', 'AZURE_DEVOPS_AUTH_METHOD=personal-access-token', 'env_file'));
+      expect(long, 'a 21-character value under a name-matched key is still SEM-CRED-002').toHaveLength(1);
+      expect(long[0].id).toBe('SEM-CRED-002');
+      expect(long[0].severity).toBe('high');
+    });
+
+    it('QGF-256.AC8 STILL flags a real secret under a key that SECRET_KEY_PATTERN matches only through its auth alternative', () => {
+      // `GITHUB_AUTH` and `AZURE_DEVOPS_AUTH` carry no other trigger word, so
+      // removing the `auth` alternative from the key match the SEM-CRED-004
+      // gate reads silences exactly these two cells.
+      const ghp = ['ghp', '_', 'a'.repeat(36)].join('');
+      const sk = ['sk', '-ant-api03-', 'realKeyValue1234567890'].join('');
+      for (const [key, value] of [
+        ['GITHUB_AUTH', ghp],
+        ['AZURE_DEVOPS_AUTH', sk],
+      ] as Array<[string, string]>) {
+        const findings = semCred004(mcpEnv(key, value));
+        expect(findings, `"${key}" with a real secret value must still fire exactly once`).toHaveLength(1);
+        expect(findings[0].severity, `"${key}" with a real secret value is critical`).toBe('critical');
+      }
+    });
+  });
 });

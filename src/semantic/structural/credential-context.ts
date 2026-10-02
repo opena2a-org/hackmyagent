@@ -25,6 +25,29 @@ import { commandNaming } from '../../ui/shell-quote';
  */
 const MIN_DRAWN_ONLY_CORE_CHARS = 2;
 
+/**
+ * A short lowercase word is a configuration enum, not a secret.
+ *
+ * `SECRET_KEY_PATTERN` matches the KEY `AZURE_DEVOPS_AUTH_METHOD` on its `auth`
+ * token, and the documented values of that key are `pat` and `oauth`. The MCP
+ * env gate had no value test that reached them, so a committed `.mcp.json`
+ * carrying an authentication-method choice scored CRITICAL on the key name
+ * alone. The `auth` alternative itself must stay: `AUTH_TOKEN` and
+ * `AZURE_DEVOPS_AUTH_TOKEN` carry real vendor tokens under the same key shape.
+ *
+ * The bound is the value, and it is narrow on purpose. Every character must be
+ * a lowercase ASCII letter — a digit (`hunt3r`), a separator (`dev_pass`) or a
+ * capital is a password shape and still fires — and the word must be shorter
+ * than the 8-character floor `looksLikeSecretValue` applies elsewhere, so the
+ * all-letters passphrases `supersecretpassword` and `correcthorsebatterystaple`
+ * that the MCP control cell pins keep firing. An all-lowercase word of 8 or
+ * more letters is NOT an enum under this gate; that is the line the control
+ * cell draws, not a claim about what such a value is.
+ */
+function isConfigEnumWord(value: string): boolean {
+  return value.length < 8 && /^[a-z]+$/.test(value);
+}
+
 /** Key names that indicate a secret value */
 const SECRET_KEY_PATTERN =
   /^(.*_)?(secret|token|key|password|passwd|credential|auth|apikey|api_key|access_key|private_key|client_secret|signing_key|encryption_key|master_key|jwt_secret|session_secret|db_password|database_password)(_.*)?$/i;
@@ -758,10 +781,19 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
       // `correcthorsebatterystaple` and `hunt3r`, all real MCP env secrets that
       // `origin/main` reports, and raised the score by doing so. A suppression
       // added for blanks must suppress blanks and nothing else.
+      //
+      // The enum gate is likewise this call site's own, not `isNonSecretValue`'s:
+      // the SEM-CRED-002 shapes reach the same values through
+      // `looksLikeSecretValue`, whose 8-character floor already leaves `pat` and
+      // `oauth` silent, and a suppression written into the shared vocabulary
+      // would also move `AZURE_DEVOPS_AUTH_METHOD=personal-access-token` in a
+      // `.env`, which is a SEM-CRED-002 finding today.
+      const core = value.trim().replace(/^["']|["']$/g, '');
       if (
         SECRET_KEY_PATTERN.test(key) &&
         !isNonSecretValue(value) &&
-        !isVisualFiller(value.trim().replace(/^["']|["']$/g, ''), MIN_DRAWN_ONLY_CORE_CHARS)
+        !isVisualFiller(core, MIN_DRAWN_ONLY_CORE_CHARS) &&
+        !isConfigEnumWord(core)
       ) {
         // Find the line number
         let lineNum: number | undefined;
