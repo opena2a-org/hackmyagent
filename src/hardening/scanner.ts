@@ -5459,6 +5459,21 @@ export class HardeningScanner {
     // went DOWN is attributable rather than mysterious.
     const scoreExcludingArchive = scoreExcludingOwnArchive(filteredFindings);
 
+    // #383 — attribute every finding inside the target's archive base, not only
+    // the ones this run's archive produced. A second `--fix` run's own archive
+    // holds only redacted copies, so nothing in it is a finding and
+    // `scoreExcludingArchive` is unset; the plaintext lives in the FIRST run's
+    // archive, and without this the report left that run's number unexplained.
+    // Attribution only: nothing here moves the score, the verdict or a finding,
+    // and `isInsideArchiveBase` answers `yes` only for the target's own base, so
+    // a directory named `.hackmyagent-backup` elsewhere in the tree is untouched.
+    for (const f of findings) {
+      if (!f.file) continue;
+      if (f.inOwnArchive || (await this.isInsideArchiveBase(path.resolve(targetDir, f.file), targetDir)) === 'yes') {
+        f.inArchive = true;
+      }
+    }
+
     // In dry-run mode, mark fixable failed findings with wouldFix
     if (dryRun && autoFix) {
       for (const finding of filteredFindings) {
