@@ -406,11 +406,16 @@ OpenClaw (Moltbot) is a popular AI agent framework. HackMyAgent includes 47 spec
 ### Usage
 
 ```bash
-hackmyagent secure-openclaw              # Scan default ~/.moltbot location
-hackmyagent secure-openclaw ~/.moltbot   # Scan specific directory
-hackmyagent secure-openclaw --fix        # Auto-fix issues
-hackmyagent secure-openclaw --json       # JSON output for CI/CD
+hackmyagent secure-openclaw                               # Scan the first of ~/.openclaw, ~/.moltbot, ~/.clawdbot that exists
+hackmyagent secure-openclaw ~/.openclaw                   # Scan a specific directory
+hackmyagent secure-openclaw ~/.openclaw --fix --dry-run   # Preview the fixes for that directory
+hackmyagent secure-openclaw ~/.openclaw --fix             # Apply them; undo with: hackmyagent rollback ~/.openclaw
+hackmyagent secure-openclaw ~/.openclaw --json            # JSON output for CI/CD
 ```
+
+With no directory argument the command scans a real directory in your home folder, so `--fix`
+there rewrites real files (skill files included). Name the directory and preview with
+`--dry-run` first.
 
 ### SKILL Checks (SKILL-001 to SKILL-012)
 
