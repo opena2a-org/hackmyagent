@@ -30,6 +30,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   analystDissentSuffix,
+  composeVerdictLine,
   dissentingFiles,
   type DissentingEscalation,
 } from '../../src/ui/analyst-dissent';
@@ -93,69 +94,58 @@ describe('analystDissentSuffix', () => {
   });
 });
 
-// ── What is NOT guarded here, and why ────────────────────────────────────
+// ── The order, held by a function a test can call (#560) ──────────────────
 //
-// The clause must be appended as the LAST mutation of `verdictDisplay.value`:
-// two disclosure branches ASSIGN that value outright, both gated on
-// `totalFindings === 0`, which is exactly the scan where a dissent is the only
-// adverse signal. Composed any earlier it is silently deleted in the one case
-// it exists for.
+// The clause must land AFTER the two disclosure verdicts: both ASSIGN the
+// line outright and both are gated on `totalFindings === 0`, which is exactly
+// the scan where a dissent is the only adverse signal. Composed any earlier it
+// is silently deleted in the one case it exists for.
 //
-// THERE IS NO TEST FOR THAT HERE, deliberately. Three successive versions of a
-// source-grep guard were each defeated by a spelling its author had not
-// thought of — an alias, bracket access with a template key,
-// `Object.defineProperty`, and finally `const sink = verdictDisplay!;`, which
-// is the `!` idiom this very file already uses. Each defeat left the suite
-// green while the clause was erased at runtime, and each fix added a new
-// coverage claim that was itself false.
-//
-// A guard that cannot be distinguished from its absence is not a guard, and
-// one that advertises class coverage it does not have is worse than none: it
-// buys a reader confidence that is not there. So it is deleted rather than
-// extended a fourth time.
-//
-// The real test is behavioural and is now known to be cheap: the render can be
-// driven end-to-end with no analyst daemon and no model by swapping the
-// orchestrator export in `require.cache` and spawning the built CLI. That is
-// tracked in #560 and is the only
-// thing that closes this class. Until it lands, the invariant is held by the
-// comment at the append site in `cli.ts`, and by nothing else. Say so.
+// Three source-grep guards for this order were each defeated by a spelling
+// their author had not thought of (an alias, bracket access, defineProperty,
+// `const sink = verdictDisplay!;`), so the order now lives in one pure
+// function and is asserted by calling it. No source-grep test for the same
+// property is kept beside these: two guards for one property is how the
+// weaker one stops being maintained.
+describe('composeVerdictLine', () => {
+  const clean = { value: 'No security issues detected.', tone: 'good' as const };
+  const clause = ' (analyst dissents on 1 file — see NanoMind Coverage Escalations)';
+  const gap = 'No issues in what was examined — but 7 stopped at a file cap. '
+    + 'This is not a clean bill of health for the whole target.';
+  const quick = 'Quick scan found nothing in what it checked.';
 
-describe('a malformed escalation does not crash the render EARLIER than before', () => {
-  // Scope note, because the obvious stronger claim is false: this does NOT make
-  // a malformed escalation survivable. The footer at `cli.ts` still does
-  // `allEscalations.filter(...)` and still dereferences `esc.file`, so a `null`
-  // element still kills the run — as it did before this change. What the guard
-  // buys is that the crash lands no earlier than it used to: without it, the
-  // throw moves up and takes the Categories and Verdict lines with it.
-  const bad = (v: unknown) => analystDissentSuffix(v as never);
-
-  it('returns empty rather than throwing on a null element', () => {
-    expect(() => bad([null])).not.toThrow();
-    expect(bad([null])).toBe('');
+  it('keeps the clause when the coverage-gap disclosure replaces the line', () => {
+    const out = composeVerdictLine({ base: clean, coverageGapVerdict: gap, escalations: [attack('SKILL.md')] });
+    expect(out.value).toBe(gap + clause);
+    expect(out.tone).toBe('warning');
   });
 
-  it('returns empty rather than throwing on a non-array with a length', () => {
-    expect(() => bad({ length: 2 })).not.toThrow();
-    expect(bad({ length: 2 })).toBe('');
+  it('keeps the clause when the quick-scan disclosure replaces the line', () => {
+    const out = composeVerdictLine({ base: clean, quickScanVerdict: quick, escalations: [attack('SKILL.md')] });
+    expect(out.value).toBe(quick + clause);
+    expect(out.tone).toBe('warning');
   });
 
-  it('ignores an element with no routed field', () => {
-    expect(bad([{ file: 'a.md' }])).toBe('');
+  it('lets the coverage-gap disclosure win over the quick-scan one, as it ran second', () => {
+    const out = composeVerdictLine({
+      base: clean, quickScanVerdict: quick, coverageGapVerdict: gap, escalations: [attack('SKILL.md')],
+    });
+    expect(out.value).toBe(gap + clause);
   });
-});
 
-describe('the clause comes off the green', () => {
-  const cli = readFileSync(join(__dirname, '../../src/cli.ts'), 'utf8');
+  it('downgrades a good tone to warning when the clause is added, and only from good', () => {
+    // One-way: the advisory channel can withdraw an all-clear but never soften
+    // a fail-direction verdict.
+    expect(composeVerdictLine({ base: clean, escalations: [attack('a')] }).tone).toBe('warning');
+    expect(composeVerdictLine({ base: { value: 'x', tone: 'critical' }, escalations: [attack('a')] }).tone)
+      .toBe('critical');
+    expect(composeVerdictLine({ base: { value: 'x', tone: 'default' }, escalations: [attack('a')] }).tone)
+      .toBe('default');
+  });
 
-  it('downgrades a good tone to warning, and only from good', () => {
-    // Both sibling disclosure branches drop green with an explicit comment
-    // saying why. This one discloses a named attack class at HIGH/CRITICAL and
-    // must not be the exception. One-way: a critical/warning verdict keeps its
-    // tone, so the advisory channel can withdraw an all-clear but never soften
-    // a fail-direction verdict. Verified by pty capture: 32m -> 33m.
-    expect(cli).toContain("if (dissentSuffix !== '' && verdictDisplay.tone === 'good')");
-    expect(cli).toContain("verdictDisplay.tone = 'warning'");
+  it('leaves the line byte-identical, tone included, with no dissent and no disclosure', () => {
+    expect(composeVerdictLine({ base: clean, escalations: undefined })).toEqual(clean);
+    expect(composeVerdictLine({ base: clean, escalations: [abstain('a')] })).toEqual(clean);
   });
 });
 

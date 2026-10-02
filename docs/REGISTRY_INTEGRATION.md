@@ -1,59 +1,65 @@
 # OpenA2A Registry Integration
 
-HackMyAgent can automatically report scan results to the OpenA2A Registry for centralized trust scoring and vulnerability tracking.
+HackMyAgent can report scan results to the OpenA2A Registry, where they feed trust scoring and vulnerability tracking for a registered package version.
 
 ## Features
 
-- **Automatic reporting:** Post scan results directly to the registry after scanning
+- **Reporting on request:** `--version-id` (or `--registry-report`) posts the results of the scan that just ran
 - **Trust score updates:** Registry recalculates trust scores based on scan results
 - **Transparency logging:** All scan results are logged to the immutable transparency log
-- **Threat intelligence:** Critical findings trigger threat intelligence alerts
+- **Threat intelligence:** Critical or high findings trigger threat intelligence alerts
 
 ## Usage
 
+There are two reporting paths:
+
+- **Authenticated (`--version-id <uuid>`):** reports against one registered package version. Needs a Registry API key.
+- **Community (`--registry-report` without `--version-id`):** submits the scan for the package the scanned directory declares (its `package.json` name, else the directory name), with a short-lived scan token the CLI requests itself. No API key.
+
+The Registry API host is `https://api.oa2a.org`, the CLI default.
+
 ### Secure Command (Hardening Scan)
 
+`secure` scans a directory. To check a published package by name, use `check <package>`; to report a scan of a published package, scan its source directory (see [End-to-End Testing](#2-test-with-real-scan--registry-report)).
+
 ```bash
-npx hackmyagent secure <package-or-directory> \
-  --registry-report \
+npx hackmyagent secure <directory> \
   --version-id <uuid> \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
 
 **Example:**
 ```bash
-# Scan and report results to registry
-npx hackmyagent secure @modelcontextprotocol/server-filesystem \
-  --registry-report \
+# Scan a package's source directory and report the results to the Registry
+npx hackmyagent secure ./server-filesystem \
   --version-id d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
+
+On success it prints `Registry: scan results reported for version <uuid>`.
 
 ### Attack Command (Offensive Testing)
 
+The target is a positional argument. `--intensity` takes `passive`, `active` (default) or `aggressive`.
+
 ```bash
-npx hackmyagent attack \
-  --target http://localhost:3000 \
-  --intensity high \
-  --registry-report \
+npx hackmyagent attack <target-url> \
+  --intensity aggressive \
   --version-id <uuid> \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
 
 **Example:**
 ```bash
-# Run attack simulation and report to registry
-npx hackmyagent attack \
-  --target http://localhost:3000 \
-  --local \
-  --registry-report \
+# Attack a running agent and report the results to the Registry
+npx hackmyagent attack http://localhost:3000 \
   --version-id d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
+
+On success it prints `Registry: attack results reported for version <uuid>`.
+
+Only a run that measured the target is reported. `attack --local` contacts no agent, and neither does an unreachable target, so either prints `Registry: not reported — this run measured nothing about the target.` and sends nothing.
 
 ## Configuration
 
@@ -62,22 +68,23 @@ npx hackmyagent attack \
 Instead of passing flags, you can set environment variables:
 
 ```bash
-export REGISTRY_URL=https://registry.opena2a.org
 export REGISTRY_API_KEY=your-api-key-here
+export REGISTRY_URL=https://api.oa2a.org   # optional: this is the default
 ```
 
 Then use:
 ```bash
-npx hackmyagent secure <package> --registry-report --version-id <uuid>
+npx hackmyagent secure <directory> --version-id <uuid>
 ```
 
-### Required Parameters
+### Parameters
 
 | Parameter | Flag | Environment | Required | Description |
 |-----------|------|-------------|----------|-------------|
-| Registry URL | `--registry-url` | `REGISTRY_URL` | Yes | Base URL of the registry API |
-| API Key | `--registry-key` | `REGISTRY_API_KEY` | Yes | API key for authentication |
-| Version ID | `--version-id` | - | Yes | UUID of the package version to report against |
+| Version ID | `--version-id` | - | For authenticated reporting | UUID of the package version to report against |
+| API Key | `--registry-key` | `REGISTRY_API_KEY` | With `--version-id` | Registry token with the `internal:scans:write` scope, sent as `Authorization: Bearer <key>` |
+| ATC token | - | `ATC_TOKEN` | No | When set, sent as `Authorization: ATC <token>` in place of the API key |
+| Registry URL | `--registry-url` | `REGISTRY_URL` | No | Registry API base URL; default `https://api.oa2a.org` |
 
 ## What Gets Reported
 
@@ -124,9 +131,9 @@ npx hackmyagent secure <package> --registry-report --version-id <uuid>
   "completedAt": "2026-02-10T12:00:00Z",
   "vulnerabilities": [
     {
-      "id": "PROMPT-INJECTION-01",
+      "id": "PI-001",
       "severity": "critical",
-      "title": "Prompt Injection: PROMPT-INJECTION-01",
+      "title": "prompt-injection: PI-001",
       "description": "Attack succeeded - agent executed unauthorized action"
     }
   ],
@@ -138,7 +145,7 @@ npx hackmyagent secure <package> --registry-report --version-id <uuid>
     "generator": "hackmyagent-attack",
     "target": "http://localhost:3000",
     "riskRating": "high",
-    "totalPayloads": 182,
+    "totalPayloads": 164,
     "successfulAttacks": 11
   }
 }
@@ -160,47 +167,43 @@ When a scan result is reported, the registry automatically:
    - Immutable audit trail
 
 3. **Recalculates trust score:**
-   - Security scan factor (22% weight)
-   - Behavioral verification factor (13% weight)
+   - Security scan factor (30% weight)
+   - Behavioral verification factor (5% weight)
    - Updates overall trust level (0-4)
 
-4. **Threat intelligence (if critical/high findings):**
+4. **Threat intelligence (if critical/high findings or a capability mismatch):**
    - Alerts threat intel service
    - May flag package for review
    - May block package if severe
 
 ## Error Handling
 
-### Missing Parameters
+### Missing API Key
 
 ```bash
-$ npx hackmyagent secure . --registry-report
-Error: --registry-url or REGISTRY_URL env is required for registry reporting
+$ npx hackmyagent secure . --version-id <uuid>
+Error: --registry-key or REGISTRY_API_KEY env is required when using --version-id
 ```
 
-### Authentication Failure
+The command exits 1.
 
-```bash
-$ npx hackmyagent secure . --registry-report --registry-url https://... --version-id ...
-Registry report failed: Registry report failed (401): Unauthorized
-```
+### Rejected or Failed Report
 
-### Version Not Found
+A report the Registry rejects (401, 403, 404) or that cannot reach it does not change the scan's output or exit code, and no error is printed. The confirmation line (`Registry: scan results reported for version <uuid>`) is printed only when the Registry accepted the report; if it is missing, the report was not recorded. See [Troubleshooting](#troubleshooting).
 
-```bash
-$ npx hackmyagent secure . --registry-report --version-id invalid-uuid
-Registry report failed: Registry report failed (404): Version not found
-```
+### Scan That Reached No Verdict
+
+When the scan reaches no verdict (inputs it discovered but could not read, or a `--deep` layer that did not finish), nothing is sent, and stderr says so: `Registry: nothing sent — <reason>. Withheld: --version-id. <remedy>`
 
 ## Registry API Endpoints
 
 ### Internal Scan Result Endpoint
 
-**POST** `/api/v1/registry/internal/scan-result`
+**POST** `/internal/scan-result` (on the API host, for example `https://api.oa2a.org/internal/scan-result`)
 
 **Headers:**
 - `Content-Type: application/json`
-- `Authorization: Bearer <api-key>`
+- `Authorization: Bearer <api-key>` (scope `internal:scans:write`)
 - `User-Agent: HackMyAgent-CLI`
 
 **Request Body:** See "Scan Report Format" above
@@ -209,14 +212,15 @@ Registry report failed: Registry report failed (404): Version not found
 ```json
 {
   "message": "Scan result processed",
-  "versionId": "d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a"
+  "versionId": "d4e5f6a7-b8c9-0d1e-2f3a-4b5c6d7e8f9a",
+  "scanRequestId": null
 }
 ```
 
 **Response (Error):**
 ```json
 {
-  "error": "Version not found"
+  "error": "Version ID is required"
 }
 ```
 
@@ -224,10 +228,11 @@ Registry report failed: Registry report failed (404): Version not found
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/registry/internal/trigger-scan/:versionId` | POST | Manually trigger a scan |
-| `/api/v1/registry/internal/simulate-scan/:versionId?severity=high` | POST | Simulate scan for testing |
-| `/api/v1/registry/internal/drift/:versionId` | GET | Check for capability drift |
-| `/api/v1/registry/internal/recalculate-trust/:versionId` | POST | Manually recalculate trust |
+| `/internal/trigger-scan/:versionId` | POST | Manually trigger a scan |
+| `/internal/simulate-scan/:versionId?severity=high` | POST | Simulate scan for testing |
+| `/internal/drift/:versionId` | GET | Check for capability drift (scope `internal:scans:read`) |
+| `/internal/recalculate-trust/:versionId` | POST | Manually recalculate trust |
+| `/api/v1/registry/packages/:id/versions` | GET | Read a package's versions, including `scanStatus` and `vulnerabilityCount` (public) |
 
 ## End-to-End Testing
 
@@ -235,37 +240,41 @@ Registry report failed: Registry report failed (404): Version not found
 
 ```bash
 # Simulate a scan with high severity findings
-curl -X POST https://registry.opena2a.org/api/v1/registry/internal/simulate-scan/{versionId}?severity=high \
+curl -X POST "https://api.oa2a.org/internal/simulate-scan/$VERSION_ID?severity=high" \
   -H "Authorization: Bearer $REGISTRY_API_KEY"
 ```
 
 ### 2. Test with Real Scan + Registry Report
 
 ```bash
-# Get a package version ID from the registry
-VERSION_ID=$(curl https://registry.opena2a.org/api/v1/registry/packages | jq -r '.[0].versions[0].id')
+# Pick a registered package: prints its id, name, latest version and that version's id
+curl -s 'https://api.oa2a.org/api/v1/registry/packages?type=mcp_server&limit=1' \
+  | jq -r '.packages[0] | .id, .name, .latestVersion, .latestVersionId'
+PACKAGE_ID=<id>
+VERSION_ID=<latestVersionId>
 
-# Run HackMyAgent with registry reporting
-npx hackmyagent secure @modelcontextprotocol/server-filesystem \
-  --registry-report \
+# Fetch that version's source into a directory
+npm pack <name>@<latestVersion>
+mkdir pkg && tar -xzf ./*.tgz -C pkg --strip-components=1
+
+# Scan it and report to the Registry
+npx hackmyagent secure pkg \
   --version-id $VERSION_ID \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 
 # Verify scan results were recorded
-curl https://registry.opena2a.org/api/v1/registry/versions/$VERSION_ID | jq '.scan_status, .vulnerability_count'
+curl -s "https://api.oa2a.org/api/v1/registry/packages/$PACKAGE_ID/versions" \
+  | jq --arg v "$VERSION_ID" '.versions[] | select(.id == $v) | {scanStatus, vulnerabilityCount}'
 ```
 
 ### 3. Test Attack Mode + Registry Report
 
 ```bash
-# Run attack simulation locally and report to registry
-npx hackmyagent attack \
-  --local \
-  --intensity medium \
-  --registry-report \
+# Attack a running agent and report the results to the Registry.
+# --local runs are never reported: they contact no agent.
+npx hackmyagent attack http://localhost:3000 \
+  --intensity active \
   --version-id $VERSION_ID \
-  --registry-url https://registry.opena2a.org \
   --registry-key $REGISTRY_API_KEY
 ```
 
@@ -277,9 +286,7 @@ npx hackmyagent attack \
 - name: Scan and report to registry
   run: |
     npx hackmyagent secure . \
-      --registry-report \
       --version-id ${{ secrets.REGISTRY_VERSION_ID }} \
-      --registry-url ${{ secrets.REGISTRY_URL }} \
       --registry-key ${{ secrets.REGISTRY_API_KEY }}
 ```
 
@@ -302,47 +309,34 @@ CMD ["--registry-report"]
 
 ## Trust Score Impact
 
-Scan results affect trust score through two factors:
+A reported scan feeds the Registry's security scan factor. The Registry scores each trust factor from 0 to 1 and weights it:
 
-### 1. Security Scan Factor (22% of total score)
-
-| Result | Score Impact |
-|--------|--------------|
-| OASB scan passed (0 critical/high) | +22 points |
-| No critical findings | +15 points |
-| No high findings | +7 points |
-| Critical or high findings | 0 points |
-
-### 2. Behavioral Verification Factor (13% of total score)
-
-| Condition | Score Impact |
-|-----------|--------------|
-| Capabilities match behavior | +13 points |
-| No suspicious activity | +10 points |
-| Sandbox tested | +3 points |
-| Capability mismatch | 0 points |
+| Factor | Weight |
+|--------|--------|
+| Security scan (HackMyAgent scan results) | 30% |
+| Platform validation | 30% |
+| Publisher verification | 15% |
+| Dependency health | 15% |
+| Behavioral verification (runtime observation) | 5% |
+| SLSA provenance | 3% |
+| Signature integrity | 2% |
 
 ## Troubleshooting
 
-### Issue: "Registry report failed (401)"
-**Solution:** Check that `REGISTRY_API_KEY` is valid and not expired
-
-### Issue: "Registry report failed (404): Version not found"
-**Solution:** Verify the `--version-id` UUID exists in the registry
-
-### Issue: "HackMyAgent service not configured"
-**Solution:** Registry backend needs `HackMyAgentService` initialized
+### Issue: no `Registry: scan results reported` line after a `--version-id` scan
+**Solution:** The Registry did not accept the report. Check that:
+- `REGISTRY_API_KEY` is valid, not expired, and carries the `internal:scans:write` scope
+- the `--version-id` UUID exists in the registry
+- `REGISTRY_URL` (or `--registry-url`), if set, points at the API host `https://api.oa2a.org`
 
 ### Issue: Scan works but no trust score change
 **Solution:** Wait for background trust recalculation job, or manually trigger:
 ```bash
-curl -X POST https://registry.opena2a.org/api/v1/registry/internal/recalculate-trust/$VERSION_ID \
+curl -X POST https://api.oa2a.org/internal/recalculate-trust/$VERSION_ID \
   -H "Authorization: Bearer $REGISTRY_API_KEY"
 ```
 
 ## Further Reading
 
-- [HackMyAgent Documentation](https://github.com/ecolibria/hackmyagent)
-- [OpenA2A Registry API Docs](https://registry.opena2a.org/docs)
-- [Trust Scoring Algorithm](https://docs.opena2a.org/registry/trust-scoring)
+- [HackMyAgent Documentation](https://github.com/opena2a-org/hackmyagent)
 - [OASB Attack Scenarios](https://oasb.ai/)
