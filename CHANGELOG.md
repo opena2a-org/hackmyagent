@@ -6,6 +6,18 @@ All notable changes to HackMyAgent will be documented in this file.
 
 Entries for the next release are kept in [`changelog.d/`](changelog.d/), one file per change. The release moves them into this file, under its version heading. To add an entry, follow [`changelog.d/README.md`](changelog.d/README.md).
 
+### `secure --benchmark --format sarif` cites the records the control failed on (#670)
+
+- The SARIF writer re-derived a control's records from `result.findings` by checkId, while
+  the assessor evaluates `allFindings`. A failing record the plain scan does not list still
+  failed its control, and SARIF then printed one location-less result for it. On an
+  `mcp.json` with no tool whitelist, OASB-1 2.3 cited TOOL-001 and TOOL-002 in the JSON
+  report and SARIF emitted one result with no file. The writer now reads the assessor's
+  record set and joins each record by its exact evidence line, failing records only, so
+  every cited record gets its own result and location, and a passed or fixed record of a
+  cited checkId is never emitted as an `error`. Control statuses, compliance and the rating
+  are unchanged. Regression: `__tests__/cli/sarif-benchmark-exact-checkid.test.ts`.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path

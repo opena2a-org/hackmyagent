@@ -113,7 +113,10 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
     const body = json(run(wild, ['--format', 'sarif']).stdout);
     const ids = body.runs[0].results.map((x: any) => x.ruleId);
     expect(ids).toContain('OASB-1/2.1');
-    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
+    // #670 — one result per record a control cites: 2.3 cites TOOL-001 and
+    // TOOL-002, which the writer had folded into one location-less result.
+    expect(ids).toHaveLength(5);
   });
 
   it('RED-ON-BASE with a lockfile: never Certified, and --fail-below 100 exits 1', () => {

@@ -45,6 +45,33 @@ function citeLocation(finding: SecurityFinding): string {
   return ` (${escapePathForDisplay(finding.file)}${line})`;
 }
 
+/**
+ * The evidence line the evaluator cites for one failing record: `checkId: `
+ * first, then the description and the record's location (#739).
+ */
+export function controlEvidenceLine(finding: SecurityFinding): string {
+  return `${finding.checkId}: ${finding.description}${citeLocation(finding)}`;
+}
+
+/**
+ * The records a control's evidence lines were cited from (#670): a failing,
+ * measured record whose own evidence line is one of the control's, by exact
+ * equality. `records` must be the set the evaluator read (`allFindings`), so a
+ * renderer consumes the assessor's record set instead of re-deriving it: a
+ * checkId substring, a passed or fixed sibling of the same checkId, or a
+ * failing record `result.findings` does not carry each made SARIF disagree
+ * with the control it reported.
+ */
+export function failingRecordsForControl<T extends SecurityFinding>(
+  evidence: ReadonlyArray<string>,
+  records: ReadonlyArray<T>,
+): T[] {
+  const cited = new Set(evidence);
+  return records.filter(
+    (f) => !f.notApplicable && !f.passed && cited.has(controlEvidenceLine(f)),
+  );
+}
+
 
 export function generateBenchmarkReport(
   findings: ReadonlyArray<SecurityFinding>,
@@ -141,9 +168,9 @@ export function generateBenchmarkReport(
             hasFailure = true;
             // #739 — the evidence line names the record's file:line when it
             // has one, so the benchmark cites the same location the plain
-            // scan does. The `checkId: ` prefix stays first: the SARIF writer
-            // joins records to controls by finding it in this string.
-            relatedFindings.push(`${checkId}: ${finding.description}${citeLocation(finding)}`);
+            // scan does. The SARIF writer joins records to controls by this
+            // exact line (failingRecordsForControl, #670).
+            relatedFindings.push(controlEvidenceLine(finding));
             if (finding.fix) {
               remediation = remediation || finding.fix;
             }
