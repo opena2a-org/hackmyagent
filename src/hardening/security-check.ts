@@ -182,9 +182,27 @@ export interface SecurityFinding {
    *
    * Set only for the current run's own archive. A pre-existing archive, or a
    * directory elsewhere in the tree merely named `.hackmyagent-backup`, is an
-   * ordinary finding and is never flagged.
+   * ordinary finding and is never flagged. (A pre-existing archive at the
+   * target's own archive base carries `inArchive` instead.)
    */
   inOwnArchive?: boolean;
+  /**
+   * This finding sits inside the target's archive base
+   * (`<target>/.hackmyagent-backup/`, resolved by identity like every other
+   * archive question), whichever run wrote the copy — this one or an earlier
+   * one. Every finding with `inOwnArchive` also carries this.
+   *
+   * #383 — attribution only, like `inOwnArchive`: the finding counts against
+   * the score and the verdict unchanged, and no second score is derived from
+   * it. It exists so a second `--fix` run, whose own archive holds only
+   * redacted copies, can still say why its score sits where it does, and so the
+   * next steps do not point at `secure --fix`, `fix-all` or `protect` for
+   * findings those commands never edit.
+   *
+   * A directory merely named `.hackmyagent-backup` anywhere else in the tree is
+   * not the archive base and is never flagged.
+   */
+  inArchive?: boolean;
   /**
    * The USER asked for this finding to be left out of the report — `--ignore`,
    * an `.hmaignore` check-ID pattern, or an `.hmaignore` path pattern.
