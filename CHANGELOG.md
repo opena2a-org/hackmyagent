@@ -6,6 +6,25 @@ All notable changes to HackMyAgent will be documented in this file.
 
 Entries for the next release are kept in [`changelog.d/`](changelog.d/), one file per change. The release moves them into this file, under its version heading. To add an entry, follow [`changelog.d/README.md`](changelog.d/README.md).
 
+### Use-case docs show output this build prints (#441)
+
+- **`docs/use-cases/scan-my-agent.md`, `openclaw-security.md` and `red-team-mcp.md`
+  printed sample output under a `HackMyAgent v0.10.1 -- Security Scanner` banner the tool
+  has not printed since 0.10.x.** Every one of those blocks is now captured from a real run
+  of the current build on a fixture that matches the page's narrative, and is abridged only
+  where marked `...`. The runs used an empty `HOME`.
+- **`openclaw-security.md` described checks the tool does not run.** It said detection keys
+  on `gateway.yaml`; the gateway checks read `openclaw.json` or `.openclaw/config.json`. Its
+  CVE table listed `0.3.x` version thresholds and descriptions that match none of the
+  scanner's CVE checks. The table now lists what `CVE-001`, `CVE-003` and `CVE-004` report,
+  and the v2026.1.29 fix version they check against (verified: a project that pins 2026.1.29
+  passes all three).
+- **Counts that had gone stale in the page text:** "310 static checks across 69
+  categories" and "34 OpenClaw checks" now point at `hackmyagent check-metadata`, which
+  prints the current counts. "75 attack payloads" now reads 164 across 16 categories, as
+  `attack --help` prints. The `--ci` tip now says what `--ci` does: it suppresses prompts
+  and does not change the exit code.
+
 ## [0.33.2] - 2026-09-17
 
 ### v0.33.1 was tagged and never published; the publish job now hands npm a file path

@@ -7,7 +7,7 @@
 
 ## Background
 
-HMA includes 34 checks specifically for [OpenClaw](https://github.com/open-claw/open-claw) installations. These cover gateway configuration, skill security, credential redaction, and known CVEs. Six of the findings led to [upstream PRs merged into OpenClaw](https://opena2a.org/blogs/securing-openclaw-6-prs-merged).
+HMA includes checks specifically for [OpenClaw](https://github.com/open-claw/open-claw) installations. They cover gateway configuration (`GATEWAY-*`), known OpenClaw CVEs (`CVE-*`), skill security, credential exposure and ClawHavoc indicators of compromise. Six of the findings led to [upstream PRs merged into OpenClaw](https://opena2a.org/blogs/securing-openclaw-6-prs-merged).
 
 ## Step 1: Run the scan
 
@@ -17,66 +17,62 @@ From your OpenClaw project directory:
 npx hackmyagent secure
 ```
 
-HMA auto-detects OpenClaw by looking for `gateway.yaml`, `skills/`, and OpenClaw configuration files. All 34 OpenClaw checks run automatically alongside the standard 310 static checks.
+HMA reads the OpenClaw configuration file (`openclaw.json`, or `.openclaw/config.json`) for the gateway checks, and the `openclaw` version in `package.json` for the CVE checks. They run alongside the rest of the static suite; `npx hackmyagent check-metadata` prints the current check counts.
 
-**Expected output (OpenClaw-specific findings):**
+**Example output**, captured from a real run on a project that pins `openclaw` 2026.1.15, binds the gateway to `0.0.0.0`, keeps its auth token in `openclaw.json`, and disables approvals and the sandbox. Lines marked `...` are abridged:
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
+Scanning /home/user/openclaw-project...
+  ...
+  openclaw-project  v1.0.0 · openclaw · 3 files analyzed
+  7 critical issues found
 
-Scanning: /home/user/openclaw-project
-Checks:  310 across 69 categories (34 OpenClaw-specific)
+  Security  ━━━━━━━━━━━━━━━━━━━━ 14/100
 
-  CRITICAL  CVE-001   CVE-2026-25253 -- OpenClaw WebSocket RCE
-            Found: openclaw v0.3.2 in package-lock.json (affected: < 0.3.5)
-            Fix:   Upgrade to openclaw >= 0.3.5
-            Ref:   https://opena2a.org/blogs/cve-2026-25253-openclaw-rce
+  ── Observations ────────────────────────────────────────────
+  ...
+  Categories  credentials (1 critical) · network (4 critical) · prompt (3 high) · supply-chain (4 medium) · skill (2 medium) · CVE (2 critical) · config (1 high) · git hygiene (1 low) · 9 others clear
+  Verdict     Not safe to ship. Bound to 0.0.0.0 in openclaw.json + 20 more. Fix before using in production.
 
-  CRITICAL  CVE-002   CVE-2026-25157 -- Skill sandbox escape
-            Found: openclaw v0.3.2 (affected: < 0.3.4)
-            Fix:   Upgrade to openclaw >= 0.3.4
+  ── Findings ────────────────────────────────────────────────
+  7 critical  6 high  7 medium  1 low
 
-  HIGH      CVE-003   CVE-2026-24763 -- Gateway auth bypass
-            Found: openclaw v0.3.2 (affected: < 0.3.3)
-            Fix:   Upgrade to openclaw >= 0.3.3
+  │ gateway                    5 crit  openclaw.json
+  │ cve                        2 crit, 1 high, 1 med  package.json, openclaw.json
+  ...
 
-  HIGH      GATEWAY-001  Gateway bound to 0.0.0.0
-            Found: gateway.yaml host: 0.0.0.0
-            Fix:   Set host to 127.0.0.1
+  ── Top Issues ──────────────────────────────────────────────
+  │ CRITICAL  Bound to 0.0.0.0
+  │ openclaw.json
+  │ Binding to 0.0.0.0 exposes the gateway to all network interfaces. Use 127.0.0.1 for local-only access unless remote access is explicitly needed with proper authentication.
+  │ →  hackmyagent secure-openclaw --fix
 
-  HIGH      GATEWAY-003  Plaintext auth token in gateway.yaml
-            Found: auth_token: "my-secret-token"
-            Fix:   Use environment variable: ${OPENCLAW_AUTH_TOKEN}
+  │ CRITICAL  Missing WebSocket Origin Validation
+  │ openclaw.json
+  │ Without origin validation, any website can connect to the gateway via WebSocket (GHSA-g8p2). This enables cross-origin command execution attacks.
+  │ Fix: Add security.websocketOrigins: ["http://localhost:3000"] to the gateway config
 
-  MEDIUM    GATEWAY-004  Human-in-the-loop approvals disabled
-            Found: approval_required: false in gateway.yaml
-            Fix:   Set approval_required: true
+  │ CRITICAL  Token Exposed in Config
+  │ openclaw.json
+  │ Plaintext tokens in config files are exposed to anyone with repo access. Use environment variable references so credentials stay outside version control.
+  │ →  hackmyagent secure-openclaw --fix
 
-  MEDIUM    GATEWAY-005  Sandbox disabled for skills
-            Found: sandbox: false in gateway.yaml
-            Fix:   Set sandbox: true
-
-  MEDIUM    SKILL-001    Unsigned skill package
-            Found: skills/data-fetcher/ has no signature
-            Fix:   Sign with hackmyagent fix-all --with-aim
-
-  LOW       CONFIG-003   Debug mode enabled
-            Found: debug: true in gateway.yaml
-            Fix:   Set debug: false for production
-
-Summary: 2 critical, 2 high, 3 medium, 1 low
-         5 auto-fixable (run with --fix)
+  Path forward: 14 -> 100 by fixing 7 critical + 6 high
 ```
+
+With this many findings the default report groups them by category and shows the top three. Add `--verbose` to list every check, or `--json` for the full finding list.
 
 ## Step 2: CVE detection
 
 HMA checks for these known OpenClaw vulnerabilities:
 
-| CVE | Severity | Description | Fixed in |
-|-----|----------|-------------|----------|
-| CVE-2026-25253 | Critical | WebSocket RCE via crafted skill message | >= 0.3.5 |
-| CVE-2026-25157 | Critical | Skill sandbox escape via symlink traversal | >= 0.3.4 |
-| CVE-2026-24763 | High | Gateway authentication bypass via header injection | >= 0.3.3 |
+| CVE | Check | Severity | What the check reports | Fixed in |
+|-----|-------|----------|------------------------|----------|
+| CVE-2026-25253 | `CVE-001` | Critical | WebSocket hijacking enables one-click remote code execution | v2026.1.29 |
+| CVE-2026-25157 | `CVE-003` | High | OS command injection through an unescaped SSH project path | v2026.1.29 |
+| CVE-2026-24763 | `CVE-004` | Critical | Command injection through unsafe `PATH` handling in the Docker sandbox | v2026.1.29 |
+
+The severities are the ones reported for `openclaw` 2026.1.15 in the run above. A version at or after v2026.1.29 reports each check as passing.
 
 For details on CVE-2026-25253, see the [disclosure blog post](https://opena2a.org/blogs/cve-2026-25253-openclaw-rce).
 
@@ -109,25 +105,13 @@ Preview what auto-fix would change:
 npx hackmyagent secure --fix --dry-run
 ```
 
-**Expected output:**
+**Example output** from the same project (abridged; the report above is printed first):
 
 ```
-  CRITICAL  CVE-001   CVE-2026-25253 -- OpenClaw WebSocket RCE
-            (manual fix required -- upgrade openclaw package)
-
-  HIGH      GATEWAY-001  Gateway bound to 0.0.0.0
-            Would fix: Set host to 127.0.0.1 in gateway.yaml
-
-  HIGH      GATEWAY-003  Plaintext auth token in gateway.yaml
-            Would fix: Replace "my-secret-token" with ${OPENCLAW_AUTH_TOKEN}
-
-  MEDIUM    GATEWAY-004  Approvals disabled
-            Would fix: Set approval_required: true in gateway.yaml
-
-  MEDIUM    GATEWAY-005  Sandbox disabled
-            Would fix: Set sandbox: true in gateway.yaml
-
-Dry run complete. 4 fixes would be applied. 1 requires manual action.
+Scanning /home/user/openclaw-project (dry-run)...
+  ...
+  Dry run complete: 7 issues auto-fixable. Run without --dry-run to apply.
+  No changes were made.
 ```
 
 Apply the fixes:
@@ -136,21 +120,35 @@ Apply the fixes:
 npx hackmyagent secure --fix
 ```
 
-**Expected output:**
+**Example output** from the same project (abridged; the backup directory name carries the run's timestamp):
 
 ```
-  FIXED     GATEWAY-001  Set host to 127.0.0.1 in gateway.yaml
-            Backup: .hackmyagent-backup/gateway.yaml.1710504000
+Scanning /home/user/openclaw-project...
+Verifying applied fixes...
+  ...
+  3 critical issues found
 
-  FIXED     GATEWAY-003  Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN}
-            Backup: .hackmyagent-backup/gateway.yaml.1710504000
-
-  FIXED     GATEWAY-004  Set approval_required: true in gateway.yaml
-  FIXED     GATEWAY-005  Set sandbox: true in gateway.yaml
-
-Summary: 4 fixed, 3 remaining (manual -- upgrade openclaw, sign skills)
-Backups saved to .hackmyagent-backup/
+  Security  ━━━━━━━━━━━━━━━━━━━━ 32/100
+  Live tree: 35/100 — the 3-point difference is 1 finding inside the backup this run created at /home/user/openclaw-project/.hackmyagent-backup/2026-09-28-075626086-000-6fa3bced
+  ...
+Fixed 6 issues (6 verified):
+  ✓✓ [GIT-002] .gitignore - Incomplete .gitignore
+  ✓✓ [SKILL-001] skills/data-fetcher/SKILL.md - Unsigned Skill
+    → Added SHA-256 signature block to skill file
+  ✓✓ [GATEWAY-001] openclaw.json - Bound to 0.0.0.0
+    → Changed gateway.host from 0.0.0.0 to 127.0.0.1
+  ✓✓ [GATEWAY-003] openclaw.json - Token Exposed in Config
+    → Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN} env var reference. Set OPENCLAW_AUTH_TOKEN in your environment.
+  ✓✓ [GATEWAY-004] openclaw.json - Approval Confirmations Disabled
+    → Enabled approval confirmations for command execution
+  ✓✓ [GATEWAY-005] openclaw.json - Sandbox Disabled
+    → Enabled sandbox mode for isolated code execution
+13 remaining issues have fix guidance. Run `hackmyagent fix-all` to apply all available fixes.
+Backup created: /home/user/openclaw-project/.hackmyagent-backup/2026-09-28-075626086-000-6fa3bced
+Something wrong? Run `hackmyagent rollback .` to undo all changes.
 ```
+
+The CVE findings are not auto-fixed: upgrading `openclaw` (Step 2) is what clears them. `GATEWAY-002` needs the `security.websocketOrigins` edit its `Fix:` line names. The auth token was on disk in plaintext, so rotate it.
 
 ## Step 5: Verify
 
@@ -158,7 +156,7 @@ Backups saved to .hackmyagent-backup/
 npx hackmyagent secure
 ```
 
-After upgrading OpenClaw and applying fixes, a clean scan exits with code `0`.
+Once no critical or high finding remains, the scan exits with code `0`. In the run above that takes the upgrade, the fixes and the `security.websocketOrigins` edit.
 
 ---
 
