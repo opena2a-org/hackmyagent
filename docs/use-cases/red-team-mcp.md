@@ -10,7 +10,7 @@
 This workflow combines two approaches:
 
 1. **Static analysis** (`secure`) -- checks MCP config files for misconfigurations
-2. **Adversarial testing** (`attack`) -- sends 75 attack payloads against your agent or MCP server
+2. **Adversarial testing** (`attack`) -- sends attack payloads against your agent or MCP server: up to 164 across 16 categories, all of them at `--intensity aggressive`
 
 ## Step 1: Check MCP configurations
 
@@ -25,30 +25,37 @@ HMA auto-detects MCP configuration files in standard locations:
 - `claude_desktop_config.json`
 - `~/.config/claude/claude_desktop_config.json`
 
-**Expected output (MCP-related findings):**
+**Example output**, captured from a real run on a project whose `.cursor/mcp.json` grants `@modelcontextprotocol/server-filesystem` the root path `/`. Lines marked `...` are abridged:
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
+Scanning /home/user/my-agent...
 
-Scanning: /home/user/my-agent
+  my-agent  v1.0.0 · library · 1 file analyzed
+  1 critical issue found
 
-  HIGH      MCP-001   Root filesystem access in MCP server
-            Found: server-filesystem allowed path: /
-            Fix:   Scope to project directory only
+  Security  ━━━━━━━━━━━━━━━━━━━━ 69/100  (score capped from 80 to 69 — verdict is fail-direction)
 
-  HIGH      MCP-003   MCP server bound to 0.0.0.0
-            Found: everything server in .cursor/mcp.json
-            Fix:   Bind to 127.0.0.1
+  ── Observations ────────────────────────────────────────────
+  ...
+  Categories  MCP (1 critical) · supply-chain (1 medium) · 13 others clear
+  Verdict     Not safe to ship. Overprivileged MCP server scope in .cursor/mcp.json:5 + 1 more. Fix before using in production.
 
-  MEDIUM    MCP-005   MCP server with unrestricted tool access
-            Found: 14 tools enabled, no allowlist configured
-            Fix:   Define an explicit tool allowlist
+  ── Findings ────────────────────────────────────────────────
+  1 critical  1 medium
 
-  MEDIUM    MCP-007   No authentication on MCP server
-            Found: stdio transport with no auth token
-            Fix:   Add bearer token authentication
+  │ CRITICAL  Overprivileged MCP server scope
+  │ .cursor/mcp.json:5
+  │ Overprivileged filesystem access allows the agent (or an attacker via prompt injection) to read sensitive files like SSH keys, credentials, and system configs.
+  │ Verify: sed -n '5p' /home/user/my-agent/.cursor/mcp.json
+  │ Fix: Scope "filesystem" to the project directory: replace "/" with "./" or a specific subdirectory.
 
-Summary: 0 critical, 2 high, 2 medium, 0 low
+  │ MEDIUM  Dependency Lock File
+  │ package-lock.json
+  │ Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.
+
+  Path forward: 69 -> 95 by fixing 1 critical
+  ...
+  Audit MCP servers:    npx opena2a-cli mcp audit  (run from project dir)
 ```
 
 Fix configuration issues before proceeding to adversarial testing.

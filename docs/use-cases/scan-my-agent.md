@@ -11,43 +11,51 @@
 npx hackmyagent secure
 ```
 
-This runs all 310 static checks against your current directory. No config files or setup needed.
+This runs every static check against your current directory, plus the semantic pass over the agent artifacts it finds. No config files or setup needed. `npx hackmyagent check-metadata` prints the current check counts.
 
-**Expected output:**
+**Example output**, captured from a real run on a small MCP project that has a hardcoded key in `config.json` and a filesystem server granted `/`. Lines marked `...` are abridged:
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
+Scanning /home/user/my-agent...
 
-Scanning: /home/user/my-agent
-Checks:  310 across 69 categories
-Time:    2.4s
+  my-agent  v1.0.0 · mcp · 3 files analyzed
+  3 critical issues found
 
-  CRITICAL  CRED-001  Hardcoded API key in .env
-            Found: sk-proj-abc... in .env (line 3)
-            Fix:   Move to a secrets manager or environment variable
+  Security  ━━━━━━━━━━━━━━━━━━━━ 53/100
 
-  HIGH      MCP-003   MCP server bound to 0.0.0.0
-            Found: stdio server in .cursor/mcp.json listening on all interfaces
-            Fix:   Bind to 127.0.0.1
+  ── Observations ────────────────────────────────────────────
+  ...
+  Categories  credentials (2 critical) · MCP (1 critical) · sandbox (1 medium) · supply-chain (1 medium) · git hygiene (1 low) · 14 others clear
+  Verdict     Not safe to ship. Exposed Credential in config.json:3 + 5 more. Fix before using in production.
 
-  HIGH      GIT-002   .gitignore missing sensitive patterns
-            Found: .env, *.pem not in .gitignore
-            Fix:   Add patterns to .gitignore
+  ── Findings ────────────────────────────────────────────────
+  3 critical  2 medium  1 low
 
-  MEDIUM    PERM-001  Overly permissive file: config.json (0644)
-            Fix:   Set to 0600
+  │ CRITICAL  Exposed Credential
+  │ config.json:3
+  │ Replaces hardcoded credentials with ${ENV_VAR} references. Store actual values in your .env file, which should be in .gitignore.
+  │ Verify: sed -n '3p' /home/user/my-agent/config.json
+  │ →  hackmyagent secure --fix
 
-  MEDIUM    LOG-001   No audit logging configured
-            Fix:   Add structured logging for agent actions
+  ...
 
-  LOW       PROMPT-002  No system prompt hardening detected
-            Fix:   Add instruction boundaries to system prompt
+  │ LOW  Incomplete .gitignore
+  │ .gitignore
+  │ No committable files match the missing patterns yet, but adding them now (.env, secrets.json, *.pem, *.key) means a future key or secrets file is never committed by accident.
+  │ →  hackmyagent secure --fix
 
-Summary: 1 critical, 2 high, 2 medium, 1 low
-         3 auto-fixable (run with --fix)
+  │ CRITICAL  Overprivileged MCP server scope
+  │ .cursor/mcp.json:5
+  │ Overprivileged filesystem access allows the agent (or an attacker via prompt injection) to read sensitive files like SSH keys, credentials, and system configs.
+  │ Verify: sed -n '5p' /home/user/my-agent/.cursor/mcp.json
+  │ Fix: Scope "files" to the project directory: replace "/" with "./" or a specific subdirectory.
 
-Exit code: 1 (critical/high issues found)
+  ...
+
+  Path forward: 53 -> 98 by fixing 3 critical
 ```
+
+Each finding names its file, and where the evidence sits on a line, the line and a `Verify:` command that prints it. Each one also says how to fix it: with `--fix` (Step 4) or by the edit its `Fix:` line names.
 
 ## Step 2: Understand severity levels
 
@@ -58,7 +66,7 @@ Exit code: 1 (critical/high issues found)
 | MEDIUM | Defense-in-depth gaps. Missing logging, weak permissions. | Fix during next sprint. |
 | LOW | Hardening recommendations. Best practices not yet applied. | Address when convenient. |
 
-The exit code is `1` if any critical or high issues are found, `0` if clean.
+The exit code is `1` if any critical or high issues are found and `0` when none are. This run exits `1`.
 
 ## Step 3: Preview fixes (dry run)
 
@@ -68,26 +76,21 @@ Before applying changes, see what HMA would do:
 npx hackmyagent secure --fix --dry-run
 ```
 
-**Expected output:**
+**Example output** from the same project (abridged):
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner (dry run)
+Scanning /home/user/my-agent (dry-run)...
 
-Scanning: /home/user/my-agent
-Checks:  310 across 69 categories
+  my-agent  v1.0.0 · mcp · 3 files analyzed
+  3 critical issues found
 
-  CRITICAL  CRED-001  Hardcoded API key in .env
-            Would fix: Replace sk-proj-abc... with ${OPENAI_API_KEY}
-
-  HIGH      GIT-002   .gitignore missing sensitive patterns
-            Would fix: Append .env, *.pem, *.key to .gitignore
-
-  MEDIUM    PERM-001  Overly permissive file: config.json (0644)
-            Would fix: chmod 0600 config.json
-
-Dry run complete. 3 fixes would be applied.
-Run without --dry-run to apply.
+  Security  ━━━━━━━━━━━━━━━━━━━━ 53/100
+  ...
+  Dry run complete: 2 issues auto-fixable. Run without --dry-run to apply.
+  No changes were made.
 ```
+
+The report is the one from Step 1. The closing lines say how many findings `--fix` would change.
 
 No files are modified during a dry run.
 
@@ -97,29 +100,28 @@ No files are modified during a dry run.
 npx hackmyagent secure --fix
 ```
 
-**Expected output:**
+**Example output** from the same project (abridged; the backup directory name carries the run's timestamp):
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
+Scanning /home/user/my-agent...
+Verifying applied fixes...
 
-Scanning: /home/user/my-agent
-Checks:  310 across 69 categories
+  my-agent  v1.0.0 · mcp · 4 files analyzed
+  3 critical issues found
 
-  FIXED     CRED-001  Replaced hardcoded key with ${OPENAI_API_KEY} in .env
-            Backup: .hackmyagent-backup/.env.1710504000
-
-  FIXED     GIT-002   Added .env, *.pem, *.key to .gitignore
-            Backup: .hackmyagent-backup/.gitignore.1710504000
-
-  FIXED     PERM-001  Set config.json permissions to 0600
-            Backup: .hackmyagent-backup/config.json.1710504000
-
-  HIGH      MCP-003   MCP server bound to 0.0.0.0
-            (manual fix required -- update server config)
-
-Summary: 3 fixed, 1 remaining (manual)
-Backups saved to .hackmyagent-backup/
+  Security  ━━━━━━━━━━━━━━━━━━━━ 55/100
+  Live tree: 69/100 — the 14-point difference is 2 findings inside the backup this run created at /home/user/my-agent/.hackmyagent-backup/2026-09-28-075235539-000-0e2eba50
+  Those are the pre-fix copies, kept so `hackmyagent rollback` can undo this run. Rotate what was exposed, then delete that directory once you no longer need to roll back.
+  ...
+Fixed 2 issues (2 verified):
+  ✓✓ [CRED-001] config.json:3 - Exposed Credential
+  ✓✓ [GIT-002] .gitignore - Incomplete .gitignore
+3 remaining issues have fix guidance. Run `hackmyagent fix-all` to apply all available fixes.
+Backup created: /home/user/my-agent/.hackmyagent-backup/2026-09-28-075235539-000-0e2eba50
+Something wrong? Run `hackmyagent rollback .` to undo all changes.
 ```
+
+After this run `config.json:3` reads `"openaiApiKey": "${OPENAI_API_KEY}"`, and `.gitignore` has gained `.env`, `secrets.json`, `*.pem` and `*.key`. The overprivileged MCP scope is left to you; its `Fix:` line names the edit. The key was on disk in plaintext, so rotate it. Until you delete the backup directory, scans also report the pre-fix copies inside it, and the report names that directory.
 
 All changes are backed up automatically. To undo:
 
@@ -141,13 +143,13 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 ## Tips
 
-- Use `--verbose` to see all 310 static checks, including ones that passed.
+- Use `--verbose` to see every check, including the ones that passed.
 - Use `--ignore CRED-001,LOG-001` to skip specific checks (e.g., known false positives).
 - Use `--json` to get machine-readable output for scripting.
-- Add `--ci` for non-interactive mode (no color, no prompts).
+- Add `--ci` in CI jobs: it suppresses interactive prompts and does not change the exit code.
 
 ## Next steps
 
 - [Red-team your MCP servers](red-team-mcp.md) with adversarial payloads
 - [Add HMA to your CI/CD pipeline](ci-pipeline.md)
-- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for all 310 static checks
+- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for the static checks
