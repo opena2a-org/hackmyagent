@@ -611,6 +611,11 @@ const FAMILY_EXCLUSIONS: readonly CheckIdExclusion[] = [
     ids: [],
     reason: 'Layer-3 LLM narrative findings: SEM-LLM-NNN numbers the findings inside one LLM analysis response (src/semantic/llm/index.ts), so the id is a per-response index, not a stable check. SEM-LLM-NOT-ANALYZED (the coverage statement) rides the SEM exclusion above.',
   },
+  {
+    family: 'CRED-HIST',
+    ids: ['CRED-HIST-001'],
+    reason: 'Git-history credential finding of `secure --scan-history` (src/hardening/git-history-scan.ts): a value the credential patterns of the CRED checks match, found in a commit rather than in the tree. The finding carries its own attack class (RETROACTIVE-PRIV), so no inventory entry is needed to classify it, and it is not counted among the published checks.',
+  },
   // NanoMind daemon narrative ids: numbered per analysis by the optional
   // daemon (src/semantic/nanomind-analyzer.ts), not stable checks; the
   // emission path is inactive in the shipped scan flow.

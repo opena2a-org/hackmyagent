@@ -244,6 +244,13 @@ export interface SecurityFinding {
   kind?: 'file' | 'directory';
   /** Line number in the file where the issue was found */
   line?: number;
+  /**
+   * #536 — the commit `file` and `line` are read at, for a finding from the
+   * git history (`secure --scan-history`). The path need not exist in the
+   * working tree; the citation is `commit:file:line`. Absent on every finding
+   * read from the tree. Full object name, hex only.
+   */
+  commit?: string;
   /** Runnable command or concise action to fix this issue */
   fix?: string;
   /**
@@ -502,6 +509,14 @@ export interface ScanResult {
    * change. Absent (not empty) when nothing was withheld.
    */
   withheldLinks?: WithheldLinkRecord[];
+  /**
+   * #536 — what the git history pass read, present only when the run asked for
+   * it (`secure --scan-history`). `commitsScanned` counts distinct commits
+   * whose changes were read; `since` is the boundary ref as given;
+   * `credentialsFound` counts distinct values before any suppression, so a
+   * reader can tell "read N commits, found nothing" from "did not look".
+   */
+  history?: { commitsScanned: number; since?: string; credentialsFound: number };
   /**
    * Summaries of AI runtimes installed on this machine but OUTSIDE the scan
    * target (`~/.openclaw`, `~/.nemoclaw`, ...).

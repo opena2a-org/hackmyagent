@@ -59,6 +59,7 @@ import { lineOfJsonValue } from '../scanner/json-locate';
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
 import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
+import { scanGitHistory, shortCommit, type HistoryCredentialHit, type HistoryScanPlan } from './git-history-scan';
 import {
   decodeArtifact,
   MAX_DECODE_DEPTH,
@@ -279,6 +280,39 @@ function modeGrants(st: fsSync.Stats, bit: 'read' | 'search'): boolean | undefin
   const groups = typeof process.getgroups === 'function' ? process.getgroups() : [];
   const shift = st.uid === uid ? 6 : (st.gid === process.getgid() || groups.includes(st.gid) ? 3 : 0);
   return (st.mode & ((bit === 'read' ? 4 : 1) << shift)) !== 0;
+}
+
+/**
+ * #536 — one credential a commit added, as a finding.
+ *
+ * The remedy is not CRED-001's. Editing the working tree does not change what a
+ * commit holds, so "move it to an environment variable" is a dead end here: the
+ * value stays readable in every clone that contains the commit until it is
+ * rotated, and rotation is the step that ends the exposure. Rewriting history
+ * is named as the separate, heavier step it is.
+ *
+ * `file` stays the plain path, so `.hmaignore` path rules and `--ignore` apply
+ * to it exactly as they do to the tree; `commit` carries the rest of the
+ * citation, and every renderer prints `commit:file:line`.
+ */
+export function historyCredentialFinding(hit: HistoryCredentialHit): SecurityFindingDraft {
+  const short = shortCommit(hit.commit);
+  return {
+    checkId: 'CRED-HIST-001',
+    name: 'Credential in git history',
+    description: `${hit.credentialType} committed at ${short}:${hit.file}:${hit.line}`,
+    category: 'credentials',
+    severity: 'critical',
+    passed: false,
+    message: `${hit.credentialType} was added by commit ${short} and stays readable from every clone that contains it`,
+    file: hit.file,
+    line: hit.line,
+    commit: hit.commit,
+    fixable: false,
+    fix: `Rotate this ${hit.credentialType} at its issuer: deleting it from the tree does not remove it from commit ${short}`,
+    guidance: 'Anyone with a clone can read this value from the commit, whether or not the file still holds it. Rotate it first. Rewriting history (for example with git filter-repo) is a separate step: it changes every later commit and needs every clone re-fetched. A rotated value still reports here, because the commit still holds it; after rotating, --since <ref> limits later runs to the commits after <ref>.',
+    attackClass: 'RETROACTIVE-PRIV',
+  };
 }
 
 /**
@@ -1064,6 +1098,12 @@ export interface ScanOptions {
    */
   confineRoots?: string[];
   /**
+   * #536 — also read the git history `resolveHistoryScan` resolved, and report
+   * every credential a commit added as `CRED-HIST-001`, including ones since
+   * deleted from the tree. Absent: the tree is the whole input, as before.
+   */
+  scanHistory?: HistoryScanPlan;
+  /**
    * The NanoMind semantic pass, run INSIDE the coverage ledger's window (#499).
    *
    * The caller supplies it as a hook rather than calling it after `scan()`
@@ -1110,7 +1150,7 @@ export interface ScanOptions {
 
 // Patterns for detecting exposed credentials
 // Each pattern is carefully tuned to minimize false positives
-const CREDENTIAL_PATTERNS = [
+export const CREDENTIAL_PATTERNS = [
   // Anthropic: sk-ant-api followed by version and 20+ char key
   { name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/ },
   // OpenAI project keys: sk-proj- prefix with 20+ chars
@@ -5259,6 +5299,22 @@ export class HardeningScanner {
       }
     }
 
+    // #536 — the history pass. After the semantic merge, so the merge is never
+    // handed a finding whose path may not exist in the tree it reads; before the
+    // filters, suppressions and the score, so a history finding travels every
+    // channel a tree finding does. A git failure part way throws: a history the
+    // scan could not read to the end must not report as one with nothing in it.
+    let history: ScanResult['history'];
+    if (options.scanHistory) {
+      const summary = await scanGitHistory(options.scanHistory, CREDENTIAL_PATTERNS, hasCredentialOutsideEnvRef);
+      findings.push(...summary.hits.map(historyCredentialFinding));
+      history = {
+        commitsScanned: summary.commitsScanned,
+        ...(summary.since !== undefined ? { since: summary.since } : {}),
+        credentialsFound: summary.hits.length,
+      };
+    }
+
     // #438 — inputs the scan found inside the target and could not read.
     //
     // This is the channel the PATHS travel on. The coverage object carries the
@@ -6024,6 +6080,8 @@ export class HardeningScanner {
       ...(this.coverage.withheldLinks.length > 0
         ? { withheldLinks: withheldLinkRecords(this.coverage.withheldLinks, this.cliName) }
         : {}),
+      // #536 — present only when the history was asked for and read.
+      ...(history ? { history } : {}),
     };
   }
 

@@ -38,6 +38,8 @@ export interface VerifyCommandInput {
   file?: string;
   line?: number;
   evidence?: Evidence;
+  /** #536 — the commit `file` is read at, for a finding from git history. */
+  commit?: string;
 }
 
 /**
@@ -125,6 +127,8 @@ export function generateVerifyCommand(
   const line = firstLineFromEvidence(f.evidence) ?? f.line;
   if (!isUsableLine(line)) return undefined;
 
+  if (f.commit !== undefined) return historyVerifyCommand(f.commit, f.file, line, scanRoot);
+
   if (scanRoot === undefined) {
     const quoted = shellEscapePath(f.file);
     if (!quoted) return undefined;
@@ -139,6 +143,30 @@ export function generateVerifyCommand(
   if (!quoted) return undefined;
 
   return `sed -n '${line}p' ${quoted}`;
+}
+
+/**
+ * #536 — the Verify for a finding read from a commit. The path may not exist
+ * in the working tree, so `sed` on it verifies nothing; the line is read from
+ * the commit instead. `<commit>:./<path>` is resolved against the directory
+ * `-C` names, which is the scan target the path is relative to, so the
+ * command is right for a target below the repository root too.
+ *
+ * A commit that is not a full hex object name is not one this tool produced,
+ * and gets no Verify rather than a command built from it.
+ */
+function historyVerifyCommand(
+  commit: string,
+  file: string,
+  line: number,
+  scanRoot: string | undefined,
+): string | undefined {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) return undefined;
+  const object = citationPath(`${commit.slice(0, 12)}:./${file}`);
+  if (!object) return undefined;
+  const root = scanRoot === undefined ? null : citationPath(scanRoot);
+  const git = root ? `git -C ${root} show` : 'git show';
+  return `${git} ${object} | sed -n '${line}p'`;
 }
 
 /**
