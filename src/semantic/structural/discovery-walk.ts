@@ -51,13 +51,23 @@ export interface WalkedArtifact {
 
 export interface WalkResult {
   artifacts: WalkedArtifact[];
-  // No completeness flag: nothing consumed one. A directory the walk cannot
-  // list is recorded on the coverage ledger as an unread input (#588), which
-  // is the channel that reaches the exit code and the user; a bound reached
-  // under-reports, and no Layer-2 finding is absence-based across the tree
-  // (every one is derived from the CONTENT of a file that was read, verified
-  // across all four analyzers, 2026-08-03), so a bounded walk can never turn
-  // into a positive accusation.
+  /**
+   * True only when every directory under the root was listed within the
+   * bounds, so an empty `artifacts` is a proof of absence rather than a
+   * failure to look.
+   *
+   * The Layer-2 analyzers ignore it: a directory the walk cannot list is
+   * recorded on the coverage ledger as an unread input (#588), which is the
+   * channel that reaches the exit code and the user, and every Layer-2 finding
+   * is derived from the CONTENT of a file that was read, so a bounded walk
+   * there only under-reports. LIFECYCLE-008 is different: it reports that a
+   * safety-instruction file does NOT exist (#355), and must not say so on the
+   * strength of a walk that stopped early or hit an unreadable directory.
+   *
+   * Policy skips (`.git`, `node_modules`, symlinked dirents, `isExcludedDir`)
+   * do not clear it; they are decisions not to look, not failures to look.
+   */
+  complete: boolean;
 }
 
 export interface WalkOptions {
@@ -184,18 +194,22 @@ export async function walkForArtifacts(
 ): Promise<WalkResult> {
   const artifacts: WalkedArtifact[] = [];
   let entries = 0;
+  // Cleared at every point where the walk stops looking before it has seen
+  // the whole tree; see `WalkResult.complete`.
+  let complete = true;
 
   try {
     const rootStat = await fs.stat(targetDir);
     // A single-FILE target has no tree to walk; the caller handles it, and an
     // empty result there is complete rather than unverifiable.
-    if (!rootStat.isDirectory()) return { artifacts };
+    if (!rootStat.isDirectory()) return { artifacts, complete };
   } catch {
-    return { artifacts };
+    return { artifacts, complete: false };
   }
 
   const walk = async (dir: string, depth: number): Promise<void> => {
     if (entries >= MAX_ENTRIES || artifacts.length >= MAX_ARTIFACTS) {
+      complete = false;
       return;
     }
     let dirents;
@@ -206,10 +220,12 @@ export async function walkForArtifacts(
       // result is not a proof of absence — and the directory itself is a lost
       // input of the directory kind, recorded where it was discovered (#588).
       noteListFailure(dir, (err as NodeJS.ErrnoException | null)?.code);
+      complete = false;
       return;
     }
     for (const dirent of dirents) {
       if (entries++ >= MAX_ENTRIES) {
+        complete = false;
         return;
       }
       if (dirent.isSymbolicLink()) continue;
@@ -229,6 +245,7 @@ export async function walkForArtifacts(
         // neither costs completeness — the same stance layer 1 takes.
         if (dirent.name === '.git' || dirent.name === 'node_modules') continue;
         if (depth + 1 > MAX_DEPTH) {
+          complete = false;
           continue;
         }
         // TOCTOU: re-examine before descending.
@@ -240,11 +257,15 @@ export async function walkForArtifacts(
           // parent denying search (`chmod 600 a/` with `a/b/` beneath it), and
           // `a/b/` is then a directory the scan could not list (#588).
           noteListFailure(abs, (err as NodeJS.ErrnoException | null)?.code);
+          complete = false;
           continue;
         }
         if (opts.isExcludedDir && (await opts.isExcludedDir(abs))) continue;
         await walk(abs, depth + 1);
-        if (artifacts.length >= MAX_ARTIFACTS) return;
+        if (artifacts.length >= MAX_ARTIFACTS) {
+          complete = false;
+          return;
+        }
         continue;
       }
 
@@ -253,6 +274,7 @@ export async function walkForArtifacts(
       const type = classifyArtifact(rel, specs);
       if (type === undefined) continue;
       if (artifacts.length >= MAX_ARTIFACTS) {
+        complete = false;
         return;
       }
       artifacts.push({ rel, type });
@@ -266,5 +288,5 @@ export async function walkForArtifacts(
   // of the host filesystem.
   artifacts.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
 
-  return { artifacts };
+  return { artifacts, complete };
 }

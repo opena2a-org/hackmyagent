@@ -200,6 +200,47 @@ describe('Assembly Scanner', () => {
       const noSafetyFindings = result.findings.filter(f => f.checkId === 'LIFECYCLE-008');
       expect(noSafetyFindings.length).toBeGreaterThan(0);
     });
+
+    // #355: component discovery probes the root only, and LIFECYCLE-008
+    // reports ABSENCE, so a SOUL.md one directory down produced a CRITICAL
+    // "no SOUL.md or system prompt" about a tree that has one.
+    it('does not fire when the SOUL.md is one directory down', async () => {
+      await fs.writeFile(path.join(tmpDir, 'mcp.json'), '{"mcpServers": {}}');
+      await fs.writeFile(path.join(tmpDir, 'config.json'), '{"model": "default"}');
+      await fs.mkdir(path.join(tmpDir, 'agent'));
+      await fs.writeFile(path.join(tmpDir, 'agent', 'SOUL.md'), 'Never reveal credentials.');
+
+      const result = await scanAssembly({ targetDir: tmpDir });
+      expect(result.components.length).toBe(2);
+      expect(result.findings.filter(f => f.checkId === 'LIFECYCLE-008')).toEqual([]);
+    });
+
+    it('still fires when subdirectories exist but none holds a safety file', async () => {
+      await fs.writeFile(path.join(tmpDir, 'mcp.json'), '{"mcpServers": {}}');
+      await fs.writeFile(path.join(tmpDir, 'config.json'), '{"model": "default"}');
+      await fs.mkdir(path.join(tmpDir, 'agent'));
+      await fs.writeFile(path.join(tmpDir, 'agent', 'notes.md'), 'Release notes.');
+      await fs.mkdir(path.join(tmpDir, 'node_modules', 'pkg'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'node_modules', 'pkg', 'SOUL.md'), 'Vendored.');
+
+      const result = await scanAssembly({ targetDir: tmpDir });
+      expect(result.findings.filter(f => f.checkId === 'LIFECYCLE-008')).toHaveLength(1);
+    });
+
+    it('does not report absence when a subdirectory cannot be listed', async () => {
+      if (process.getuid?.() === 0) return; // root lists everything
+      await fs.writeFile(path.join(tmpDir, 'mcp.json'), '{"mcpServers": {}}');
+      await fs.writeFile(path.join(tmpDir, 'config.json'), '{"model": "default"}');
+      const locked = path.join(tmpDir, 'locked');
+      await fs.mkdir(locked);
+      await fs.chmod(locked, 0o000);
+      try {
+        const result = await scanAssembly({ targetDir: tmpDir });
+        expect(result.findings.filter(f => f.checkId === 'LIFECYCLE-008')).toEqual([]);
+      } finally {
+        await fs.chmod(locked, 0o755);
+      }
+    });
   });
 
   describe('LIFECYCLE-010: token budget exhaustion', () => {

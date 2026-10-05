@@ -34,6 +34,7 @@ import type {
 // rather than relying on the scanner's boundary downstream.
 import { emitFindings, type RedactedFinding } from '../hardening/finding-emit';
 import { escapeForDisplay, escapePathForDisplay } from '../ui/display-safe';
+import { walkForArtifacts, type ArtifactSpec } from '../semantic/structural/discovery-walk';
 
 /** Patterns that indicate prompt injection when found in assembled context */
 const INJECTION_PATTERNS: { pattern: RegExp; name: string; severity: 'critical' | 'high' | 'medium' }[] = [
@@ -144,6 +145,25 @@ function displacementFix(comp: AssemblyComponent, totalLength: number): string {
     + `does not use or by moving long descriptions out of the prompt, and keep the safety instructions at the start and `
     + `end of the assembled prompt. Verify: hackmyagent secure .`
   );
+}
+
+const SOUL_SPECS: readonly ArtifactSpec[] = SOUL_FILES.map(glob => ({ glob, type: 'agent_instructions' as const }));
+
+/**
+ * Whether the tree is PROVEN to hold no safety-instruction file at any depth.
+ *
+ * Component discovery probes the root only, so "no SOUL.md among the
+ * components" is not "no SOUL.md in the tree": measured on #355, root
+ * `mcp.json` + `config.json` with the safety instructions in `agent/SOUL.md`
+ * reported LIFECYCLE-008 at CRITICAL, asserting the opposite of the tree.
+ * LIFECYCLE-008 is absence-based, so it may only fire on a walk that saw the
+ * whole tree and found nothing; a bound reached or an unreadable directory is
+ * not a proof of absence (the unreadable directory is already on the coverage
+ * ledger as an unread input, #588).
+ */
+async function provablyNoSafetyFile(targetDir: string): Promise<boolean> {
+  const { artifacts, complete } = await walkForArtifacts(targetDir, SOUL_SPECS);
+  return complete && artifacts.length === 0;
 }
 
 interface AssemblyScanOptions {
@@ -546,7 +566,7 @@ export async function scanAssembly(options: AssemblyScanOptions): Promise<{
 
   // 8. Check for assembly without safety instructions
   const hasSafety = components.some(c => c.role === 'soul' || c.role === 'systemInstruction');
-  if (!hasSafety && components.length > 1) {
+  if (!hasSafety && components.length > 1 && (await provablyNoSafetyFile(targetDir))) {
     findings.push({
       checkId: 'LIFECYCLE-008',
       name: 'Assembly without safety instructions',
