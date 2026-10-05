@@ -24,7 +24,7 @@
 import { fs as trackedFs } from '../hardening/tracked-fs';
 import { noteReadFailure, noteListFailure, currentLedger } from '../hardening/coverage-ledger';
 import { readStaysInsideTree } from '../hardening/contain';
-const { readFile, readdir, stat } = trackedFs;
+const { readFile, readdir, stat, open } = trackedFs;
 // DELIBERATELY RAW, and the reason is not an oversight (#499).
 //
 // Two callers, and neither is a read of a discovered input:
@@ -897,6 +897,42 @@ async function isWithinSizeLimit(filePath: string): Promise<boolean> {
   } catch (err) {
     noteReadFailure(filePath, (err as NodeJS.ErrnoException | null)?.code);
     return false;
+  }
+}
+
+/**
+ * Discovery without the reader (#516).
+ *
+ * `--static-only` turns this layer off, and with it the only component that
+ * discovers and opens a source file at `--scan-depth quick`: most static check
+ * groups are skipped there and none of the rest reads an arbitrary source
+ * path. So `secure --static-only --scan-depth quick` over a tree holding a
+ * mode-000 `src/greet.js` scored 98/100 at exit 0, while the same tree exited
+ * 2 and named the file without the flag, and at standard depth with it. The
+ * gate had nothing to settle on because nothing had recorded the file.
+ *
+ * This runs the same walk the compile loop consumes and opens each file it
+ * would have read, so the set of inputs the run reports as discovered does
+ * not depend on whether the analyzer runs. Nothing is compiled or analyzed and
+ * no bytes are read: a file that opens is not recorded anywhere (outside a
+ * `coverage.run()` frame a success is unattributable and dropped, so
+ * `filesExamined` is unchanged), and a file that does not open is recorded on
+ * the failure channel the compile loop's `readFile` would have used. The
+ * walker's own list and `stat` failures are recorded by the walk itself.
+ * Sweep-only documents are left out because the compile loop does not read
+ * them either.
+ */
+export async function noteUnreadDiscoveredInputs(targetDir: string): Promise<void> {
+  const { compileFiles } = await discoverFiles(targetDir);
+  for (const filePath of compileFiles) {
+    let handle;
+    try {
+      handle = await open(filePath, 'r');
+    } catch (err) {
+      noteReadFailure(filePath, (err as NodeJS.ErrnoException | null)?.code);
+      continue;
+    }
+    await handle.close().catch(() => {});
   }
 }
 

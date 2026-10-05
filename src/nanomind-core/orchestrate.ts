@@ -167,6 +167,11 @@ export async function orchestrateNanoMind(
   // Skip NanoMind only when explicitly opted out
   // CI mode still runs NanoMind (deterministic, no cost, better results)
   if (staticOnly) {
+    // Turning the analyzer off must not turn its discovery off (#516): at
+    // `--scan-depth quick` this layer is the only reader of source files, so
+    // an unreadable one left no record and the run exited 0.
+    const { noteUnreadDiscoveredInputs } = await import('./scanner-bridge.js');
+    await noteUnreadDiscoveredInputs(targetDir);
     return {
       mergedFindings: [...existingFindings],
       nanomindUsed: false,
