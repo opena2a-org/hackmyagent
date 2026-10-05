@@ -57,6 +57,7 @@ const ALLOWLIST: Record<string, string> = {
   'store/project-store.ts': 'HMA\'s own project store under the home directory',
   'hardening/nemoclaw-scanner.ts': 'not constructed anywhere in src/ (0 `new NemoClawScanner` sites); off the scan path',
   'cli-prefix.ts': 'existsSync only, on the two candidate spellings of one Verify-citation operand (#491); reads no content, and a candidate that leaves the scan target lexically or through a link (isPathWithinDirectory + readStaysInsideTree) is not re-based',
+  'change-scope.ts': 'secure --range / --staged (#537): materializes the base and head trees of a change into a mkdtemp of its own through git checkout-index with a throwaway index, so like extract-archive.ts it CREATES scan targets rather than reading one; its only content reads are re-reads, after the scan has finished, of lines the scan already cited under those temp roots, which must stay off the coverage ledger (see the module docblock)',
   // Off the scan path — other commands.
   'index.ts': 'library entry; re-exports only',
   'init-mcp.ts': 'writes the MCP client config the user names',
