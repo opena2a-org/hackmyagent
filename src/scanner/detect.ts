@@ -126,7 +126,19 @@ export interface Finding {
   title: string;
   detail: string;
   whyItMatters: string;
-  remediation: string;
+  /**
+   * The command that fixes this finding, and nothing else: a reader or an
+   * agent may paste it into a shell. `null` when the fix is a change only a
+   * person can make, such as narrowing one permission entry. A sentence pasted
+   * into a shell is not inert — the first word runs as a program and a `>` in
+   * it creates a file — so words never go in this field.
+   */
+  remediation: string | null;
+  /**
+   * The fix in words: what the command does, or the change to make when there
+   * is no command. Renders as body text, never in the command colour.
+   */
+  remediationNote?: string;
   /**
    * Stable identifier for findings the renderer has to reason about, so it
    * does not have to match on prose. Added for #303: the Path-forward line
@@ -310,6 +322,37 @@ function sevBadge(level: RiskLevel): string {
 function sectionHeader(label: string): string {
   const fill = Math.max(1, 56 - label.length);
   return `  ${c.dim}──${R} ${c.bold}${label}${R} ${c.dim}${'─'.repeat(fill)}${R}`;
+}
+
+/**
+ * The Fix and Verify lines under a finding, for both the project and the
+ * workspace report.
+ *
+ * Only a command takes the command colour. The note is body text on its own
+ * line, so selecting the Fix line copies the command and nothing after it. A
+ * finding whose fix is words alone gets its Verify command in the command
+ * colour instead, so the one thing styled to be copied is something a shell
+ * can run. `palette` is a parameter so a test can see the colour choice even
+ * though its stdout is not a terminal.
+ */
+export function remedyLines(
+  f: Pick<Finding, 'remediation' | 'remediationNote' | 'verify'>,
+  pipe: string,
+  palette: typeof c = c,
+): string[] {
+  const p = palette;
+  const lines: string[] = [];
+  if (f.remediation) {
+    lines.push(`  ${pipe} ${p.cyan}Fix:${p.reset} ${p.cyan}${f.remediation}${p.reset}`);
+    if (f.remediationNote) lines.push(`  ${pipe} ${f.remediationNote}`);
+  } else if (f.remediationNote) {
+    lines.push(`  ${pipe} ${p.cyan}Fix:${p.reset} ${f.remediationNote}`);
+  }
+  if (f.verify) {
+    const verifyColor = f.remediation ? p.dim : p.cyan;
+    lines.push(`  ${pipe} ${p.dim}Verify:${p.reset} ${verifyColor}${f.verify}${p.reset}`);
+  }
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -1482,7 +1525,10 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       whyItMatters:
         'API keys or tokens appear to be stored directly in these configuration files. '
         + 'Anyone with repository access can see and use these credentials.',
-      remediation: `opena2a protect ${target}  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.`,
+      remediation: `opena2a protect ${target}`,
+      remediationNote:
+        'Migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or '
+        + 'HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
       verify: configVerifyCommand(result.scanDirectory, criticalConfigs[0]),
     });
   }
@@ -1509,12 +1555,17 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
       // the generic sentence is wrong for half of them: "replace it with the
       // specific commands or paths this agent needs" is a dead end against
       // `defaultMode: acceptEdits`, which takes neither a command nor a path.
-      remediation: cited.evidence
-        ? `Narrow ${escapePathForDisplay(cited.file)}${cited.evidence.line === undefined ? '' : `:${cited.evidence.line}`} — ${
-          cited.evidence.fix
-            ?? `replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
-        }`
-        : `hackmyagent scan-soul ${target}`,
+      // That fix is an edit to one entry, so it is words with no command, and
+      // the Verify below is what the reader copies.
+      ...(cited.evidence
+        ? {
+          remediation: null,
+          remediationNote: `Narrow ${escapePathForDisplay(cited.file)}${cited.evidence.line === undefined ? '' : `:${cited.evidence.line}`} — ${
+            cited.evidence.fix
+              ?? `replace ${quoted(cited.evidence.token)} with the specific commands or paths this agent needs`
+          }`,
+        }
+        : { remediation: `hackmyagent scan-soul ${target}` }),
       verify: configVerifyCommand(result.scanDirectory, cited),
     });
   }
@@ -1858,8 +1909,7 @@ function formatWorkspaceText(ws: WorkspaceDetectResult, verbose: boolean, rawRoo
       lines.push(`  ${pipe} ${sevBadge(f.severity)}  ${c.bold}${f.title}${R}`);
       if (f.detail) lines.push(`  ${pipe} ${c.dim}${f.detail}${R}`);
       if (verbose && f.whyItMatters) lines.push(`  ${pipe} ${f.whyItMatters}`);
-      if (f.remediation) lines.push(`  ${pipe} ${c.cyan}Fix:${R} ${cyan(f.remediation)}`);
-      if (f.verify) lines.push(`  ${pipe} ${c.dim}Verify:${R} ${dim(f.verify)}`);
+      lines.push(...remedyLines(f, pipe));
     });
     if (hidden > 0) {
       lines.push('');
@@ -2030,8 +2080,7 @@ function formatText(
       lines.push(`  ${pipe} ${sevBadge(f.severity)}  ${c.bold}${c.white}${f.title}${R}`);
       if (f.detail) lines.push(`  ${pipe} ${c.dim}${f.detail}${R}`);
       if (f.whyItMatters) lines.push(`  ${pipe} ${f.whyItMatters}`);
-      if (f.remediation) lines.push(`  ${pipe} ${c.cyan}Fix:${R} ${cyan(f.remediation)}`);
-      if (f.verify) lines.push(`  ${pipe} ${c.dim}Verify:${R} ${dim(f.verify)}`);
+      lines.push(...remedyLines(f, pipe));
     }
     const remaining = result.findings.length - shown;
     if (remaining > 0) {
