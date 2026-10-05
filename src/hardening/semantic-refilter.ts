@@ -5,7 +5,8 @@
  */
 
 import type { HardeningScanner } from './scanner';
-import type { ScanResult } from './security-check';
+import type { ScanResult, SecurityFindingDraft } from './security-check';
+import { summarizeSuppressed } from '../ui/verdict-band';
 
 /**
  * Re-apply the scope and suppression filters after the semantic merge, and
@@ -83,4 +84,59 @@ export async function refilterAfterSemanticMerge(
       scanner.isReportableFinding(f, projectType)
     );
   }
+}
+
+type SuppressionRows = NonNullable<ScanResult['suppressed']>;
+
+/**
+ * Fold two suppression records into one, per (checkId, channel), in the order
+ * `summarizeSuppressed` sorts. Expanded and re-summarised rather than
+ * concatenated, so a check recorded by both passes is one row with the summed
+ * count and the worst row stays first.
+ */
+function mergeSuppressionRows(...records: Array<SuppressionRows | undefined>): SuppressionRows {
+  return summarizeSuppressed(
+    records.flatMap((rows) =>
+      (rows ?? []).flatMap((r) =>
+        Array.from({ length: r.count }, () => ({
+          checkId: r.checkId,
+          name: r.name,
+          category: r.category,
+          severity: r.severity,
+          suppressed: true,
+          suppressedBy: r.suppressedBy,
+          passed: false,
+        })),
+      ),
+    ),
+  );
+}
+
+/**
+ * The re-filter for the report paths that run the semantic pass AFTER
+ * `scan()` returned (`secure-openclaw`, `secure-nemoclaw`), which merge it
+ * over `result.findings` rather than over `allFindings` (#460).
+ *
+ * `result.findings` no longer holds what the scan pass suppressed, so the
+ * merged array this re-filters carries only findings that pass never saw.
+ * The two records are therefore disjoint and ADDED: replacing the scan's
+ * record with this call's, as `refilterAfterSemanticMerge` can because it
+ * re-derives from the whole post-merge set, would drop every suppression the
+ * scan pass made. The result carries both, so the caller can add the
+ * suppressed penalties back at its risk level and exit code and name them,
+ * as `secure` and `check` do. Returns the merged findings with every matched
+ * one removed, the same removal the paths made before.
+ */
+export async function refilterAfterLateSemanticMerge<T extends SecurityFindingDraft>(
+  scanner: HardeningScanner,
+  result: ScanResult,
+  mergedFindings: T[],
+  targetDir: string,
+): Promise<T[]> {
+  const refiltered = await scanner.reapplyIgnoreFilters(mergedFindings, targetDir, result.projectType || 'library');
+  const suppressed = mergeSuppressionRows(result.suppressed, scanner.lastSuppressed);
+  const outOfScope = mergeSuppressionRows(result.outOfScope, scanner.lastOutOfScope);
+  result.suppressed = suppressed.length > 0 ? suppressed : undefined;
+  result.outOfScope = outOfScope.length > 0 ? outOfScope : undefined;
+  return refiltered;
 }
