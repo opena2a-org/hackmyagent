@@ -70,7 +70,7 @@ import {
 } from './analyzers/family-coverage.js';
 import type { AnalyzerFamily, AnalyzerRoute } from './analyzers/family-coverage.js';
 import { resolveFindingLine } from '../types/finding-location.js';
-import { enrichFindings } from './fix-generator.js';
+import { enrichFindings, scanEvasionFix } from './fix-generator.js';
 import { enforceSeverityFloor, validateEnhancement } from './security/defense-in-depth.js';
 import type { SeverityLevel } from './security/defense-in-depth.js';
 import { verifyAll } from './security/integrity-verifier.js';
@@ -919,7 +919,7 @@ function runAllAnalyzers(
   const findings: ASTFinding[] = [];
 
   // Capability analyzer does not require verifier (checks internally)
-  findings.push(...analyzeCapabilities(ast, projectType, projectConstraints));
+  findings.push(...analyzeCapabilities(ast, projectType, projectConstraints, artifactContent));
 
   // Credential, governance, and scope analyzers require AST integrity verification
   findings.push(...analyzeCredentials(ast, verifier, projectType, artifactContent));
@@ -1172,11 +1172,58 @@ export function mergeFindings(
       }
     } else {
       // No matching static finding -- add as a new finding
-      merged.push(astFindingToSecurityFinding(astFinding, readArtifact));
+      const named = astFinding.scanEvasion
+        ? nameScanEvasionReporters(astFinding, staticFindings, staticIndex, astFindings)
+        : astFinding;
+      merged.push(astFindingToSecurityFinding(named, readArtifact));
     }
   }
 
   return merged;
+}
+
+/**
+ * #759 — AST-MANIP-001 counts risk surfaces that are, in most reports, each
+ * reported by a finding of their own. Name those findings, by the identity
+ * this merge already uses (file + attack class): the failed static findings
+ * under that key when there are any, since an AST finding under it is absorbed
+ * into them; otherwise the failed AST findings under it, which are added as
+ * they are. An empty list says no finding reports that surface on its own.
+ * The fix is rebuilt from the named basis; it is tool-authored text plus the
+ * evidence it already carried, and is redacted at emit like any other fix.
+ */
+function nameScanEvasionReporters(
+  finding: ASTFinding,
+  staticFindings: SecurityFindingDraft[],
+  staticIndex: Map<string, number[]>,
+  astFindings: ASTFinding[],
+): ASTFinding {
+  const basis = finding.scanEvasion;
+  if (!basis) return finding;
+  // Narrowed to the reporters on the surface's own line when any is there, so
+  // a surface on line 17 is not credited to a finding about line 13.
+  const reportersOf = (attackClass: string, line: number | undefined): string[] => {
+    const key = findingMatchKey(finding.file, attackClass, finding.checkId);
+    const staticMatches = staticIndex.get(key);
+    const reporters: Array<{ checkId: string; line?: number }> = staticMatches && staticMatches.length > 0
+      ? staticMatches
+        .map(i => staticFindings[i])
+        .filter(f => f.passed === false && !f.notApplicable)
+      : astFindings
+        .filter(a => a !== finding && !a.passed && findingMatchKey(a.file, a.attackClass, a.checkId) === key);
+    const sameLine = line === undefined ? [] : reporters.filter(r => r.line === line);
+    const chosen = sameLine.length > 0 ? sameLine : reporters;
+    return [...new Set(chosen.map(r => r.checkId))].sort();
+  };
+  const named: ASTFinding = {
+    ...finding,
+    scanEvasion: {
+      ...basis,
+      surfaces: basis.surfaces.map(s => ({ ...s, reportedAs: reportersOf(s.attackClass, s.line) })),
+    },
+  };
+  const fix = scanEvasionFix(named);
+  return { ...named, fix: fix.fix, [FIX_LINES]: fix.fixLines };
 }
 
 // ============================================================================
@@ -1242,6 +1289,9 @@ function astFindingToSecurityFinding(
       // existing details bag rather than as a new top-level field: no
       // consumer reads it yet, so it is not a contract.
       ...(ast.matched ? { matched: ast.matched } : {}),
+      // #759 — what AST-MANIP-001 measured: the intent rating and each
+      // surface above 0.7 with its line and the findings that report it.
+      ...(ast.scanEvasion ? { scanEvasion: ast.scanEvasion } : {}),
     },
   });
 }

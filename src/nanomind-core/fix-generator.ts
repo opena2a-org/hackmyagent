@@ -75,7 +75,7 @@ export function enrichFindings(
  * `fixLines.join('\n') === fix` by construction here, and `emitFinding`
  * drops any pair for which that stops being true.
  */
-interface GeneratedFix {
+export interface GeneratedFix {
   fix: string;
   fixLines?: readonly string[];
 }
@@ -581,22 +581,44 @@ function fixScopeMismatch(finding: ASTFinding, ast: SecurityAST): string[] {
 // Scanner Evasion Fix
 // ============================================================================
 
-function fixScannerEvasion(finding: ASTFinding, ast: SecurityAST): string[] {
+/**
+ * The AST-MANIP-001 fix, built from the finding alone so the scanner bridge can
+ * rebuild it once it knows which reported findings carry each surface (#759).
+ */
+export function scanEvasionFix(finding: ASTFinding): GeneratedFix {
+  return composed(fixScannerEvasion(finding));
+}
+
+function fixScannerEvasion(finding: ASTFinding, ast?: SecurityAST): string[] {
   const parts: string[] = [];
-  const file = finding.file ?? ast.artifactPath ?? 'the artifact';
+  const file = finding.file ?? ast?.artifactPath ?? 'the artifact';
+  const basis = finding.scanEvasion;
+  const intent = basis?.intentClassification ?? ast?.intentClassification ?? 'unknown';
+  const intentConfidence = basis?.intentConfidence ?? ast?.intentConfidence ?? 0;
+  const surfaces = basis?.surfaces ?? [];
 
-  parts.push(`MANUAL REVIEW REQUIRED for ${file}.`);
-  parts.push('This artifact shows signs of intentional scanner evasion:');
-  parts.push(`  - ${ast.inferredRiskSurface.filter(r => r.confidence > 0.7).length} high-confidence risk surfaces`);
-  parts.push(`  - Intent classification: ${ast.intentClassification} (confidence: ${(ast.intentConfidence * 100).toFixed(0)}%)`);
+  parts.push(
+    `In ${file}, intent is classified ${intent} (${Math.round(intentConfidence * 100)}%) ` +
+    `while ${surfaces.length} risk surfaces exceed 0.7 confidence:`,
+  );
+  for (const s of surfaces) {
+    const where = s.line !== undefined ? `line ${s.line}` : 'line not located';
+    const reported = s.reportedAs === undefined
+      ? ''
+      : s.reportedAs.length > 0
+        ? ` (reported as ${s.reportedAs.join(', ')})`
+        : ' (no separate finding)';
+    parts.push(`  - ${where}: ${s.attackClass} ${Math.round(s.confidence * 100)}% "${truncate(s.evidence, 60)}"${reported}`);
+  }
+  parts.push('Resolve each listed surface: rewrite or remove the content on that line.');
+  parts.push('This finding clears when fewer than two surfaces stay above 0.7 confidence.');
+
+  const constituentIds = [...new Set(surfaces.flatMap(s => s.reportedAs ?? []))].sort();
   parts.push('');
-  parts.push('Evasion artifacts cannot be auto-fixed. A human security reviewer should:');
-  parts.push('  1. Examine the artifact line by line for hidden directives.');
-  parts.push('  2. Test in a sandboxed environment with full logging.');
-  parts.push('  3. Check git history for when evasion patterns were introduced.');
-  parts.push('  4. If intentional: remove the artifact entirely.');
-  parts.push('  5. If benign: simplify the artifact to remove false positive triggers.');
-
+  if (constituentIds.length > 0) {
+    parts.push(`Findings that report these surfaces for ${file}: ${constituentIds.join(', ')}.`);
+  }
+  parts.push(verifyCommandFor(finding.file ?? ast?.artifactPath));
   return parts;
 }
 
@@ -697,7 +719,11 @@ function generateGuidance(finding: ASTFinding, ast: SecurityAST, projectConstrai
 // ============================================================================
 
 function verifyCommand(ast: SecurityAST): string {
-  return `Verify: hackmyagent secure ${citationTarget(artifactDir(ast))}`;
+  return verifyCommandFor(ast.artifactPath);
+}
+
+function verifyCommandFor(artifactPath: string | undefined): string {
+  return `Verify: hackmyagent secure ${citationTarget(artifactDirOf(artifactPath))}`;
 }
 
 /**
@@ -715,7 +741,11 @@ function verifyCommand(ast: SecurityAST): string {
  * leave the finding with no way to check it.
  */
 function artifactDir(ast: SecurityAST): string {
-  return ast.artifactPath ? ast.artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
+  return artifactDirOf(ast.artifactPath);
+}
+
+function artifactDirOf(artifactPath: string | undefined): string {
+  return artifactPath ? artifactPath.split('/').slice(0, -1).join('/') || '.' : '.';
 }
 
 /**
@@ -818,7 +848,7 @@ function attackClassExplanation(attackClass?: string): string {
     case 'SOUL-MISSING':
       return 'Missing governance domains mean entire categories of abuse are undefended.';
     case 'SCAN-EVASION':
-      return 'Scanner evasion is a strong signal of malicious intent. Benign artifacts do not need to evade security scanning.';
+      return 'A suspicious rather than malicious intent rating alongside several high-confidence risk surfaces is the combination this check measures; each listed surface is a risk on its own.';
     case 'SUPPLY-CHAIN':
       return 'Supply chain attacks compromise users who install the artifact, not just the artifact itself.';
     default:
