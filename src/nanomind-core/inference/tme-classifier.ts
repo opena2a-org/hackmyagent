@@ -16,7 +16,9 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import https from 'node:https';
+import type { IncomingMessage } from 'node:http';
 import { escapeForDisplay } from '../../ui/display-safe';
+import { proxiedRequestOptions, resolveModelProxy } from './model-proxy';
 
 // Pinned to the model repository commit the sha256 values below were taken
 // from. A branch URL follows every later commit to that repository, so a new
@@ -231,7 +233,9 @@ export class TMEClassifier {
 
   /**
    * Download a single file from Hugging Face, following redirects only to
-   * the hosts `isAllowedModelHost` accepts.
+   * the hosts `isAllowedModelHost` accepts. Each request, redirects included,
+   * goes through the proxy HTTPS_PROXY, HTTP_PROXY and NO_PROXY choose for
+   * its host (see model-proxy.ts).
    * Uses only Node.js built-ins (https, fs, crypto).
    *
    * `timeout` is a socket idle bound armed before the socket connects, so it
@@ -248,7 +252,12 @@ export class TMEClassifier {
           reject(new Error(`refused a request to ${host}, which is outside huggingface.co and *.hf.co`));
           return;
         }
-        const req = https.get(targetUrl, { timeout: idleTimeoutMs }, (response) => {
+        const route = resolveModelProxy(targetUrl);
+        if (route.kind === 'unusable') {
+          reject(new Error(`${route.variable} is set but ${route.reason}, so no request was made`));
+          return;
+        }
+        const onResponse = (response: IncomingMessage) => {
           if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
             const location = response.headers.location;
             response.resume();
@@ -282,7 +291,13 @@ export class TMEClassifier {
           response.pipe(file);
           file.on('finish', () => { file.close(); resolve(); });
           file.on('error', (err) => { file.close(); reject(err); });
-        });
+        };
+        // The idle bound applies on both routes; through a proxy it covers the
+        // tunnel request as well as the connection inside the tunnel.
+        const options: https.RequestOptions = route.kind === 'direct'
+          ? { timeout: idleTimeoutMs }
+          : proxiedRequestOptions(route.proxy, targetUrl, idleTimeoutMs);
+        const req = https.get(targetUrl, options, onResponse);
         req.on('timeout', () => {
           req.destroy(new Error(`no data received for ${idleTimeoutMs / 1000}s`));
         });
@@ -314,7 +329,8 @@ export class TMEClassifier {
    * written to stderr in every output mode: a `--json` or `--ci` run is
    * exactly the run where a download nobody was told about goes unnoticed.
    * Before the first request it says what is fetched, from which hosts, how
-   * many bytes, into which directory, that it happens once per cache, and
+   * many bytes, into which directory, through which proxy (host:port and the
+   * variable it came from), that it happens once per cache, and
    * the flag that skips it; then one line reports the outcome. Nothing is
    * written when every file is already in the cache, because no request is
    * made.
@@ -332,9 +348,14 @@ export class TMEClassifier {
     const say = (line: string) => { process.stderr.write(`${line}\n`); };
     const size = formatModelBytes(toFetch.reduce((sum, f) => sum + f.bytes, 0));
     const fallback = 'The classifier did not run; this scan uses vocabulary scoring and its results can differ.';
+    // host:port and the variable's name only: a proxy URL can carry a password.
+    const route = resolveModelProxy(HF_BASE);
+    const via = route.kind === 'proxy'
+      ? `, through the proxy ${escapeForDisplay(route.proxy.display)} set in ${route.proxy.variable}`
+      : '';
     say(
       `NanoMind: downloading the classifier model (${toFetch.length} file(s), ${size}) from ` +
-      `${MODEL_HOSTS_FOR_NOTICE} into ${escapeForDisplay(dir)}.`,
+      `${MODEL_HOSTS_FOR_NOTICE} into ${escapeForDisplay(dir)}${via}.`,
     );
     say(
       '  This happens once per cache; later runs use the cached copy.' +
