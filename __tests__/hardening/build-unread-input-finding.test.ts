@@ -11,7 +11,8 @@ import { describe, it, expect, afterAll } from 'vitest';
 import * as fsn from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildUnreadInputFinding, unsearchableAncestorSync } from '../../src/hardening/scanner';
+import { execFileSync } from 'node:child_process';
+import { buildUnreadInputFinding, unsearchableAncestorSync, HardeningScanner } from '../../src/hardening/scanner';
 
 describe('buildUnreadInputFinding', () => {
   // A fresh target per probe-sensitive cell. The builder probes
@@ -320,5 +321,116 @@ describe('buildUnreadInputFinding', () => {
     );
     expect(f.fix).toBe(`chmod u+x cfg && hackmyagent secure ${dir}`);
     expect(f.guidance).toContain('can be listed but not entered');
+  });
+
+  // ---- #617: the obstruction's kind decides the words ----
+  describe('obstruction kinds the mode-bit probe cannot name (#617)', () => {
+    const asyncProbe = (absPath: string, targetDir: string): Promise<string | undefined> =>
+      (new HardeningScanner() as any).unsearchableAncestor(absPath, targetDir);
+
+    it('an access-control entry denying search on a mode-755 directory gets no chmod and no "no execute bit" claim', (ctx) => {
+      if (process.platform !== 'darwin') {
+        console.warn('[build-unread-input-finding] ACL fixture uses macOS `chmod +a`: SKIPPING, not passing');
+        ctx.skip();
+      }
+      const { dir, locked } = realTree();
+      const cfg = path.join(dir, 'cfg');
+      try {
+        fsn.chmodSync(cfg, 0o755);
+        execFileSync('chmod', ['+a', `${os.userInfo().username} deny search`, cfg]);
+        if (!denied(cfg, fsn.constants.X_OK)) {
+          console.warn('[build-unread-input-finding] the ACL did not deny search to this process (root?): SKIPPING, not passing');
+          ctx.skip();
+        }
+        // Raw ledger record (the `check` arm) and pre-classified (the `secure` arm).
+        for (const f of [
+          buildUnreadInputFinding({ path: locked, rel: 'cfg/secrets.js', code: 'EACCES' }, { cliName: 'hackmyagent', targetDir: dir, command: 'check' }),
+          buildUnreadInputFinding({ rel: 'cfg/secrets.js', code: 'EACCES', obstructedBy: 'cfg' }, { cliName: 'hackmyagent', targetDir: dir }),
+        ]) {
+          // `chmod u+x cfg` exits 0 here and changes nothing: the mode already has it.
+          expect(f.fix).not.toContain('chmod u+');
+          expect(f.fix).toContain('`ls -led cfg`');
+          expect(f.fix).toContain('not a mode bit');
+          expect(f.guidance).toContain('its mode grants search');
+          expect(f.guidance).not.toContain('no execute bit');
+          expect(f.guidance).toContain('the remedy is on `cfg` first');
+        }
+      } finally {
+        try { execFileSync('chmod', ['-N', cfg]); } catch { /* no ACL left */ }
+        cleanup(dir);
+      }
+    });
+
+    it('a mode-bit obstruction is the first remedy, not a claim that the file itself is readable', () => {
+      const dir = freshTarget();
+      const f = buildUnreadInputFinding(
+        { rel: 'cfg/secrets.js', code: 'EACCES', obstructedBy: 'cfg' },
+        { cliName: 'hackmyagent', targetDir: dir },
+      );
+      expect(f.fix).toBe(`chmod u+x cfg && hackmyagent secure ${dir}`);
+      expect(f.guidance).not.toContain('not on the file');
+      expect(f.guidance).toContain('the remedy is on `cfg` first');
+      expect(f.guidance).toContain('Whether the file itself can be read cannot be checked until `cfg` can be entered');
+      const d = buildUnreadInputFinding(
+        { rel: 'a/b', code: 'EACCES', kind: 'directory', obstructedBy: 'a' },
+        { cliName: 'hackmyagent', targetDir: dir },
+      );
+      expect(d.guidance).not.toContain('not on a/b/');
+      expect(d.guidance).toContain('Whether a/b/ itself can be listed cannot be checked until `a` can be entered');
+      expect(d.guidance).not.toMatch(/\bfiles?\b/i);
+    });
+
+    it('an obstruction whose name cannot be cited gets a remedy about the directory, not about the file', () => {
+      const dir = freshTarget();
+      const hazard = 'c\nf\x1b[31mg';
+      const f = buildUnreadInputFinding(
+        { rel: `${hazard}/secrets.js`, code: 'EACCES', obstructedBy: hazard },
+        { cliName: 'hackmyagent', targetDir: dir },
+      );
+      expect(f.fix).not.toContain('file named above');
+      expect(f.fix).toBe('Make the directory named in the guidance enterable, then re-run this scan.');
+      expect(f.fix).not.toContain(hazard);
+    });
+
+    it('an obstruction that vanished is not named, and a record that vanished gets the re-run, not a chmod', async () => {
+      const { dir, locked } = realTree();
+      try {
+        fsn.rmSync(path.join(dir, 'cfg'), { recursive: true });
+        expect(unsearchableAncestorSync(locked, dir)).toBeUndefined();
+        expect(await asyncProbe(locked, dir)).toBeUndefined();
+        const f = buildUnreadInputFinding(
+          { path: locked, rel: 'cfg/secrets.js', code: 'EACCES' },
+          { cliName: 'hackmyagent', targetDir: dir, command: 'check' },
+        );
+        expect(f.fix).toBe(`hackmyagent check ${dir}`);
+        expect(f.guidance).toContain('cfg/secrets.js no longer exists');
+        expect(f.guidance).not.toContain('`cfg`');
+      } finally { cleanup(dir); }
+    });
+
+    it('both probes resolve the path and bound the walk at the resolved root', async (ctx) => {
+      const { dir } = realTree();
+      const outside = fsn.mkdtempSync(path.join(os.tmpdir(), 'hma-buif-outside-'));
+      try {
+        fsn.mkdirSync(path.join(outside, 'evil'));
+        fsn.chmodSync(path.join(outside, 'evil'), 0o600);
+        if (!denied(path.join(outside, 'evil'), fsn.constants.X_OK)) {
+          console.warn('[build-unread-input-finding] cannot deny search to this process (root?): SKIPPING, not passing');
+          ctx.skip();
+        }
+        const escaping = `${dir}${path.sep}..${path.sep}${path.basename(outside)}${path.sep}evil${path.sep}f.js`;
+        expect(unsearchableAncestorSync(escaping, dir)).toBeUndefined();
+        expect(await asyncProbe(escaping, dir)).toBeUndefined();
+        // A `..` that stays inside the target still finds the obstruction.
+        fsn.chmodSync(path.join(dir, 'cfg'), 0o600);
+        const inside = `${dir}${path.sep}cfg${path.sep}..${path.sep}cfg${path.sep}secrets.js`;
+        expect(unsearchableAncestorSync(inside, dir)).toBe('cfg');
+        expect(await asyncProbe(inside, dir)).toBe('cfg');
+      } finally {
+        fsn.chmodSync(path.join(outside, 'evil'), 0o700);
+        fsn.rmSync(outside, { recursive: true, force: true });
+        cleanup(dir);
+      }
+    });
   });
 });

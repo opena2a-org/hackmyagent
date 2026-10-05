@@ -218,16 +218,24 @@ export const ROOT_MCP_CONFIG_SUBJECT = ROOT_MCP_CONFIG_FILES.join(' or ');
  * shallowest ancestor inside the target that this process cannot enter, the
  * target root included and named `.` (#588). `accessSync` here is an
  * inspection of a path already known to exist, not a discovery read.
+ *
+ * The path is resolved before the walk and bounded at the resolved root, so a
+ * `..` segment cannot carry it outside the target (#617). Only a permission
+ * denial marks a directory as one this user cannot enter: a directory that
+ * vanished between the record and this probe answers `ENOENT`, and naming it
+ * would send the user to a path that does not exist (#617).
  */
 export function unsearchableAncestorSync(absPath: string, targetDir: string): string | undefined {
   const root = path.resolve(targetDir);
-  let dir = path.dirname(absPath);
+  const file = path.resolve(absPath);
+  if (!withinRoot(file, root)) return undefined;
+  let dir = path.dirname(file);
   let shallowest: string | undefined;
-  while (dir.startsWith(root + path.sep)) {
+  while (dir !== root && withinRoot(dir, root)) {
     try {
       fsSync.accessSync(dir, fsSync.constants.X_OK);
-    } catch {
-      shallowest = dir;
+    } catch (e) {
+      if (isPermissionDenial(e)) shallowest = dir;
     }
     dir = path.dirname(dir);
   }
@@ -235,14 +243,38 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
   // path beneath it, and naming a child instead sends the user to the wrong
   // directory. `.` is the root's own relative name, so the remedy stays a
   // relative command like every other.
-  if (dir === root || path.resolve(absPath) === root) {
-    try {
-      fsSync.accessSync(root, fsSync.constants.X_OK);
-    } catch {
-      shallowest = root;
-    }
+  try {
+    fsSync.accessSync(root, fsSync.constants.X_OK);
+  } catch (e) {
+    if (isPermissionDenial(e)) shallowest = root;
   }
-  return shallowest ? (path.relative(targetDir, shallowest) || '.') : undefined;
+  return shallowest ? (path.relative(root, shallowest) || '.') : undefined;
+}
+
+/** `p` (resolved) is the root or beneath it — never a lexical prefix match on an unresolved path (#617). */
+function withinRoot(p: string, root: string): boolean {
+  return p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+}
+
+function isPermissionDenial(e: unknown): boolean {
+  const c = (e as NodeJS.ErrnoException | undefined)?.code;
+  return c === 'EACCES' || c === 'EPERM';
+}
+
+/**
+ * Whether `st`'s mode bits alone grant this process `bit`, by the class
+ * access(2) applies: the owner bits for the owner, the group bits for a member
+ * of the group, the other bits for everyone else (#617). `undefined` when that
+ * cannot be computed here — no POSIX ids on this platform, or uid 0, whose
+ * access the mode does not decide — so the caller keeps the words it had.
+ */
+function modeGrants(st: fsSync.Stats, bit: 'read' | 'search'): boolean | undefined {
+  if (typeof process.getuid !== 'function' || typeof process.getgid !== 'function') return undefined;
+  const uid = process.getuid();
+  if (uid === 0) return undefined;
+  const groups = typeof process.getgroups === 'function' ? process.getgroups() : [];
+  const shift = st.uid === uid ? 6 : (st.gid === process.getgid() || groups.includes(st.gid) ? 3 : 0);
+  return (st.mode & ((bit === 'read' ? 4 : 1) << shift)) !== 0;
 }
 
 /**
@@ -263,9 +295,12 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
  *
  * Not pure: when the caller did not classify the obstruction and the record
  * carries its absolute path, this builder probes the tree itself
- * (`unsearchableAncestorSync`, plus one read-bit probe on the obstruction) so
- * both arms print the same remedy for the same obstruction. The probes are
- * inspections of paths already known to exist and report to no channel.
+ * (`unsearchableAncestorSync`) so both arms print the same remedy for the same
+ * obstruction. It also classifies the obstruction's kind before choosing
+ * words (#617): an `lstat` on the record (gone since it was recorded), and a
+ * read-bit, search-bit and `stat` probe on the obstruction (a denial its mode
+ * does not explain). The probes are inspections of recorded paths and report
+ * to no channel.
  */
 export function buildUnreadInputFinding(
   u: { rel: string; code: string; kind?: 'file' | 'directory'; obstructedBy?: string; path?: string },
@@ -300,8 +335,23 @@ export function buildUnreadInputFinding(
   // exists to remove — on the same input, in the same run (#515 adversarial
   // round). Probe only for a permission denial, only when the record carries
   // its absolute path.
-  const obstruction = obstructedBy
-    ?? (permission && u.path ? unsearchableAncestorSync(u.path, targetDir) : undefined);
+  //
+  // A record whose path no longer exists comes first (#617): `lstat` answers
+  // EACCES, not ENOENT, through a directory this user cannot enter, so ENOENT
+  // here means the path is gone, and any `chmod` on it — or on an ancestor
+  // named for it — fails. The only remedy left is the re-run.
+  let vanished = false;
+  if (permission && u.path) {
+    try {
+      fsSync.lstatSync(u.path);
+    } catch (e) {
+      const c = (e as NodeJS.ErrnoException).code;
+      vanished = c === 'ENOENT' || c === 'ENOTDIR';
+    }
+  }
+  const obstruction = vanished
+    ? undefined
+    : obstructedBy ?? (permission && u.path ? unsearchableAncestorSync(u.path, targetDir) : undefined);
   // A directory record whose only obstruction is itself (its listing failed and
   // every ancestor is searchable) is its own remedy target; an ancestor that
   // cannot be entered is the #515 shape and wins over it.
@@ -314,13 +364,34 @@ export function buildUnreadInputFinding(
   // caller pinned a path that never existed — the enterable-not-listable
   // wording stands, which is what every earlier pin in the unit suite relies
   // on.
+  //
+  // A denial the mode bits do not explain (#617): an access-control entry or
+  // a mandatory-access label can refuse search on a directory whose mode
+  // grants it, and `chmod u+x` then exits 0, changes nothing, and the re-run
+  // repeats the finding. Claimed only when the directory still refuses search
+  // AND `stat` shows the mode granting it to this user's class; when either
+  // cannot be measured the mode-bit wording stands.
   let ancestorDeniesRead = false;
+  let searchDeniedNotByMode = false;
   if (ancestor && permission) {
+    const ancestorPath = path.resolve(targetDir, ancestor);
     try {
-      fsSync.accessSync(path.resolve(targetDir, ancestor), fsSync.constants.R_OK);
+      fsSync.accessSync(ancestorPath, fsSync.constants.R_OK);
     } catch (e) {
-      const c = (e as NodeJS.ErrnoException).code;
-      ancestorDeniesRead = c === 'EACCES' || c === 'EPERM';
+      ancestorDeniesRead = isPermissionDenial(e);
+    }
+    let searchDenied = false;
+    try {
+      fsSync.accessSync(ancestorPath, fsSync.constants.X_OK);
+    } catch (e) {
+      searchDenied = isPermissionDenial(e);
+    }
+    if (searchDenied) {
+      try {
+        searchDeniedNotByMode = modeGrants(fsSync.statSync(ancestorPath), 'search') === true;
+      } catch {
+        // Not measurable now: keep the mode-bit wording.
+      }
     }
   }
   // Every runnable remedy is a string LITERAL per verb, never a raw
@@ -341,6 +412,13 @@ export function buildUnreadInputFinding(
   const chmodUr = (file: string): string => (command === 'check'
     ? `chmod u+r ${file} && ${cliName} check ${target}`
     : `chmod u+r ${file} && ${cliName} secure ${target}`);
+  const rerun = command === 'check' ? `${cliName} check ${target}` : `${cliName} secure ${target}`;
+  // A denial that is not a mode bit is found by listing the directory's
+  // access-control entries, not by a `chmod` (#617): `ls -le` on macOS,
+  // `getfacl` elsewhere. Called only with a citation-bound value.
+  const inspectAccess = (dir: string): string => (process.platform === 'darwin'
+    ? `ls -led ${dir}`
+    : `getfacl ${dir}`);
   // The remedy is keyed on the ERRNO first; the failed-call rule (a listing
   // that failed => `u+rx`, a read under a directory this user cannot enter =>
   // `u+x` on that directory) lives inside the permission branch only. Any
@@ -364,25 +442,56 @@ export function buildUnreadInputFinding(
         return 'an I/O error or an unreadable mount are the usual causes';
     }
   })();
+  // An ancestor whose name cannot be cited (a display hazard) still gets a
+  // remedy about that directory, never one about the file beneath it: the
+  // guidance names the directory, and the two must agree (#617).
   const fix = !permission
     ? `Resolve the ${code} on this path: ${cause}, then re-run this scan.`
-    : citedAncestor
-      ? (ancestorDeniesRead ? chmodUrx(citedAncestor) : chmodUx(citedAncestor))
-      : isDir
-        ? (cited ? chmodUrx(cited) : 'Make the directory named above listable, then re-run this scan.')
-        : (cited ? chmodUr(cited) : 'Make the file named above readable, then re-run this scan.');
+    : vanished
+      ? rerun
+      : ancestor
+        ? (searchDeniedNotByMode
+          ? (citedAncestor
+            ? `The denial on ${citedAncestor} is not a mode bit, so chmod cannot clear it: find the entry `
+              + `with \`${inspectAccess(citedAncestor)}\`, remove it, then re-run this scan.`
+            : 'The denial on the directory named in the guidance is not a mode bit, so chmod cannot '
+              + 'clear it: remove the access rule that refuses search on it, then re-run this scan.')
+          : citedAncestor
+            ? (ancestorDeniesRead ? chmodUrx(citedAncestor) : chmodUx(citedAncestor))
+            : `Make the directory named in the guidance ${ancestorDeniesRead ? 'listable and enterable' : 'enterable'}, `
+              + 'then re-run this scan.')
+        : isDir
+          ? (cited ? chmodUrx(cited) : 'Make the directory named above listable, then re-run this scan.')
+          : (cited ? chmodUr(cited) : 'Make the file named above readable, then re-run this scan.');
   // The errno is named in the body, not only in `message`: the rendered
   // finding prints `guidance`, so an errno that lives only on `message`
   // reaches no reader — and the errno is the input that decides which
   // remedy applies.
-  const ancestorSentence = ancestor
-    ? (ancestorDeniesRead
-      ? `\`${ancestor}\` cannot be listed or entered by this user (no read or execute bit `
-        + `on the directory), which is why ${shown} could not be ${isDir ? 'listed' : 'read'}: `
-        + `the remedy is on \`${ancestor}\`, not on ${isDir ? shown : 'the file'}. `
-      : `\`${ancestor}\` can be listed but not entered by this user (no execute bit on the `
-        + `directory), which is why ${shown} could not be ${isDir ? 'listed' : 'opened'}: `
-        + `the remedy is on \`${ancestor}\`, not on ${isDir ? shown : 'the file'}. `)
+  //
+  // The ancestor is the FIRST remedy, not the only one (#617): nothing below
+  // it can be stat'd until it can be entered, so whether the record's own
+  // mode also denies it is unknown here, and the next run reports it.
+  const firstStep = `the remedy is on \`${ancestor}\` first. Whether `
+    + (isDir ? `${shown} itself can be listed` : 'the file itself can be read')
+    + ` cannot be checked until \`${ancestor}\` can be entered; a re-run reports it. `;
+  const ancestorSentence = !ancestor
+    ? ''
+    : searchDeniedNotByMode
+      ? `\`${ancestor}\` cannot be entered by this user although its mode grants search: the denial `
+        + 'is not a mode bit (an access-control entry or a mandatory-access label refuses it), so '
+        + `\`chmod\` cannot clear it. That is why ${shown} could not be ${isDir ? 'listed' : 'opened'}: `
+        + firstStep
+      : ancestorDeniesRead
+        ? `\`${ancestor}\` cannot be listed or entered by this user (no read or execute bit `
+          + `on the directory), which is why ${shown} could not be ${isDir ? 'listed' : 'read'}: `
+          + firstStep
+        : `\`${ancestor}\` can be listed but not entered by this user (no execute bit on the `
+          + `directory), which is why ${shown} could not be ${isDir ? 'listed' : 'opened'}: `
+          + firstStep;
+  const vanishedSentence = vanished
+    ? `${shown} no longer exists: it was recorded as ${isDir ? 'unlistable' : 'unreadable'} (${code}) `
+      + 'and is gone now, so no permission change applies to it — re-running the scan measures the '
+      + 'tree as it is. '
     : '';
   const pathLength = code === 'ENAMETOOLONG' && u.path
     ? `The absolute path is ${u.path.length} characters. `
@@ -392,7 +501,7 @@ export function buildUnreadInputFinding(
   // the words the user sees must be the words that were ruled.
   const listedSentence = `${shown} could not be listed (${code}) — its contents were not discovered, so nothing inside it reached any check.`;
   const guidance = isDir
-    ? ancestorSentence
+    ? vanishedSentence + ancestorSentence
       + (ancestor
         ? ''
         : (permission
@@ -405,7 +514,7 @@ export function buildUnreadInputFinding(
       + 'meant to stay closed, scan a narrower target that does not contain it — an `.hmaignore` '
       + 'path rule will not clear this, because it scopes what is reported and cannot make an '
       + 'unlisted directory listed.'
-    : ancestorSentence
+    : vanishedSentence + ancestorSentence
       + `This file was discovered inside the target and the read failed with ${code}`
       + (permission ? '' : ` (${cause})`)
       + `, so its contents never reached a check. ${pathLength}`
@@ -4178,25 +4287,25 @@ export class HardeningScanner {
    */
   private async unsearchableAncestor(absPath: string, targetDir: string): Promise<string | undefined> {
     const root = path.resolve(targetDir);
-    let dir = path.dirname(absPath);
+    const file = path.resolve(absPath);
+    if (!withinRoot(file, root)) return undefined;
+    let dir = path.dirname(file);
     let shallowest: string | undefined;
-    while (dir.startsWith(root + path.sep)) {
+    while (dir !== root && withinRoot(dir, root)) {
       try {
         await fs.access(dir, fs.constants.X_OK);
-      } catch {
-        shallowest = dir;
+      } catch (e) {
+        if (isPermissionDenial(e)) shallowest = dir;
       }
       dir = path.dirname(dir);
     }
     // The root last (#588) — see `unsearchableAncestorSync`.
-    if (dir === root || path.resolve(absPath) === root) {
-      try {
-        await fs.access(root, fs.constants.X_OK);
-      } catch {
-        shallowest = root;
-      }
+    try {
+      await fs.access(root, fs.constants.X_OK);
+    } catch (e) {
+      if (isPermissionDenial(e)) shallowest = root;
     }
-    return shallowest ? (path.relative(targetDir, shallowest) || '.') : undefined;
+    return shallowest ? (path.relative(root, shallowest) || '.') : undefined;
   }
 
   /**
