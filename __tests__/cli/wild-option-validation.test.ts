@@ -15,7 +15,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
 import { parseWildTier, parseWildTimeout, parseWildDelay, WILD_MAX_TIER } from '../../src/wild';
 
@@ -54,10 +54,12 @@ describe('#480 wild integer options are parsed strictly', () => {
   });
 });
 
-describe.skipIf(!fs.existsSync(CLI))('#480 wild refuses a gate parameter that would scan nothing', { timeout: 120_000 }, () => {
+describe('#480 wild refuses a gate parameter that would scan nothing', { timeout: 120_000 }, () => {
   let target: string;
   beforeAll(() => {
-    assertDistFreshIfPresent();
+    // A checkout that has not built fails here, naming the command to run; the
+    // parser cases above read only the source and still report on their own.
+    assertDistFresh();
     target = path.join(tempDir('hma-480-'), 'no-such-site');
   });
 

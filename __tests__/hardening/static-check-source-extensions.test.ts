@@ -31,18 +31,19 @@
  *                is where a silent re-omission would land.
  *   End-to-end — a hazard really is reported in a `.mjs` by the built CLI.
  *                Proves the walks actually consult the constant, which the
- *                contract layer cannot. Needs `dist/`, so it self-skips.
+ *                contract layer cannot. Needs `dist/`, and fails naming
+ *                `npm run build` when it is missing.
  *
  * The NEGATIVE CONTROL is load-bearing in both. Without it, a scanner that read
  * every file regardless of extension would satisfy every positive case here.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JS_FAMILY_EXTENSIONS } from '../../src/hardening/scanner';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
 /**
  * The JavaScript family, authored as the contract. Deliberately NOT imported
@@ -106,16 +107,17 @@ describe('#414 static-check source extensions: contract', () => {
 
 describe('#414 static-check source extensions: end to end', () => {
   const cli = join(__dirname, '../../dist/cli.js');
-  const built = existsSync(cli);
 
   // Required of every suite that spawns the built CLI, and enforced by
   // __tests__/harness/spawn-suites-assert-freshness.test.ts, which caught this
   // file for omitting it. Without it this suite would spawn the PREVIOUS binary
   // and report a pass for source it never ran, which is the same shape as the
-  // defect the whole change is about.
-  beforeAll(assertDistFreshIfPresent);
+  // defect the whole change is about. A missing build is the same failure
+  // reported earlier: it fails here, naming the command to run, rather than
+  // skipping the one case that proves the walk reaches the check.
+  beforeAll(assertDistFresh);
 
-  it.skipIf(!built)('reports a hazard in .mjs and .cjs, not only in .js', () => {
+  it('reports a hazard in .mjs and .cjs, not only in .js', () => {
     const root = mkdtempSync(join(tmpdir(), 'hma-414-'));
     try {
       mkdirSync(join(root, 'scripts'), { recursive: true });

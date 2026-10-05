@@ -35,9 +35,9 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { assertDistFresh, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import {
   getTaxonomyMap,
   getCheckCounts,
@@ -490,8 +490,10 @@ describe('the inventory covers, or declares its exclusion of, every emitted fami
   });
 });
 
-describe.runIf(existsSync(CLI))('check-metadata carries the coverage and the exclusions (spawn)', () => {
-  beforeAll(assertDistFreshIfPresent);
+describe('check-metadata carries the coverage and the exclusions (spawn)', () => {
+  // A checkout that has not built fails here, naming the command to run; the
+  // census blocks above read only the source and still report on their own.
+  beforeAll(assertDistFresh);
 
   it('check-metadata --json: totalChecks reflects the added ids and exclusions are declared', () => {
     const res = spawnSync(process.execPath, [CLI, 'check-metadata', '--json'], {

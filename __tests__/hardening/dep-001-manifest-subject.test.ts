@@ -23,13 +23,13 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'fs/promises';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'path';
 import * as os from 'os';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import type { SecurityFinding, ScanResult } from '../../src/hardening/security-check';
 import { initThrowawayRepo } from '../helpers/throwaway-repo';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
 const SCAN_TIMEOUT = 120_000;
 
@@ -134,11 +134,12 @@ describe('DEP-001 with a package manifest and a lock file', () => {
 // above pin the record shape; this one pins that the CLI's file-less filter
 // no longer lets the advisory through and that no deduction is taken for it.
 describe('secure on an empty directory (CLI)', () => {
-  beforeAll(assertDistFreshIfPresent);
+  // A checkout that has not built fails here, naming the command to run,
+  // rather than skipping the one case that reads the CLI's score.
+  beforeAll(assertDistFresh);
 
   const REPO_ROOT = path.join(__dirname, '..', '..');
   const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
-  const canRun = () => existsSync(CLI);
 
   const spawned: string[] = [];
   afterAll(() => {
@@ -158,7 +159,7 @@ describe('secure on an empty directory (CLI)', () => {
     return JSON.parse((r.stdout || '').trim());
   }
 
-  it.runIf(canRun())('carries no DEP-001 finding, a not-applicable record in --json, and the same score as a tree whose manifest is locked', () => {
+  it('carries no DEP-001 finding, a not-applicable record in --json, and the same score as a tree whose manifest is locked', () => {
     const empty = mkdtempSync(path.join(os.tmpdir(), 'hackmyagent-dep001-empty-'));
     spawned.push(empty);
     const locked = mkdtempSync(path.join(os.tmpdir(), 'hackmyagent-dep001-locked-'));

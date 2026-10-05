@@ -21,14 +21,15 @@
  * nothing here trips push protection or a secret scanner.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
-// #285 — this suite spawns the built CLI; refuse to measure a stale binary.
-beforeAll(assertDistFreshIfPresent);
+// #285 — this suite spawns the built CLI; refuse to measure a stale binary,
+// and fail naming the command to run when there is no build at all.
+beforeAll(assertDistFresh);
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
@@ -88,7 +89,7 @@ const FORMATS: Array<[string, string[]]> = [
 
 describe('#370 — no raw credential in any output format', { timeout: 600_000 }, () => {
   for (const [label, args] of FORMATS) {
-    it.runIf(existsSync(CLI))(`${label}: the credential file is rendered and neither value leaks`, () => {
+    it(`${label}: the credential file is rendered and neither value leaks`, () => {
       const { status, out } = secure(args);
       // The fixture carries CRITICAL/HIGH credential findings, so every
       // reporting path exits 1. A crash (null, 2+) would print nothing and
@@ -103,7 +104,7 @@ describe('#370 — no raw credential in any output format', { timeout: 600_000 }
     });
   }
 
-  it.runIf(existsSync(CLI))('json: the one-line evidence is present and redacted for BOTH shapes', () => {
+  it('json: the one-line evidence is present and redacted for BOTH shapes', () => {
     const { stdout } = secure(['--json']);
     const doc = JSON.parse(stdout);
     const all = [...(doc.findings ?? []), ...(doc.allFindings ?? [])];

@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -24,7 +24,7 @@ import {
   resolveOutputFormat,
   shouldPrintVersionFooter,
 } from '../../src/ui/version-footer';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -94,18 +94,21 @@ describe('secure output formats parse (spawn, local-only)', () => {
   // private corpus, so the only real prerequisite is a built dist/. Gating
   // them on `CI !== 'true'` meant reverting the cli.ts wiring stayed green in
   // CI, since the deterministic tests above only exercise the helper module.
-  const canRun = () => existsSync(CLI);
+  // Gating them on the build's existence had the same effect on any checkout
+  // that had not built: three green-looking skips. A missing build is an
+  // error that names the command to run.
+  beforeAll(assertDistFresh);
 
   // Explicit timeouts: each case spawns one or two full `secure` scans, and
   // the suite default (10s in vitest.config.ts) was measured at 75% consumed
   // on an M4 Max — a slower CI runner would flake the release gate.
-  it.runIf(canRun())('text output still carries the footer', () => {
+  it('text output still carries the footer', () => {
     // Non-vacuity for every assertion below: if #202's footer stopped being
     // emitted at all, the absence checks would pass for the wrong reason.
     expect(run(fixture(), [])).toMatch(FOOTER_RE);
   }, 240_000);
 
-  it.runIf(canRun())('--format json and --format sarif stay parseable', () => {
+  it('--format json and --format sarif stay parseable', () => {
     for (const format of ['json', 'sarif']) {
       const out = run(fixture(), ['--format', format]);
       expect(out, `--format ${format} carries the footer`).not.toMatch(FOOTER_RE);
@@ -113,7 +116,7 @@ describe('secure output formats parse (spawn, local-only)', () => {
     }
   }, 240_000);
 
-  it.runIf(canRun())('the deprecated --json alias stays parseable too', () => {
+  it('the deprecated --json alias stays parseable too', () => {
     const out = run(fixture(), ['--json']);
     expect(out).not.toMatch(FOOTER_RE);
     expect(() => JSON.parse(out)).not.toThrow();

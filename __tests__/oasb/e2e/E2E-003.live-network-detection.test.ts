@@ -2,8 +2,9 @@
 // Proves ARP's NetworkMonitor detects real TCP connections via lsof/ss polling.
 // No event injection — the monitor polls the OS network state directly.
 //
-// NOTE: Requires lsof (macOS) or ss (Linux) to be available.
-// Test skips gracefully if neither tool is present.
+// NOTE: Requires lsof (macOS) or ss (Linux) to be available. Both runner
+// images in the test matrix supply one. On a host that ships neither, the
+// case is withdrawn as a reported skip with the reason, never as a pass.
 //
 // ATLAS: AML.T0024
 // OWASP: A04
@@ -84,10 +85,13 @@ describe('E2E-003: Live Network Detection', () => {
     });
   });
 
-  it('should detect a new outbound TCP connection', { timeout: 30000 }, async () => {
+  it('should detect a new outbound TCP connection', { timeout: 30000 }, async (ctx) => {
     if (!networkAvailable) {
-      console.log('SKIP: lsof/ss not available — network E2E test requires system tools');
-      return;
+      // This used to log a line and return, which the runner counts as a
+      // PASS: the one case that proves the monitor sees a real TCP connection
+      // claimed to have proven it on a host with no way to look. Withdrawing
+      // through the run context reports it as skipped, with the reason.
+      ctx.skip('neither lsof (darwin) nor ss (linux) is on PATH; nothing was measured');
     }
 
     clientSocket = net.connect({ host: '127.0.0.1', port: serverPort });

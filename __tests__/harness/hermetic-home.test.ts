@@ -26,10 +26,10 @@
 
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -37,7 +37,6 @@ beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-const canRun = () => existsSync(CLI);
 
 /**
  * A finding is $HOME-derived when its FILE is under the fixture home — not when
@@ -145,6 +144,10 @@ function homeDerived(hermetic: boolean): {
   };
 }
 
+// The cases below that spawn the built CLI open with `assertDistFresh()`: a
+// checkout that has not built fails each of them by name, with the command to
+// run, while the two that read only the worker environment still report on
+// their own.
 describe('the suite never reads the developer home directory', () => {
   it('defaults the hermetic flag for every test worker', () => {
     // Set by vitest.setup.ts. Unregister it, or gut it, and 18 files that spawn
@@ -168,9 +171,10 @@ describe('the suite never reads the developer home directory', () => {
     }
   });
 
-  it.runIf(canRun())(
+  it(
     'non-vacuity: with the flag off, $HOME infrastructure IS read and reported',
     () => {
+      assertDistFresh();
       const off = homeDerived(false);
       // The flag has something to suppress: with it off, the $HOME runtime is
       // detected and named. There is no count to assert on — the section
@@ -182,9 +186,10 @@ describe('the suite never reads the developer home directory', () => {
     180_000,
   );
 
-  it.runIf(canRun())(
+  it(
     'with the flag on, nothing in the report came from $HOME',
     () => {
+      assertDistFresh();
       const on = homeDerived(true);
       expect(on.posture).toEqual([]);
       expect(on.taggedFindings).toEqual([]);
@@ -192,9 +197,10 @@ describe('the suite never reads the developer home directory', () => {
     180_000,
   );
 
-  it.runIf(canRun())(
+  it(
     'even with the flag off, $HOME never reaches the target findings list',
     () => {
+      assertDistFresh();
       // The flag governs whether $HOME is READ. It is not what keeps $HOME out
       // of the target's score — that is unconditional, and this pins it so a
       // future change cannot restore the merge behind an unset flag.

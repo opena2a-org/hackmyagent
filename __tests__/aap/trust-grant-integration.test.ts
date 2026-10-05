@@ -20,7 +20,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { trustAapGate } from '../../src/aap';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -278,9 +278,11 @@ describe('hackmyagent trust --grant (AAP gate)', () => {
   // (breaks AAP §6.6 audit-attribution). The CLI rejects the combination
   // explicitly at exit 2 before any broker round-trip.
   describe('--grant mode-interaction guards (CLI exit codes)', () => {
-    const skipIfNoBuild = fs.existsSync(CLI_BIN) ? it : it.skip;
+    // The build is this block's only precondition, so its absence is an error
+    // that names the fix, not three cases that report nothing.
+    beforeAll(assertDistFresh);
 
-    skipIfNoBuild('rejects --grant with --audit (exit 2, broker never contacted)', () => {
+    it('rejects --grant with --audit (exit 2, broker never contacted)', () => {
       const result = spawnSync('node', [
         CLI_BIN, 'trust',
         '--grant', 'grant://hackmyagent-trust',
@@ -291,7 +293,7 @@ describe('hackmyagent trust --grant (AAP gate)', () => {
       expect(result.stderr).toMatch(/--grant cannot be combined with --audit or --batch/);
     });
 
-    skipIfNoBuild('rejects --grant with --batch (exit 2)', () => {
+    it('rejects --grant with --batch (exit 2)', () => {
       const result = spawnSync('node', [
         CLI_BIN, 'trust',
         '--grant', 'grant://hackmyagent-trust',
@@ -302,7 +304,7 @@ describe('hackmyagent trust --grant (AAP gate)', () => {
       expect(result.stderr).toMatch(/--grant cannot be combined with --audit or --batch/);
     });
 
-    skipIfNoBuild('rejects --grant with no positional package (exit 2)', () => {
+    it('rejects --grant with no positional package (exit 2)', () => {
       const result = spawnSync('node', [
         CLI_BIN, 'trust',
         '--grant', 'grant://hackmyagent-trust',

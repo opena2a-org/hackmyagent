@@ -25,21 +25,18 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { successFromExitCode } from '@opena2a/telemetry';
 import { commandSucceeded, EXIT2_IS_SEMANTIC } from '../../src/telemetry/command-success';
 import { spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
 
 // #285 — without this the suite would happily measure a dist older than `src/`
-// and report a pass.
-beforeAll(assertDistFreshIfPresent);
+// and report a pass. Every case here spawns the built CLI, so a checkout that
+// has not built fails here, naming the command to run, rather than skipping.
+beforeAll(assertDistFresh);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-
-function canRunSpawn(): boolean {
-  return existsSync(CLI);
-}
 
 const BENIGN = '# Agent\nYou are a helpful bot.\n';
 const JAILBREAK =
@@ -60,7 +57,7 @@ function runRedTeam(content: string, filename: string): { code: number | null; o
   return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
 
-describe.runIf(canRunSpawn())('#369 red-team CLI never reports an unmeasured all-clear', () => {
+describe('#369 red-team CLI never reports an unmeasured all-clear', () => {
   it('exits 2 and says NOT MEASURED on the jailbreak fixture', () => {
     const { code, out } = runRedTeam(JAILBREAK, 'jailbreak.md');
 
@@ -210,7 +207,7 @@ describe.runIf(canRunSpawn())('#369 red-team CLI never reports an unmeasured all
 // COUNT (generated > 0, executed 0) so the assertion cannot pass vacuously if
 // the wording changes. `--iterations` is inert until an execution path exists
 // (see its option text), which is why neither value changes what is generated.
-describe.runIf(canRunSpawn())('#392 red-team with out-of-range --iterations never reports an all-clear', () => {
+describe('#392 red-team with out-of-range --iterations never reports an all-clear', () => {
   function runWith(iterations: string, json = false): { code: number | null; stdout: string; out: string } {
     const dir = tempDir('hma-rt392-');
     const home = tempDir('hma-rt392-home-');

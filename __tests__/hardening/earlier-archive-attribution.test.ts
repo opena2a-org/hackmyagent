@@ -27,12 +27,11 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
-import { assertDistFreshIfPresent, BUILT_CLI } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent, BUILT_CLI } from '../helpers/dist-freshness';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -126,7 +125,10 @@ describe('#383 findings inside an earlier run\'s backup are attributed, not exem
     }
   }, 120_000);
 
-  it.skipIf(!existsSync(BUILT_CLI))('the report explains the earlier backup and stops citing commands that cannot move it', async () => {
+  it('the report explains the earlier backup and stops citing commands that cannot move it', async () => {
+    // The only case here that reads the built CLI. Without a build it fails
+    // by name, with the command to run; the library cases above do not wait.
+    assertDistFresh();
     const dir = await makeFixture('hma-383-render-');
     const home = await mkdtemp(path.join(tmpdir(), 'hma-383-home-'));
     const control = await makeFixture('hma-383-control-');

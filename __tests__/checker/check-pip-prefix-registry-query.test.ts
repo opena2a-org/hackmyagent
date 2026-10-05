@@ -24,9 +24,9 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { EXIT_UNMEASURED } from '../../src/check/verdict';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
@@ -36,10 +36,6 @@ beforeAll(assertDistFreshIfPresent);
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI_TS = join(REPO_ROOT, 'src', 'cli.ts');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-
-function canRunSpawn(): boolean {
-  return existsSync(CLI);
-}
 
 function parseJsonOrNull(stdout: string | null | undefined): any {
   try {
@@ -76,7 +72,12 @@ describe('PyPI Registry-query key (lock-in: closes pip-prefix bug)', () => {
 });
 
 describe('PyPI Registry-query end-to-end (smoke, local-only)', () => {
-  it.runIf(canRunSpawn())(
+  // A checkout that has not built fails here, naming the command to run. The
+  // live Registry not answering is a different precondition and is still
+  // withdrawn inside the case, with its reason.
+  beforeAll(assertDistFresh);
+
+  it(
     'check pip:anthropic --no-scan returns Registry record (found:true)',
     (ctx) => {
       // Live-Registry test. `anthropic` is stably indexed in the

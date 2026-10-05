@@ -22,14 +22,14 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findingAppliesTo } from '../../src/hardening/scanner';
 import type { SecurityFinding, ProjectType } from '../../src/hardening/security-check';
 import { OBSERVATION_LABEL_WIDTH, OBSERVATION_LABELS } from '../../src/ui/quick-scan-labels';
 import { classifyCategory } from '@opena2a/cli-ui';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
 function failing(checkId: string): SecurityFinding {
   return {
@@ -171,13 +171,11 @@ function renderFixture(home: string): string {
   return run.stdout ?? '';
 }
 
-const canSpawn = existsSync(CLI);
-const describeSpawn = canSpawn ? describe : describe.skip;
-
-describeSpawn('#421 layer 2 — the finding reaches the output and the score', () => {
+describe('#421 layer 2 — the finding reaches the output and the score', () => {
   // #285 — without this the suite would happily measure a binary older than
-  // src/ and report a pass.
-  beforeAll(assertDistFreshIfPresent);
+  // src/ and report a pass. With no build at all it fails here, naming the
+  // command to run, rather than skipping the layer that reads the CLI's output.
+  beforeAll(assertDistFresh);
 
   // One HOME for the whole suite so the classifier model is fetched at most
   // once rather than per scan.
@@ -327,8 +325,8 @@ describeSpawn('#421 layer 2 — the finding reaches the output and the score', (
   });
 });
 
-describeSpawn('#421 layer 2 — the run discloses what it silenced', () => {
-  beforeAll(assertDistFreshIfPresent);
+describe('#421 layer 2 — the run discloses what it silenced', () => {
+  beforeAll(assertDistFresh);
   const HOME_DIR = mkdtempSync(join(tmpdir(), 'hma-421-home2-'));
 
   /**

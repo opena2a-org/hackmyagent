@@ -37,17 +37,15 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { countsAgainstScore } from '../../src/ui/verdict-band';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
-beforeAll(assertDistFreshIfPresent);
+// Every case reads a run of the built CLI, so a checkout that has not built
+// fails here, naming the command to run, rather than skipping the suite.
+beforeAll(assertDistFresh);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const PRELOAD = join(REPO_ROOT, '__tests__', 'fixtures', 'stub-registry-fetch-preload.cjs');
-
-function canRunSpawn(): boolean {
-  return existsSync(CLI);
-}
 
 // The credential-bearing dotfile's name, assembled so no Bash command that
 // quotes this file's source ever names a blocked pattern literally.
@@ -76,8 +74,6 @@ let fixture = '';
 let scratch = '';
 
 beforeAll(() => {
-  if (!canRunSpawn()) return;
-
   scratch = mkdtempSync(join(tmpdir(), 'hma-wire-parity-'));
   fixture = join(scratch, 'pkg');
   const fakeHome = join(scratch, 'home');
@@ -139,7 +135,7 @@ afterAll(() => {
   if (scratch) rmSync(scratch, { recursive: true, force: true });
 });
 
-describe.skipIf(!canRunSpawn())('secure --publish wire parity (#458)', () => {
+describe('secure --publish wire parity (#458)', () => {
   it('harness: run completes, emits a JSON doc, and POSTs exactly one publish payload', () => {
     // Exit 1 is the scanner reporting failures on a credential-bearing
     // fixture — expected. Anything else (null = crash/timeout, >1 = error

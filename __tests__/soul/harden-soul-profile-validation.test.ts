@@ -9,12 +9,12 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SoulScanner, PROFILE_DOMAINS } from '../../src/soul/scanner';
 import { UsageError } from '../../src/checker/errors';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -54,7 +54,11 @@ describe('hardenSoul refuses an unknown profile (#611)', () => {
   }
 });
 
-describe.runIf(existsSync(CLI))('harden-soul --profile bogus exits 1 from the CLI (#611)', () => {
+describe('harden-soul --profile bogus exits 1 from the CLI (#611)', () => {
+  // A checkout that has not built fails here, naming the command to run; the
+  // library block above still reports on its own.
+  beforeAll(assertDistFresh);
+
   it('names the accepted set on stderr and leaves the file untouched', () => {
     const home = mkdtempSync(join(tmpdir(), 'hma-611-home-'));
     try {

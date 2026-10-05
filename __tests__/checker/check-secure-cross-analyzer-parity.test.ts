@@ -26,11 +26,11 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { quickScanScopeDisclosure } from '../../src/ui/quick-scan-labels';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -38,10 +38,6 @@ beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-
-function canRunSpawn(): boolean {
-  return existsSync(CLI);
-}
 
 // A password-bearing localhost connection string. Deliberately chosen over
 // a vendor-prefixed API key so the fixture cannot trip GitHub push
@@ -105,7 +101,12 @@ describe('check vs secure direction agreement on a local dir (spawn, local-only)
     if (fixture) rmSync(fixture, { recursive: true, force: true });
   });
 
-  it.runIf(canRunSpawn())('secure establishes the ground truth (>=1 critical or high)', () => {
+  // The build is the only thing these three cases need that a checkout can
+  // lack, so its absence fails here with the command to run instead of
+  // skipping the whole direction check.
+  beforeAll(assertDistFresh);
+
+  it('secure establishes the ground truth (>=1 critical or high)', () => {
     const res = spawnSync('node', [CLI, 'secure', fixture, '--ci', '--json'], {
       encoding: 'utf8',
       timeout: 120_000,
@@ -122,7 +123,7 @@ describe('check vs secure direction agreement on a local dir (spawn, local-only)
     expect(severe.length).toBeGreaterThan(0);
   });
 
-  it.runIf(canRunSpawn())('check does not contradict secure with an absolute safe verdict', () => {
+  it('check does not contradict secure with an absolute safe verdict', () => {
     const res = spawnSync('node', [CLI, 'check', fixture, '--ci'], {
       encoding: 'utf8',
       timeout: 120_000,
@@ -141,7 +142,7 @@ describe('check vs secure direction agreement on a local dir (spawn, local-only)
     expect(stdout).not.toMatch(/all clear/i);
   });
 
-  it.runIf(canRunSpawn())('check names the finding secure names', () => {
+  it('check names the finding secure names', () => {
     const res = spawnSync('node', [CLI, 'check', fixture, '--ci'], {
       encoding: 'utf8',
       timeout: 120_000,
