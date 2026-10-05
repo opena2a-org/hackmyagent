@@ -65,6 +65,7 @@ import { formatCategoriesLine } from './ui/categories-line';
 import { composeVerdictLine, dissentingFiles } from './ui/analyst-dissent';
 import { incompleteVerdictLead } from './ui/incomplete-verdict';
 import { WildScanner, type WildScanReport } from './wild';
+import { assertKnownProfile } from './soul/scanner';
 import { buildCheckOutput, buildNotFoundOutput, mapScanStatusForMeter, translateDownloadError } from '@opena2a/check-core';
 import {
   isRenderableAnalystFinding,
@@ -11053,6 +11054,11 @@ Examples:
 
       const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
+
+      // #861 — refuse an unknown profile before the backup below: `hardenSoul`
+      // refuses it too, but only after this run has created a backup directory
+      // in the target, and a refused run should leave the target as it was.
+      assertKnownProfile(options.profile);
 
       // #271 — a real write gets a real backup. This command rewrote a
       // governance file (measured: `.cursorrules` 113 -> 19055 bytes) and took
