@@ -496,6 +496,10 @@ function isFindingShaped(v: Record<string, unknown>): boolean {
   // shape exemption is earned by what the value carries, and a projection that
   // grows a byte-carrying field revokes its own exemption automatically.
   //
+  // #552 — the `expandSuppressed` stubs DO carry `passed` and `name`, so they
+  // match; they are built through `emitFinding` and carry the stamp instead.
+  // A projection that gains `passed` takes that route, never an exemption.
+  //
   // The last clause reads `BYTE_CARRYING_FIELDS` rather than naming `message`
   // and `description`: those two were an under-count. `toASSF` renders
   // `f.message || f.name || f.checkId` over a local finding type whose
