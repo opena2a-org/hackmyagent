@@ -40,7 +40,7 @@ Artifact → Secure Ingestion → NanoMind Compiler → Signed AST → Analyzers
 
 ### Security (`security/`)
 - `defense-in-depth.ts` -- 7 rules: severity floor, benign consensus, secret redaction, AST integrity, training provenance, audit logging
-- `integrity-verifier.ts` -- `verifyAll()` startup check, tamper-evident event chain, manifest generation
+- `integrity-verifier.ts` -- `verifyAll()` startup check, bounded hash-linked event log (diagnostic, unkeyed), manifest generation
 
 ### Bridge
 - `scanner-bridge.ts` -- Merges AST findings with static findings (defense-in-depth)
