@@ -27,9 +27,9 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, rmSync } from 'node:fs';
+import { writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import {
   STATIC_EXPLANATIONS,
   SOUL_SCAN_EXPLANATIONS,
@@ -43,6 +43,10 @@ import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
+// Each block below that spawns the built CLI opens with
+// `beforeAll(assertDistFresh)`: a checkout that has not built fails those
+// blocks by name, with the command to run, and the registry-only block still
+// reports on its own.
 const DEAD_DAEMON = 'http://127.0.0.1:9';
 
 function runExplain(id: string): { code: number | null; stdout: string; stderr: string } {
@@ -53,7 +57,9 @@ function runExplain(id: string): { code: number | null; stdout: string; stderr: 
   return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
 
-describe.runIf(existsSync(CLI))('explain refuses unknown check IDs (spawn)', () => {
+describe('explain refuses unknown check IDs (spawn)', () => {
+  beforeAll(assertDistFresh);
+
   it('explain NEMO-999 exits non-zero, names the ID, and suggests neighbours', () => {
     const { code, stdout, stderr } = runExplain('NEMO-999');
 
@@ -149,7 +155,9 @@ describe('the refusal misfires on nothing known (every id source)', () => {
   });
 });
 
-describe.runIf(existsSync(CLI))('known IDs still explain with exit 0 (spawn, one per path)', () => {
+describe('known IDs still explain with exit 0 (spawn, one per path)', () => {
+  beforeAll(assertDistFresh);
+
   it.each([
     // static explanations table
     ['CRED-001', /Hardcoded credential/i],
@@ -170,7 +178,9 @@ describe.runIf(existsSync(CLI))('known IDs still explain with exit 0 (spawn, one
   });
 });
 
-describe.runIf(existsSync(CLI))('ids secure emits on the tree’s own fixtures explain (spawn)', () => {
+describe('ids secure emits on the tree’s own fixtures explain (spawn)', () => {
+  beforeAll(assertDistFresh);
+
   // Before the SEM-MCP ids were inventory keys: `secure --ci --json
   // test-fixtures` emitted SEM-MCP-001 at critical while `explain
   // SEM-MCP-001` exited 1 suggesting SEM-CRED-001. The eight SEM-MCP ids
@@ -188,7 +198,9 @@ describe.runIf(existsSync(CLI))('ids secure emits on the tree’s own fixtures e
   });
 });
 
-describe.runIf(existsSync(CLI))('ids scan-soul prints explain (spawn, #760)', () => {
+describe('ids scan-soul prints explain (spawn, #760)', () => {
+  beforeAll(assertDistFresh);
+
   // scan-soul printed SOUL-PROFILE-MISMATCH as a HIGH while `explain
   // SOUL-PROFILE-MISMATCH` answered "Unknown check ID" and exited 1; the
   // SOUL-VIOLATION-* ids, SOUL-PROFILE-MARKER-INVALID and the
@@ -270,7 +282,9 @@ describe.runIf(existsSync(CLI))('ids scan-soul prints explain (spawn, #760)', ()
   });
 });
 
-describe.runIf(existsSync(CLI))('the sweep population is independent of the predicate (spawn)', () => {
+describe('the sweep population is independent of the predicate (spawn)', () => {
+  beforeAll(assertDistFresh);
+
   // A sweep filtered by isKnownExplainId — the predicate under test —
   // could not fail, so this population does not use it. It comes from
   // `check-metadata --json`, the inventory the CLI advertises to users,
@@ -307,7 +321,9 @@ describe.runIf(existsSync(CLI))('the sweep population is independent of the pred
   }, 300_000);
 });
 
-describe.runIf(existsSync(CLI))('input normalisation and self-referencing help (spawn)', () => {
+describe('input normalisation and self-referencing help (spawn)', () => {
+  beforeAll(assertDistFresh);
+
   it('the id is trimmed before matching', () => {
     // Without the trim, `explain "CRED-001 "` was refused while
     // suggesting the very id it was handed.

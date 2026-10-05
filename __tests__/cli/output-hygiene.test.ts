@@ -15,24 +15,22 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
-// measure a binary older than `src/` and report a pass.
-beforeAll(assertDistFreshIfPresent);
+// measure a binary older than `src/` and report a pass. Every case spawns it,
+// so a checkout that has not built fails here, naming the command to run,
+// rather than reporting twelve skips.
+beforeAll(assertDistFresh);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const VERSION = JSON.parse(
   require('node:fs').readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'),
 ).version as string;
-
-function canRunSpawn(): boolean {
-  return existsSync(CLI);
-}
 
 /** spawnSync with stdout as a PIPE — i.e. NOT a TTY, the case that regressed. */
 function run(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
@@ -47,7 +45,7 @@ function run(args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {
 const ESC = '\x1b';
 
 describe('version footer (#202)', { timeout: 240_000 }, () => {
-  it.runIf(canRunSpawn())('secure stamps the version on the findings path (exit 1)', () => {
+  it('secure stamps the version on the findings path (exit 1)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-202-findings-'));
     try {
       writeFileSync(
@@ -66,7 +64,7 @@ describe('version footer (#202)', { timeout: 240_000 }, () => {
     }
   });
 
-  it.runIf(canRunSpawn())('secure stamps the version on the clean path (exit 0)', () => {
+  it('secure stamps the version on the clean path (exit 0)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-202-clean-'));
     try {
       const res = run(['secure', dir]);
@@ -76,7 +74,7 @@ describe('version footer (#202)', { timeout: 240_000 }, () => {
     }
   });
 
-  it.runIf(canRunSpawn())('--json carries the version as a field, not a footer', () => {
+  it('--json carries the version as a field, not a footer', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-202-json-'));
     try {
       const res = run(['secure', dir, '--json']);
@@ -89,7 +87,7 @@ describe('version footer (#202)', { timeout: 240_000 }, () => {
     }
   });
 
-  it.runIf(canRunSpawn())('--ci output stays free of the footer', () => {
+  it('--ci output stays free of the footer', () => {
     // The corpus release-smoke harness consumes --ci output; a version line
     // would churn it on every bump.
     const dir = mkdtempSync(join(tmpdir(), 'hma-202-ci-'));
@@ -103,7 +101,7 @@ describe('version footer (#202)', { timeout: 240_000 }, () => {
 });
 
 describe('detect strips ANSI on a non-TTY stdout (#253.2)', { timeout: 240_000 }, () => {
-  it.runIf(canRunSpawn())('emits no escape sequences when piped', () => {
+  it('emits no escape sequences when piped', () => {
     const res = run(['detect']);
     expect(res.stdout.length).toBeGreaterThan(0);
     expect(res.stdout).not.toContain(ESC);
@@ -111,7 +109,7 @@ describe('detect strips ANSI on a non-TTY stdout (#253.2)', { timeout: 240_000 }
 });
 
 describe('red-team accepts a directory (#253.3)', { timeout: 240_000 }, () => {
-  it.runIf(canRunSpawn())('resolves the conventional artifact inside a directory', () => {
+  it('resolves the conventional artifact inside a directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-253-rt-ok-'));
     try {
       writeFileSync(join(dir, 'SKILL.md'), '---\nname: t\n---\n# t\n', 'utf8');
@@ -124,7 +122,7 @@ describe('red-team accepts a directory (#253.3)', { timeout: 240_000 }, () => {
     }
   });
 
-  it.runIf(canRunSpawn())('names what to point at when the directory holds no artifact', () => {
+  it('names what to point at when the directory holds no artifact', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-253-rt-empty-'));
     try {
       const res = run(['red-team', dir]);
@@ -138,7 +136,7 @@ describe('red-team accepts a directory (#253.3)', { timeout: 240_000 }, () => {
     }
   });
 
-  it.runIf(canRunSpawn())('distinguishes a missing path from an unreadable one', () => {
+  it('distinguishes a missing path from an unreadable one', () => {
     const res = run(['red-team', join(tmpdir(), 'hma-253-does-not-exist-xyz')]);
     expect(res.status).toBe(1);
     expect(res.stderr).toContain('No such file or directory');
@@ -146,7 +144,7 @@ describe('red-team accepts a directory (#253.3)', { timeout: 240_000 }, () => {
 });
 
 describe('pull-stubs validates the API key before using it as a header (#253.4)', { timeout: 240_000 }, () => {
-  it.runIf(canRunSpawn())('reports a clean validation error, not a ByteString exception', () => {
+  it('reports a clean validation error, not a ByteString exception', () => {
     // U+FFFD is what a mis-decoded copy-paste actually leaves behind, and is
     // the exact character from the issue report.
     const res = run(['pull-stubs'], { env: { INTERNAL_API_KEY: 'abcdefgh�ijkl' } });
@@ -160,7 +158,7 @@ describe('pull-stubs validates the API key before using it as a header (#253.4)'
 });
 
 describe('fix-all --dry-run does not claim work it did not do (#253.6)', { timeout: 240_000 }, () => {
-  it.runIf(canRunSpawn())('previews with "Would fix", never "Fixed"', () => {
+  it('previews with "Would fix", never "Fixed"', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hma-253-dry-'));
     try {
       mkdirSync(join(dir, 'sub'), { recursive: true });
@@ -181,11 +179,11 @@ describe('fix-all --dry-run does not claim work it did not do (#253.6)', { timeo
 });
 
 describe('quick-start banner is root-only (#253.7)', { timeout: 240_000 }, () => {
-  it.runIf(canRunSpawn())('renders on the top-level help', () => {
+  it('renders on the top-level help', () => {
     expect(run(['--help']).stdout).toContain('Quick start:');
   });
 
-  it.runIf(canRunSpawn())('does not repeat above subcommand help', () => {
+  it('does not repeat above subcommand help', () => {
     for (const cmd of ['secure', 'check', 'scan-soul', 'detect']) {
       expect(run([cmd, '--help']).stdout).not.toContain('Quick start:');
     }

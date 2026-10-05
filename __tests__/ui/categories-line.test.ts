@@ -9,12 +9,12 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { buildCategorySummaries } from '@opena2a/cli-ui';
 import { formatCategoriesLine, formatCategoryCounts } from '../../src/ui/categories-line';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
 describe('formatCategoryCounts', () => {
   it('names every non-zero severity, worst first', () => {
@@ -80,10 +80,11 @@ describe('formatCategoriesLine', () => {
 
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-const describeSpawn = existsSync(CLI) ? describe : describe.skip;
 
-describeSpawn('#393 secure: Categories reconciles with the Findings summary', () => {
-  beforeAll(assertDistFreshIfPresent);
+describe('#393 secure: Categories reconciles with the Findings summary', () => {
+  // A checkout that has not built fails here, naming the command to run; the
+  // formatter cases above read only the source and still report on their own.
+  beforeAll(assertDistFresh);
 
   it('counts every failing finding on a tree with a critical and a high in one category', () => {
     const home = mkdtempSync(join(tmpdir(), 'hma-393-home-'));

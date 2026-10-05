@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import { generateBenchmarkReport } from '../../src/benchmarks/benchmark-report';
 import { OASB_1_CATEGORIES } from '../../src/benchmarks/oasb-1';
 import type { BenchmarkControl, BenchmarkResult } from '../../src/benchmarks/oasb-1';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
 
 const CATALOGUE = new Map<string, BenchmarkControl>(
@@ -50,8 +50,10 @@ describe('#418 an unverified control carries its verification procedure', () => 
 
 const CLI = path.join(__dirname, '..', '..', 'dist', 'cli.js');
 
-describe.skipIf(!fs.existsSync(CLI))('#418 secure -b oasb-1 --json renders the procedure', { timeout: 240_000 }, () => {
-  beforeAll(() => { assertDistFreshIfPresent(); });
+describe('#418 secure -b oasb-1 --json renders the procedure', { timeout: 240_000 }, () => {
+  // A checkout that has not built fails here, naming the command to run,
+  // rather than skipping the case that reads the rendered report.
+  beforeAll(assertDistFresh);
 
   it('an unverified control in the JSON report carries its audit text', () => {
     const dir = tempDir('hma-418-');

@@ -27,10 +27,10 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -40,10 +40,6 @@ const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 // A name no registry carries, so a fall-through to `npm pack` cannot succeed
 // by accident and a scan document in the output is unambiguous.
 const PKG = '@opena2a-parity/does-not-exist-9308';
-
-function canRunSpawn(): boolean {
-  return existsSync(CLI);
-}
 
 function npmNoScanBranch(source: string): string {
   const start = source.indexOf('async function checkNpmPackage(');
@@ -165,6 +161,12 @@ describe('check <npm-name> --no-scan --json against a local fake Registry', () =
     hits = 0;
   });
 
+  // Every case below spawns the built CLI and nothing else is missing on a
+  // checkout that has not built, so that absence fails here, by name, rather
+  // than skipping the four cases. After the fake Registry starts, so the
+  // afterAll below always has a server to close.
+  beforeAll(assertDistFresh);
+
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     if (server6) await new Promise<void>((resolve) => server6!.close(() => resolve()));
@@ -203,7 +205,7 @@ describe('check <npm-name> --no-scan --json against a local fake Registry', () =
     });
   }
 
-  it.skipIf(!canRunSpawn())('a Registry 503 under --no-scan exits non-zero with a body that names the error, and no scan document', async () => {
+  it('a Registry 503 under --no-scan exits non-zero with a body that names the error, and no scan document', async () => {
     mode = 'error'; hits = 0;
     const r = await run();
     expect(r.json, r.stdout + r.stderr).not.toBeNull();
@@ -223,7 +225,7 @@ describe('check <npm-name> --no-scan --json against a local fake Registry', () =
   // 5xx used to be reported as `not found in the OpenA2A Registry`, a
   // definitive absence for a question that never completed. No clone, no
   // PyPI fetch: the fake Registry is the only thing these runs may touch.
-  it.skipIf(!canRunSpawn())('GitHub path: a Registry 503 under --no-scan is an error, not a not-found', async () => {
+  it('GitHub path: a Registry 503 under --no-scan is an error, not a not-found', async () => {
     mode = 'error'; hits = 0;
     const r = await run('opena2a-parity/does-not-exist-9308');
     expect(r.json, r.stdout + r.stderr).not.toBeNull();
@@ -234,7 +236,7 @@ describe('check <npm-name> --no-scan --json against a local fake Registry', () =
     expect(hits).toBe(1);
   });
 
-  it.skipIf(!canRunSpawn())('PyPI path: a Registry 503 under --no-scan is an error, not a not-found', async () => {
+  it('PyPI path: a Registry 503 under --no-scan is an error, not a not-found', async () => {
     mode = 'error'; hits = 0;
     const r = await run('pip:does-not-exist-9308');
     expect(r.json, r.stdout + r.stderr).not.toBeNull();
@@ -245,7 +247,7 @@ describe('check <npm-name> --no-scan --json against a local fake Registry', () =
     expect(hits).toBe(1);
   });
 
-  it.skipIf(!canRunSpawn())('a Registry record under --no-scan exits 0 with source: registry', async () => {
+  it('a Registry record under --no-scan exits 0 with source: registry', async () => {
     mode = 'found'; hits = 0;
     const r = await run();
     expect(r.json, r.stdout + r.stderr).not.toBeNull();

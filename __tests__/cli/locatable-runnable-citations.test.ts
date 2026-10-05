@@ -57,9 +57,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { assertDistFreshIfPresent } from "../helpers/dist-freshness";
+import { assertDistFresh } from "../helpers/dist-freshness";
 
-beforeAll(assertDistFreshIfPresent);
+// Every case in this file reads a scan the built CLI produced, so a checkout
+// that has not built fails here with the command to run, not with two blocks
+// reported as skipped.
+beforeAll(assertDistFresh);
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const CLI = join(REPO_ROOT, "dist", "cli.js");
@@ -127,10 +130,6 @@ const PLACEHOLDER_MARKERS = [
 
 let scanDir = "";
 let artifactAbsolute = "";
-
-function canRun(): boolean {
-  return existsSync(CLI);
-}
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -324,7 +323,6 @@ let loneDir = "";
 let loneFile = "";
 
 beforeAll(() => {
-  if (!canRun()) return;
   // No `test` / `fixture` / `example` segment: those suppress the credential
   // checks by design and would make every assertion below vacuous.
   scanDir = mkdtempSync(join(tmpdir(), "hma-cite-"));
@@ -351,7 +349,7 @@ afterAll(() => {
   }
 });
 
-describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
+describe("locatable, runnable citations (#368, #286)", () => {
   it("the fixture itself satisfies every detector precondition", () => {
     expect(KEY).toMatch(/^sk-[a-zA-Z0-9]{48,}$/);
     expect(KEY_BODY.length).toBeGreaterThanOrEqual(48);
@@ -611,7 +609,7 @@ describe.runIf(canRun())("locatable, runnable citations (#368, #286)", () => {
  * by the fix, and would read to a future author as intent.
  */
 
-describe.runIf(canRun())("a lone-FILE target cites the user's tree, not the temp copy", () => {
+describe("a lone-FILE target cites the user's tree, not the temp copy", () => {
   // `secure <file>` copies the file into a temp directory and scans THAT, so the
   // two questions "what path do I show the reader" and "what tree did I scan"
   // have different answers. A revision of this work carried BOTH roots so a

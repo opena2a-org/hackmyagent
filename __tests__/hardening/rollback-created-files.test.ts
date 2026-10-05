@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -32,10 +32,6 @@ beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-
-function canRunSpawn(): boolean {
-  return existsSync(CLI);
-}
 
 function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -426,6 +422,10 @@ describe('recordCreatedFiles gating (#262)', () => {
 describe('secure --fix then rollback, end to end (spawn, local-only)', { timeout: 240_000 }, () => {
   let dir: string;
 
+  // The build is the only precondition these two cases have that a checkout
+  // can lack, so its absence fails here, naming the command to run.
+  beforeAll(assertDistFresh);
+
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'hma-262-e2e-'));
     // A password-bearing localhost URL rather than a vendor-prefixed key, so
@@ -445,7 +445,7 @@ describe('secure --fix then rollback, end to end (spawn, local-only)', { timeout
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  it.runIf(canRunSpawn())('leaves no generated SOUL.md behind and restores modified files', () => {
+  it('leaves no generated SOUL.md behind and restores modified files', () => {
     const skillBefore = readFileSync(join(dir, 'SKILL.md'), 'utf8');
     const envBefore = readFileSync(join(dir, '.env'), 'utf8');
 
@@ -474,7 +474,7 @@ describe('secure --fix then rollback, end to end (spawn, local-only)', { timeout
     expect(rollback.stdout || '').not.toMatch(/All auto-fix changes have been reverted/i);
   });
 
-  it.runIf(canRunSpawn())('keeps a generated SOUL.md the user edited and names it', () => {
+  it('keeps a generated SOUL.md the user edited and names it', () => {
     spawnSync('node', [CLI, 'secure', dir, '--fix', '--ci'], { encoding: 'utf8', timeout: 180_000 });
     expect(existsSync(join(dir, 'SOUL.md')), 'harden-soul did not generate SOUL.md').toBe(true);
 

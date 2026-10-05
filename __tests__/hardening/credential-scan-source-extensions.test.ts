@@ -39,12 +39,12 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { SECURITY_RELEVANT_EXTENSIONS } from '../../src/nanomind-core/scanner-bridge';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 /**
  * Source extensions whose contents MUST be examined. Authored as the contract;
@@ -97,8 +97,6 @@ const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 // happily measure a binary older than src/ and report a pass.
 beforeAll(assertDistFreshIfPresent);
 
-const canSpawn = (): boolean => existsSync(CLI);
-
 /** Write a project holding one high-entropy credential at `relPath`, scan it. */
 function scanFixture(relPath: string): { detected: boolean; output: string } {
   const dir = mkdtempSync(join(tmpdir(), 'hma-412-'));
@@ -121,7 +119,11 @@ function scanFixture(relPath: string): { detected: boolean; output: string } {
   }
 }
 
-describe.runIf(canSpawn())('#412 end-to-end: a credential in a .mjs file is reported', () => {
+describe('#412 end-to-end: a credential in a .mjs file is reported', () => {
+  // The build is the only precondition this layer has, so a checkout that has
+  // not built fails here, naming the command to run, instead of skipping it.
+  beforeAll(assertDistFresh);
+
   for (const rel of ['config.mjs', 'config.cjs', 'src/config.mjs']) {
     it(`reports the credential in ${rel}`, () => {
       const { detected, output } = scanFixture(rel);

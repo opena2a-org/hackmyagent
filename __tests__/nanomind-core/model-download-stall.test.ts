@@ -24,7 +24,7 @@ import https from 'node:https';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TMEClassifier } from '../../src/nanomind-core/inference/tme-classifier';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
@@ -120,9 +120,11 @@ describe('a stalled model download fails instead of hanging', () => {
 // path carries a space and a quote, with the model download stalled. It has to
 // return its report on its own, inside a budget well short of the old hang.
 describe('secure finishes its report when the model download stalls', () => {
-  beforeAll(assertDistFreshIfPresent);
+  // A checkout that has not built fails here, naming the command to run; the
+  // download cases above load the source and still report on their own.
+  beforeAll(assertDistFresh);
 
-  it.runIf(existsSync(CLI))('the hostile-HOME scan from machine-posture-not-scored completes', async () => {
+  it('the hostile-HOME scan from machine-posture-not-scored completes', async () => {
     const server = await silentServer();
     try {
       const work = track(mkdtempSync(join(tmpdir(), 'hma-dl-spawn-')));

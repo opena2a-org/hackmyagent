@@ -68,18 +68,24 @@ function walk(dir: string, out: string[] = []): string[] {
  * The precondition each helper is left holding once the CI clause is gone.
  * A file that no longer contains its row has had more removed than the
  * short-circuit.
+ *
+ * Where the build was a suite's only precondition, the row names
+ * `beforeAll(assertDistFresh)` rather than an existence check: the same
+ * precondition, now an error that names `npm run build` instead of a skip
+ * (dist-only-gates-are-named-errors.test.ts). Dropping it outright still
+ * fails this row.
  */
 const REMAINING_PRECONDITION: ReadonlyArray<readonly [string, string]> = [
   ['__tests__/checker/check-not-found-json.test.ts', 'return existsSync(CLI);'],
-  ['__tests__/checker/check-pip-prefix-registry-query.test.ts', 'return existsSync(CLI);'],
-  ['__tests__/checker/check-secure-cross-analyzer-parity.test.ts', 'return existsSync(CLI);'],
+  ['__tests__/checker/check-pip-prefix-registry-query.test.ts', 'beforeAll(assertDistFresh)'],
+  ['__tests__/checker/check-secure-cross-analyzer-parity.test.ts', 'beforeAll(assertDistFresh)'],
   ['__tests__/cli/check-skill-quick-scan-label.test.ts', 'existsSync(CLI) && existsSync(FIXTURE)'],
   ['__tests__/cli/opena2a-citation-and-next-steps-target.test.ts', 'return existsSync(CLI);'],
-  ['__tests__/cli/output-hygiene.test.ts', 'return existsSync(CLI);'],
-  ['__tests__/hardening/credential-scan-source-extensions.test.ts', 'existsSync(CLI)'],
-  ['__tests__/hardening/rollback-created-files.test.ts', 'return existsSync(CLI);'],
+  ['__tests__/cli/output-hygiene.test.ts', 'beforeAll(assertDistFresh)'],
+  ['__tests__/hardening/credential-scan-source-extensions.test.ts', 'beforeAll(assertDistFresh)'],
+  ['__tests__/hardening/rollback-created-files.test.ts', 'beforeAll(assertDistFresh)'],
   ['__tests__/oasb/e2e/E2E-003.live-network-detection.test.ts', "execSync('which ss'"],
-  ['__tests__/registry/secure-publish-wire-parity.test.ts', 'return existsSync(CLI);'],
+  ['__tests__/registry/secure-publish-wire-parity.test.ts', 'beforeAll(assertDistFresh)'],
   ['__tests__/ui/artifact-intent.test.ts', 'existsSync(CLI) && existsSync(fixture)'],
   ['__tests__/ui/verdict-band.test.ts', 'existsSync(CLI) && existsSync(FIXTURE)'],
 ];

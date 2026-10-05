@@ -24,15 +24,15 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, chmodSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 
 // This suite spawns the built CLI. Without a freshness check it would silently
-// measure a binary older than `src/` and report a pass.
-beforeAll(assertDistFreshIfPresent);
+// measure a binary older than `src/` and report a pass; without a build at all
+// it fails here, naming the command to run.
+beforeAll(assertDistFresh);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-const canRun = () => existsSync(CLI);
 
 // Every temp tree this file makes, removed at the end. One of them is chmod 000
 // until a `finally` that a vitest timeout would skip, so cleanup restores mode
@@ -118,14 +118,14 @@ function scanText(dir: string, home: string, extraArgs: string[] = []) {
 
 describe('machine posture is reported, never scored', () => {
   it('the built CLI exists, so the gates below are actually armed', () => {
-    // `it.runIf(canRun())` on every case means a missing `dist/` turns this
-    // whole file into silent green no-ops and `npm test` still exits 0 —
-    // `npm test` does not build. This one case is unconditional so that state
-    // is reported rather than hidden.
+    // `npm test` does not build. The file-level freshness assertion already
+    // fails every case here by name when `dist/` is missing; this case states
+    // the same precondition as its own result, so the report reads the same
+    // whichever line a reader looks at first.
     expect(existsSync(CLI), `${CLI} is missing — run \`npm run build\` first`).toBe(true);
   });
 
-  it.runIf(canRun())('the TEXT verdict is unmoved by a home runtime, not just the JSON one', () => {
+  it('the TEXT verdict is unmoved by a home runtime, not just the JSON one', () => {
     // The observable every other test in this file was blind to. A merge gated
     // on `format !== 'json'` produced text 36/exit 1 vs JSON 98/exit 0 on the
     // same tree, with all 16 tests green.
@@ -142,7 +142,7 @@ describe('machine posture is reported, never scored', () => {
     expect(scan(dir, homeWithRuntime()).data.score).toBe(withRuntime.score);
   });
 
-  it.runIf(canRun())('the text section renders the runtime, its scope disclaimer and a command', () => {
+  it('the text section renders the runtime, its scope disclaimer and a command', () => {
     // No test rendered this block in text mode at all, so both instruments the
     // project says it never trusts alone were blind to the same expressions.
     const { out } = scanText(target(), homeWithRuntime());
@@ -157,7 +157,7 @@ describe('machine posture is reported, never scored', () => {
     expect(out).toMatch(/Scan it:.*secure /);
   });
 
-  it.runIf(canRun())('fixture check: the fake home runtime really does produce high/critical findings', () => {
+  it('fixture check: the fake home runtime really does produce high/critical findings', () => {
     const home = homeWithRuntime();
     // Scan the runtime AS the target — this is the scope where those findings
     // legitimately count. If this is clean, every other assertion below would
@@ -170,7 +170,7 @@ describe('machine posture is reported, never scored', () => {
     expect(bad.length).toBeGreaterThan(0);
   });
 
-  it.runIf(canRun())('the target score, finding count and exit code do not move when a home runtime exists', () => {
+  it('the target score, finding count and exit code do not move when a home runtime exists', () => {
     const dir = target();
     const withRuntime = scan(dir, homeWithRuntime());
     const withoutRuntime = scan(dir, homeWithoutRuntime());
@@ -182,7 +182,7 @@ describe('machine posture is reported, never scored', () => {
     expect(withRuntime.exitCode).toBe(withoutRuntime.exitCode);
   });
 
-  it.runIf(canRun())('no finding in a target-scoped scan comes from the home runtime', () => {
+  it('no finding in a target-scoped scan comes from the home runtime', () => {
     const dir = target();
     const withRuntime = scan(dir, homeWithRuntime());
     const control = scan(dir, homeWithoutRuntime());
@@ -207,7 +207,7 @@ describe('machine posture is reported, never scored', () => {
     expect(ids(withRuntime)).toEqual(ids(control));
   });
 
-  it.runIf(canRun())('the home runtime is still reported, with its own score and a runnable command', () => {
+  it('the home runtime is still reported, with its own score and a runnable command', () => {
     const dir = target();
     const { data } = scan(dir, homeWithRuntime());
 
@@ -224,7 +224,7 @@ describe('machine posture is reported, never scored', () => {
     expect(openclaw.scanCommand).toContain('secure');
   });
 
-  it.runIf(canRun())('the reported command actually resolves to the runtime directory', () => {
+  it('the reported command actually resolves to the runtime directory', () => {
     // The label and the command have different jobs, and pasting the label
     // would not work: `citationTarget('~/.openclaw')` quotes the tilde, and a
     // quoted `~` does not expand — the command would resolve to a literal `~`
@@ -246,7 +246,7 @@ describe('machine posture is reported, never scored', () => {
     expect(expanded.stdout.trim().split('\n')).toEqual([join(home, '.openclaw')]);
   });
 
-  it.runIf(canRun())('a home directory carrying shell metacharacters still yields a safe command', () => {
+  it('a home directory carrying shell metacharacters still yields a safe command', () => {
     // The injection class #339/#343 closed, reached through this new citation.
     const hostile = track(mkdtempSync(join(tmpdir(), "hma-mp-ho me'x-")));
     const skillDir = join(hostile, '.openclaw', 'skills', 'harvester');
@@ -267,7 +267,7 @@ describe('machine posture is reported, never scored', () => {
     expect(expanded.stdout.trim().split('\n')).toEqual([join(hostile, '.openclaw')]);
   });
 
-  it.runIf(canRun())('a runtime INSIDE the scan target is not also reported as outside it', () => {
+  it('a runtime INSIDE the scan target is not also reported as outside it', () => {
     // Scanning `~` (or `.` from $HOME) put every `~/.openclaw` finding into the
     // target's findings, score and exit code — correctly, they ARE inside the
     // target — while the Machine Posture section still announced "Outside this
@@ -287,7 +287,7 @@ describe('machine posture is reported, never scored', () => {
     expect(data.machinePosture).toBeUndefined();
   });
 
-  it.runIf(canRun())('a symlink to the runtime is recognised as the runtime', () => {
+  it('a symlink to the runtime is recognised as the runtime', () => {
     // `path.resolve` does not follow symlinks, so a link in the scanned tree
     // pointing at ~/.openclaw compared unequal to the runtime it actually is,
     // and the section made the same false claim as above.
@@ -300,7 +300,7 @@ describe('machine posture is reported, never scored', () => {
     expect(data.machinePosture).toBeUndefined();
   });
 
-  it.runIf(canRun())('a sibling directory sharing the prefix is still reported as outside', () => {
+  it('a sibling directory sharing the prefix is still reported as outside', () => {
     // Containment must be a path test, not a string prefix test:
     // `~/.openclaw-backup` is not inside `~/.openclaw`.
     const home = homeWithRuntime();
@@ -315,7 +315,7 @@ describe('machine posture is reported, never scored', () => {
 
 
 
-  it.runIf(canRun())('--fail-below is a real CI gate: same verdict on any machine, both formats', () => {
+  it('--fail-below is a real CI gate: same verdict on any machine, both formats', () => {
     // NOTHING in the suite passed --fail-below, despite it being a fixed bug in
     // this release. A mutation that penalized the score ONLY when --fail-below
     // was set therefore passed every guard in the repo while reproducing the
@@ -338,7 +338,7 @@ describe('machine posture is reported, never scored', () => {
     expect(run(dir, bare, ['--json', '--fail-below', '10']).status).toBe(0);
   });
 
-  it.runIf(canRun())('--no-machine-posture suppresses the section without touching the target score', () => {
+  it('--no-machine-posture suppresses the section without touching the target score', () => {
     const dir = target();
     const home = homeWithRuntime();
     const on = scan(dir, home);
