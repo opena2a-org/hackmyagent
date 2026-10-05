@@ -5649,6 +5649,7 @@ Change scope (--range, --staged):
         semanticPass: async ({ findings: existingFindings, projectType }) => {
           nmResult = await orchestrateNanoMind(targetDir, existingFindings, {
             staticOnly: isStaticOnly,
+            modelDownloadOptOut: '--static-only',
             ci: isCiMode(options),
             deep: isDeep,
             nanomind: resolveNanomindFlag(options),

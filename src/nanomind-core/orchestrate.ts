@@ -52,6 +52,13 @@ export interface OrchestrationOptions {
    * unmeasured posts nothing. Absent = flush here, after the scan.
    */
   deferTelemetryFlush?: boolean;
+  /**
+   * The flag on the calling command that skips the semantic layer, and with
+   * it the first-run model download (`--static-only` on `secure`). The
+   * download notice names it. Leave unset on a command that registers no
+   * such flag.
+   */
+  modelDownloadOptOut?: string;
 }
 
 export interface OrchestrationResult {
@@ -206,12 +213,13 @@ export async function orchestrateNanoMind(
 
     // Pre-download the ONNX model before scanning starts.
     // For npm users without cached models, this triggers a one-time
-    // download from HuggingFace (~5.5MB). Without this, the download
-    // happens lazily during the first file compilation which can cause
-    // the model to not be ready for subsequent files in the same scan.
+    // download from Hugging Face, announced on stderr in every output
+    // mode. Without this, the download happens lazily during the first
+    // file compilation which can cause the model to not be ready for
+    // subsequent files in the same scan.
     const { getTMEClassifier } = await import('./inference/tme-classifier.js');
     const tme = getTMEClassifier();
-    await tme.ensureModel(silent);
+    await tme.ensureModel({ optOut: options.modelDownloadOptOut });
 
     const { runNanoMindScan } = await import('./scanner-bridge.js');
     const nmResult: NanoMindScanResult = await runNanoMindScan(targetDir, existingFindings, options.projectType);
