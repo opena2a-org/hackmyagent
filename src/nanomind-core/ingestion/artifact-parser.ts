@@ -67,6 +67,105 @@ function declaresCapabilities(content: string): boolean {
   return frontmatter !== null && /^capabilities[ \t]*:/m.test(frontmatter);
 }
 
+/**
+ * The keys of the top-level object when the file IS a JSON object, or null when it is not.
+ *
+ * Structure, not substring (#411): a key counts only at depth 1 of a document that opens with
+ * `{`, so a `"agentType"` inside a Markdown code sample, a nested object or a string value
+ * never qualifies. Reads strings with their escapes and skips `//` and block comments, so
+ * JSONC and trailing commas are accepted the way the mcp_config fallback accepts them.
+ */
+function topLevelJsonKeys(content: string): Set<string> | null {
+  const text = content.replace(/^\uFEFF/, '');
+  const n = text.length;
+  let i = 0;
+  const skipTrivia = (): void => {
+    while (i < n) {
+      const c = text[i];
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+        i++;
+      } else if (c === '/' && text[i + 1] === '/') {
+        const nl = text.indexOf('\n', i);
+        i = nl === -1 ? n : nl + 1;
+      } else if (c === '/' && text[i + 1] === '*') {
+        const end = text.indexOf('*/', i + 2);
+        i = end === -1 ? n : end + 2;
+      } else {
+        return;
+      }
+    }
+  };
+
+  skipTrivia();
+  if (text[i] !== '{') return null;
+  const keys = new Set<string>();
+  let depth = 0;
+  while (i < n) {
+    const c = text[i];
+    if (c === '"') {
+      const start = ++i;
+      while (i < n && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+      const value = text.slice(start, i);
+      i++;
+      if (depth === 1) {
+        skipTrivia();
+        if (text[i] === ':') keys.add(value);
+      }
+      continue;
+    }
+    if (c === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
+      skipTrivia();
+      continue;
+    }
+    if (c === '{' || c === '[') {
+      depth++;
+    } else if (c === '}' || c === ']') {
+      depth--;
+      if (depth === 0) break;
+    }
+    i++;
+  }
+  return keys;
+}
+
+/**
+ * Exact basenames of the developer instruction files, lowercased. Matched against the last
+ * path segment, never as a substring of the path: `about-claude.md.backup` and
+ * `docs/not-claude.md.old` are not instruction files (#411).
+ */
+const INSTRUCTION_FILE_BASENAMES: ReadonlySet<string> = new Set([
+  'claude.md',
+  '.cursorrules',
+  '.clinerules',
+  '.windsurfrules',
+]);
+
+/**
+ * A system prompt file is named for what it is: the name before its first dot, or the whole
+ * name, is `system-prompt`, `system_prompt` or `systemprompt`, alone or followed by `-`, `_`
+ * or `.` and a suffix. So `system-prompt.prod.md`, `system-prompt-v2.txt` and
+ * `system_prompt.en.md` are system prompts. Anchored at the start of the basename, so
+ * `about-system-prompt.md` is not one, and `system-prompts.md` is not one either.
+ *
+ * Testing the whole basename covers the first-dot stem too: a stem that matches is followed
+ * only by `.` and the rest of the name, which the optional suffix accepts.
+ */
+const SYSTEM_PROMPT_NAME = /^(?:system-prompt|system_prompt|systemprompt)(?:[-_.].*)?$/;
+
+/** A backup copy is not the file it copies: `system-prompt.md.bak`, `system-prompt.md~`. */
+const BACKUP_SUFFIX = /(?:\.(?:bak|backup|old|orig)|~)$/;
+
+function isSystemPromptPath(path: string | undefined): boolean {
+  if (!path) return false;
+  const segments = path.toLowerCase().split(/[/\\]/);
+  const basename = segments[segments.length - 1];
+  if (INSTRUCTION_FILE_BASENAMES.has(basename)) return true;
+  // Cline also reads every file under a `.clinerules/` directory.
+  if (segments.slice(0, -1).includes('.clinerules')) return true;
+  if (BACKUP_SUFFIX.test(basename)) return false;
+  return SYSTEM_PROMPT_NAME.test(basename);
+}
+
 const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean; type: ArtifactType }> = [
   // Source code: recognized source extensions.
   //
@@ -134,28 +233,39 @@ const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean
     test: (_, path) => path?.toUpperCase().includes('SOUL.MD') || false,
     type: 'soul',
   },
-  // System prompt: CLAUDE.md, .cursorrules, .clinerules
+  // System prompt: CLAUDE.md, .cursorrules, .clinerules, .windsurfrules, system-prompt*
+  //
+  // IMPORTANT: read from the basename, not path substrings. `includes('claude.md')` also
+  // named `docs/about-claude.md.backup` a system prompt (#411).
   {
-    test: (_, path) => {
-      const p = path?.toLowerCase() ?? '';
-      return p.includes('claude.md') || p.includes('.cursorrules') ||
-        p.includes('.clinerules') || p.includes('.windsurfrules') ||
-        p.includes('system-prompt') || p.includes('systemprompt');
-    },
+    test: (_, path) => isSystemPromptPath(path),
     type: 'system_prompt',
   },
-  // Agent config: agent-config.yaml, *.agent.json
+  // Agent config: agent-config.yaml, *.agent.json, or a JSON object whose top-level keys
+  // declare an agent.
+  //
+  // IMPORTANT: read the keys from the parsed structure. This previously used
+  // `/"agentType"|"capabilities".*"constraints"/s` on the raw text: unanchored, and `s`
+  // let `.*` bridge the two strings across any distance, so a guide with a JSON example or
+  // two field names fifty lines apart classified as an agent config and drew the agent
+  // analyzers (#411).
   {
-    test: (content, path) =>
-      (path?.includes('agent-config') || path?.includes('.agent.') || false) ||
-      /"agentType"|"capabilities".*"constraints"/s.test(content),
+    test: (content, path) => {
+      if (path?.includes('agent-config') || path?.includes('.agent.')) return true;
+      const keys = topLevelJsonKeys(content);
+      return keys !== null &&
+        (keys.has('agentType') || (keys.has('capabilities') && keys.has('constraints')));
+    },
     type: 'agent_config',
   },
-  // A2A card: agent.json (well-known), contains agentType/capabilities
+  // A2A card: agent.json (well-known), or a JSON object with top-level agentType and
+  // capabilities keys.
   {
-    test: (content, path) =>
-      (path?.endsWith('agent.json') || false) ||
-      (content.startsWith('{') && /"agentType"/.test(content) && /"capabilities"/.test(content)),
+    test: (content, path) => {
+      if (path?.endsWith('agent.json')) return true;
+      const keys = topLevelJsonKeys(content);
+      return keys !== null && keys.has('agentType') && keys.has('capabilities');
+    },
     type: 'a2a_card',
   },
   // Env file: .env, .env.*
@@ -163,9 +273,16 @@ const TYPE_SIGNATURES: Array<{ test: (content: string, path?: string) => boolean
     test: (_, path) => /\.env($|\.)/.test(path ?? ''),
     type: 'env_file',
   },
-  // Credential file: contains API keys or secrets (non-source, non-env)
+  // Credential file: contains API keys or secrets (non-source, non-env, non-Markdown)
+  //
+  // IMPORTANT: a Markdown document is never a credential store, so a key shape in one does
+  // not make it this type. Textually, a page documenting a key format and a page leaking a
+  // key are identical (#411); telling them apart is the credential analyzers' job, and they
+  // read `.md` as documentation context. Classifying the page `credential_file` instead
+  // marked it a place where credentials are expected.
   {
-    test: (content) =>
+    test: (content, path) =>
+      !/\.md$/i.test(path ?? '') &&
       /sk-ant-|sk-proj-|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|-----BEGIN .* KEY-----/.test(content),
     type: 'credential_file',
   },
