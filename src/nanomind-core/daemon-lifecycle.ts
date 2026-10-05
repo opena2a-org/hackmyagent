@@ -107,32 +107,46 @@ async function startDaemon(port: number): Promise<boolean> {
   }
 
   // Path 3: Global nanomind-daemon
-  try {
-    return spawnDaemon('nanomind-daemon', ['start'], env);
-  } catch {
-    return false;
-  }
+  return spawnDaemon('nanomind-daemon', ['start'], env);
 }
 
-function spawnDaemon(command: string, args: string[], env: NodeJS.ProcessEnv): boolean {
-  try {
-    const child = spawn(command, args, {
-      env,
-      stdio: 'ignore',
-      detached: true,
-    });
+/**
+ * Resolves true once the process has launched, false if it could not be.
+ *
+ * `spawn` does not throw for a command that is not installed: it returns a
+ * ChildProcess and reports ENOENT later as an 'error' event. Reporting success
+ * at return time sent every scan on a machine without the daemon into the full
+ * STARTUP_WAIT_MS health-poll loop for a process that never existed — about
+ * 3s per scan, most of the wall time of a small one.
+ */
+function spawnDaemon(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<boolean> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(command, args, {
+        env,
+        stdio: 'ignore',
+        detached: true,
+      });
+    } catch {
+      resolve(false);
+      return;
+    }
 
     child.unref();
-    managedProcess = child;
 
-    child.on('error', () => {
-      managedProcess = null;
+    child.on('spawn', () => {
+      managedProcess = child;
+      resolve(true);
     });
 
-    return true;
-  } catch {
-    return false;
-  }
+    // Stays attached after launch: a later 'error' with no listener would
+    // throw out of the scan.
+    child.on('error', () => {
+      if (managedProcess === child) managedProcess = null;
+      resolve(false);
+    });
+  });
 }
 
 function sleep(ms: number): Promise<void> {
