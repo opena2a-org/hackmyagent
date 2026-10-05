@@ -18,7 +18,13 @@ import { homedir } from 'node:os';
 import https from 'node:https';
 import { escapeForDisplay } from '../../ui/display-safe';
 
-const HF_BASE = 'https://huggingface.co/opena2a/nanomind-security-classifier/resolve/main';
+// Pinned to the model repository commit the sha256 values below were taken
+// from. A branch URL follows every later commit to that repository, so a new
+// upload would fail the integrity check on every install and leave scans on
+// vocabulary scoring. Moving to a new model changes the commit and the hashes
+// together.
+const HF_REVISION = '5b0b37cddeff5ae535a25a06d8a6a555016b33b2';
+const HF_BASE = `https://huggingface.co/opena2a/nanomind-security-classifier/resolve/${HF_REVISION}`;
 const MODEL_FILES: Array<{ name: string; sha256: string }> = [
   { name: 'tokenizer.json', sha256: '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce' },
   { name: 'nanomind-tme.onnx', sha256: '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb' },

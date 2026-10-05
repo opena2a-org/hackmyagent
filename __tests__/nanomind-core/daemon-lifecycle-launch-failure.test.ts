@@ -13,16 +13,25 @@
  * Counted, not timed: the health endpoint is a local server on an ephemeral
  * port that tallies probes, so the assertion holds on a loaded machine and the
  * test never touches the daemon's real port. The launch candidates that live
- * on disk (monorepo sibling, local `.bin`, PID file) are hidden from the
- * module, and PATH is pointed at a directory this test controls, so whether a
- * daemon is installed on the machine running the suite does not matter.
+ * on disk (monorepo sibling, PID file) are hidden from the module, and the
+ * `@nanomind/daemon` package resolves only to a directory this test controls,
+ * so whether a daemon is installed on the machine running the suite does not
+ * matter.
+ *
+ * The daemon is started from a path found relative to the package, never from
+ * a command name. PATH is pointed at a directory this test controls so the
+ * case for a `nanomind-daemon` that exists only there can show it is left
+ * alone.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+/** Where `@nanomind/daemon/package.json` resolves to; null means not installed. */
+const installed = vi.hoisted(() => ({ manifest: null as string | null }));
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -30,6 +39,23 @@ vi.mock('node:fs', async (importOriginal) => {
     ...actual,
     existsSync: (p: Parameters<typeof actual.existsSync>[0]) =>
       String(p).includes('nanomind') ? false : actual.existsSync(p),
+  };
+});
+
+vi.mock('node:module', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:module')>();
+  return {
+    ...actual,
+    createRequire: (from: Parameters<typeof actual.createRequire>[0]) => {
+      const real = actual.createRequire(from);
+      return {
+        resolve: (id: string) => {
+          if (id !== '@nanomind/daemon/package.json') return real.resolve(id);
+          if (!installed.manifest) throw new Error(`Cannot find module '${id}'`);
+          return installed.manifest;
+        },
+      };
+    },
   };
 });
 
@@ -66,13 +92,14 @@ describe('ensureDaemon and a daemon that cannot be launched', () => {
   });
 
   afterEach(async () => {
+    installed.manifest = null;
     process.env.PATH = savedPath;
     rmSync(binDir, { recursive: true, force: true });
     if (server) await new Promise((r) => server!.close(r));
     server = undefined;
   });
 
-  it('gives up after the first health check when the daemon command is not installed', async () => {
+  it('gives up after the first health check when the daemon is not installed', async () => {
     const h = await healthServer([503]);
     server = h.server;
 
@@ -84,12 +111,32 @@ describe('ensureDaemon and a daemon that cannot be launched', () => {
     expect(h.probes()).toBe(1);
   });
 
-  it('still waits for a daemon that did launch', async () => {
-    // A command that launches and exits — the daemon itself is the health
-    // server above, which comes up healthy on the second probe.
+  it('does not start a nanomind-daemon that is only on PATH', async () => {
+    const started = join(binDir, 'started');
     const stub = join(binDir, 'nanomind-daemon');
-    writeFileSync(stub, '#!/bin/sh\nexit 0\n');
+    writeFileSync(stub, `#!/bin/sh\n: > '${started}'\n`);
     chmodSync(stub, 0o755);
+    const h = await healthServer([503]);
+    server = h.server;
+
+    const available = await ensureDaemon(h.port);
+
+    expect(available).toBe(false);
+    expect(h.probes()).toBe(1);
+    expect(existsSync(started)).toBe(false);
+  });
+
+  it('still waits for a daemon that did launch', async () => {
+    // A CLI that launches and exits — the daemon itself is the health server
+    // above, which comes up healthy on the second probe.
+    const pkgDir = join(binDir, 'daemon');
+    mkdirSync(pkgDir);
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@nanomind/daemon',
+      bin: { 'nanomind-daemon': 'cli.js' },
+    }));
+    writeFileSync(join(pkgDir, 'cli.js'), 'process.exit(0);\n');
+    installed.manifest = join(pkgDir, 'package.json');
     const h = await healthServer([503, 200]);
     server = h.server;
 
