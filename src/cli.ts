@@ -11838,9 +11838,20 @@ program
 // explain command: NanoMind-powered finding explanation
 program
   .command('explain')
-  .argument('<findingId>', 'Finding ID to explain (e.g., CRED-001 or AST-INJECT-001)')
+  // Optional to the parser only, so a bare `explain` reaches the refusal
+  // below instead of Commander's "missing required argument" (#742); the
+  // usage line still shows the id as required.
+  .argument('[findingId]', 'Finding ID to explain (e.g., CRED-001 or AST-INJECT-001)')
+  .usage('[options] <findingId>')
   .description('Explain a security finding in plain English')
-  .action(async (findingId: string) => {
+  .action(async (findingId: string | undefined) => {
+    if (findingId === undefined) {
+      process.stderr.write('No check ID given: explain needs a check ID to look up (e.g., CRED-001).\n');
+      process.stderr.write(`  Run: ${CLI_PREFIX} explain CRED-001\n`);
+      process.stderr.write(`  Full inventory: ${CLI_PREFIX} check-metadata --json\n`);
+      return exitRecorded(1, 'refused');
+    }
+
     // Trimmed before matching: `explain "CRED-001 "`
     // used to be refused while suggesting the very id it was handed.
     const checkId = findingId.trim().toUpperCase();

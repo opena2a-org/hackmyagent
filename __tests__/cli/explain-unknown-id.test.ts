@@ -320,6 +320,40 @@ describe.runIf(existsSync(CLI))('input normalisation and self-referencing help (
     }
   });
 
+  it('a bare explain is refused with a runnable example, not a parser error', () => {
+    // Pages showed bare `hackmyagent explain`, and running it printed
+    // Commander's "missing required argument 'findingId'" with nothing
+    // to run next (#742).
+    const res = spawnSync(process.execPath, [CLI, 'explain'], {
+      encoding: 'utf-8',
+      env: { ...process.env, NO_COLOR: '1', NANOMIND_URL: DEAD_DAEMON },
+    });
+    const stderr = res.stderr ?? '';
+    expect(stderr).not.toMatch(/missing required argument/i);
+    expect(stderr).toMatch(/No check ID given/);
+    // Same exit as the empty-id refusal and the other bare commands.
+    expect(res.status).toBe(1);
+    expect(res.stdout ?? '').toBe('');
+
+    // The example it offers is a command the CLI answers.
+    const example = stderr.match(/Run: \S+ explain (\S+)/);
+    expect(example, 'bare explain names an example to run').not.toBeNull();
+    const answered = runExplain(example![1]);
+    expect(answered.stderr).not.toMatch(/Unknown check ID/i);
+    expect(answered.code).toBe(0);
+    expect(stderr).toMatch(/Full inventory: \S+ check-metadata --json/);
+  });
+
+  it('the usage line still shows the check id as required', () => {
+    const help = spawnSync(process.execPath, [CLI, 'explain', '--help'], {
+      encoding: 'utf-8',
+      env: { ...process.env, NO_COLOR: '1' },
+    });
+    expect(help.status).toBe(0);
+    expect(help.stdout).toMatch(/Usage:[^\n]*explain[^\n]*<findingId>/);
+    expect(help.stdout).not.toMatch(/Usage:[^\n]*explain[^\n]*\[findingId\]/);
+  });
+
   it('the help example names only ids the command answers', () => {
     // The help once cited SKILL-SEMANTIC-007, an id the command
     // refuses; an example must be answerable.
