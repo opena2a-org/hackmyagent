@@ -602,7 +602,10 @@ export interface ScanResult {
      * classifies real findings with, so the two cannot drift into different
      * category vocabularies. (`LOG-*` findings carry `category: 'logging'` but
      * render under the label `audit` — a set keyed by the raw category would
-     * silently never match.)
+     * silently never match.) Keep `passed` at the consumer: a stored row that
+     * carries it is finding-shaped to the publish-boundary reader, and must
+     * then be built through `emitFinding`, as `expandSuppressed` builds its
+     * stubs (#552).
      *
      * Findings the USER suppressed (`--ignore`, `.hmaignore`) are deliberately
      * absent: that suppression was requested, and is already disclosed

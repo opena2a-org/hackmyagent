@@ -32,7 +32,8 @@
  * incoherence.
  */
 
-import type { SecurityFinding, Severity } from '../hardening/security-check';
+import type { SecurityFinding, SecurityFindingDraft, Severity } from '../hardening/security-check';
+import { emitFinding } from '../hardening/finding-emit';
 
 /** Lowest score the meter still paints green. Mirrors the renderer in cli.ts. */
 export const GOOD_BAND_FLOOR = 70;
@@ -185,15 +186,26 @@ export function retainForVerdict(f: {
  *
  * The stubs carry no `file`, no `message` and no `evidence`, so nothing that
  * consumes them can leak what the finding was about.
+ *
+ * #552 — each stub is still finding-shaped (`checkId`, `severity`, `passed`,
+ * and `name`, a byte-carrying field), which is exactly what the publish-boundary
+ * reader recognises. So the stubs are built through `emitFinding` like every
+ * other finding: they carry a provenance stamp, and the one stray spread that
+ * puts them on a publish payload cannot make the reader throw on safe bytes.
+ * The stamp describes the stub's own text — its `name` is put through the
+ * redactor here rather than trusted because it came off an emitted finding.
  */
 export function expandSuppressed(
   summary: readonly { checkId: string; name: string; category: string; severity: string; count: number }[] | undefined,
-): Array<{ checkId: string; name: string; category: string; severity: string; passed: false; suppressed: true }> {
+): SuppressedStub[] {
   if (!summary?.length) return [];
-  const out: Array<{ checkId: string; name: string; category: string; severity: string; passed: false; suppressed: true }> = [];
+  const out: SuppressedStub[] = [];
   for (const row of summary) {
     for (let i = 0; i < row.count; i++) {
-      out.push({
+      // A draft by assertion: the stub omits `description`, `message` and
+      // `fixable` on purpose, and `emitFinding` adds nothing it was not given
+      // beyond the two provenance fields.
+      const stamped = emitFinding({
         checkId: row.checkId,
         name: row.name,
         // Carried, not blanked. `calculateSecurityScore` applies the 0.4
@@ -206,11 +218,22 @@ export function expandSuppressed(
         severity: row.severity,
         passed: false,
         suppressed: true,
-      });
+      } as SecurityFindingDraft);
+      out.push(stamped as unknown as SuppressedStub);
     }
   }
   return out;
 }
+
+/** One `expandSuppressed` entry: the score's inputs, stamped at the boundary. */
+export type SuppressedStub = {
+  checkId: string;
+  name: string;
+  category: string;
+  severity: string;
+  passed: false;
+  suppressed: true;
+} & Pick<SecurityFinding, 'redactionStatus' | 'redactedShapes'>;
 
 /**
  * Whether a finding is shown in the rendered findings list.
