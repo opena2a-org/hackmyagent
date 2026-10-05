@@ -405,6 +405,7 @@ import {
   OBSERVATION_LABELS,
   OBSERVATION_LABEL_WIDTH,
 } from './ui/quick-scan-labels';
+import { checkGroupTally, scanDepthDisclosure } from './ui/scan-depth-disclosure';
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
@@ -1323,6 +1324,11 @@ interface UnifiedCheckDisplayOptions {
     ownArchivePath?: string;
     /** What the scan actually examined, measured at runtime. */
     coverage?: ScanResult['coverage'];
+    /**
+     * The depth the user asked for (#507). At `quick` the score line carries
+     * its check-group denominator; unset elsewhere, where it does not.
+     */
+    scanDepth?: 'quick' | 'standard' | 'deep';
   };
   registry?: RegistryTrustData | null;
   verbose?: boolean;
@@ -2108,7 +2114,18 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       score,
       clamped: localScan ? localScan.scoreClamped : nanomindScoreClamped,
     });
-    console.log(`  ${scoreLineLabel(quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${RESET()}`);
+    // #507 — a quick-depth score names what it is over. Same line as the
+    // meter, because the Checks line that already carried `6 of 63` sits a
+    // screen further down and the headline number was read without it.
+    const depthDisclosure = scanDepthDisclosure({
+      scanDepth: localScan?.scanDepth,
+      executions: localScan?.coverage?.executions,
+      target: opts.nextStepsTarget,
+    });
+    console.log(`  ${scoreLineLabel(quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${depthDisclosure?.scoreSuffix ?? ''}${RESET()}`);
+    if (depthDisclosure?.followup) {
+      console.log(`  ${colors.cyan}${colors.bold}${depthDisclosure.followup}${RESET()}`);
+    }
     if (quickScan) {
       // Cyan + bold, same visual weight as the suppressed Path-forward
       // line so the disclaimer cannot be skimmed past. (#136 adversarial
@@ -2550,13 +2567,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // but it is now labelled as the declared suite and stood next to the
     // number that actually executed.
     if (coverageCategories && localScan?.coverage) {
-      const execs = localScan.coverage.executions;
-      const ran = execs.filter(e => e.completed).length;
       // Denominator is the REGISTERED check set, not the records that happen
       // to exist. Sizing it from `executions.length` made a check that never
       // registered vanish from both halves, so the ratio always read `N of N`
-      // and could not express a missing check at all.
-      const registered = Object.keys(CHECK_METHOD_PREFIXES).length;
+      // and could not express a missing check at all. The score line's quick
+      // depth denominator (#507) reads the same tally.
+      const { ran, registered } = checkGroupTally(localScan.coverage.executions);
       const parts = [
         `${staticCount} static declared`,
         `${ran} of ${registered} check groups ran`,
@@ -6399,6 +6415,8 @@ Examples:
           // which is what printed "(all clear)" over categories nothing
           // examined.
           coverage: result.coverage,
+          // #507 — so a quick-depth score is printed with its denominator.
+          scanDepth,
         },
         // Without this, the Observations "Checks" line renders "0 semantic"
         // even though the pre-scan status reports N artifacts compiled.
