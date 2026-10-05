@@ -48,6 +48,55 @@ const CLASSES = [
   'policy_violation', 'benign', 'steganography',
 ];
 
+/** The part of an onnxruntime `InferenceSession` this module releases. */
+interface ReleasableSession {
+  release(): unknown;
+}
+
+/**
+ * ONNX sessions this module created and has not released yet (#770).
+ *
+ * Nothing used to release the session. The CLI sets `process.exitCode` and
+ * returns, so the session, and the thread pool it owns, was still alive while
+ * the process tore down its native state. `scan-soul --deep` was recorded
+ * ending in that window with `recursive_mutex lock failed: Invalid argument`
+ * from the C++ runtime and exit 134, after a complete report. The cause of that
+ * abort is not established. What this removes is the open session at teardown,
+ * the one part of it that HackMyAgent owns.
+ *
+ * The `exit` event fires on both ways a command ends, natural teardown after
+ * `process.exitCode` and `process.exit()`, and it fires before the runtime is
+ * torn down, so one listener covers every command on both. It does not fire
+ * when a signal or a fatal error ends the process.
+ *
+ * The listener must be synchronous, and `release()` is: onnxruntime-node
+ * disposes the native session before the first `await` inside its `release()`,
+ * so the work is done when the call returns, not when its promise settles.
+ */
+const openOnnxSessions = new Set<ReleasableSession>();
+let releaseOnExitInstalled = false;
+
+function releaseOpenOnnxSessions(): void {
+  for (const session of [...openOnnxSessions]) {
+    openOnnxSessions.delete(session);
+    try {
+      // Not awaited, because an `exit` listener cannot wait. The catch only
+      // keeps a failed release from becoming an unhandled rejection.
+      Promise.resolve(session.release()).catch(() => {});
+    } catch {
+      // A release that throws is not retried; the process is ending anyway.
+    }
+  }
+}
+
+function trackOnnxSession(session: ReleasableSession): void {
+  openOnnxSessions.add(session);
+  if (!releaseOnExitInstalled) {
+    releaseOnExitInstalled = true;
+    process.once('exit', releaseOpenOnnxSessions);
+  }
+}
+
 export interface TMEClassification {
   intentClass: 'benign' | 'suspicious' | 'malicious';
   attackClass: string;
@@ -336,6 +385,7 @@ export class TMEClassifier {
       this.onnxSession = await ort.InferenceSession.create(this.modelPath, {
         logSeverityLevel: TMEClassifier.ORT_SEVERITY_ERROR,
       });
+      trackOnnxSession(this.onnxSession);
       this.onnxReady = true;
     } catch {
       this.useOnnx = false;
