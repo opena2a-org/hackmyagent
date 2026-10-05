@@ -13,7 +13,8 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 const DEFAULT_PORT = 47200;
@@ -21,6 +22,8 @@ const HEALTH_TIMEOUT_MS = 2000;
 const STARTUP_WAIT_MS = 3000;
 const STARTUP_POLL_MS = 200;
 const PID_FILE = join(homedir(), '.nanomind', 'daemon.pid');
+const DAEMON_PACKAGE = '@nanomind/daemon';
+const DAEMON_BIN = 'nanomind-daemon';
 
 let managedProcess: ChildProcess | null = null;
 
@@ -45,8 +48,7 @@ export async function isDaemonRunning(port: number = DEFAULT_PORT): Promise<bool
  * Start order:
  * 1. Check if already running (health check)
  * 2. Check PID file for an existing process
- * 3. Try to start via the nanomind-daemon CLI package
- * 4. Try to start via the monorepo sibling path
+ * 3. Start the daemon CLI that resolveDaemonCommand() finds, if any
  */
 export async function ensureDaemon(port: number = DEFAULT_PORT): Promise<boolean> {
   // Already running?
@@ -87,27 +89,75 @@ export async function ensureDaemon(port: number = DEFAULT_PORT): Promise<boolean
   return false;
 }
 
+/** How to start the daemon: an absolute interpreter path and its arguments. */
+export interface DaemonCommand {
+  command: string;
+  args: string[];
+}
+
+/**
+ * Work out how to start the NanoMind daemon, or return null when no daemon
+ * CLI is installed where HMA can find it.
+ *
+ * The interpreter is the Node binary already running HMA and the daemon CLI
+ * is an absolute path found relative to this package. No command name is
+ * looked up on PATH, so a `node` or `nanomind-daemon` earlier on PATH is never
+ * what runs. A daemon installed only globally is not started; start it with
+ * `nanomind-daemon start` and HMA finds it through the health check.
+ *
+ * Search order:
+ * 1. Monorepo sibling checkout (development)
+ * 2. The @nanomind/daemon package, resolved the way Node resolves this
+ *    package's own dependencies
+ *
+ * `baseDir` and `execPath` are parameters so tests can supply their own.
+ */
+export function resolveDaemonCommand(
+  baseDir: string = __dirname,
+  execPath: string = process.execPath,
+): DaemonCommand | null {
+  const cli = findDaemonCli(baseDir);
+  return cli ? { command: execPath, args: [cli, 'start'] } : null;
+}
+
+/**
+ * Where a monorepo sibling checkout keeps the daemon CLI, relative to the
+ * directory that holds both checkouts.
+ */
+export const SIBLING_DAEMON_CLI = join('nanomind', 'packages', 'nanomind-daemon', 'dist', 'cli.js');
+
+function findDaemonCli(baseDir: string): string | null {
+  const monorepoCli = join(baseDir, '..', '..', '..', '..', SIBLING_DAEMON_CLI);
+  if (existsSync(monorepoCli)) {
+    return monorepoCli;
+  }
+
+  try {
+    const manifestPath = createRequire(join(baseDir, 'noop.js')).resolve(`${DAEMON_PACKAGE}/package.json`);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+    const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.[DAEMON_BIN];
+    if (typeof bin !== 'string') {
+      return null;
+    }
+    const cli = join(dirname(manifestPath), bin);
+    return existsSync(cli) ? cli : null;
+  } catch {
+    // Not installed, or a manifest that cannot be read
+    return null;
+  }
+}
+
 /**
  * Start the NanoMind daemon process.
- * Tries multiple paths to find the daemon CLI.
  */
 async function startDaemon(port: number): Promise<boolean> {
+  const launch = resolveDaemonCommand();
+  if (!launch) {
+    return false;
+  }
+
   const env = { ...process.env, NANOMIND_PORT: String(port) };
-
-  // Path 1: Monorepo sibling (development)
-  const monorepoPath = join(__dirname, '..', '..', '..', '..', 'nanomind', 'packages', 'nanomind-daemon', 'dist', 'cli.js');
-  if (existsSync(monorepoPath)) {
-    return spawnDaemon('node', [monorepoPath, 'start'], env);
-  }
-
-  // Path 2: Installed @nanomind/daemon package
-  const localBin = join(__dirname, '..', '..', 'node_modules', '.bin', 'nanomind-daemon');
-  if (existsSync(localBin)) {
-    return spawnDaemon(localBin, ['start'], env);
-  }
-
-  // Path 3: Global nanomind-daemon
-  return spawnDaemon('nanomind-daemon', ['start'], env);
+  return spawnDaemon(launch.command, launch.args, env);
 }
 
 /**
