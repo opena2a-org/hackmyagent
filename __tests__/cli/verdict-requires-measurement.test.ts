@@ -698,8 +698,13 @@ describe('#371 the OASB-2 conformance gate cannot be switched off by a score fla
     // — the flag a CI user is most likely to set, and the one that reads as
     // "add a score floor" — silently disabled conformance checking and
     // restored the score-averaging the fix exists to remove.
+    //
+    // The governance file is read and conforms to nothing. A tree with none
+    // was this fixture until #489: there, nothing is graded and the run exits
+    // 2 (NOT MEASURED), so it could not show a conformance failure.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-oasb-'));
     fs.writeFileSync(path.join(dir, 'README.md'), '# demo\n');
+    fs.writeFileSync(path.join(dir, 'SOUL.md'), 'name: demo\n');
     for (const extra of [[], ['--fail-below', '0'], ['--fail-below', '1'], ['--fail-below', '100']]) {
       const { status, out } = run(['secure', dir, '-b', 'oasb-2', ...extra]);
       expect(out).toMatch(/Conformance:\s+NONE/);
