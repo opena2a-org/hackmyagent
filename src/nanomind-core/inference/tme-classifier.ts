@@ -26,6 +26,22 @@ const MODEL_FILES: Array<{ name: string; sha256: string }> = [
 ];
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
+/**
+ * How long a model download may receive nothing, connecting included, before
+ * it is abandoned and the scan continues on vocabulary scoring.
+ *
+ * There was no bound. A connection that was accepted and then went silent held
+ * `secure` open indefinitely: the report was never written, and whatever was
+ * waiting on the scan (a CI step, a spawn budget) killed it with empty output.
+ * Every scan under a HOME with no model cache downloads, so a test suite that
+ * gives each spawned scan a fresh HOME runs many of these at once and fails
+ * intermittently whenever one stalls (#542).
+ *
+ * An idle bound, not a total one: a slow link that keeps delivering bytes
+ * still completes the download; only a silent one is given up on.
+ */
+const DOWNLOAD_IDLE_TIMEOUT_MS = 10_000;
+
 const CLASSES = [
   'exfiltration', 'injection', 'privilege_escalation', 'persistence',
   'credential_abuse', 'lateral_movement', 'social_engineering',
@@ -114,11 +130,16 @@ export class TMEClassifier {
   /**
    * Download a single file from HuggingFace, following 302 redirects.
    * Uses only Node.js built-ins (https, fs, crypto).
+   *
+   * `timeout` is a socket idle bound armed before the socket connects, so it
+   * covers a connect, a TLS handshake or a response body that goes silent.
+   * Node only announces it; ending the request is this function's job, and the
+   * response's own `error` is what settles a body cut off part-way.
    */
-  private static downloadFile(url: string, destPath: string): Promise<void> {
+  private static downloadFile(url: string, destPath: string, idleTimeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
       const follow = (targetUrl: string) => {
-        https.get(targetUrl, (response) => {
+        const req = https.get(targetUrl, { timeout: idleTimeoutMs }, (response) => {
           if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
             const location = response.headers.location;
             if (!location) {
@@ -137,10 +158,15 @@ export class TMEClassifier {
             return;
           }
           const file = createWriteStream(destPath);
+          response.on('error', (err) => { file.destroy(); reject(err); });
           response.pipe(file);
           file.on('finish', () => { file.close(); resolve(); });
           file.on('error', (err) => { file.close(); reject(err); });
-        }).on('error', reject);
+        });
+        req.on('timeout', () => {
+          req.destroy(new Error(`no data received for ${idleTimeoutMs / 1000}s`));
+        });
+        req.on('error', reject);
       };
       follow(url);
     });
@@ -163,8 +189,15 @@ export class TMEClassifier {
    * Download the NanoMind TME model files from HuggingFace.
    * Verifies SHA-256 integrity of each file. Cleans up on failure.
    * Returns true if download succeeded, false otherwise.
+   *
+   * A connection that goes silent for `idleTimeoutMs` fails the download, and
+   * the caller falls back to vocabulary scoring (see `DOWNLOAD_IDLE_TIMEOUT_MS`).
    */
-  static async downloadModel(targetDir?: string, quiet = false): Promise<boolean> {
+  static async downloadModel(
+    targetDir?: string,
+    quiet = false,
+    idleTimeoutMs = DOWNLOAD_IDLE_TIMEOUT_MS,
+  ): Promise<boolean> {
     const dir = targetDir ?? DOWNLOAD_DIR;
     try {
       mkdirSync(dir, { recursive: true });
@@ -180,7 +213,7 @@ export class TMEClassifier {
 
       const url = `${HF_BASE}/${file.name}`;
       try {
-        await TMEClassifier.downloadFile(url, dest);
+        await TMEClassifier.downloadFile(url, dest, idleTimeoutMs);
         // Verify integrity
         const hash = await TMEClassifier.computeHash(dest);
         if (file.sha256 && hash !== file.sha256) {
