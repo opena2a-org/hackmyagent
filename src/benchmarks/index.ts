@@ -25,6 +25,7 @@ export type {
   LadderRating,
   BenchmarkCategoryResult,
   BenchmarkControlResult,
+  BenchmarkFailingRecord,
 } from './oasb-1';
 
 /**
