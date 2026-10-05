@@ -81,6 +81,29 @@ function classifyServer(name: string, config: McpServerConfig): Capability[] {
   return capabilities;
 }
 
+/**
+ * Read a list-valued server field (`args`, `allowedTools`, `allowedCommands`)
+ * as the list of strings it declares.
+ *
+ * A server entry is parsed JSON, not a typed `McpServerConfig`, and every
+ * check below iterates these fields and calls string methods on the elements.
+ * `"allowedTools": 5`, `"args": {}` or `"args": ["x", 7]` threw a TypeError
+ * there, the caller's catch swallowed it, and the scan dropped EVERY Layer-2
+ * finding for the whole tree — the other servers' and the other analyzers'
+ * included — with no notice. One malformed entry was a way to switch the
+ * layer off.
+ *
+ * Arrays and strings are read the way the compiler's tool-declaration
+ * normaliser reads them: an array keeps its string elements, and a lone string
+ * is a one-element list (so `"allowedTools": "*"` is still the wildcard it
+ * spells). Any other value declares nothing.
+ */
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (typeof value === 'string') return [value];
+  return [];
+}
+
 export class McpConfigAnalyzer {
   analyze(files: AnalysisFile[]): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
@@ -116,8 +139,16 @@ export class McpConfigAnalyzer {
       let located: Map<string, ServerLocation | null> | undefined;
       const locate = () => (located ??= locateServerEntries(file.content));
 
-      for (const [serverName, serverConfig] of Object.entries(servers)) {
-        if (!serverConfig || typeof serverConfig !== 'object') continue;
+      for (const [serverName, rawConfig] of Object.entries(servers)) {
+        if (!rawConfig || typeof rawConfig !== 'object') continue;
+
+        const raw = rawConfig as unknown as Record<string, unknown>;
+        const serverConfig: McpServerConfig = {
+          ...rawConfig,
+          args: stringList(raw.args),
+          allowedTools: stringList(raw.allowedTools),
+          allowedCommands: stringList(raw.allowedCommands),
+        };
 
         // Track capabilities for attack chain detection
         const caps = classifyServer(serverName, serverConfig);
@@ -311,7 +342,7 @@ export class McpConfigAnalyzer {
       fieldName: string
     ) => {
       if (!field) return;
-      if (field.includes('*') || field.some((v) => v === '*')) {
+      if (field.includes('*')) {
         findings.push({
           id: 'SEM-MCP-004',
           title: 'Wildcard permission in MCP server',
