@@ -718,6 +718,44 @@ governance:
       const postScan = await scanner.scanSoul(tmpDir);
       expect(postScan.agentTier).toBe('BASIC');
     });
+
+    // #744 — `harden-soul --tier AGENTIC --dry-run` was documented and rejected.
+    it('harden-soul --tier pins the given tier instead of the detected one', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), '# Simple chatbot\nBasic Q&A.');
+      expect((await scanner.scanSoul(tmpDir)).agentTier).toBe('BASIC');
+
+      const preview = await scanner.hardenSoul(tmpDir, { dryRun: true, tier: 'agentic' });
+      expect(preview.content).toContain('<!-- soul:tier=AGENTIC -->');
+      expect(fs.readFileSync(path.join(tmpDir, 'SOUL.md'), 'utf-8')).toBe('# Simple chatbot\nBasic Q&A.');
+
+      await scanner.hardenSoul(tmpDir, { tier: 'AGENTIC' });
+      expect((await scanner.scanSoul(tmpDir)).agentTier).toBe('AGENTIC');
+    });
+
+    it('harden-soul --tier writes the given tier into a new SOUL.md', async () => {
+      const result = await scanner.hardenSoul(tmpDir, { dryRun: true, tier: 'MULTI-AGENT' });
+      expect(result.existedBefore).toBe(false);
+      expect(result.content).toContain('<!-- soul:tier=MULTI-AGENT -->');
+      expect(fs.existsSync(path.join(tmpDir, 'SOUL.md'))).toBe(false);
+    });
+
+    it('harden-soul refuses an unknown --tier before writing anything', async () => {
+      await expect(scanner.hardenSoul(tmpDir, { tier: 'bogus' }))
+        .rejects.toThrow("Unknown --tier 'bogus'. Accepted: BASIC, TOOL-USING, AGENTIC, MULTI-AGENT.");
+      expect(fs.existsSync(path.join(tmpDir, 'SOUL.md'))).toBe(false);
+    });
+
+    it('harden-soul refuses a --tier that conflicts with the tier marker already in the file', async () => {
+      const original = '<!-- soul:tier=BASIC -->\n# Agent\nBasic Q&A.';
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), original);
+      await expect(scanner.hardenSoul(tmpDir, { tier: 'AGENTIC' }))
+        .rejects.toThrow('--tier AGENTIC conflicts with the tier marker already in SOUL.md (soul:tier=BASIC).');
+      expect(fs.readFileSync(path.join(tmpDir, 'SOUL.md'), 'utf-8')).toBe(original);
+
+      // A matching marker is not a conflict.
+      const result = await scanner.hardenSoul(tmpDir, { dryRun: true, tier: 'basic' });
+      expect(result.sectionsAdded.length).toBeGreaterThan(0);
+    });
   });
 
   // ---------------------------------------------------------------

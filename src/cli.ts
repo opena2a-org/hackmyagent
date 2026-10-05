@@ -11027,12 +11027,14 @@ Examples:
   $ ${CLI_PREFIX} harden-soul                  Add missing sections
   $ ${CLI_PREFIX} harden-soul --dry-run        Preview changes
   $ ${CLI_PREFIX} harden-soul ./my-agent       Target specific directory
+  $ ${CLI_PREFIX} harden-soul --tier AGENTIC --dry-run  Pin the tier, preview
   $ ${CLI_PREFIX} harden-soul --json           Machine-readable output`)
   .argument('[directory]', 'Directory to harden (defaults to current directory)', '.')
   .option('--dry-run', 'Preview changes without modifying files')
+  .option('--tier <tier>', 'Override agent tier detection and pin it in the soul:tier marker (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
   .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--json', 'Output as JSON')
-  .action(async (directory: string, options: { dryRun?: boolean; profile?: string; json?: boolean }) => {
+  .action(async (directory: string, options: { dryRun?: boolean; tier?: string; profile?: string; json?: boolean }) => {
     try {
       const targetDir = require("path").resolve(directory);
 
@@ -11079,6 +11081,7 @@ Examples:
       const result = await scanner.hardenSoul(targetDir, {
         dryRun: options.dryRun,
         profile: options.profile,
+        tier: options.tier,
         writeGuard: hardenGuard,
       });
 
