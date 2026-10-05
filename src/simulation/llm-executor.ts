@@ -70,6 +70,27 @@ export class NanoMindBackend implements LLMBackend {
 // Anthropic Claude Backend
 // ============================================================================
 
+/**
+ * Build the Messages API request body for one probe.
+ *
+ * The skill system prompt is the same for every probe run against a skill, so
+ * it carries the cache breakpoint and later probes read it from the prompt
+ * cache. The probe input changes on every call and stays after the breakpoint,
+ * uncached. A system prompt below the model's minimum cacheable length is
+ * processed normally and simply not cached.
+ */
+export function buildAnthropicRequestBody(systemPrompt: string, userMessage: string) {
+  return {
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    // An empty text block is rejected by the API, so an empty prompt sends no system field.
+    ...(systemPrompt
+      ? { system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] }
+      : {}),
+    messages: [{ role: 'user', content: userMessage }],
+  };
+}
+
 export class AnthropicBackend implements LLMBackend {
   name = 'anthropic';
   private apiKey: string;
@@ -90,12 +111,7 @@ export class AnthropicBackend implements LLMBackend {
         'x-api-key': this.apiKey,
         'anthropic-version': '2023-06-01',
       },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMessage }],
-      }),
+      body: JSON.stringify(buildAnthropicRequestBody(systemPrompt, userMessage)),
       signal: AbortSignal.timeout(10000),
     });
     if (!resp.ok) throw new Error(`Anthropic returned ${resp.status}`);
