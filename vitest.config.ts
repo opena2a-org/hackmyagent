@@ -41,8 +41,10 @@ export default defineConfig({
     // full-suite runs on an idle machine. 180s covers a contended scan with
     // headroom while a genuinely hung unit test still fails in minutes, not
     // hours. A file whose own spawn budget meets or exceeds this cap carries
-    // an explicit higher `{ timeout }` on its describe (secure-unread-input-
-    // gate: spawn budget 240s, describe timeout 300s).
+    // an explicit `{ timeout }` on its describe. secure-unread-input-gate
+    // turns the cap off (`timeout: 0`): its spawns draw on a budget scaled
+    // from the file's own measured spawn times, which stops a hung command
+    // once for the file (__tests__/helpers/spawn-budget.ts).
     // hookTimeout matches testTimeout for the same reason: several files run
     // their scan spawns in beforeAll (fix-marker-under-prefix timed out its
     // hook at exactly 60000ms in the run after testTimeout alone was raised).
