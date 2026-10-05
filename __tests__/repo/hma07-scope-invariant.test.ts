@@ -83,6 +83,12 @@ const TRACKED_FS_SHA256 = 'bf6566fa2dfab6877ebed88b67b0d28e518e013d2ca164d5640aa
  * materialized from git objects) and remove findings the base already holds;
  * neither narrows the walk over the tree it scans, and a tree-scan without them
  * is unchanged. A flag that did make the walk opt-in would still turn this red.
+ *
+ * SCOPE DECISION, taken with #536 (`secure --scan-history` and
+ * `secure --since <ref>`), on the same rule: that change adds two flags,
+ * recorded here. `--scan-history` ADDS a pass over the commits reachable from
+ * any ref; `--since` bounds only that added pass. Neither narrows the walk over
+ * the checked-out tree, and a scan without them is unchanged.
  */
 const REGISTERED_LONG_FLAGS = [
   '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--as', '--at',
@@ -96,7 +102,8 @@ const REGISTERED_LONG_FLAGS = [
   '--no-color', '--no-contribute', '--no-machine-posture', '--no-registry',
   '--no-scan', '--offline', '--output', '--payload-file', '--ports', '--profile',
   '--publish', '--range', '--reason', '--registry-key', '--registry-report', '--registry-url',
-  '--rescan', '--root', '--scan-depth', '--scan-only', '--source-commit', '--staged',
+  '--rescan', '--root', '--scan-depth', '--scan-history', '--scan-only', '--since',
+  '--source-commit', '--staged',
   '--static-only', '--status', '--stop-on-success', '--surface', '--system-prompt',
   '--target-type', '--tier', '--timeout', '--tool', '--type', '--verbose',
   '--version', '--version-id', '--with-aim',

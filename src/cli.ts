@@ -390,6 +390,7 @@ import {
 } from './hardening/coverage-ledger';
 import type { ScanResult, SuppressionChannel, SecurityFindingDraft, WithheldLinkRecord } from './hardening/security-check';
 import { readStaysInsideTree } from './hardening/contain';
+import { resolveHistoryScan, shortCommit, HistoryScanRefusal, type HistoryScanPlan } from './hardening/git-history-scan';
 import { mergeWithheldLinks, retargetInstruction, withheldLinkLines, withheldLinkRecords } from './hardening/withheld-links';
 
 /**
@@ -1447,6 +1448,8 @@ interface UnifiedCheckDisplayOptions {
    * NEVER change the exit code.
    */
   hmaignore?: ScanResult['hmaignore'];
+  /** #536 — what `secure --scan-history` read; absent when it was not asked for. */
+  history?: ScanResult['history'];
   artifactSummaries?: Array<{
     path: string;
     type: string;
@@ -1889,7 +1892,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
    * `checkId` but no `file`, so the verdict can say WHAT still counts against
    * the tree without naming the path the caller asked to have withheld.
    */
-  let verdictInput: Array<{ severity: string; name?: string; checkId?: string; file?: string; line?: number }> = [];
+  let verdictInput: Array<{ severity: string; name?: string; checkId?: string; file?: string; line?: number; commit?: string }> = [];
   let score = 0;
   let maxScore = 100;
   let critical = 0, high = 0, medium = 0, low = 0;
@@ -2065,6 +2068,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     if (unreadFiles > 0) meta.push(`${unreadFiles} could not be read`);
   }
   if (localScan?.filesScanned) meta.push(`${localScan.filesScanned} files scanned`);
+  // #536 — the history pass is named in the header whenever it ran, so a clean
+  // report says it read N commits rather than leaving "did not look" possible.
+  if (opts.history) {
+    const n = opts.history.commitsScanned;
+    meta.push(`${n} commit${n === 1 ? '' : 's'} of history read${opts.history.since !== undefined ? ` after ${escapeForDisplay(opts.history.since)}` : ''}`);
+  }
 
   console.log();
   // #328 — `name` is the target as given, which for a local scan is a path out
@@ -2423,7 +2432,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // pass below, so the line stays formatted by one place. Found by a test
         // asserting no rendered line splits: the finding header and the fix line
         // were escaped and this third consumer of the same path was not.
-        file: f.file === undefined ? undefined : escapePathForDisplay(f.file),
+        // #536 — a finding from git history is named at `commit:file:line`.
+        file: f.file === undefined
+          ? undefined
+          : (f.commit ? `${escapeForDisplay(shortCommit(f.commit))}:` : '') + escapePathForDisplay(f.file),
         line: f.line,
       })),
     );
@@ -2934,7 +2946,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // #377 — the header names the file the `Verify:` line names: the full
         // relative path, never elided (subsumes the #374 archive case).
         const headerPath = f.file ? escapePathForDisplay(f.file) : '';
-        const loc = headerPath + (f.line ? `:${f.line}` : '');
+        // #536 — a finding from git history cites `commit:file:line`.
+        const loc = (f.commit ? `${escapeForDisplay(shortCommit(f.commit))}:` : '') + headerPath + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
         console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${escapeForDisplay(f.name || f.message)}${RESET()}`);
@@ -2982,7 +2995,8 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         // #377 — the header names the file the `Verify:` line names: the full
         // relative path, never elided (subsumes the #374 archive case).
         const headerPath = f.file ? escapePathForDisplay(f.file) : '';
-        const loc = headerPath + (f.line ? `:${f.line}` : '');
+        // #536 — a finding from git history cites `commit:file:line`.
+        const loc = (f.commit ? `${escapeForDisplay(shortCommit(f.commit))}:` : '') + headerPath + (f.line ? `:${f.line}` : '');
         const borderColor = SEVERITY_DISPLAY[f.severity].color();
         console.log();
         console.log(`  ${borderColor}│${RESET()} ${sevBadge(f.severity)}  ${colors.bold}${colors.white}${escapeForDisplay(f.name || f.message)}${RESET()}`);
@@ -4371,6 +4385,8 @@ function generateScanSarif(findings: SecurityFinding[], targetDir: string, discl
         ...(f.line ? { region: { startLine: f.line } } : {}),
       },
     }] : undefined,
+    // #536 — the path of a history finding is read at this commit, not HEAD.
+    ...(f.commit ? { properties: { commit: f.commit } } : {}),
   }));
 
   const runProperties = sarifRunProperties(disclosure);
@@ -4420,7 +4436,7 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
         <td><span class="severity-badge" style="background: ${severityColors[f.severity]}20; color: ${severityColors[f.severity]}; border: 1px solid ${severityColors[f.severity]}40;">${escapeHtml(f.severity.toUpperCase())}</span></td>
         <td><code>${escapeHtml(f.checkId)}</code></td>
         <td>${escapeHtml(f.description)}</td>
-        <td>${f.file ? escapeHtml(f.file) + (f.line ? ':' + f.line : '') : ''}</td>
+        <td>${f.file ? (f.commit ? escapeHtml(shortCommit(f.commit)) + ':' : '') + escapeHtml(f.file) + (f.line ? ':' + f.line : '') : ''}</td>
         <td>${f.fix ? escapeHtml(f.fix) : ''}</td>
       </tr>`).join('');
 
@@ -5201,6 +5217,7 @@ Examples:
   $ ${CLI_PREFIX} secure -b oasb-1 -f html -o report.html
   $ ${CLI_PREFIX} secure -b oasb-1 --fail-below 80 CI threshold
   $ ${CLI_PREFIX} secure -b oasb-2               OASB composite (infra + governance)
+  $ ${CLI_PREFIX} secure --scan-history          Also scan every commit for credentials
   $ ${CLI_PREFIX} secure ./my-agent --publish    Scan and publish results to registry (not with -b)
   $ ${CLI_PREFIX} secure --range origin/main...HEAD  Pull request gate: only what the branch introduces
   $ ${CLI_PREFIX} secure --staged                Pre-commit hook: only what the staged changes introduce
@@ -5238,6 +5255,8 @@ Change scope (--range, --staged):
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
+  .option('--scan-history', 'Also read every commit reachable from any ref and report credentials committed there as <commit>:<file>:<line>, including ones since deleted from the tree (needs a git work tree; not with -b)')
+  .option('--since <ref>', 'With --scan-history: read only commits not reachable from <ref>')
   .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env; not with -b)')
   .option('--publish', 'Push scan results to the OpenA2A Registry (not with -b)')
   .option('--registry-report', 'Post results to OpenA2A Registry (not with -b)')
@@ -5251,7 +5270,7 @@ Change scope (--range, --staged):
   .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
   .option('--range <base..head>', 'Report only what the commits in this git range introduce (<base>..<head>, or <base>...<head> to measure from the merge base). A finding already present at <base> is not reported and does not set the exit code')
   .option('--staged', 'Report only what the staged changes introduce, measured against HEAD (for a pre-commit hook)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean; range?: string; staged?: boolean }, cmd: Command) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; scanHistory?: boolean; since?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean; range?: string; staged?: boolean }, cmd: Command) => {
     try {
       const originalTarget = require("path").resolve(directory);
       let targetDir = originalTarget;
@@ -5544,6 +5563,7 @@ Change scope (--range, --staged):
           options.registryReport && '--registry-report',
           options.versionId !== undefined && '--version-id',
           options.contribute === true && cmd.getOptionValueSource('contribute') === 'cli' && '--contribute',
+          options.scanHistory && '--scan-history',
         ].filter((f): f is string => typeof f === 'string');
         if (scopeConflicts.length > 0) {
           throw usageError`${scopeFlag} reports only what a change introduces and cannot be combined with ${scopeConflicts.join(', ')}. Run secure without ${scopeFlag} for ${scopeConflicts.length === 1 ? 'that flag' : 'those flags'}.`;
@@ -5559,6 +5579,35 @@ Change scope (--range, --staged):
         // A change-scoped finding list is a subset of the tree's by design;
         // sharing it would report the subset as the tree.
         options.contribute = false;
+      }
+
+      // #536 — the history pass. Every way the request can fail is refused here,
+      // before the scan prints anything, through the catch's refusal branch: a
+      // run asked to read history that quietly read only the tree would report
+      // clean on exactly the state the flag exists to examine.
+      let historyPlan: HistoryScanPlan | undefined;
+      if (options.since !== undefined && !options.scanHistory) {
+        throw usageError`--since sets where --scan-history starts reading. Add --scan-history, or drop --since.`;
+      }
+      if (options.scanHistory) {
+        if (options.benchmark !== undefined) {
+          throw usageError`--scan-history is not available with -b ${benchmarkAsGiven}: a benchmark scores the tree's controls, and a commit is not one. Run secure --scan-history without -b.`;
+        }
+        if (_isFileTarget) {
+          throw usageError`--scan-history reads a repository's history, and ${originalTarget} is a single file. Point it at the repository directory.`;
+        }
+        try {
+          historyPlan = await resolveHistoryScan(originalTarget, options.since);
+        } catch (err) {
+          if (!(err instanceof HistoryScanRefusal)) throw err;
+          if (err.subject === 'git') throw usageError`--scan-history ${err.message}.`;
+          if (err.subject === 'since') throw usageError`--since ${options.since} ${err.message}.`;
+          // git's own reason goes on its own line: the line break is ours, the
+          // text is git's and is escaped like any other interpolated value.
+          throw err.detail
+            ? usageError`--scan-history: ${originalTarget} ${err.message}.\ngit said: ${err.detail}`
+            : usageError`--scan-history: ${originalTarget} ${err.message}.`;
+        }
       }
 
       // Only show progress for text output — write to stderr so stdout stays clean for pipes
@@ -5654,6 +5703,7 @@ Change scope (--range, --staged):
         autoFix: options.fix ?? false,
         dryRun: options.dryRun ?? false,
         ignore: ignoreList,
+        ...(historyPlan ? { scanHistory: historyPlan } : {}),
         deep: isDeep,
         scanDepth,
         cliName: RAW_CLI_PREFIX,
@@ -6651,6 +6701,7 @@ Change scope (--range, --staged):
         // #286 — the directory the findings' paths are relative to, so every
         // rendered Verify command runs from wherever the reader is standing.
         scanRoot: citationRoot,
+        history: result.history,
         // #450 — the two narrowings, carried so the report can name them.
         // Without this the scan is narrowed invisibly: 0.27.0 printed
         // `100/100 · No security issues found` on this repo while an

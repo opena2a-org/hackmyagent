@@ -27,6 +27,9 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
   // to be a finding it can explain. Says plainly that this one is not
   // rewritten for you: fix-all edits config files, never source.
   'CRED-005': 'Hardcoded credential in a source file. fix-all reports it but does not rewrite source. Rotate the credential at the provider, then read it from the environment or a secrets manager. Run: opena2a protect . — migrates hardcoded secrets into the Secretless vault so source files reference them by name only.',
+  // #536 — reported only by `secure --scan-history`. The remedy is rotation,
+  // not a tree edit: the commit keeps serving the value whatever the tree holds.
+  'CRED-HIST-001': 'Credential in git history. A commit reachable from a branch, tag or remote ref added this value, so every clone that contains the commit can read it, whether or not the file still holds it. Rotate the credential at its issuer first; that is the step that ends the exposure. Rewriting history (for example with git filter-repo) is a separate step that changes every later commit and needs every clone re-fetched. A rotated value keeps reporting while a commit holds it; after rotating, --since <ref> limits later runs to the commits after <ref>. Reported by: hackmyagent secure --scan-history',
   'MCP-001': 'MCP server running without TLS. Agent-to-server communication is unencrypted. Enable TLS on the MCP server or use a reverse proxy with TLS termination.',
   'SKILL-005': 'External endpoint in skill capability declaration. Verify the endpoint is trusted and uses HTTPS.',
   'GOV-001': 'No governance policy found. Agents should declare behavioral constraints in a SOUL.md or governance file. Create a SOUL.md with mission, boundaries, and allowed actions.',

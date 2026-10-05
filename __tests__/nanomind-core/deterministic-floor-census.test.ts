@@ -53,6 +53,12 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
  * choose which trees the scan runs over and drop findings the base tree
  * already has; the floor runs unchanged over both trees and neither flag turns
  * any part of it off.
+ *
+ * #536 adds two: `--scan-history` and `--since <ref>` on `secure`. The first
+ * ADDS a pass over the commits reachable from any ref, reporting credentials
+ * committed there; the second bounds that added pass to the commits not
+ * reachable from `<ref>`. The tree scan and the floor run unchanged with or
+ * without them, and neither turns any part of either off.
  */
 const COMMAND_SURFACE = [
   '--a2a-recipient', '--a2a-sender', '--analm', '--api-format', '--at', '--atx',
@@ -61,6 +67,7 @@ const COMMAND_SURFACE = [
   '--all', '--check-id', '--reason', '--source-commit',        // HMA-08, see note below
   '--as',                                                      // HMA-70, see note above
   '--range', '--staged',                                       // #537, see note above
+  '--scan-history', '--since',                                 // #536, see note above
   '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',
