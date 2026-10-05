@@ -14,6 +14,7 @@ import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
+import { AsyncLocalStorage } from 'async_hooks';
 import { execFile } from 'child_process';
 import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure } from './security-check';
 import { isScopeChannel } from './security-check';
@@ -3931,31 +3932,39 @@ function describeSkillBundlePayload(line: string): string | null {
   return `reads ${credRead} and sends it out via ${sink}`;
 }
 
-export class HardeningScanner {
-  private cliName = 'hackmyagent';
+/** One input a run could not read, with the path its counts leave out. */
+type UnreadInput = { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string };
+
+/**
+ * Everything one `scan()` builds its result from.
+ *
+ * Per run, not per instance. These used to be instance fields that `scan()`
+ * reset on entry, which is right for one scan at a time and wrong for two
+ * overlapping scans on one instance: the second reset replaced the first's
+ * ledger, CLI name and fix bookkeeping mid-flight, so the first result
+ * reported the second scan's withheld links (and a `--fix` write could be
+ * judged against the other scan's backup). Each `scan()` now starts a fresh
+ * run, and the scanner reads it through `activeScanRuns`.
+ */
+interface ScanRun {
+  cliName: string;
   /** The verb a SCAN-UNREAD-001 remedy re-runs; see `ScanOptions.unreadRemedyCommand`. */
-  private unreadRemedyCommand = 'secure';
-  /**
-   * Coverage ledger for the current `scan()`. Replaced per run.
-   *
-   * Initialised to a ledger rooted at a path nothing resolves inside, so a
-   * check invoked outside `scan()` records against a throwaway rather than
-   * crashing or, worse, banking evidence onto the previous run's ledger.
-   */
-  private coverage: CoverageLedger = new CoverageLedger(path.join(path.sep, 'hackmyagent-no-active-scan'));
-  /** Fix writes that did not land this run. Reset per `scan()`. */
-  private fixWriteFailures: { file: string; code: string; message: string }[] = [];
+  unreadRemedyCommand: string;
+  /** Coverage ledger for this run. */
+  coverage: CoverageLedger;
+  /** Fix writes that did not land this run. */
+  fixWriteFailures: { file: string; code: string; message: string }[];
   /**
    * Fix writes that landed inside a directory named like a backup archive but
-   * belonging to a DIFFERENT tree. Reset per `scan()`.
+   * belonging to a DIFFERENT tree.
    *
    * Not a failure — the write is recoverable through this run's own backup. It
    * is a fact the other tree's owner has to be told, because their `rollback`
    * no longer restores what they expect.
    */
-  private fixWritesIntoForeignArchive: string[] = [];
+  fixWritesIntoForeignArchive: string[];
   /**
-   * Every path a fix write actually landed on this run. Reset per `scan()`.
+   * Every path a fix write actually landed on this run.
    *
    * `recordCreatedFiles` used to derive its candidates from the findings —
    * `f.fixed && f.file` — which silently assumes every file a fix writes is
@@ -3966,14 +3975,16 @@ export class HardeningScanner {
    * not depend on finding attribution, so a fix with no owning finding cannot
    * fall through the same gap again.
    */
-  private fixWritePaths: string[] = [];
+  fixWritePaths: string[];
   /**
    * Backup context for the current `--fix` run, or undefined when no backup
    * was taken (detect-only, dry-run, or a `createBackup` failure that already
    * downgraded the run). `applyFixWrite` refuses to write without it — see
-   * `ensureBackupCovers`.
+   * `ensureBackupCovers`. Starts undefined on every run and is only ever set
+   * once a backup actually exists, so one run's backup cannot authorise
+   * another run's writes (#300).
    */
-  private backupContext: {
+  backupContext: {
     backupDir: string;
     /**
      * The backup directory's `dev`+`ino`. Carried separately from the path
@@ -3996,26 +4007,97 @@ export class HardeningScanner {
    * context and still has to answer "is this file inside a backup archive" the
    * same way, or `secure` and `secure --fix` disagree about the same file.
    */
-  private archiveBases = new Map<string, ArchiveBase>();
-  /** Per-directory memo for `isInsideArchiveBase`. Reset per `scan()`. */
-  private archiveDirAnswers = new Map<string, 'yes' | 'no' | 'unknown'>();
-  /** Per-directory memo for `resolvesToANestedArchive`. Reset per `scan()`. */
-  private nestedArchiveDirs = new Map<string, boolean>();
+  archiveBases: Map<string, ArchiveBase>;
+  /** Per-directory memo for `isInsideArchiveBase`. */
+  archiveDirAnswers: Map<string, 'yes' | 'no' | 'unknown'>;
+  /** Per-directory memo for `resolvesToANestedArchive`. */
+  nestedArchiveDirs: Map<string, boolean>;
   /**
    * Target-relative paths the last `createBackup` already accounted for, in
    * either manifest list. Seeds `backupContext.covered` so the static
    * candidates are not re-copied one at a time.
    */
-  private lastBackupCovered: string[] = [];
+  lastBackupCovered: string[];
   /** Identity of the directory the last `createBackup` created. See #317. */
-  private lastBackupIdent: FsIdentity | undefined;
+  lastBackupIdent: FsIdentity | undefined;
   /**
    * Candidates the last `createBackup` refused to copy because they resolve
    * outside the scanned tree. The refusal is a policy skip that must be
    * ANNOUNCED, never silent: the caller that renders withheld links merges
    * these with the scan-side records (`backupWithheldLinks`).
    */
-  private lastBackupWithheldLinks: WithheldLink[] = [];
+  lastBackupWithheldLinks: WithheldLink[];
+  /** Every unreadable input this run recorded, before scope filtering. */
+  unreadableAll: UnreadInput[];
+}
+
+function newScanRun(coverage: CoverageLedger): ScanRun {
+  return {
+    cliName: 'hackmyagent',
+    unreadRemedyCommand: 'secure',
+    coverage,
+    fixWriteFailures: [],
+    fixWritesIntoForeignArchive: [],
+    fixWritePaths: [],
+    backupContext: undefined,
+    archiveBases: new Map(),
+    archiveDirAnswers: new Map(),
+    nestedArchiveDirs: new Map(),
+    lastBackupCovered: [],
+    lastBackupIdent: undefined,
+    lastBackupWithheldLinks: [],
+    unreadableAll: [],
+  };
+}
+
+/**
+ * The run each scanner instance is executing in the calling async context.
+ *
+ * Keyed by instance, so a nested scan through another instance (the verify
+ * pass a `--fix` performs) adds its own run without hiding its caller's, and
+ * carried like the active ledger, so two overlapping `scan()` calls on ONE
+ * instance each read their own run.
+ */
+const activeScanRuns = new AsyncLocalStorage<ReadonlyMap<HardeningScanner, ScanRun>>();
+
+export class HardeningScanner {
+  /**
+   * The run outside any `scan()`: the last scan's once one has finished, so a
+   * caller reading `lastUnreadInputs` or `backupWithheldLinks` after awaiting a
+   * scan sees that scan. Before the first scan it is rooted at a path nothing
+   * resolves inside, so a check invoked outside `scan()` records against a
+   * throwaway rather than crashing.
+   */
+  private lastRun: ScanRun = newScanRun(new CoverageLedger(path.join(path.sep, 'hackmyagent-no-active-scan')));
+
+  /** This instance's run in the calling context, else `lastRun`. */
+  private get currentRun(): ScanRun {
+    return activeScanRuns.getStore()?.get(this) ?? this.lastRun;
+  }
+
+  // The per-run state, read and written through the current run. Each field
+  // is documented on `ScanRun`.
+  private get cliName(): string { return this.currentRun.cliName; }
+  private set cliName(v: string) { this.currentRun.cliName = v; }
+  private get unreadRemedyCommand(): string { return this.currentRun.unreadRemedyCommand; }
+  private set unreadRemedyCommand(v: string) { this.currentRun.unreadRemedyCommand = v; }
+  private get coverage(): CoverageLedger { return this.currentRun.coverage; }
+  private get fixWriteFailures(): ScanRun['fixWriteFailures'] { return this.currentRun.fixWriteFailures; }
+  private get fixWritesIntoForeignArchive(): string[] { return this.currentRun.fixWritesIntoForeignArchive; }
+  private get fixWritePaths(): string[] { return this.currentRun.fixWritePaths; }
+  private get backupContext(): ScanRun['backupContext'] { return this.currentRun.backupContext; }
+  private set backupContext(v: ScanRun['backupContext']) { this.currentRun.backupContext = v; }
+  private get archiveBases(): ScanRun['archiveBases'] { return this.currentRun.archiveBases; }
+  private get archiveDirAnswers(): ScanRun['archiveDirAnswers'] { return this.currentRun.archiveDirAnswers; }
+  private get nestedArchiveDirs(): ScanRun['nestedArchiveDirs'] { return this.currentRun.nestedArchiveDirs; }
+  private get lastBackupCovered(): string[] { return this.currentRun.lastBackupCovered; }
+  private set lastBackupCovered(v: string[]) { this.currentRun.lastBackupCovered = v; }
+  private get lastBackupIdent(): FsIdentity | undefined { return this.currentRun.lastBackupIdent; }
+  private set lastBackupIdent(v: FsIdentity | undefined) { this.currentRun.lastBackupIdent = v; }
+  private get lastBackupWithheldLinks(): WithheldLink[] { return this.currentRun.lastBackupWithheldLinks; }
+  private set lastBackupWithheldLinks(v: WithheldLink[]) { this.currentRun.lastBackupWithheldLinks = v; }
+  private get unreadableAll(): UnreadInput[] { return this.currentRun.unreadableAll; }
+  private set unreadableAll(v: UnreadInput[]) { this.currentRun.unreadableAll = v; }
   // Files that may be created or modified during auto-fix
   private static readonly BACKUP_FILES = [
     'config.json',
@@ -4246,8 +4328,6 @@ export class HardeningScanner {
   /**
    * Check if a file path matches any .hmaignore pattern.
    */
-  /** Every unreadable input this run recorded, before scope filtering. */
-  private unreadableAll: { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }[] = [];
   /**
    * The unread inputs of the last `scan()`, with their paths. The result's
    * `coverage.unreadableInputs` carries counts and errno codes only; a caller
@@ -4338,39 +4418,35 @@ export class HardeningScanner {
   }
 
   /**
-   * Install a fresh coverage ledger for this run, then scan.
+   * Start a fresh run (coverage ledger included) for this call, then scan.
    *
-   * The ledger is per-run and the install is scoped: a nested scan (the verify
+   * The run is per call and the install is scoped: a nested scan (the verify
    * pass a `--fix` performs through its own scanner instance) collects onto
    * its own ledger and restores this one on the way out, so neither run banks
-   * the other's evidence.
+   * the other's evidence, and two overlapping calls on one instance each
+   * build their result from their own run. A reused instance inherits nothing
+   * from the previous scan.
    */
   async scan(options: ScanOptions): Promise<ScanResult> {
     const ledger = new CoverageLedger(options.targetDir);
     if (options.confineRoots) ledger.setConfineRoots(options.confineRoots);
-    this.coverage = ledger;
-    // Per-run, like the ledger itself: a reused instance must not inherit the
-    // previous scan's unread set.
-    this.unreadableAll = [];
-    return withActiveLedger(ledger, () => this.scanInner(options));
+    const run = newScanRun(ledger);
+    const runs = new Map(activeScanRuns.getStore());
+    runs.set(this, run);
+    try {
+      return await activeScanRuns.run(runs, () => withActiveLedger(ledger, () => this.scanInner(options)));
+    } finally {
+      this.lastRun = run;
+    }
   }
 
   private async scanInner(options: ScanOptions): Promise<ScanResult> {
     const { targetDir, autoFix = false, dryRun = false, ignore = [], cliName = 'hackmyagent', unreadRemedyCommand = 'secure' } = options;
+    // The rest of the run's state starts fresh in `scan()` (see `ScanRun`):
+    // no failed write, fix path, backup context or archive memo carries over
+    // from another run.
     this.cliName = cliName;
     this.unreadRemedyCommand = unreadRemedyCommand;
-    // Per-run, so a reused scanner instance cannot report a previous run's
-    // failed writes.
-    this.fixWriteFailures = [];
-    this.fixWritesIntoForeignArchive = [];
-    this.fixWritePaths = [];
-    // Cleared per run, and only ever set below once a backup actually
-    // exists. A reused scanner instance must not let one run's backup
-    // authorise the next run's writes (#300).
-    this.backupContext = undefined;
-    this.archiveDirAnswers = new Map();
-    this.archiveBases = new Map();
-    this.nestedArchiveDirs = new Map();
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
