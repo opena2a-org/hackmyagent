@@ -130,6 +130,21 @@ export async function flushNanoMindTelemetry(
 }
 
 /**
+ * Flush at a command's settlement point (#655). `outboundAllowed` is the
+ * settled run's own outbound decision: a withheld run posts nothing and
+ * keeps its queue, so the next run in this process whose outcome allows
+ * outbound records flushes it. Resolves false when withheld.
+ */
+export async function settleNanoMindTelemetry(
+  outboundAllowed: boolean,
+  registryUrl?: string,
+  verbose?: boolean,
+): Promise<boolean> {
+  if (!outboundAllowed) return false;
+  return flushNanoMindTelemetry(registryUrl, verbose);
+}
+
+/**
  * Get the current queue size (for testing/debugging).
  */
 export function getTelemetryQueueSize(): number {

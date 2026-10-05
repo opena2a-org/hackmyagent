@@ -5507,6 +5507,9 @@ Examples:
             // dropped by the projectType filter does not structurally cover its
             // file (it never reaches the user), so the sweep still reads it.
             findingVisible: (f) => scanner.findingAppliesTo(f, projectType),
+            // This pass runs before the settlement point; the classification
+            // telemetry flushes there, behind the outbound decision (#655).
+            deferTelemetryFlush: true,
           });
           return { findings: nmResult.mergedFindings };
         },
@@ -5638,6 +5641,12 @@ Examples:
       const settled = settledOutcome(result, settledExit);
       // One decision, one line: no outbound arm re-discovers a reason to send.
       const sendOutbound = outboundAllowed(settled);
+      // NanoMind classification telemetry, queued during the scan, flushes
+      // here behind the same decision (#655): a withheld run posts nothing
+      // and keeps its queue. Non-blocking, best-effort.
+      import('./telemetry/nanomind-telemetry.js')
+        .then((m) => m.settleNanoMindTelemetry(sendOutbound))
+        .catch(() => {});
       const withheldOutbound: string[] = [];
       // The one printed line when something outbound was withheld (#464,
       // slice A; fixed template). The reason clause is the exit-2
