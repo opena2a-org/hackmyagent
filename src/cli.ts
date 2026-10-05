@@ -644,7 +644,7 @@ Quick start:
 // users see the boundary without reading the privacy policy.
 program.addHelpText('after', `
 Telemetry:
-  Anonymous usage telemetry is on. Disable: OPENA2A_TELEMETRY=off
+  Usage telemetry is on and each event carries a persistent install ID. Disable: OPENA2A_TELEMETRY=off
   Local scans may contribute to the OpenA2A Registry once you have opted in. Disable: --no-contribute,
   or set contribute.enabled to false in ~/.opena2a/config.json. '${CLI_PREFIX} telemetry off' covers usage telemetry only.
 `);
@@ -15371,7 +15371,7 @@ async function checkNpmPackage(
     colors = { green: '', brightGreen: '', yellow: '', red: '', brightRed: '', cyan: '', blue: '', magenta: '', dim: '', bold: '', white: '', underline: '', reset: '' };
   }
 
-  // Tier-1 anonymous usage telemetry — default ON; opt-out via
+  // Tier-1 usage telemetry — default ON; opt-out via
   // OPENA2A_TELEMETRY=off or `hackmyagent telemetry off`. See README §Telemetry.
   // Disclosure surfaces: README, --version line, telemetry subcommand,
   // opena2a.org/telemetry. The `tele` import + init happened above (before
@@ -15511,10 +15511,10 @@ async function checkNpmPackage(
     });
   };
 
-  // Telemetry subcommand: inspect or toggle anonymous usage telemetry.
+  // Telemetry subcommand: inspect or toggle usage telemetry.
   program
     .command('telemetry [action]')
-    .description('Inspect or toggle anonymous usage telemetry: on | off | status')
+    .description('Inspect or toggle usage telemetry: on | off | status')
     .action((action: TelemetryAction | undefined) => {
       console.log(runTelemetryCommand(action, {
         tool: 'hackmyagent',
