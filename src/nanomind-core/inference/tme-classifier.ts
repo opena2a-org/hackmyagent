@@ -11,7 +11,7 @@
  * Security: model file integrity verified before loading.
  */
 
-import { readFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync, createReadStream } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync, createReadStream, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -25,10 +25,13 @@ import { escapeForDisplay } from '../../ui/display-safe';
 // together.
 const HF_REVISION = '5b0b37cddeff5ae535a25a06d8a6a555016b33b2';
 const HF_BASE = `https://huggingface.co/opena2a/nanomind-security-classifier/resolve/${HF_REVISION}`;
-const MODEL_FILES: Array<{ name: string; sha256: string }> = [
-  { name: 'tokenizer.json', sha256: '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce' },
-  { name: 'nanomind-tme.onnx', sha256: '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb' },
-  { name: 'nanomind-tme.onnx.data', sha256: '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018' },
+// `bytes` is each file's size at that commit. The notice printed before a
+// download states the sum of the files it is about to fetch, and a download
+// is checked against it the same way it is checked against the hash.
+const MODEL_FILES: Array<{ name: string; sha256: string; bytes: number }> = [
+  { name: 'tokenizer.json', sha256: '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce', bytes: 168_639 },
+  { name: 'nanomind-tme.onnx', sha256: '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb', bytes: 142_990 },
+  { name: 'nanomind-tme.onnx.data', sha256: '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018', bytes: 8_380_416 },
 ];
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
@@ -47,6 +50,50 @@ const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
  * still completes the download; only a silent one is given up on.
  */
 const DOWNLOAD_IDLE_TIMEOUT_MS = 10_000;
+
+/**
+ * The hosts a model download may reach: the model repository on
+ * huggingface.co, and Hugging Face's content CDN under hf.co, where the large
+ * files redirect (the CDN host itself varies by region). A redirect to any
+ * other host is refused, so the notice printed before the download names
+ * every host the download can contact.
+ */
+const MODEL_HOSTS_FOR_NOTICE = "huggingface.co and Hugging Face's content CDN";
+const MAX_MODEL_REDIRECTS = 5;
+
+export function isAllowedModelHost(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase();
+  return host === 'huggingface.co' || host.endsWith('.hf.co');
+}
+
+/** Decimal units: 1 MB is 1,000,000 bytes. */
+function formatModelBytes(bytes: number): string {
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} kB`;
+  return `${bytes} bytes`;
+}
+
+export interface ModelDownloadOptions {
+  /**
+   * The flag, registered on the command that triggers the download, that
+   * skips it (for example `--static-only` on `secure`). The notice names it.
+   * Omitted when the command registers no such flag, so the notice never
+   * names a flag the command would reject.
+   */
+  optOut?: string;
+  /**
+   * How long a connection may receive nothing before the download is
+   * abandoned. Defaults to `DOWNLOAD_IDLE_TIMEOUT_MS`.
+   */
+  idleTimeoutMs?: number;
+}
 
 const CLASSES = [
   'exfiltration', 'injection', 'privilege_escalation', 'persistence',
@@ -125,7 +172,7 @@ export class TMEClassifier {
   private useOnnx = false;
   private needsDownload = false;
   private downloadPromise: Promise<boolean> | null = null;
-  private quiet = false;
+  private downloadOptions: ModelDownloadOptions = {};
 
   constructor(modelDir?: string) {
     // Look for model in standard locations (ordered by preference)
@@ -183,7 +230,8 @@ export class TMEClassifier {
   }
 
   /**
-   * Download a single file from HuggingFace, following 302 redirects.
+   * Download a single file from Hugging Face, following redirects only to
+   * the hosts `isAllowedModelHost` accepts.
    * Uses only Node.js built-ins (https, fs, crypto).
    *
    * `timeout` is a socket idle bound armed before the socket connects, so it
@@ -193,23 +241,40 @@ export class TMEClassifier {
    */
   private static downloadFile(url: string, destPath: string, idleTimeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      const follow = (targetUrl: string) => {
+      const follow = (targetUrl: string, redirects: number) => {
+        if (!isAllowedModelHost(targetUrl)) {
+          let host = 'an unparseable URL';
+          try { host = new URL(targetUrl).host; } catch { /* keep the placeholder */ }
+          reject(new Error(`refused a request to ${host}, which is outside huggingface.co and *.hf.co`));
+          return;
+        }
         const req = https.get(targetUrl, { timeout: idleTimeoutMs }, (response) => {
           if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400) {
             const location = response.headers.location;
+            response.resume();
             if (!location) {
               reject(new Error('Redirect with no location header'));
               return;
             }
-            response.resume();
-            // Handle relative redirects by resolving against the request URL
-            const resolved = location.startsWith('http') ? location : new URL(location, targetUrl).href;
-            follow(resolved);
+            if (redirects >= MAX_MODEL_REDIRECTS) {
+              reject(new Error(`more than ${MAX_MODEL_REDIRECTS} redirects`));
+              return;
+            }
+            // Relative redirects resolve against the request URL
+            let resolved: string;
+            try {
+              resolved = new URL(location, targetUrl).href;
+            } catch {
+              reject(new Error('Redirect with an unparseable location header'));
+              return;
+            }
+            follow(resolved, redirects + 1);
             return;
           }
           if (response.statusCode !== 200) {
             response.resume();
-            reject(new Error(`HTTP ${response.statusCode} for ${targetUrl}`));
+            // The host, not the URL: a CDN URL carries a signed query string.
+            reject(new Error(`HTTP ${response.statusCode} from ${new URL(targetUrl).host}`));
             return;
           }
           const file = createWriteStream(destPath);
@@ -223,7 +288,7 @@ export class TMEClassifier {
         });
         req.on('error', reject);
       };
-      follow(url);
+      follow(url, 0);
     });
   }
 
@@ -241,65 +306,87 @@ export class TMEClassifier {
   }
 
   /**
-   * Download the NanoMind TME model files from HuggingFace.
-   * Verifies SHA-256 integrity of each file. Cleans up on failure.
+   * Download the NanoMind TME model files from Hugging Face.
+   * Verifies the size and SHA-256 of each file. Cleans up on failure.
    * Returns true if download succeeded, false otherwise.
    *
-   * A connection that goes silent for `idleTimeoutMs` fails the download, and
-   * the caller falls back to vocabulary scoring (see `DOWNLOAD_IDLE_TIMEOUT_MS`).
+   * The disclosure lives here, where the network request is made, and is
+   * written to stderr in every output mode: a `--json` or `--ci` run is
+   * exactly the run where a download nobody was told about goes unnoticed.
+   * Before the first request it says what is fetched, from which hosts, how
+   * many bytes, into which directory, that it happens once per cache, and
+   * the flag that skips it; then one line reports the outcome. Nothing is
+   * written when every file is already in the cache, because no request is
+   * made.
+   *
+   * A connection that goes silent for `options.idleTimeoutMs` fails the
+   * download, and the caller falls back to vocabulary scoring (see
+   * `DOWNLOAD_IDLE_TIMEOUT_MS`).
    */
-  static async downloadModel(
-    targetDir?: string,
-    quiet = false,
-    idleTimeoutMs = DOWNLOAD_IDLE_TIMEOUT_MS,
-  ): Promise<boolean> {
+  static async downloadModel(targetDir?: string, options: ModelDownloadOptions = {}): Promise<boolean> {
     const dir = targetDir ?? DOWNLOAD_DIR;
+    const idleTimeoutMs = options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
+    const toFetch = MODEL_FILES.filter(f => !existsSync(join(dir, f.name)));
+    if (toFetch.length === 0) return true;
+
+    const say = (line: string) => { process.stderr.write(`${line}\n`); };
+    const size = formatModelBytes(toFetch.reduce((sum, f) => sum + f.bytes, 0));
+    const fallback = 'The classifier did not run; this scan uses vocabulary scoring and its results can differ.';
+    say(
+      `NanoMind: downloading the classifier model (${toFetch.length} file(s), ${size}) from ` +
+      `${MODEL_HOSTS_FOR_NOTICE} into ${escapeForDisplay(dir)}.`,
+    );
+    say(
+      '  This happens once per cache; later runs use the cached copy.' +
+      (options.optOut ? ` To skip it, run this command with ${escapeForDisplay(options.optOut)}.` : ''),
+    );
+
     try {
       mkdirSync(dir, { recursive: true });
-    } catch {
+    } catch (err: any) {
+      say(`NanoMind: model download failed: cannot create ${escapeForDisplay(dir)} (${escapeForDisplay(String(err?.code ?? err?.message ?? 'unknown error'))}). ${fallback}`);
       return false;
     }
 
-    if (!quiet) console.error('Downloading security analysis model (5.5MB)...');
-
-    for (const file of MODEL_FILES) {
+    for (const file of toFetch) {
       const dest = join(dir, file.name);
-      if (existsSync(dest)) continue;
-
       const url = `${HF_BASE}/${file.name}`;
+      let problem: string | null = null;
       try {
         await TMEClassifier.downloadFile(url, dest, idleTimeoutMs);
-        // Verify integrity
-        const hash = await TMEClassifier.computeHash(dest);
-        if (file.sha256 && hash !== file.sha256) {
-          if (!quiet) console.error(`  Integrity check failed for ${escapeForDisplay(file.name)}. Removing.`);
-          try { unlinkSync(dest); } catch { /* ignore */ }
-          return false;
+        const received = statSync(dest).size;
+        if (received !== file.bytes) {
+          problem = `received ${received} bytes, expected ${file.bytes}`;
+        } else if ((await TMEClassifier.computeHash(dest)) !== file.sha256) {
+          problem = 'sha256 does not match the pinned value';
         }
       } catch (err: any) {
-        if (!quiet) console.error(`  Failed to download ${escapeForDisplay(file.name)}: ${escapeForDisplay(String(err?.message ?? 'unknown error'))}`);
+        problem = String(err?.message ?? 'unknown error');
+      }
+      if (problem !== null) {
         try { unlinkSync(dest); } catch { /* ignore */ }
+        say(`NanoMind: model download failed: ${escapeForDisplay(file.name)}: ${escapeForDisplay(problem)}. ${fallback}`);
         return false;
       }
     }
 
-    if (!quiet) console.error('Model ready. Using neural inference for deep scanning.');
+    say(`NanoMind: model downloaded and verified (${size}).`);
     return true;
   }
 
   /**
-   * Ensure the model is available. Downloads from HuggingFace if needed.
+   * Ensure the model is available. Downloads from Hugging Face if needed.
    * Call this from async contexts before classifyAsync().
    */
-  async ensureModel(quiet = false): Promise<void> {
-    this.quiet = quiet;
+  async ensureModel(options: ModelDownloadOptions = {}): Promise<void> {
+    this.downloadOptions = options;
     if (!this.needsDownload) return;
     if (this.downloadPromise) {
       await this.downloadPromise;
       return;
     }
 
-    this.downloadPromise = TMEClassifier.downloadModel(undefined, quiet);
+    this.downloadPromise = TMEClassifier.downloadModel(undefined, options);
     const ok = await this.downloadPromise;
     this.downloadPromise = null;
 
@@ -311,8 +398,7 @@ export class TMEClassifier {
       this.needsDownload = false;
       this.loaded = false; // Force re-load with new paths
     } else {
-      // Download failed; fall back to vocab scoring silently
-      if (!quiet) console.error('Model download unavailable. Using vocabulary-based scoring.');
+      // Download failed; downloadModel has said so. Fall back to vocab scoring.
       this.needsDownload = false;
     }
   }
@@ -400,7 +486,7 @@ export class TMEClassifier {
 
   /** Wait for model download (if needed) and ONNX to be ready */
   async ensureReady(): Promise<void> {
-    if (this.needsDownload) await this.ensureModel();
+    if (this.needsDownload) await this.ensureModel(this.downloadOptions);
     if (this.onnxLoading) await this.onnxLoading;
   }
 
@@ -452,7 +538,7 @@ export class TMEClassifier {
    */
   async classifyAsync(text: string): Promise<TMEClassification> {
     // Auto-download model from HuggingFace if no local files found
-    if (this.needsDownload) await this.ensureModel(this.quiet);
+    if (this.needsDownload) await this.ensureModel(this.downloadOptions);
 
     if (!this.load()) {
       return { intentClass: 'benign', attackClass: 'none', confidence: 0.5, topClasses: [] };

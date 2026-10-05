@@ -83,7 +83,7 @@ describe('a stalled model download fails instead of hanging', () => {
     routeDownloadsTo(server.port);
     const dir = track(mkdtempSync(join(tmpdir(), 'hma-dl-silent-')));
 
-    const outcome = await within(TMEClassifier.downloadModel(dir, true, 200), 10_000);
+    const outcome = await within(TMEClassifier.downloadModel(dir, { idleTimeoutMs: 200 }), 10_000);
 
     // Non-vacuous: the download really did reach the stalled endpoint.
     expect(server.connections()).toBeGreaterThan(0);
@@ -108,7 +108,7 @@ describe('a stalled model download fails instead of hanging', () => {
     routeDownloadsTo((server.address() as { port: number }).port);
     const dir = track(mkdtempSync(join(tmpdir(), 'hma-dl-partial-')));
 
-    const outcome = await within(TMEClassifier.downloadModel(dir, true, 200), 10_000);
+    const outcome = await within(TMEClassifier.downloadModel(dir, { idleTimeoutMs: 200 }), 10_000);
 
     expect(sockets.length).toBeGreaterThan(0);
     expect(outcome, 'download still pending 10s after a 200ms idle bound').toBe(false);

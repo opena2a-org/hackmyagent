@@ -152,7 +152,7 @@ Output shows an Observations block (surfaces, checks, categories, verdict) and a
 
 ### NanoMind semantic analysis
 
-Runs automatically on every `secure` scan. On first use, HMA downloads a 5.5 MB ONNX classifier from HuggingFace ([`opena2a/nanomind-security-classifier`](https://huggingface.co/opena2a/nanomind-security-classifier), a 3M-parameter Mamba TME model) and caches it locally. No external calls after that.
+Runs automatically on every `secure` scan. On first use, HMA downloads an ONNX classifier from Hugging Face ([`opena2a/nanomind-security-classifier`](https://huggingface.co/opena2a/nanomind-security-classifier), a 3M-parameter Mamba TME model) into `~/.nanomind/models`. Before the first request it prints on stderr, in every output format, the download size, the hosts (huggingface.co and Hugging Face's content CDN), the cache path and the flag that skips it (`--static-only`). Later scans use the cached copy and make no model request.
 
 - 7 AST analyzers: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`.
 - 9 attack classes: `exfiltration`, `injection`, `privilege_escalation`, `persistence`, `credential_abuse`, `lateral_movement`, `social_engineering`, `policy_violation`, `benign`.

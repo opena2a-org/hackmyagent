@@ -37,7 +37,7 @@ describe('NanoMind classifier download URL', () => {
     // lets the next run reach the one after it, until every file is present.
     for (let i = 0; i < 10; i++) {
       const before = urls.length;
-      await TMEClassifier.downloadModel(dir, true);
+      await TMEClassifier.downloadModel(dir);
       if (urls.length === before) break;
       writeFileSync(join(dir, posix.basename(new URL(urls[urls.length - 1]).pathname)), '');
     }
