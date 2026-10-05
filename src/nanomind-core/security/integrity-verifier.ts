@@ -311,8 +311,7 @@ export class EventChain {
     });
 
     let event = linkTo(last);
-    if (size > 0 && size + Buffer.byteLength(JSON.stringify(event)) + 1 > this.maxBytes) {
-      this.rotate(size);
+    if (size > 0 && size + Buffer.byteLength(JSON.stringify(event)) + 1 > this.maxBytes && this.rotate(size)) {
       event = linkTo(null);
     }
 
@@ -376,16 +375,26 @@ export class EventChain {
     }
   }
 
-  private rotate(size: number): void {
+  /**
+   * Move the live log aside so a new chain can start. Returns true when the
+   * live path is clear: rotated, removed, or already gone because another
+   * process rotated it first. A rotation that fails for any other reason
+   * (`<path>.1` is a directory, the directory is not writable) returns false
+   * and leaves the live log where it is, so the caller appends to it, linked
+   * to the event it already read. Nothing is thrown: verifyAll() appends its
+   * result before returning it, and an error here would turn a passed
+   * integrity check into a skipped one.
+   */
+  private rotate(size: number): boolean {
     try {
       if (size > this.maxBytes * 2) {
         unlinkSync(this.chainPath);
       } else {
         renameSync(this.chainPath, this.rotatedPath);
       }
+      return true;
     } catch (err) {
-      // Another process rotated the log between our read and this call.
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      return (err as NodeJS.ErrnoException).code === 'ENOENT';
     }
   }
 
