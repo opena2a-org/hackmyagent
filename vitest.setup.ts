@@ -1,3 +1,6 @@
+import { afterAll } from 'vitest';
+import { removeTempDirs } from './__tests__/helpers/temp-dir';
+
 // Test-harness hermeticity: a scan in this suite must not read the developer's
 // home directory.
 //
@@ -67,3 +70,11 @@ for (const v of [
 ]) {
   delete process.env[v];
 }
+
+// Third: a test file leaves nothing in the temporary directory. `tempDir` in
+// __tests__/helpers/temp-dir.ts removes what it creates when the creating test
+// finishes; this hook removes what was created outside a test, and anything
+// the per-test pass could not, when each file finishes. Registering it here
+// puts it ahead of each file's own hooks, and after-hooks run in reverse order
+// of registration, so it runs after a file's own `afterAll`.
+afterAll(removeTempDirs);

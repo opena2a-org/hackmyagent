@@ -11,9 +11,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 import { SARIF_SCHEMA_URL } from '../../src/output/sarif-schema';
 
 beforeAll(assertDistFreshIfPresent);
@@ -21,7 +21,7 @@ beforeAll(assertDistFreshIfPresent);
 let root: string;
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-394-'));
+  root = tempDir('hma-394-');
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'hma-394', version: '1.0.0' }));
   fs.writeFileSync(path.join(root, 'index.js'), 'module.exports = (req) => eval(req.body.code);\n');
 });
@@ -39,7 +39,7 @@ function sarif(args: string[]): { $schema?: string; version?: string } {
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   const out = r.stdout ?? '';

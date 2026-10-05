@@ -17,9 +17,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -29,8 +29,8 @@ let tree: string;
 let home: string;
 
 beforeAll(() => {
-  tree = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-739-'));
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-'));
+  tree = tempDir('hma-739-');
+  home = tempDir('hma-home-');
   fs.mkdirSync(path.join(tree, '.claude'));
   const key = 'sk-ant-api03-' + 'a'.repeat(60);
   fs.writeFileSync(

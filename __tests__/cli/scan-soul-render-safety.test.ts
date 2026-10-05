@@ -16,9 +16,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -43,7 +43,7 @@ const SOUL = [
 let root: string;
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-595-'));
+  root = tempDir('hma-595-');
   fs.writeFileSync(path.join(root, 'SOUL.md'), SOUL);
 });
 
@@ -56,14 +56,14 @@ function run(args: string[]): string {
     encoding: 'utf8',
     timeout: 240_000,
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
   });
   return `${r.stdout ?? ''}${r.stderr ?? ''}`;
 }
 
 describe('#595 scan-soul renders evidence and fix through the display escape', () => {
   it('an invalid profile marker carrying a CSI renders escaped on every line that names it, and --json keeps the byte', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-595m-'));
+    const dir = tempDir('hma-595m-');
     fs.writeFileSync(path.join(dir, 'SOUL.md'), `<!-- soul:profile=weird\x1b[2JFORGED-MARKER -->\n${SOUL}`);
     const out = run(['scan-soul', dir]);
     // Non-vacuity: the marker value has to be on screen (the extractor

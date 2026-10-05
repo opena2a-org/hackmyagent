@@ -19,6 +19,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import { pickSettledOutcome, SETTLED_OUTCOME_KEYS } from '../../src/hardening/settled-outcome';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -38,12 +39,12 @@ let unread: string;
 beforeAll(() => {
   if (corpusAvailable) {
     // The corpus tree is the shared adversarial fixture set; copy, never touch.
-    leaky = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-leaky-'));
+    leaky = tempDir('hma-464-leaky-');
     fs.cpSync(CORPUS, leaky, { recursive: true });
     fs.writeFileSync(path.join(leaky, '.hmaignore'), '!CONFIG-004\n');
   }
 
-  unread = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-unread-'));
+  unread = tempDir('hma-464-unread-');
   fs.writeFileSync(path.join(unread, 'index.js'), 'module.exports = 1;\n');
   fs.writeFileSync(path.join(unread, 'locked.js'), 'const secret = 1;\n');
   fs.chmodSync(path.join(unread, 'locked.js'), 0o000);
@@ -59,7 +60,7 @@ function run(dir: string, args: string[]) {
     encoding: 'utf8',
     timeout: 240_000,
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
@@ -108,7 +109,7 @@ describe('#464 the --json document IS the settled record', { timeout: 300_000 },
 
 describe('#464 the exit precedence holds where the classes overlap', { timeout: 300_000 }, () => {
   it.skipIf(!corpusAvailable)('RED-ON-BASE: an unread input AND a counted critical exit 2 — the finding line RAISES, never assigns over the floor', () => {
-    const overlap = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-464-overlap-'));
+    const overlap = tempDir('hma-464-overlap-');
     try {
       fs.cpSync(CORPUS, overlap, { recursive: true });
       fs.writeFileSync(path.join(overlap, 'locked.js'), 'const secret = 1;\n');
@@ -130,7 +131,7 @@ describe('#464 an unmeasured run withholds every outbound arm', { timeout: 300_0
     // Consent ON in the config, disabled for this run by the flag: the line
     // must not list `contribution`. Without the flag (consent standing) it
     // must. This is what makes the two spellings distinguishable.
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-consent-'));
+    const home = tempDir('hma-home-consent-');
     fs.mkdirSync(path.join(home, '.opena2a'), { recursive: true });
     fs.writeFileSync(path.join(home, '.opena2a', 'config.json'), '{"contribute":{"enabled":true}}\n');
     const spawn = (args: string[]) => {

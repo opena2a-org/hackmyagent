@@ -15,16 +15,16 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
 interface Stub { url: string; seen(): Array<{ one: string | null; two: string | null }>; stop(): Promise<void> }
 
 async function startHeaderStub(): Promise<Stub> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-660-stub-'));
+  const dir = tempDir('hma-660-stub-');
   const script = path.join(dir, 'stub.mjs');
   const log = path.join(dir, 'headers.jsonl');
   fs.writeFileSync(script, [
@@ -73,7 +73,7 @@ function attack(url: string, extra: string[]) {
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
   });
   return { status: r.status, out: (r.stdout ?? '') + (r.stderr ?? '') };
 }

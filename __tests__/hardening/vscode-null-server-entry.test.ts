@@ -12,9 +12,9 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as os from 'os';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import type { SecurityFinding } from '../../src/hardening/security-check';
+import { tempDir } from '../helpers/temp-dir';
 import { initThrowawayRepo } from '../helpers/throwaway-repo';
 
 const SCAN_TIMEOUT = 120_000;
@@ -28,7 +28,7 @@ afterAll(async () => {
 });
 
 async function vscodeTree(servers: Record<string, unknown>): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-test-'));
+  const dir = tempDir('hackmyagent-test-');
   tempDirs.push(dir);
   await fs.writeFile(
     path.join(dir, 'package.json'),

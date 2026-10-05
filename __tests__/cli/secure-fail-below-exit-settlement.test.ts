@@ -24,9 +24,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -57,7 +57,7 @@ function run(args: string[]) {
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
@@ -104,7 +104,7 @@ function makeUnreadable(file: string): boolean {
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-494-512-'));
+  root = tempDir('hma-494-512-');
 });
 
 afterAll(() => {
@@ -165,7 +165,7 @@ describe('#494 --fail-below is honoured on every output channel', () => {
       status = spawnSync(process.execPath, [CLI, 'secure', dir, '--fail-below', String(score + 1)], {
         stdio: ['ignore', fd, fd],
         timeout: 240_000,
-        env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+        env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
       }).status;
     } finally {
       fs.closeSync(fd);

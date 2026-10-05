@@ -21,18 +21,19 @@
  * upstream code adds.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { SoulScanner } from '../../src/soul/scanner';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
 beforeAll(assertDistFreshIfPresent);
 
 function tmpDirWithSoul(content: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'scan-soul-clamp-'));
+  const dir = tempDir('scan-soul-clamp-');
   writeFileSync(join(dir, 'SOUL.md'), content, 'utf-8');
   return dir;
 }
@@ -44,7 +45,7 @@ function tmpDirWithSoul(content: string): string {
  * body so the fixture stays in sync with the control keyword set.
  */
 async function tmpDirWithMismatchFixture(scanner: SoulScanner, profileMarker: string): Promise<string> {
-  const dir = mkdtempSync(join(tmpdir(), 'scan-soul-clamp-mismatch-'));
+  const dir = tempDir('scan-soul-clamp-mismatch-');
   // Seed body with autonomous-shape content so the harden-soul pass
   // generates the broadest possible coverage.
   writeFileSync(join(dir, 'SOUL.md'), '# Hidden agent\n\nThis agent runs an autonomous loop and uses tool calls.\n', 'utf-8');
@@ -411,7 +412,7 @@ Refuse harmful requests including self-harm, violence, and weapons.
       const path = require('node:path');
       const fs = require('node:fs');
       const os = require('node:os');
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-soul-clamp-ci-'));
+      const dir = tempDir('scan-soul-clamp-ci-');
       fs.writeFileSync(path.join(dir, 'SOUL.md'), '<!-- soul:profile=xyz -->\n', 'utf-8');
       const CLI = path.resolve(__dirname, '../../dist/cli.js');
       if (!fs.existsSync(CLI)) return; // dist not built; skip silently
@@ -432,7 +433,7 @@ Refuse harmful requests including self-harm, violence, and weapons.
       const path = require('node:path');
       const fs = require('node:fs');
       const os = require('node:os');
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-soul-clamp-ci-clean-'));
+      const dir = tempDir('scan-soul-clamp-ci-clean-');
       // Use a body whose keyword profile matches the declared
       // marker -- conversational body + conversational marker = no
       // mismatch.

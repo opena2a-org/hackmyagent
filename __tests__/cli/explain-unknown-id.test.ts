@@ -27,8 +27,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import {
@@ -40,6 +39,7 @@ import {
 } from '../../src/explain-registry';
 import { getTaxonomyMap, getAttackClass } from '../../src/hardening/taxonomy';
 import { CONTROL_DEFS, VIOLATION_CATALOG } from '../../src/soul/scanner';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -220,7 +220,7 @@ describe.runIf(existsSync(CLI))('ids scan-soul prints explain (spawn, #760)', ()
   };
 
   function printedSoulIds(fixture: string, flags: readonly string[]): string[] {
-    const dir = mkdtempSync(join(tmpdir(), 'explain-scan-soul-'));
+    const dir = tempDir('explain-scan-soul-');
     try {
       writeFileSync(join(dir, 'SOUL.md'), fixture, 'utf-8');
       const res = spawnSync(process.execPath, [CLI, 'scan-soul', dir, ...flags], {

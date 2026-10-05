@@ -12,12 +12,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { generateBenchmarkReport } from '../../src/benchmarks/benchmark-report';
 import { OASB_1_CATEGORIES } from '../../src/benchmarks/oasb-1';
 import type { BenchmarkControl, BenchmarkResult } from '../../src/benchmarks/oasb-1';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 const CATALOGUE = new Map<string, BenchmarkControl>(
   OASB_1_CATEGORIES.flatMap((c) => c.controls).map((c) => [c.id, c]),
@@ -54,7 +54,7 @@ describe.skipIf(!fs.existsSync(CLI))('#418 secure -b oasb-1 --json renders the p
   beforeAll(() => { assertDistFreshIfPresent(); });
 
   it('an unverified control in the JSON report carries its audit text', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-418-'));
+    const dir = tempDir('hma-418-');
     // One file the quick-depth scan reads, so the run is measured rather than
     // Not Assessed under the zero-read floor.
     fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules\n');
@@ -63,7 +63,7 @@ describe.skipIf(!fs.existsSync(CLI))('#418 secure -b oasb-1 --json renders the p
     ], {
       encoding: 'utf-8',
       timeout: 200_000,
-      env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+      env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
     });
     const out = res.stdout ?? '';
     const report = JSON.parse(out.slice(out.indexOf('{'))) as BenchmarkResult;

@@ -18,10 +18,10 @@
  * Plus the fail-safe: an archive that cannot be listed counts as holding a copy.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm, readdir, readFile, symlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile, rm, readdir, readFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { tempDir } from '../helpers/temp-dir';
 
 async function onlyArchive(dir: string): Promise<string> {
   const stamps = await readdir(path.join(dir, '.hackmyagent-backup'));
@@ -40,7 +40,7 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
     // the verify scan regardless. So the `.gitignore` is a link to a shared one
     // outside the tree — GIT-001 reads through it and passes, and the backup
     // withholds it because it resolves outside the scanned tree.
-    const root = await mkdtemp(path.join(tmpdir(), 'hma-381-empty-'));
+    const root = tempDir('hma-381-empty-');
     const dir = path.join(root, 'tree');
     try {
       await mkdir(dir);
@@ -94,7 +94,7 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
   });
 
   it('still runs the second scan when the archive holds a copy and nothing was fixed', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'hma-381-copy-'));
+    const dir = tempDir('hma-381-copy-');
     try {
       await writeFile(path.join(dir, 'package.json'), '{"name":"f","version":"1.0.0"}\n');
       await writeFile(
@@ -133,7 +133,7 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
   it('treats an archive it cannot list as holding a copy', async () => {
     // A wrong "no" skips the scan that keeps the announced score honest; a
     // wrong "yes" costs one scan. Doubt has to land on "yes".
-    const dir = await mkdtemp(path.join(tmpdir(), 'hma-381-unlisted-'));
+    const dir = tempDir('hma-381-unlisted-');
     try {
       const scanner = new HardeningScanner() as unknown as {
         backupContext?: { backupDir: string; targetDir: string; covered: Set<string> };

@@ -24,6 +24,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -75,7 +76,7 @@ function tarball(members: Array<[string, string, number]>): Buffer {
 }
 
 beforeAll(async () => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-508-url-'));
+  root = tempDir('hma-508-url-');
   // Prove unreadability is enforceable at all before serving anything.
   const probe = path.join(root, 'probe');
   fs.writeFileSync(probe, 'x');
@@ -128,7 +129,7 @@ function run(args: string[]): Promise<{ status: number | null; stdout: string; s
         ...process.env,
         NO_COLOR: '1',
         OPENA2A_TELEMETRY: 'off',
-        HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+        HOME: tempDir('hma-home-'),
       },
     });
     let stdout = '';

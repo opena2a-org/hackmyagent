@@ -14,9 +14,9 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 import { parseWildTier, parseWildTimeout, parseWildDelay, WILD_MAX_TIER } from '../../src/wild';
 
 const CLI = path.join(__dirname, '..', '..', 'dist', 'cli.js');
@@ -25,7 +25,7 @@ function run(args: string[]) {
   const res = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf-8',
     timeout: 60_000,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
   });
   return { status: res.status, out: res.stdout ?? '', err: res.stderr ?? '' };
 }
@@ -58,7 +58,7 @@ describe.skipIf(!fs.existsSync(CLI))('#480 wild refuses a gate parameter that wo
   let target: string;
   beforeAll(() => {
     assertDistFreshIfPresent();
-    target = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hma-480-')), 'no-such-site');
+    target = path.join(tempDir('hma-480-'), 'no-such-site');
   });
 
   for (const tier of ['99999', '-5', 'abc', '0', '']) {

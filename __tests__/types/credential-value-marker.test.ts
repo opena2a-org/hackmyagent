@@ -16,14 +16,14 @@
  * and no four-character window of the value past its vendor prefix.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { credentialValueMarker } from "../../src/types/credential-format.js";
 import { containsRedactionMarker } from "../../src/types/redacted-evidence.js";
 import { buildPackageNarrative, type BuildPackageNarrativeInput } from "../../src/narrative/build-narrative.js";
 import type { SecurityAST } from "../../src/nanomind-core/types.js";
 import type { SecurityFinding } from "../../src/hardening/security-check.js";
+import { tempDir } from "../helpers/temp-dir";
 
 // Synthetic bodies: mixed case and digits so no window of one can occur in a
 // label by accident.
@@ -130,8 +130,8 @@ describe("NemoClaw key findings", () => {
   let scanner: Probe;
 
   beforeAll(async () => {
-    home = mkdtempSync(join(tmpdir(), "hma-nmc-home-"));
-    target = mkdtempSync(join(tmpdir(), "hma-nmc-target-"));
+    home = tempDir("hma-nmc-home-");
+    target = tempDir("hma-nmc-target-");
     writeFileSync(join(target, ".nemoclawrc"), `NVIDIA_API_KEY=${NVIDIA}\n`);
     mkdirSync(join(home, ".openshell", "logs"), { recursive: true });
     writeFileSync(join(home, ".openshell", "logs", "gateway.log"), `auth ${NVIDIA_SHORT_HEAD}\n`);

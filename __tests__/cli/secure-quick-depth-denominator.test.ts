@@ -17,9 +17,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -53,7 +53,7 @@ function scoreLine(out: string): string {
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-507-'));
+  root = tempDir('hma-507-');
   tree = path.join(root, 't');
   home = path.join(root, 'home');
   fs.mkdirSync(home);

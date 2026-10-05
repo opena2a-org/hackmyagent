@@ -10,9 +10,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 import { disclosureSentences, hasDisclosure, sarifRunProperties } from '../../src/output/suppression-disclosure';
 
 beforeAll(assertDistFreshIfPresent);
@@ -20,7 +20,7 @@ beforeAll(assertDistFreshIfPresent);
 let root: string;
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-465-'));
+  root = tempDir('hma-465-');
   fs.mkdirSync(path.join(root, 'vendor'));
   fs.mkdirSync(path.join(root, 'lib'));
   const evalSource = 'module.exports = (r) => eval(r.body);\n';
@@ -44,7 +44,7 @@ function run(args: string[]): { stdout: string; stderr: string; status: number |
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };

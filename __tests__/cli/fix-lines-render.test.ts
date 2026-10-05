@@ -26,10 +26,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { HOSTILE_NAME, SPLIT_MARKER } from '../helpers/render-safety';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -45,7 +45,7 @@ function run(args: string[]): { status: number | null; out: string; stdout: stri
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
       OPENA2A_CORPUS_DETERMINISTIC: '1',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, stdout: r.stdout ?? '' };
@@ -113,7 +113,7 @@ function block(out: string, head: RegExp): string[] {
 const HARDEN = /│\s*→\s+hackmyagent harden-soul/;
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-367-'));
+  root = tempDir('hma-367-');
 });
 
 afterAll(() => {

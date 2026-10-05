@@ -26,9 +26,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -41,7 +41,7 @@ let fileTree: string;
 const homes: string[] = [];
 
 function run(args: string[], cwd?: string) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-'));
+  const home = tempDir('hma-home-');
   homes.push(home);
   const res = spawnSync(process.execPath, [CLI, ...args], {
     cwd,
@@ -68,7 +68,7 @@ function key(): string {
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-740-'));
+  root = tempDir('hma-740-');
   dir = path.join(root, 'tree');
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
   fs.writeFileSync(
@@ -209,7 +209,7 @@ describe('an existing, readable, empty directory is a measured absence, as secur
   // over it, so the run has evidence (a recorded absence), the same reading
   // `secure` gives the same tree. 0.33.0 exited 2 here with NOT MEASURED.
   it('text: a report with a score, no banner, exit 0', () => {
-    const empty = fs.mkdtempSync(path.join(root, 'empty-'));
+    const empty = tempDir('empty-', root);
     const { status, stdout, stderr } = run(['check', empty, '--offline']);
     expect(status).toBe(0);
     expect(stdout).toMatch(/\d+\/100/);
@@ -217,7 +217,7 @@ describe('an existing, readable, empty directory is a measured absence, as secur
   });
 
   it('--json: measured, a non-failing risk band, the score secure gives the same tree, exit 0', () => {
-    const empty = fs.mkdtempSync(path.join(root, 'empty-json-'));
+    const empty = tempDir('empty-json-', root);
     const check = json(['check', empty, '--offline']);
     const secure = json(['secure', empty, '--no-registry']);
     expect(check.status).toBe(0);
@@ -235,7 +235,7 @@ describe('an existing, readable, empty directory is a measured absence, as secur
 
   it('a directory whose only file cannot be read stays unmeasured: banner, Verify, pointer, exit 2', () => {
     if (typeof process.getuid === 'function' && process.getuid() === 0) return;
-    const dir = fs.mkdtempSync(path.join(root, 'unread-'));
+    const dir = tempDir('unread-', root);
     const file = path.join(dir, 'config.json');
     fs.writeFileSync(file, '{}\n');
     fs.chmodSync(file, 0o000);

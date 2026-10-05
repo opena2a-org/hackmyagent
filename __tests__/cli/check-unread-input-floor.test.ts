@@ -16,9 +16,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -37,7 +37,7 @@ function run(args: string[]) {
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}`, stdout: res.stdout ?? '' };
@@ -78,7 +78,7 @@ function cannotProbe(): boolean {
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-508-'));
+  root = tempDir('hma-508-');
   const probe = path.join(root, 'probe');
   fs.writeFileSync(probe, 'x');
   unreadable = makeUnreadable(probe);

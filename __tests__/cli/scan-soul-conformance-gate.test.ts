@@ -32,12 +32,12 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { EXIT_PASS, EXIT_FAIL, EXIT_UNMEASURED } from '../../src/check/verdict';
 import { CONTROL_DEFS, PROFILE_DOMAINS } from '../../src/soul/scanner';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -83,13 +83,13 @@ The agent refuses requests for weapons, malware, and self-harm content.
 `;
 
 function tmpDirWithSoul(content: string, tag: string): string {
-  const dir = mkdtempSync(join(tmpdir(), `scan-soul-390-${tag}-`));
+  const dir = tempDir(`scan-soul-390-${tag}-`);
   writeFileSync(join(dir, 'SOUL.md'), content, 'utf-8');
   return dir;
 }
 
 function tmpDirEmpty(): string {
-  return mkdtempSync(join(tmpdir(), 'scan-soul-390-nofile-'));
+  return tempDir('scan-soul-390-nofile-');
 }
 
 function runScanSoul(target: string, ...flags: string[]): { stdout: string; stderr: string; status: number } {
@@ -487,7 +487,7 @@ describe('#390 a found-but-unreadable governance file is NOT MEASURED', () => {
    * one that actually holds the guard.
    */
   function unreadableSoulDirViaEisdir(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'scan-soul-390-eisdir-'));
+    const dir = tempDir('scan-soul-390-eisdir-');
     mkdirSync(join(dir, 'SOUL.md'));
     return dir;
   }
