@@ -160,6 +160,7 @@ describe('#298 discovery walk bounds and safety', () => {
       { isExcludedDir: async (abs) => path.basename(abs) === 'drop' },
     );
     expect(res.artifacts.map(a => a.rel)).toEqual([path.join('keep', 'CLAUDE.md')]);
+    expect(res.complete).toBe(true);
   });
 
   it('records an unreadable directory on the coverage ledger rather than reporting clean', async () => {
@@ -178,6 +179,9 @@ describe('#298 discovery walk bounds and safety', () => {
       // silent-miss #250 caught at layer 1. The record, not a flag on the
       // walk result, is what reaches the exit code and the user (#588).
       expect(res.artifacts).toEqual([]);
+      // #355: LIFECYCLE-008 is absence-based and reads this flag, so an
+      // unlisted directory must not leave the walk claiming it saw everything.
+      expect(res.complete).toBe(false);
       expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
       expect(ledger.unreadablePaths()).toEqual([{ path: locked, code: 'EACCES', kind: 'directory' }]);
     } finally {
