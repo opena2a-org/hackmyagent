@@ -5147,7 +5147,16 @@ Examples:
   $ ${CLI_PREFIX} secure -b oasb-1 -f html -o report.html
   $ ${CLI_PREFIX} secure -b oasb-1 --fail-below 80 CI threshold
   $ ${CLI_PREFIX} secure -b oasb-2               OASB composite (infra + governance)
-  $ ${CLI_PREFIX} secure ./my-agent --publish    Scan and publish results to registry (not with -b)`)
+  $ ${CLI_PREFIX} secure ./my-agent --publish    Scan and publish results to registry (not with -b)
+  $ ${CLI_PREFIX} secure --range origin/main...HEAD  Pull request gate: only what the branch introduces
+  $ ${CLI_PREFIX} secure --staged                Pre-commit hook: only what the staged changes introduce
+
+Change scope (--range, --staged):
+  Both sides are read from git (the commits, or the index for --staged), never
+  from the working tree, and scanned with the same options. A finding is
+  reported only when the base has no finding with the same check, file and
+  cited line content; a file the change deletes reports nothing. The score,
+  the exit code and every --format cover the introduced findings only.`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
@@ -5186,7 +5195,9 @@ Examples:
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Does not change the exit code')
   .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean }, cmd: Command) => {
+  .option('--range <base..head>', 'Report only what the commits in this git range introduce (<base>..<head>, or <base>...<head> to measure from the merge base). A finding already present at <base> is not reported and does not set the exit code')
+  .option('--staged', 'Report only what the staged changes introduce, measured against HEAD (for a pre-commit hook)')
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean; range?: string; staged?: boolean }, cmd: Command) => {
     try {
       const originalTarget = require("path").resolve(directory);
       let targetDir = originalTarget;
@@ -5452,6 +5463,48 @@ Examples:
         process.exit(1); // exit-unsettled(#350/S009): pre-work refusal; events await the schema reason field (#525)
       }
 
+      // #537 — change scope. Resolved before any output, so a refusal is the
+      // only thing a refused run prints. Refusals throw `UsageError`: the
+      // catch at the end of this action renders them and exits 1, so no new
+      // exit site is opened.
+      let changeScope: import('./change-scope').ChangeScope | undefined;
+      let changeTrees: import('./change-scope').MaterializedTrees | undefined;
+      if (options.range !== undefined || options.staged) {
+        const scopeFlag = options.range !== undefined ? '--range' : '--staged';
+        if (_isFileTarget) {
+          throw usageError`${scopeFlag} scans a change to a directory inside a git repository, not a single file. Pass the repository directory.`;
+        }
+        // Each of these either writes into the tree (the scanned trees are
+        // temporary copies), scores against a benchmark denominator a subset
+        // cannot fill, or sends a subset to the Registry as if it were the
+        // whole tree.
+        const scopeConflicts = [
+          options.range !== undefined && options.staged && '--staged',
+          options.fix && '--fix',
+          options.dryRun && '--dry-run',
+          options.benchmark !== undefined && '-b/--benchmark',
+          options.publish && '--publish',
+          options.ciPublish && '--ci-publish',
+          options.registryReport && '--registry-report',
+          options.versionId !== undefined && '--version-id',
+          options.contribute === true && cmd.getOptionValueSource('contribute') === 'cli' && '--contribute',
+        ].filter((f): f is string => typeof f === 'string');
+        if (scopeConflicts.length > 0) {
+          throw usageError`${scopeFlag} reports only what a change introduces and cannot be combined with ${scopeConflicts.join(', ')}. Run secure without ${scopeFlag} for ${scopeConflicts.length === 1 ? 'that flag' : 'those flags'}.`;
+        }
+        const { resolveChangeScope, materializeTrees } = await import('./change-scope.js');
+        changeScope = resolveChangeScope(
+          originalTarget,
+          options.range !== undefined ? { kind: 'range', spec: options.range } : { kind: 'staged' },
+        );
+        changeTrees = materializeTrees(changeScope);
+        process.on('exit', changeTrees.cleanup);
+        targetDir = changeTrees.headDir;
+        // A change-scoped finding list is a subset of the tree's by design;
+        // sharing it would report the subset as the tree.
+        options.contribute = false;
+      }
+
       // Only show progress for text output — write to stderr so stdout stays clean for pipes
       if (format === 'text') {
         // #339 — `displayDir` is the scan TARGET, and a target is a path the
@@ -5462,7 +5515,12 @@ Examples:
         if (options.dryRun) {
           process.stderr.write(`\nScanning ${escapePathForDisplay(displayDir)} (dry-run)...\n\n`);
         } else {
-          process.stderr.write(`\nScanning ${escapePathForDisplay(displayDir)}...\n\n`);
+          const scopeLabel = !changeScope
+            ? ''
+            : changeScope.range !== null
+              ? ` (changes in ${escapeForDisplay(changeScope.range)})`
+              : ' (staged changes)';
+          process.stderr.write(`\nScanning ${escapePathForDisplay(displayDir)}${scopeLabel}...\n\n`);
         }
       }
 
@@ -5576,6 +5634,55 @@ Examples:
       // feed the semantic truncation disclosure, and defaulting them would
       // print "not truncated" over a pass that never happened.
       if (!nmResult) throw new Error('internal: the semantic pass did not run');
+
+      // #537 — the base side of a change-scoped run: the same scan over the
+      // base tree, then every head finding the base already has is removed
+      // BEFORE the filters below, so the suppression record, the score and
+      // the exit code are all derived from what the change introduced.
+      let changeRemoved: unknown[] = [];
+      if (changeScope && changeTrees) {
+        const baseDir = changeTrees.baseDir;
+        if (format === 'text') {
+          process.stderr.write(`Scanning the base ${changeScope.baseCommit ? changeScope.baseCommit.slice(0, 12) : '(empty tree)'} to leave out findings already present there...\n`);
+        }
+        const baseScanner = new HardeningScanner();
+        const baseResult = await baseScanner.scan({
+          targetDir: baseDir,
+          autoFix: false,
+          dryRun: false,
+          ignore: ignoreList,
+          deep: isDeep,
+          scanDepth,
+          cliName: RAW_CLI_PREFIX,
+          semanticPass: async ({ findings: existingFindings, projectType }) => {
+            const baseNm = await orchestrateNanoMind(baseDir, existingFindings, {
+              staticOnly: isStaticOnly,
+              ci: isCiMode(options),
+              deep: isDeep,
+              nanomind: resolveNanomindFlag(options),
+              silent: true,
+              projectType,
+              findingVisible: (f) => baseScanner.findingAppliesTo(f, projectType),
+              // Same run, same settlement point: this pass also flushes behind
+              // the outbound decision (#655), never on its own.
+              deferTelemetryFlush: true,
+            });
+            return { findings: baseNm.mergedFindings };
+          },
+        });
+        const { classifyAgainstBase } = await import('./change-scope.js');
+        const headAll = result.allFindings ?? result.findings ?? [];
+        const split = classifyAgainstBase(
+          headAll,
+          baseResult.allFindings ?? baseResult.findings ?? [],
+          changeScope,
+          changeTrees,
+        );
+        const keptSet = new Set<unknown>(split.kept);
+        changeRemoved = headAll.filter((f) => !keptSet.has(f));
+        if (result.allFindings) result.allFindings = split.kept as typeof result.allFindings;
+        if (result.findings) result.findings = result.findings.filter((f) => keptSet.has(f));
+      }
 
       {
         // Re-apply all filters after NanoMind merge. Shared with `check`'s
@@ -6124,6 +6231,20 @@ Examples:
         return;
       }
 
+      // #537 — what a change-scoped run reported and what it left out. The
+      // counts are over the same predicates the report lists and scores by.
+      const changeScopeReport = changeScope
+        ? {
+            mode: changeScope.mode,
+            range: changeScope.range,
+            baseCommit: changeScope.baseCommit,
+            headCommit: changeScope.headCommit,
+            introduced: result.findings.filter((f) => countsAgainstScore(f)).length,
+            preExisting: changeRemoved.filter((f: any) =>
+              scanner.isReportableFinding(f, result.projectType || 'library') && countsAgainstScore(f)).length,
+          }
+        : undefined;
+
       if (format === 'json') {
         // Run publish in JSON mode and include result in output
         let publishStatus: Record<string, unknown> | undefined;
@@ -6206,6 +6327,7 @@ Examples:
           ...(nmResult.analystFindings?.length ? { analystFindings: nmResult.analystFindings } : {}),
           ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),
           ...(nmResult.coverageSweep ? { coverageSweep: nmResult.coverageSweep } : {}),
+          ...(changeScopeReport ? { changeScope: changeScopeReport } : {}),
         };
         const jsonOutput = publishStatus ? { ...jsonBase, publish: publishStatus } : jsonBase;
         // The --output arm below bypasses writeJsonStdout, so the boundary
@@ -6397,6 +6519,16 @@ Examples:
           const msg = govFixErr instanceof Error ? govFixErr.message : 'unknown error';
           process.stderr.write(`Governance auto-fix skipped: ${escapeForDisplay(msg)}\n`);
         }
+      }
+
+      if (changeScopeReport) {
+        const scopeName = changeScopeReport.range !== null
+          ? `Changes in ${escapeForDisplay(changeScopeReport.range)}`
+          : 'Staged changes';
+        const baseName = changeScopeReport.baseCommit ? changeScopeReport.baseCommit.slice(0, 12) : 'the empty tree';
+        const n = changeScopeReport.introduced;
+        const m = changeScopeReport.preExisting;
+        console.log(`${scopeName}: ${n} finding${n === 1 ? '' : 's'} introduced. ${m} finding${m === 1 ? '' : 's'} already present at ${baseName} ${m === 1 ? 'is' : 'are'} not reported; run secure without --${changeScopeReport.mode} to see the whole tree.\n`);
       }
 
       // Display using unified check style (matches `check` command visual language)

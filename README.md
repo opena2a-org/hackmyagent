@@ -398,6 +398,20 @@ jobs:
 
 SARIF output and a pre-commit hook: [`docs/use-cases/ci-pipeline.md`](docs/use-cases/ci-pipeline.md).
 
+### Gating a pull request on what it changes
+
+A tree scan fails on every finding the repository already has. `--range` reports only
+what the commits in a range introduce: both trees are read from git and scanned, and a
+finding the base already has (same check, file and cited line) is left out of the
+report, the score and the exit code. `--staged` does the same for the index against
+`HEAD`, for a pre-commit hook.
+
+```yaml
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: npx hackmyagent secure --range origin/${{ github.base_ref }}...HEAD
+```
+
 ### Scanning a text a pipeline was handed
 
 `scan-text` takes ONE text rather than a tree — a pull-request body, an issue, a
