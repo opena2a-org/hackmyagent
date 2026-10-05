@@ -62,6 +62,7 @@ import {
 import { resolveAndLogMcpShorthand } from './resolve-mcp';
 import { extractArchiveInto, type ArchiveFormat } from './hardening/extract-archive';
 import { suppressedCategoryLabels, unresolvedCategoryNames } from './ui/unresolved-categories';
+import { formatCategoriesLine } from './ui/categories-line';
 import { composeVerdictLine, dissentingFiles } from './ui/analyst-dissent';
 import { incompleteVerdictLead } from './ui/incomplete-verdict';
 import { WildScanner, type WildScanReport } from './wild';
@@ -2426,6 +2427,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     const surfacesLine = lines.find(l => l.label === 'Surfaces')!;
     const checksLine = lines.find(l => l.label === 'Checks')!;
     const categoriesLine = lines.find(l => l.label === 'Categories')!;
+    // #393 — the renderer names only each category's worst severity, so a high
+    // sharing `credentials` with a critical vanished from this line while the
+    // Findings summary counted it. Restated from the same summaries with every
+    // severity named; the zero-findings line stays the renderer's.
+    const categoriesWithAllCounts = formatCategoriesLine(categorySummaries);
+    if (categoriesWithAllCounts !== undefined) categoriesLine.value = categoriesWithAllCounts;
     const verdictDisplay = lines.find(l => l.label === 'Verdict')!;
     // #560 — the two disclosures below record their verdict text here instead
     // of assigning `verdictDisplay`; `composeVerdictLine` applies them, then
