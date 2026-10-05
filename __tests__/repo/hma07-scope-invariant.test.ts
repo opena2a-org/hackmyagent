@@ -76,6 +76,13 @@ const TRACKED_FS_SHA256 = 'bf6566fa2dfab6877ebed88b67b0d28e518e013d2ca164d5640aa
  * skills walk opt-in in either direction. It names where a text came from
  * (`pr-body`, `issue`, `comment`, `card`, `text`); it turns nothing off, and a
  * value outside the five is a usage error rather than a wider or narrower scan.
+ *
+ * SCOPE DECISION, taken with #537 (`secure --range <base>..<head>` and
+ * `secure --staged`), on the same rule: that change adds two flags, recorded
+ * here. Both choose WHICH trees `secure` scans (the base and head of a change,
+ * materialized from git objects) and remove findings the base already holds;
+ * neither narrows the walk over the tree it scans, and a tree-scan without them
+ * is unchanged. A flag that did make the walk opt-in would still turn this red.
  */
 const REGISTERED_LONG_FLAGS = [
   '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--as', '--at',
@@ -88,8 +95,8 @@ const REGISTERED_LONG_FLAGS = [
   '--local', '--mcp-tool', '--min-trust', '--model', '--name', '--nanomind',
   '--no-color', '--no-contribute', '--no-machine-posture', '--no-registry',
   '--no-scan', '--offline', '--output', '--payload-file', '--ports', '--profile',
-  '--publish', '--reason', '--registry-key', '--registry-report', '--registry-url',
-  '--rescan', '--root', '--scan-depth', '--scan-only', '--source-commit',
+  '--publish', '--range', '--reason', '--registry-key', '--registry-report', '--registry-url',
+  '--rescan', '--root', '--scan-depth', '--scan-only', '--source-commit', '--staged',
   '--static-only', '--status', '--stop-on-success', '--surface', '--system-prompt',
   '--target-type', '--tier', '--timeout', '--tool', '--type', '--verbose',
   '--version', '--version-id', '--with-aim',
