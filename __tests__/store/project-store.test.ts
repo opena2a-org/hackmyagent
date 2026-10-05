@@ -10,6 +10,8 @@ import { spawnSync } from 'child_process';
 import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
 import {
   findLegacyKeyMaterial,
+  identityState,
+  IdentityUnreadableError,
   projectKey,
   resolveProjectStore,
   userStoreRoot,
@@ -106,6 +108,84 @@ describe('resolveProjectStore', () => {
     const before = fs.readFileSync(path.join(store.root, 'project.json'), 'utf8');
     store.ensure();
     expect(fs.readFileSync(path.join(store.root, 'project.json'), 'utf8')).toBe(before);
+  });
+});
+
+describe('identityState', () => {
+  // aim-core creates over any file it cannot read or parse; this is the check
+  // that keeps an existing identity, in whatever state, from being replaced.
+  const FAKE_IDENTITY = JSON.stringify({
+    agentId: 'aim_FAKE',
+    publicKey: 'FAKE-PLACEHOLDER-PUBLIC',
+    secretKey: 'FAKE-PLACEHOLDER-SECRET',
+    agentName: 'proj',
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+
+  function identityFile(): string {
+    const store = resolveProjectStore(target).ensure();
+    fs.mkdirSync(store.aimDir, { recursive: true });
+    return store.identityPath;
+  }
+
+  function refusal(p: string): IdentityUnreadableError {
+    try {
+      identityState(p);
+    } catch (e) {
+      expect(e).toBeInstanceOf(IdentityUnreadableError);
+      return e as IdentityUnreadableError;
+    }
+    throw new Error(`identityState(${p}) did not refuse`);
+  }
+
+  it('is absent only when nothing is at the path', () => {
+    expect(identityState(identityFile())).toBe('absent');
+  });
+
+  it('is present for a readable identity', () => {
+    const p = identityFile();
+    fs.writeFileSync(p, FAKE_IDENTITY);
+    expect(identityState(p)).toBe('present');
+  });
+
+  it('refuses a truncated file and leaves it as it was', () => {
+    const p = identityFile();
+    fs.writeFileSync(p, FAKE_IDENTITY.slice(0, 20));
+    const e = refusal(p);
+    expect(e.code).toBe('INVALID_JSON');
+    expect(e.path).toBe(p);
+    expect(fs.readFileSync(p, 'utf8')).toBe(FAKE_IDENTITY.slice(0, 20));
+  });
+
+  it('refuses JSON that aim-core would read as no identity, or that holds no key', () => {
+    const p = identityFile();
+    for (const body of ['null', '0', 'false', '""', '[]', '{}', '{"publicKey":"FAKE"}']) {
+      fs.writeFileSync(p, body);
+      expect(refusal(p).code, body).toBe('NOT_AN_IDENTITY');
+    }
+  });
+
+  it('refuses a directory and a dangling link at the path', () => {
+    const p = identityFile();
+    fs.mkdirSync(p);
+    expect(refusal(p).code).toBe('EISDIR');
+    fs.rmdirSync(p);
+    if (process.platform === 'win32') return;
+    fs.symlinkSync(path.join(tmp, 'missing.json'), p);
+    expect(refusal(p).code).toBe('ENOENT');
+    expect(fs.lstatSync(p).isSymbolicLink()).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses a file it has no permission to read', () => {
+    const p = identityFile();
+    fs.writeFileSync(p, FAKE_IDENTITY);
+    fs.chmodSync(p, 0o000);
+    try {
+      expect(refusal(p).code).toBe('EACCES');
+    } finally {
+      fs.chmodSync(p, 0o600);
+    }
+    expect(fs.readFileSync(p, 'utf8')).toBe(FAKE_IDENTITY);
   });
 });
 

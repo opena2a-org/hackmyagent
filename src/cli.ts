@@ -9247,14 +9247,35 @@ import { createPlugin as createCredVaultPlugin } from './plugins/credvault';
 import { createPlugin as createSecretlessPlugin } from './plugins/secretless';
 import { createPlugin as createSigncryptPlugin } from './plugins/signcrypt';
 import { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
-import { AIMCore, loadIdentity } from '@opena2a/aim-core';
-import { resolveProjectStore, findLegacyKeyMaterial, type ProjectStore } from './store/project-store';
+import { AIMCore } from '@opena2a/aim-core';
+import { resolveProjectStore, findLegacyKeyMaterial, identityState, IdentityUnreadableError, type ProjectStore } from './store/project-store';
 import type {
   Finding as PluginFinding,
   Remediation,
   OpenA2APlugin,
   Severity as PluginSeverity,
 } from './plugins/core';
+
+/**
+ * What `fix-all --with-aim` prints instead of replacing an identity file it
+ * cannot use: the key in it is the one thing a re-run cannot bring back.
+ */
+function identityRefusal(e: IdentityUnreadableError): UsageError {
+  const why =
+    e.code === 'INVALID_JSON' ? 'is not valid JSON (a truncated or partly written file reads this way)'
+      : e.code === 'NOT_AN_IDENTITY' ? 'does not hold a publicKey and secretKey'
+        : `cannot be read (${e.code})`;
+  // The path is named on the first line; a command operand is quoted, or a
+  // placeholder when the path cannot be pasted truthfully.
+  const operand = citationPath(e.path) ?? '<identity file>';
+  const fix = e.code === 'EACCES' || e.code === 'EPERM'
+    ? `restore read access (chmod 600 ${operand}) and re-run`
+    : 'restore the file from a backup and re-run';
+  return usageError`The signing identity ${e.path} exists but ${why}.
+--with-aim does not create a new identity over it: the private key in it cannot be recovered once replaced. The file was left as it is and no fix ran.
+Verify: ls -l ${operand}
+Fix: ${fix}; to start over with a new identity, move the file aside yourself first.`;
+}
 
 const PLUGIN_SEVERITY_DISPLAY: Record<PluginSeverity, { symbol: string; color: () => string }> = {
   critical: { symbol: '[!!]', color: () => colors.brightRed },
@@ -9381,7 +9402,14 @@ Examples:
         if (options.withAim && writes) {
           if (!store) throw storeRefusal;
           store.ensure();
-          identityReused = loadIdentity(store.aimDir) !== null;
+          // aim-core creates over any file it cannot read or parse; an identity
+          // that exists in any form is reused or refused here, never replaced.
+          try {
+            identityReused = identityState(store.identityPath) === 'present';
+          } catch (e) {
+            if (e instanceof IdentityUnreadableError) throw identityRefusal(e);
+            throw e;
+          }
           aimCore = new AIMCore({
             agentName: path.basename(targetDir),
             dataDir: store.aimDir,
