@@ -36,7 +36,8 @@
     "clean": "rm -rf dist",
     "guard:token-shapes": "tsx scripts/token-shape-guard.ts",
     "release-smoke:corpus": "tsx scripts/release-smoke-corpus.ts",
-    "audit:consumer": "node scripts/audit-consumer-resolution.mjs"
+    "audit:consumer": "node scripts/audit-consumer-resolution.mjs",
+    "census:source": "node scripts/source-census.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
