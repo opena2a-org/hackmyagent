@@ -13,6 +13,34 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+/**
+ * Scratch HOME for `@opena2a/contribute`, set BEFORE that package loads.
+ *
+ * The package binds its queue path (dist/queue.js) and its contributor-salt
+ * path (dist/contributor.js) from `homedir()` once, at module load, and never
+ * consults OPENA2A_HOME. Without this, every queue and flush test below reads
+ * and writes the developer's real ~/.opena2a/contribute-queue.json, a file any
+ * other process on the machine may be writing at the same moment: a second
+ * suite run in another checkout, or a real `hackmyagent secure --contribute`.
+ * One such writer between `queueEvent` and `flushQueue` leaves the batch empty,
+ * `flushQueue` returns early, and the stubbed `fetch` is never called.
+ *
+ * `vi.hoisted` runs ahead of the imports below, so the package's module-load
+ * `homedir()` resolves here. `USERPROFILE` is what `homedir()` reads on Windows.
+ */
+const scratch = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { homedir, tmpdir } = await import('node:os');
+  const realHome = homedir();
+  const original = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  const home = mkdtempSync(join(tmpdir(), 'contribute-home-'));
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  return { home, realHome, original };
+});
+
 import {
   getContributorToken,
   generateContributorToken,
@@ -44,8 +72,11 @@ function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'contribute-test-'));
 }
 
-/** The real `~/.opena2a` this run must not write into. See the beforeAll below. */
-const REAL_OPENA2A_DIR = path.join(os.homedir(), '.opena2a');
+/**
+ * The real `~/.opena2a` this run must not write into. Taken from the home
+ * captured before the scratch HOME above replaced it.
+ */
+const REAL_OPENA2A_DIR = path.join(scratch.realHome, '.opena2a');
 
 /**
  * Registry base URL for the flush tests. Loopback discard port: nothing is
@@ -82,12 +113,10 @@ function mtimeOrNull(p: string): number | null {
 // — and reads the variable lazily inside each path helper, so setting it in a
 // hook (rather than before the import) is enough.
 //
-// KNOWN LIMIT, deliberately left: `@opena2a/contribute`'s dist/queue.js binds
-// `QUEUE_PATH = join(homedir(), '.opena2a', 'contribute-queue.json')` at module
-// load and never consults OPENA2A_HOME, so `queueEvent`/`clearQueue` in this
-// file still touch the developer's real ~/.opena2a/contribute-queue.json. That
-// is a change to the published package, not to this repository, and is out of
-// HMA-20's scope. The same is true of contributor-salt via dist/contributor.js.
+// `@opena2a/contribute` does not honour OPENA2A_HOME: its queue and
+// contributor-salt paths come from `homedir()` at module load. Those two files
+// are isolated by the scratch HOME set in the `vi.hoisted` block at the top of
+// this file, and the `queue isolation` describe below pins that.
 //
 // The nested describes that set their own OPENA2A_HOME still work: they capture
 // the value on entry (which is this scratch dir) and restore it on exit.
@@ -107,6 +136,12 @@ afterAll(() => {
     process.env.OPENA2A_HOME = suiteHomeOriginalEnv;
   }
   cleanupDir(suiteHome);
+  for (const key of ['HOME', 'USERPROFILE'] as const) {
+    const value = scratch.original[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  cleanupDir(scratch.home);
 });
 
 function cleanupDir(dir: string): void {
@@ -177,7 +212,8 @@ function makeSampleFindings(): SecurityFinding[] {
 
 describe('getContributorToken', () => {
   // The shared library (@opena2a/contribute) uses ~/.opena2a/ directly
-  // (not OPENA2A_HOME), so we test against the real home directory.
+  // (not OPENA2A_HOME); `os.homedir()` here is the scratch HOME set at the
+  // top of this file, so the salt lands there and not in the real home.
   const opena2aDir = path.join(os.homedir(), '.opena2a');
 
   it('returns a 64-character hex string (SHA-256)', () => {
@@ -364,6 +400,40 @@ describe('buildContributionPayloadFromDir', () => {
 // ---------------------------------------------------------------
 // Queue operations
 // ---------------------------------------------------------------
+
+// The queue and flush tests below assert on the queue's exact contents, so
+// they hold only if no other process can write that file. This pins that the
+// file they use is the scratch one, by content rather than mtime: a real run
+// elsewhere on the machine may legitimately touch the real file meanwhile.
+describe('queue isolation', () => {
+  afterEach(() => {
+    sharedClearQueue();
+  });
+
+  it('keeps the shared queue and contributor salt under the scratch HOME, not the real one', () => {
+    expect(os.homedir()).toBe(scratch.home);
+    expect(scratch.home).not.toBe(scratch.realHome);
+
+    const marker = `queue-isolation-${process.pid}-${Date.now()}`;
+    queueEvent({
+      type: 'scan_result',
+      tool: 'hackmyagent',
+      toolVersion: marker,
+      timestamp: new Date().toISOString(),
+    });
+    getContributorToken();
+
+    const scratchDir = path.join(scratch.home, '.opena2a');
+    const scratchQueue = path.join(scratchDir, 'contribute-queue.json');
+    expect(fs.existsSync(scratchQueue)).toBe(true);
+    expect(fs.readFileSync(scratchQueue, 'utf-8')).toContain(marker);
+    expect(fs.existsSync(path.join(scratchDir, 'contributor-salt'))).toBe(true);
+
+    const realQueue = path.join(REAL_OPENA2A_DIR, 'contribute-queue.json');
+    const realContents = fs.existsSync(realQueue) ? fs.readFileSync(realQueue, 'utf-8') : '';
+    expect(realContents).not.toContain(marker);
+  });
+});
 
 describe('queueEvent', () => {
   beforeEach(() => {
