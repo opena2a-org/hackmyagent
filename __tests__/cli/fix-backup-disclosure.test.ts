@@ -86,6 +86,24 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
     }
   });
 
+  // #862 — both benchmark arms of `secure` returned above the disclosure, so
+  // a `-b oasb-1 --fix` run wrote `.gitignore` and a backup run directory and
+  // named neither.
+  it.each(['oasb-1', 'oasb-2'])('secure -b %s --fix, text report: names the backup it wrote', (benchmark) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hma-862-'));
+    try {
+      writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
+      const out = hma(['secure', dir, '-b', benchmark, '--fix']);
+      const written = runs(dir);
+      expect(written).toHaveLength(1);
+      expect(out.stdout).toContain('Backup created:');
+      expect(out.stdout).toContain(written[0]);
+      expect(out.stdout).toMatch(/Something wrong\? Run `\S+ rollback /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('secure --fix that attempted nothing: names the run directory it added', () => {
     const dir = skillTree();
     try {

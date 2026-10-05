@@ -3413,6 +3413,20 @@ function printBenchmarkUnreadDisclosure(result: ScanResult): void {
   console.log();
 }
 
+/**
+ * #610 — keyed on the backup the scanner wrote, not on the attempt count.
+ * A `--fix` run that attempted nothing still writes a fresh run directory
+ * under `.hackmyagent-backup/`. #862 — the `-b oasb-1` and `-b oasb-2` text
+ * reports return before the ordinary report's tail, so each calls this too.
+ */
+function printFixBackupDisclosure(result: { backupPath?: string }, directory: string): void {
+  if (!result.backupPath) return;
+  // #339 — the backup path is derived from the target, and the rollback
+  // hint is a command the report tells the user to paste. Both were raw.
+  console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+  console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
+}
+
 // SARIF 2.1.0 output for GitHub Security tab and IDE integration
 function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: SecurityFinding[], targetDir: string, disclosure: SuppressionDisclosure = {}): string {
   assertRedactionProvenance(findings, 'sarif-benchmark');
@@ -5909,6 +5923,7 @@ Examples:
             process.stdout.write(`\nCritical Floor: APPLIED (${govResult.criticalMissing.join(', ')} missing)\n`);
           }
           process.stdout.write('\n');
+          printFixBackupDisclosure(result, directory);
         }
 
         // #371 — the composite path had no default gate at all, so
@@ -6022,6 +6037,7 @@ Examples:
           default: // text
             printBenchmarkReport(benchmarkResult, options.verbose ?? false, targetDir, benchmarkRunFlags);
             printBenchmarkUnreadDisclosure(result);
+            printFixBackupDisclosure(result, directory);
             output = '';
         }
 
@@ -6504,16 +6520,9 @@ Examples:
         }
       }
 
-      // #610 — keyed on the backup the scanner wrote, not on the attempt count.
-      // A `--fix` run that attempted nothing still writes a fresh run directory
-      // under `.hackmyagent-backup/`; nested under `fixedFindings.length > 0`
-      // it did so without a word.
-      if (result.backupPath) {
-        // #339 — the backup path is derived from the target, and the rollback
-        // hint is a command the report tells the user to paste. Both were raw.
-        console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
-        console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
-      }
+      // #610 — not nested under `fixedFindings.length > 0`, where a run that
+      // attempted nothing added a backup run directory without a word.
+      printFixBackupDisclosure(result, directory);
 
       // Registry reporting: only when explicitly requested via --version-id (CI) or --registry-report
       // Community contributions are handled by the opena2a CLI wrapper, not HMA directly
