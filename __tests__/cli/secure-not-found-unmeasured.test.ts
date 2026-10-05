@@ -105,6 +105,40 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
     expect(r.stderr).not.toContain('Report written to');
   });
 
+  // #882 — RED-ON-BASE (a67dce41): `--format sarif -o` and `--format html -o`
+  // exited 2 with no report file and nothing naming the file, while `--help`
+  // said `-o` writes those reports. No not-measured SARIF is written: an
+  // upload with no results closes the repository's open alerts, a clean
+  // reading from a run that scanned nothing. The file stays absent, stderr
+  // says so, and `--help` scopes `-o` to json for a missing target.
+  for (const format of ['sarif', 'html']) {
+    it(`RED-ON-BASE: --format ${format} -o names the report it did not write and exits 2`, () => {
+      const dir = tmp(`hma-882-${format}-`);
+      const report = path.join(dir, `report.${format}`);
+      const r = run(['secure', path.join(dir, 'no-such-dir'), '--format', format, '-o', report]);
+      expect(r.status, r.stderr).toBe(2);
+      expect(fs.existsSync(report)).toBe(false);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/NOT MEASURED — .* does not exist, so nothing was scanned\./);
+      expect(r.stderr).toContain(`No report was written to ${report}`);
+      expect(r.stderr).toContain('use --format json -o <file>');
+      expect(r.stderr).not.toContain('Report written to');
+    });
+  }
+
+  it('RED-ON-BASE: --help says a missing target writes the -o file only for json', () => {
+    const r = run(['secure', '--help']);
+    const flat = r.stdout.replace(/\s+/g, ' ');
+    expect(flat).toContain('Write the json, sarif, html, asp or asff report to a file instead of stdout (not with text)');
+    expect(flat).toContain('a target that does not exist writes the file only for json');
+  });
+
+  it('without -o the missing-target stderr names no report', () => {
+    const r = run(['secure', path.join(tmp('hma-882-none-'), 'no-such-dir'), '--format', 'sarif']);
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.stderr).not.toContain('No report was written');
+  });
+
   it('RED-ON-BASE: text mode exits 2 and says nothing was measured', () => {
     const missing = path.join(tmp('hma-481-txt-'), 'no-such-dir');
     const r = run(['secure', missing]);
