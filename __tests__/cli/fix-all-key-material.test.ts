@@ -19,7 +19,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
@@ -268,6 +268,49 @@ describe('fix-all --with-aim leaves no private key in the tree (#534, #431)', ()
     const body = JSON.parse(json.stdout.slice(json.stdout.indexOf('{')));
     expect(body.legacyKeyMaterial.map((l: any) => l.kind)).toEqual(['vault']);
     expect(body.store.legacyInTree.vault).toEqual({ found: true, path: legacy });
+  });
+
+  it('an identity the run cannot read or parse is refused and kept, never replaced with a new key', () => {
+    // Measured before the fix: a truncated identity.json, and a valid one with
+    // mode 000, were each renamed over by a new key — "(Ed25519, created)", rc 0.
+    const dir = makeTree('unreadable-identity', { git: false });
+    expect(run(dir, ['--with-aim']).status).toBe(0);
+    const stores = readdirSync(path.join(opena2aHome, 'projects'));
+    const store = stores.find((k) => readFileSync(path.join(opena2aHome, 'projects', k, 'project.json'), 'utf8').includes(dir));
+    expect(store).toBeTypeOf('string');
+    const identityPath = path.join(opena2aHome, 'projects', store!, 'aim', 'identity.json');
+    const original = readFileSync(identityPath, 'utf8');
+    const publicKey = JSON.parse(original).publicKey as string;
+    const inode = statSync(identityPath).ino;
+
+    writeFileSync(identityPath, original.slice(0, 20));
+    const truncated = run(dir, ['--with-aim']);
+    expect(truncated.status).toBe(1);
+    expect(truncated.out).toContain(identityPath);
+    expect(truncated.out).toContain('is not valid JSON');
+    expect(truncated.out).toContain('does not create a new identity over it');
+    expect(truncated.out).not.toContain('Signing identity:');
+    expect(statSync(identityPath).ino).toBe(inode);
+    expect(readFileSync(identityPath, 'utf8')).toBe(original.slice(0, 20));
+
+    writeFileSync(identityPath, original);
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      chmodSync(identityPath, 0o000);
+      const denied = run(dir, ['--with-aim']);
+      chmodSync(identityPath, 0o600);
+      expect(denied.status).toBe(1);
+      expect(denied.out).toContain('cannot be read (EACCES)');
+      expect(denied.out).toContain(`chmod 600 ${identityPath}`);
+      expect(statSync(identityPath).ino).toBe(inode);
+      expect(readFileSync(identityPath, 'utf8')).toBe(original);
+    }
+
+    // once readable again, the same key is reused
+    const restored = run(dir, ['--with-aim']);
+    expect(restored.status).toBe(0);
+    expect(restored.out).toContain('(Ed25519, reused)');
+    expect(restored.out).toContain(publicKey);
+    expect(readFileSync(identityPath, 'utf8')).toBe(original);
   });
 
   it('refuses to run when the store would sit inside the target', () => {

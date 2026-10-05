@@ -163,6 +163,56 @@ export function resolveProjectStore(target: string, opts: { createdBy?: string }
 }
 
 /**
+ * An identity file that exists and cannot be used. `code` is the errno code
+ * of the failed lstat or read, or `INVALID_JSON` / `NOT_AN_IDENTITY` when the
+ * bytes were read and are not an aim-core identity.
+ */
+export class IdentityUnreadableError extends Error {
+  readonly code: string;
+  readonly path: string;
+  constructor(code: string, filePath: string) {
+    super(`The identity file ${filePath} exists and cannot be used (${code}).`);
+    this.name = 'IdentityUnreadableError';
+    this.code = code;
+    this.path = filePath;
+  }
+}
+
+/**
+ * Whether `identityPath` holds an identity aim-core can load, decided before
+ * aim-core is handed the path. aim-core's getOrCreateIdentity treats a file it
+ * cannot read or parse exactly like a missing one and renames a fresh key over
+ * it, so a permission fault or a truncated write would cost a private key that
+ * nothing can recover. Only lstat ENOENT means absent: a dangling link, a
+ * directory, an unreadable or unparseable file all throw
+ * IdentityUnreadableError, and the caller creates nothing.
+ */
+export function identityState(identityPath: string): 'absent' | 'present' {
+  try {
+    fs.lstatSync(identityPath);
+  } catch (e: any) {
+    if (e?.code === 'ENOENT') return 'absent';
+    throw new IdentityUnreadableError(e?.code ?? 'UNKNOWN', identityPath);
+  }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(identityPath, 'utf-8');
+  } catch (e: any) {
+    throw new IdentityUnreadableError(e?.code ?? 'UNKNOWN', identityPath);
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new IdentityUnreadableError('INVALID_JSON', identityPath);
+  }
+  const usable = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    && typeof parsed.publicKey === 'string' && typeof parsed.secretKey === 'string';
+  if (!usable) throw new IdentityUnreadableError('NOT_AN_IDENTITY', identityPath);
+  return 'present';
+}
+
+/**
  * Private key material an earlier hackmyagent wrote INTO the target. Reported,
  * never read, moved or deleted: a key of unknown exposure gets regenerated in
  * the user store, and what happens to the old file is the user's decision
