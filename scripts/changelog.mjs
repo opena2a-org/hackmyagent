@@ -390,11 +390,34 @@ function slugFromOption(name) {
   return name;
 }
 
+/** Issue numbers referenced as `#<n>` in an entry's first line, in order of appearance. */
+function firstLineIssues(body) {
+  return [...new Set([...body.split('\n')[0].matchAll(/#(\d+)\b/g)].map(m => Number(m[1])).filter(n => n > 0))];
+}
+
 /** Issue numbers named in a promoted `#### title` line, in order of appearance. */
 function titleIssues(body) {
-  const first = body.split('\n')[0];
-  if (!first.startsWith('#### ')) return [];
-  return [...new Set([...first.matchAll(/#(\d+)\b/g)].map(m => Number(m[1])).filter(n => n > 0))];
+  return body.startsWith('#### ') ? firstLineIssues(body) : [];
+}
+
+/**
+ * The slug of a new fragment when --name is not given. The branch names the
+ * change when its last part carries one of the entry's issue numbers
+ * (`fix/761-example`), and when the entry names no issue there is nothing
+ * better to go by. A branch named for anything else, such as the session that
+ * did the work, says nothing about the change, so the entry is then filed
+ * under its own first issue number and the words of its first line.
+ */
+function defaultSlug(body, issueText) {
+  const branch = branchSlug();
+  const issues = issueText === undefined
+    ? firstLineIssues(body)
+    : issueText.split(',').map(s => s.trim()).filter(p => /^[1-9]\d*$/.test(p)).map(Number);
+  if (!issues.length) return branch;
+  // A date in the branch name is not an issue number.
+  const parts = branch.replace(/(^|-)\d{4}-\d{2}-\d{2}(?=-|$)/g, '$1').split('-');
+  if (issues.some(n => parts.includes(String(n)))) return branch;
+  return slugify(`${issues[0]} ${body.split('\n')[0].replace(/#\d+\b/g, ' ')}`);
 }
 
 function fragmentText({ type, issues = [], breaking = false, issueText }, body) {
@@ -511,7 +534,7 @@ function cmdNew(opts) {
   requireConverted(changelog);
   if (!opts.type) throw new Usage('new needs --type <type>');
   if (!TYPE_KEYS.has(opts.type)) throw new Refusal(`type "${opts.type}" is not one of ${[...TYPE_KEYS].join(', ')}`);
-  const slug = opts.name !== undefined ? slugFromOption(opts.name) : branchSlug();
+  const named = opts.name !== undefined ? slugFromOption(opts.name) : null;
   let input;
   try {
     input = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(0));
@@ -521,6 +544,7 @@ function cmdNew(opts) {
   if (input.includes('\r')) throw new Refusal('the entry has CR characters; use LF line endings');
   const body = trimBlankLines(input.split('\n')).join('\n');
   if (!body) throw new Refusal('the entry on standard input is empty');
+  const slug = named ?? defaultSlug(body, opts.issue);
   const [file] = writeFragments(fragmentDir(changelog), [
     { slug, body, text: fragmentText({ type: opts.type, issueText: opts.issue, breaking: !!opts.breaking }, body) },
   ]);
