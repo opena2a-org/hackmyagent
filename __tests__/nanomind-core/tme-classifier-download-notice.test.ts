@@ -34,6 +34,12 @@ describe('NanoMind model download notice', () => {
   let stdout: string[];
 
   beforeEach(() => {
+    // A proxy variable in the developer's shell would send these requests
+    // through a tunnel instead of the direct `https.get` call the
+    // redirect test stubs. model-download-proxy.test.ts covers proxies.
+    for (const name of ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'no_proxy', 'NO_PROXY']) {
+      vi.stubEnv(name, '');
+    }
     dir = mkdtempSync(join(tmpdir(), 'hma-model-notice-'));
     events = [];
     stderr = [];
@@ -51,6 +57,7 @@ describe('NanoMind model download notice', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     rmSync(dir, { recursive: true, force: true });
   });
 
