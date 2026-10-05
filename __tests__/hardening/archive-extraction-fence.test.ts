@@ -390,3 +390,40 @@ for (const compression of COMPRESSIONS) {
     }
   });
 }
+
+describe('a tar name or link target longer than its 100-byte field reaches the fence whole', () => {
+  // The absolute and symbolic-link cases above put the temporary directory into
+  // a member name or a link target, and a long TMPDIR makes either longer than
+  // the ustar field. Cut there, those cases would fail on the refusal's wording
+  // rather than on the fence. These two lengthen the name on purpose, so they
+  // fail the same way whatever TMPDIR is.
+  it('a member name and a link target past 100 bytes extract under their full spelling', async () => {
+    const b = bench();
+    const deep = `${'d'.repeat(60)}/${'e'.repeat(60)}`;
+    const archive = writeArchive(
+      b,
+      'long-names.tar.gz',
+      zlib.gzipSync(
+        tarBytes([
+          { name: `pkg/${deep}/index.js`, kind: 'file', data: BENIGN },
+          { name: 'pkg/long-link', kind: 'symlink', linkTarget: `${deep}/index.js` },
+        ]),
+      ),
+    );
+    const written = await extractArchiveInto(archive, b.dest, { format: 'tar.gz' });
+    expect(written).toEqual([`pkg/${deep}/index.js`, 'pkg/long-link']);
+    expect(fs.readFileSync(path.join(b.dest, 'pkg', deep, 'index.js'))).toEqual(BENIGN);
+    expect(fs.readlinkSync(path.join(b.dest, 'pkg', 'long-link'))).toBe(`${deep}/index.js`);
+  });
+
+  it('an absolute member name past 100 bytes is refused under its full spelling', async () => {
+    const b = bench();
+    const name = path.posix.join(b.outside, 'x'.repeat(100), 'planted');
+    const archive = writeArchive(
+      b,
+      'long-absolute.tar.gz',
+      zlib.gzipSync(tarBytes([{ name, kind: 'file', data: PLANTED }])),
+    );
+    await expectRefusal(archive, b, 'tar.gz', [`refused entry "${name}"`]);
+  });
+});

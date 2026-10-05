@@ -39,30 +39,63 @@ export interface ZipMember {
 }
 
 const TAR_BLOCK = 512;
+const TAR_NAME_FIELD = 100;
 
-/** A ustar archive. Names and link targets stay under the 100-byte fields. */
+/**
+ * A ustar archive. A name or link target longer than its 100-byte field is
+ * carried whole in a pax `x` header ahead of the member, the way `tar(1)`
+ * records one, so a case never hands the fence a name cut short. The absolute
+ * cases put the temporary directory into a name, and `os.tmpdir()` alone can
+ * be longer than the field.
+ */
 export function tarBytes(members: TarMember[]): Buffer {
   const blocks: Buffer[] = [];
   for (const member of members) {
+    const pax = paxRecords(member);
+    if (pax.length > 0) {
+      blocks.push(tarHeader({ name: 'PaxHeader', kind: 'file' }, pax.length, 'x'));
+      blocks.push(padToBlock(pax));
+    }
     const data = member.kind === 'file' ? (member.data ?? Buffer.alloc(0)) : Buffer.alloc(0);
     blocks.push(tarHeader(member, data.length));
-    if (data.length > 0) {
-      const padded = Buffer.alloc(Math.ceil(data.length / TAR_BLOCK) * TAR_BLOCK);
-      data.copy(padded);
-      blocks.push(padded);
-    }
+    if (data.length > 0) blocks.push(padToBlock(data));
   }
   // Two zero blocks close the archive.
   blocks.push(Buffer.alloc(TAR_BLOCK * 2));
   return Buffer.concat(blocks);
 }
 
-function tarHeader(member: TarMember, size: number): Buffer {
+function padToBlock(data: Buffer): Buffer {
+  const padded = Buffer.alloc(Math.ceil(data.length / TAR_BLOCK) * TAR_BLOCK);
+  data.copy(padded);
+  return padded;
+}
+
+/** `<len> <key>=<value>\n` records for each field the ustar header would cut. */
+function paxRecords(member: TarMember): Buffer {
+  const records: Buffer[] = [];
+  const add = (key: string, value: string): void => {
+    const body = ` ${key}=${value}\n`;
+    // The length counts its own digits, so settle it by iteration.
+    let length = Buffer.byteLength(body, 'utf8');
+    while (String(length).length + Buffer.byteLength(body, 'utf8') !== length) {
+      length = String(length).length + Buffer.byteLength(body, 'utf8');
+    }
+    records.push(Buffer.from(`${length}${body}`, 'utf8'));
+  };
+  if (Buffer.byteLength(member.name, 'utf8') > TAR_NAME_FIELD) add('path', member.name);
+  const linkTarget = member.linkTarget ?? '';
+  if (Buffer.byteLength(linkTarget, 'utf8') > TAR_NAME_FIELD) add('linkpath', linkTarget);
+  return Buffer.concat(records);
+}
+
+function tarHeader(member: TarMember, size: number, typeflagOverride?: string): Buffer {
   const header = Buffer.alloc(TAR_BLOCK);
-  const typeflag = { file: '0', directory: '5', hardlink: '1', symlink: '2' }[member.kind];
+  const typeflag =
+    typeflagOverride ?? { file: '0', directory: '5', hardlink: '1', symlink: '2' }[member.kind];
   const defaultMode = member.kind === 'directory' ? 0o755 : member.kind === 'symlink' ? 0o777 : 0o644;
 
-  header.write(member.name, 0, 100, 'utf8');
+  header.write(member.name, 0, TAR_NAME_FIELD, 'utf8');
   writeOctalField(header, member.mode ?? defaultMode, 100, 8);
   writeOctalField(header, 0, 108, 8); // uid
   writeOctalField(header, 0, 116, 8); // gid
@@ -70,7 +103,7 @@ function tarHeader(member: TarMember, size: number): Buffer {
   writeOctalField(header, 0, 136, 12); // mtime
   header.write('        ', 148, 8, 'ascii'); // checksum, counted as spaces
   header.write(typeflag, 156, 1, 'ascii');
-  header.write(member.linkTarget ?? '', 157, 100, 'utf8');
+  header.write(member.linkTarget ?? '', 157, TAR_NAME_FIELD, 'utf8');
   header.write('ustar\0', 257, 6, 'binary');
   header.write('00', 263, 2, 'ascii');
 
