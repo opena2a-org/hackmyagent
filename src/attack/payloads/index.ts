@@ -69,9 +69,17 @@ export function getPayloads(
   return payloads;
 }
 
-/** Get payload by ID */
+/** Payload ids carry this prefix so they never equal a check id. */
+const PAYLOAD_ID_PREFIX = 'ATK-';
+
+/**
+ * Get payload by ID. An id from before the ATK- prefix (`PI-001`) still
+ * resolves to its payload (`ATK-PI-001`), so a stored `payloadIds` list does
+ * not silently select nothing.
+ */
 export function getPayloadById(id: string): AttackPayload | undefined {
-  return ALL_PAYLOADS.find(p => p.id === id);
+  const wanted = id.startsWith(PAYLOAD_ID_PREFIX) ? id : PAYLOAD_ID_PREFIX + id;
+  return ALL_PAYLOADS.find(p => p.id === wanted);
 }
 
 /** Payload statistics */

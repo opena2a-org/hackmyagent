@@ -18,7 +18,7 @@ describe('Supply Chain Payloads', () => {
 
   it('all IDs follow SUP-XXX convention', () => {
     for (const p of SUPPLY_CHAIN_PAYLOADS) {
-      expect(p.id).toMatch(/^SUP-\d{3}$/);
+      expect(p.id).toMatch(/^ATK-SUP-\d{3}$/);
     }
   });
 
@@ -63,9 +63,9 @@ describe('Supply Chain Payloads', () => {
     for (const p of payloads) expect(p.category).toBe('supply-chain');
   });
 
-  it('IDs are sequential from SUP-001 to SUP-010', () => {
+  it('IDs are sequential from ATK-SUP-001 to ATK-SUP-010', () => {
     for (let i = 0; i < 10; i++) {
-      expect(SUPPLY_CHAIN_PAYLOADS[i].id).toBe(`SUP-${String(i + 1).padStart(3, '0')}`);
+      expect(SUPPLY_CHAIN_PAYLOADS[i].id).toBe(`ATK-SUP-${String(i + 1).padStart(3, '0')}`);
     }
   });
 

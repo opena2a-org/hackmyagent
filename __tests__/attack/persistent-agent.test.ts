@@ -14,7 +14,7 @@ describe('Persistent Agent Payloads', () => {
 
   it('all IDs follow PERSIST-XXX convention', () => {
     for (const p of PERSISTENT_AGENT_PAYLOADS) {
-      expect(p.id).toMatch(/^PERSIST-\d{3}$/);
+      expect(p.id).toMatch(/^ATK-PERSIST-\d{3}$/);
     }
   });
 
@@ -59,10 +59,10 @@ describe('Persistent Agent Payloads', () => {
     for (const p of payloads) expect(p.category).toBe('persistent-agent');
   });
 
-  it('IDs are sequential from PERSIST-001 to PERSIST-010', () => {
+  it('IDs are sequential from ATK-PERSIST-001 to ATK-PERSIST-010', () => {
     for (let i = 0; i < 10; i++) {
       expect(PERSISTENT_AGENT_PAYLOADS[i].id)
-        .toBe(`PERSIST-${String(i + 1).padStart(3, '0')}`);
+        .toBe(`ATK-PERSIST-${String(i + 1).padStart(3, '0')}`);
     }
   });
 

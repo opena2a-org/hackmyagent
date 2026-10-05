@@ -18,7 +18,7 @@ describe('Context Window Payloads', () => {
 
   it('all IDs follow CTX-XXX convention', () => {
     for (const p of CONTEXT_WINDOW_PAYLOADS) {
-      expect(p.id).toMatch(/^CTX-\d{3}$/);
+      expect(p.id).toMatch(/^ATK-CTX-\d{3}$/);
     }
   });
 
@@ -63,9 +63,9 @@ describe('Context Window Payloads', () => {
     for (const p of payloads) expect(p.category).toBe('context-window');
   });
 
-  it('IDs are sequential from CTX-001 to CTX-010', () => {
+  it('IDs are sequential from ATK-CTX-001 to ATK-CTX-010', () => {
     for (let i = 0; i < 10; i++) {
-      expect(CONTEXT_WINDOW_PAYLOADS[i].id).toBe(`CTX-${String(i + 1).padStart(3, '0')}`);
+      expect(CONTEXT_WINDOW_PAYLOADS[i].id).toBe(`ATK-CTX-${String(i + 1).padStart(3, '0')}`);
     }
   });
 

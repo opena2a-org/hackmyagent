@@ -12,7 +12,7 @@ import { AttackPayload } from '../types';
 
 export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
   {
-    id: 'FAKETOOL-001',
+    id: 'ATK-FAKETOOL-001',
     category: 'fake-tool',
     name: 'Tool Name Squatting',
     description: 'Registers a tool with a name nearly identical to a legitimate tool (typosquat) to intercept calls',
@@ -32,7 +32,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Implement Levenshtein distance checks against existing tool names during registration. Block tools with names within edit distance 2 of existing tools. Require tool provenance verification.',
   },
   {
-    id: 'FAKETOOL-002',
+    id: 'ATK-FAKETOOL-002',
     category: 'fake-tool',
     name: 'Tool Description Impersonation',
     description: 'Registers a malicious tool with a description copied from a legitimate tool to mislead the agent into using it',
@@ -52,7 +52,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Verify tool provenance before registration. Flag tools claiming to replace existing tools. Detect hidden parameters (exfil endpoints) in tool schemas. Require signed tool manifests.',
   },
   {
-    id: 'FAKETOOL-003',
+    id: 'ATK-FAKETOOL-003',
     category: 'fake-tool',
     name: 'Shadow Tool Injection via Config',
     description: 'Injects a shadow tool definition into the MCP configuration that intercepts calls to a legitimate tool',
@@ -72,7 +72,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Make MCP server configuration immutable at runtime. Require signed configuration files. Block dynamic server registration that proxies to external endpoints.',
   },
   {
-    id: 'FAKETOOL-004',
+    id: 'ATK-FAKETOOL-004',
     category: 'fake-tool',
     name: 'Tool Schema Poisoning',
     description: 'Modifies a legitimate tool schema to add hidden required parameters that exfiltrate data when the agent auto-fills them',
@@ -92,7 +92,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Tool schemas must be immutable after registration. Block schema modifications that add new required fields. Detect parameters that reference environment variables or credentials.',
   },
   {
-    id: 'FAKETOOL-005',
+    id: 'ATK-FAKETOOL-005',
     category: 'fake-tool',
     name: 'Tool Priority Escalation',
     description: 'Registers a fake tool with maximum priority so it intercepts calls before the legitimate tool can respond',
@@ -112,7 +112,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Reject tool registration with duplicate names. Tool priority must be set at configuration time, not registration time. Implement tool namespace isolation per server.',
   },
   {
-    id: 'FAKETOOL-006',
+    id: 'ATK-FAKETOOL-006',
     category: 'fake-tool',
     name: 'Capability Expansion via Fake Tool',
     description: 'Registers a tool that claims capabilities beyond what any legitimate tool offers, tricking the agent into delegating sensitive operations',
@@ -132,7 +132,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Review tool capabilities during registration. Block tools claiming administrative or credential access. Implement capability-based access control where tools declare minimum required permissions.',
   },
   {
-    id: 'FAKETOOL-007',
+    id: 'ATK-FAKETOOL-007',
     category: 'fake-tool',
     name: 'Tool Response Manipulation',
     description: 'Registers a proxy tool that forwards requests to the real tool but modifies responses to inject instructions or hide data',
@@ -152,7 +152,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Block tool registration with response transformation capabilities. Tool responses must be immutable between tool and agent. Detect and block tools that proxy to other tools.',
   },
   {
-    id: 'FAKETOOL-008',
+    id: 'ATK-FAKETOOL-008',
     category: 'fake-tool',
     name: 'Batch Tool Flooding',
     description: 'Registers many fake tools at once to overwhelm tool discovery and increase the chance the agent selects a malicious tool',
@@ -172,7 +172,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Rate-limit tool registration. Set a maximum tool count per server. Detect and block mass registration of tools with similar descriptions. Require human approval for batch registration.',
   },
   {
-    id: 'FAKETOOL-009',
+    id: 'ATK-FAKETOOL-009',
     category: 'fake-tool',
     name: 'Tool Identity Spoofing via Metadata',
     description: 'Registers a tool with forged metadata claiming it comes from a trusted provider (e.g., Anthropic, OpenAI) to bypass trust checks',
@@ -192,7 +192,7 @@ export const FAKE_TOOL_PAYLOADS: AttackPayload[] = [
     remediation: 'Verify tool provider claims cryptographically. Reject self-asserted trust levels and verification status. Implement a tool signing and attestation framework.',
   },
   {
-    id: 'FAKETOOL-010',
+    id: 'ATK-FAKETOOL-010',
     category: 'fake-tool',
     name: 'Tool Persistence via Auto-Install Hook',
     description: 'Registers a tool that hooks into the agent initialization process to re-register itself on every startup, persisting across restarts',
