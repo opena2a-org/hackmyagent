@@ -18,6 +18,8 @@ import type { ProjectType } from '../../hardening/security-check.js';
 import type { ShapeId } from '../../types/credential-format.js';
 import { nonAgentGateApplies } from './family-coverage.js';
 import { FIX_LINES } from '../../hardening/fix-lines.js';
+import { resolveFindingLine } from '../../types/finding-location.js';
+import { lineFromOffset } from '../../types/text-position.js';
 
 // ============================================================================
 // Finding Type (compatible with HMA SecurityFinding)
@@ -37,6 +39,28 @@ export interface FindingMatch {
   termLine?: number;
   verbLine?: number;
   destinationLine?: number;
+}
+
+/**
+ * One inferred risk surface above the AST-MANIP-001 confidence floor, with
+ * the line it sits on when that line can be derived (#759). `reportedAs` is
+ * filled in by the scanner bridge at merge time, where the report's own
+ * findings are known: the check ids that report this file and attack class,
+ * empty when none does. Absent when no merge ran.
+ */
+export interface ScanEvasionSurface {
+  attackClass: string;
+  confidence: number;
+  evidence: string;
+  line?: number;
+  reportedAs?: string[];
+}
+
+/** What AST-MANIP-001 measured: the intent rating and the surfaces above 0.7. */
+export interface ScanEvasionBasis {
+  intentClassification: string;
+  intentConfidence: number;
+  surfaces: ScanEvasionSurface[];
 }
 
 export interface ASTFinding {
@@ -68,6 +92,8 @@ export interface ASTFinding {
   evidence?: string;
   /** AST-specific: what a pairing finding matched (AST-CRED-002) */
   matched?: FindingMatch;
+  /** AST-specific: the measured basis of AST-MANIP-001 (#759) */
+  scanEvasion?: ScanEvasionBasis;
   /**
    * Redaction provenance FORWARDED from the AST, not asserted by the analyzer
    * (HMA-38). Set — via `purposeRedactionProvenance` — only when this
@@ -127,7 +153,12 @@ function isAgentLevelArtifact(ast: SecurityAST): boolean {
  * Analyze a SecurityAST for capability-related security issues.
  * Replaces SKILL-*, TOOL-*, and related regex checks.
  */
-export function analyzeCapabilities(ast: SecurityAST, projectType?: ProjectType, projectConstraints?: Constraint[]): ASTFinding[] {
+export function analyzeCapabilities(
+  ast: SecurityAST,
+  projectType?: ProjectType,
+  projectConstraints?: Constraint[],
+  artifactContent?: string,
+): ASTFinding[] {
   const findings: ASTFinding[] = [];
   const isSDK = projectType === 'sdk';
   // Same predicate the governance, scope and prompt families use, and the same
@@ -174,7 +205,7 @@ export function analyzeCapabilities(ast: SecurityAST, projectType?: ProjectType,
   // of what this analyzer saw. capability-analyzer no longer emits either.
 
   // Check 9: NanoMind manipulation detected
-  findings.push(...checkManipulationAttempts(ast));
+  findings.push(...checkManipulationAttempts(ast, artifactContent));
 
   // Check 10: Scope mismatch (declared purpose vs capabilities)
   // Skip for SDK/library -- they don't declare purpose/capabilities
@@ -412,34 +443,79 @@ function checkPersistencePatterns(ast: SecurityAST): ASTFinding[] {
   return findings;
 }
 
-function checkManipulationAttempts(ast: SecurityAST): ASTFinding[] {
+/**
+ * AST-MANIP-001: the intent rating is only `suspicious` while two or more
+ * inferred risk surfaces each exceed 0.7 confidence. That combination is the
+ * whole measurement — nothing here detects an evasion technique — so the
+ * finding names the surfaces it counted, with their lines, rather than a count
+ * of them (#759). Each surface is a risk in its own right and is usually also
+ * reported by its own check; the bridge names those checks at merge time.
+ */
+function checkManipulationAttempts(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
-  // If the input sanitizer detected manipulation, the AST was flagged
-  // Check for suspiciously low confidence on clearly risky artifacts
   if (ast.intentClassification === 'suspicious' && ast.inferredRiskSurface.length > 0) {
-    // Check if there are risk surfaces but intent is only "suspicious" not "malicious"
-    // This could indicate the artifact is trying to downplay its risk
     const highRiskSurfaces = ast.inferredRiskSurface.filter(r => r.confidence > 0.7);
     if (highRiskSurfaces.length >= 2) {
+      const surfaces = [...highRiskSurfaces]
+        .sort((a, b) => b.confidence - a.confidence)
+        .map((r): ScanEvasionSurface => {
+          const line = surfaceLine(r, ast.artifactPath, artifactContent);
+          return {
+            attackClass: r.attackClass,
+            confidence: r.confidence,
+            evidence: r.evidence,
+            ...(line !== undefined ? { line } : {}),
+          };
+        });
+      const intentPct = Math.round(ast.intentConfidence * 100);
+      const listed = surfaces
+        .map(s => `${s.attackClass} ${Math.round(s.confidence * 100)}% (${s.line !== undefined ? `line ${s.line}` : 'line not located'})`)
+        .join(', ');
+      const located = surfaces.find(s => s.line !== undefined);
       findings.push({
         checkId: `AST-MANIP-001`,
         name: 'Possible Scanner Evasion',
-        description: 'Multiple high-confidence risk surfaces detected alongside manipulation indicators. This artifact may be attempting to evade security scanning.',
+        description: `Intent is classified suspicious rather than malicious while ${surfaces.length} inferred risk surfaces each exceed 0.7 confidence. This check measures only that combination; the surfaces it counted are listed with their lines.`,
         category: 'Scanner Evasion',
         severity: 'critical',
         passed: false,
-        message: `${highRiskSurfaces.length} risk surfaces with potential evasion`,
+        message: `Intent suspicious at ${intentPct}%, ${surfaces.length} risk surfaces above 0.7: ${listed}`,
         fixable: false,
         file: ast.artifactPath,
-        fix: 'Manual review required. This artifact shows signs of intentional scanner evasion.',
+        ...(located ? { line: located.line } : {}),
+        fix: 'Resolve each listed risk surface; this finding clears when fewer than two remain above 0.7 confidence.',
         attackClass: 'SCAN-EVASION',
         confidence: 0.85,
+        evidence: located?.evidence ?? surfaces[0].evidence,
+        scanEvasion: {
+          intentClassification: ast.intentClassification,
+          intentConfidence: ast.intentConfidence,
+          surfaces,
+        },
       });
     }
   }
 
   return findings;
+}
+
+/**
+ * The 1-based line of a risk surface: from the offset its producer recorded
+ * when there is one, otherwise from its evidence under the same rules every
+ * other unlocated AST finding is held to (a verbatim trigger that occurs
+ * exactly once). Undefined when neither identifies one place.
+ */
+function surfaceLine(
+  surface: RiskSurface,
+  file: string | undefined,
+  artifactContent: string | undefined,
+): number | undefined {
+  if (!artifactContent) return undefined;
+  if (surface.offset !== undefined && surface.offset >= 0 && surface.offset < artifactContent.length) {
+    return lineFromOffset(artifactContent, surface.offset);
+  }
+  return resolveFindingLine({ file, evidence: surface.evidence }, artifactContent);
 }
 
 function checkScopeMismatch(ast: SecurityAST): ASTFinding[] {
