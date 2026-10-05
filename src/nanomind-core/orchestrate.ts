@@ -44,6 +44,14 @@ export interface OrchestrationOptions {
    * suppressing the sweep). Absent = all findings count (legacy behavior).
    */
   findingVisible?: (finding: SecurityFindingDraft) => boolean;
+  /**
+   * Leave the classification telemetry queue for the caller to flush (#655).
+   * This function runs inside the scan, before a command settles its exit
+   * code; `secure` flushes at its settlement point instead, gated on the
+   * same outbound decision its outcome wires read, so a run that settles
+   * unmeasured posts nothing. Absent = flush here, after the scan.
+   */
+  deferTelemetryFlush?: boolean;
 }
 
 export interface OrchestrationResult {
@@ -215,10 +223,13 @@ export async function orchestrateNanoMind(
       process.stderr.write(`  Integrity: ${nmResult.integrityStatus}\n`);
     }
 
-    // Flush NanoMind classification telemetry (non-blocking, best-effort)
-    import('../telemetry/nanomind-telemetry.js')
-      .then(m => m.flushNanoMindTelemetry())
-      .catch(() => {});
+    // Flush NanoMind classification telemetry (non-blocking, best-effort),
+    // unless the caller flushes behind its own settlement point (#655).
+    if (!options.deferTelemetryFlush) {
+      import('../telemetry/nanomind-telemetry.js')
+        .then(m => m.flushNanoMindTelemetry())
+        .catch(() => {});
+    }
 
     const result: OrchestrationResult = {
       mergedFindings: nmResult.mergedFindings,
