@@ -599,6 +599,20 @@ const PROFILE_DOMAINS: Record<AgentProfile, number[]> = {
   custom: [11, 12, 13, 14, 15, 16, 17, 18, 19],       // All 9 domains
 };
 
+/**
+ * Refuse a `--profile` value that is not a profile (#611), case-insensitively.
+ * `hardenSoul` calls it before it reads or writes anything; a caller with side
+ * effects of its own — the CLI takes a backup first — calls it before those,
+ * so a refused value leaves the target as it was (#861).
+ */
+export function assertKnownProfile(profile: string | undefined): void {
+  if (profile === undefined) return;
+  const accepted = Object.keys(PROFILE_DOMAINS);
+  if (!accepted.includes(profile.toLowerCase())) {
+    throw usageError`Unknown --profile '${profile}'. Accepted: ${accepted.join(', ')}.`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tier detection keywords
 // ---------------------------------------------------------------------------
@@ -2446,12 +2460,7 @@ export class SoulScanner {
     // unknown value was cast and written verbatim (`soul:profile=bogus`, exit 0).
     // Refused here, at the writer and before anything is read or written, so the
     // CLI, the library and the MCP server all get the same answer.
-    if (options?.profile !== undefined) {
-      const accepted = Object.keys(PROFILE_DOMAINS);
-      if (!accepted.includes(options.profile.toLowerCase())) {
-        throw usageError`Unknown --profile '${options.profile}'. Accepted: ${accepted.join(', ')}.`;
-      }
-    }
+    assertKnownProfile(options?.profile);
 
     // #744 — same rule for the tier: it lands in `<!-- soul:tier=… -->`, which
     // `detectTier` trusts on every later scan, so an unknown value is refused

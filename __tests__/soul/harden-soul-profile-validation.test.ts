@@ -71,4 +71,23 @@ describe.runIf(existsSync(CLI))('harden-soul --profile bogus exits 1 from the CL
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  // #861 — the refusal came from `hardenSoul`, after the CLI had already taken
+  // its backup: every refused run left a `.hackmyagent-backup/<run>/` holding a
+  // manifest and a copy of the governance file.
+  it('refuses before the backup, so the target directory is left as it was (#861)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'hma-861-home-'));
+    try {
+      const r = spawnSync(process.execPath, [CLI, 'harden-soul', dir, '--profile', 'bogus'], {
+        encoding: 'utf8',
+        timeout: 120_000,
+        env: { ...process.env, HOME: home, OPENA2A_HOME: home },
+      });
+      expect(r.status, `${r.stdout}${r.stderr}`).toBe(1);
+      expect(r.stderr).toContain("Unknown --profile 'bogus'");
+      expect(readdirSync(dir)).toEqual(['SOUL.md']);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
