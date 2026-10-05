@@ -1837,6 +1837,11 @@ export class SoulScanner {
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 10,
+          // #771 — left unset, the API samples at temperature 1.0, so a
+          // borderline control came back YES on one run and NO on the next and
+          // the score, conformance and exit code moved with it on an unchanged
+          // file. 0 asks for the most likely answer every time.
+          temperature: 0,
           messages: [{ role: 'user', content: prompt }],
         }),
       });
