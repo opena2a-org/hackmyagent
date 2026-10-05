@@ -90,6 +90,21 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
     expect(JSON.parse(fs.readFileSync(report, 'utf8')).coverage.reason).toBe('target-not-found');
   });
 
+  it('--json -o under a directory that does not exist still exits 2, with the document on stdout', () => {
+    const dir = tmp('hma-866-unwritable-');
+    const missing = path.join(dir, 'no-such-dir');
+    const out = path.join(dir, 'no-such-output-dir', 'report.json');
+    const r = run(['secure', missing, '--json', '-o', out]);
+    expect(r.status, r.stderr).toBe(2);
+    expect(fs.existsSync(out)).toBe(false);
+    const doc = JSON.parse(r.stdout);
+    expect(doc.measured).toBe(false);
+    expect(doc.exitCode).toBe(2);
+    expect(doc.coverage.reason).toBe('target-not-found');
+    expect(r.stderr).toContain('Could not write the report');
+    expect(r.stderr).not.toContain('Report written to');
+  });
+
   it('RED-ON-BASE: text mode exits 2 and says nothing was measured', () => {
     const missing = path.join(tmp('hma-481-txt-'), 'no-such-dir');
     const r = run(['secure', missing]);

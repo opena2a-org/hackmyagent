@@ -5201,12 +5201,22 @@ Examples:
           };
           // #866 — `-o` receives this document the way it receives the
           // measured one; a CI step that reads the report file found none.
+          // A file that cannot be written does not turn "not measured" into
+          // exit 1: the reason goes to stderr, the document to stdout, and
+          // the exit code stays 2.
+          let wroteReportFile = false;
           if (options.output) {
-            require('fs').writeFileSync(options.output, buildJsonStdoutDocument(notMeasuredDoc, VERSION));
-            console.error(`Report written to ${options.output}`);
-          } else {
-            writeJsonStdout(notMeasuredDoc);
+            try {
+              require('fs').writeFileSync(options.output, buildJsonStdoutDocument(notMeasuredDoc, VERSION));
+              wroteReportFile = true;
+              console.error(`Report written to ${options.output}`);
+            } catch (err) {
+              const why = err instanceof Error ? err.message : String(err);
+              console.error(`Could not write the report to ${escapePathForDisplay(String(options.output))}: ${why}`);
+              console.error('The report follows on stdout.');
+            }
           }
+          if (!wroteReportFile) writeJsonStdout(notMeasuredDoc);
         } else {
           console.error(unmeasuredBanner(verdict));
           // Omitted rather than printed when the path cannot be cited
