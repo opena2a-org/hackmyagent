@@ -208,6 +208,60 @@ describe('new', () => {
   });
 });
 
+/**
+ * #875: five fragments were filed as `hma-i1-2026-10-04-<hex>.md` and
+ * `hma-i2-2026-10-04-<hex>.md`, after the branches they were written on, which
+ * say nothing about the change. The branch names a fragment only when it
+ * carries one of the entry's issue numbers; otherwise the entry names itself.
+ */
+describe('new: the default name', () => {
+  const WORK = 'issues/hma-i1-2026-10-04';
+
+  /** The name `new` gives one entry written on `branch`. */
+  function nameOn(branch: string, args: string[], entry: string): string {
+    const { dir } = convertedRepo();
+    try {
+      git(dir, 'checkout', '-q', '-b', branch);
+      const r = run(dir, ['new', '--type', 'fixed', ...args], entry);
+      expect(r.status, r.stderr).toBe(0);
+      const names = fragments(dir);
+      expect(names).toHaveLength(1);
+      expect(r.stdout.trim()).toBe(path.join('changelog.d', names[0]));
+      expect(run(dir, ['check']).status).toBe(0);
+      return names[0];
+    } finally { cleanup(dir); }
+  }
+
+  it('is the issue and the first line when the branch does not carry the issue', () => {
+    const name = nameOn(WORK, ['--issue', '673'], '#### Benchmark control results name each failing record (#673)\n\n- The text.\n');
+    expect(name).toMatch(/^673-benchmark-control-results-name-each-failing-record-[0-9a-f]{6}\.md$/);
+  });
+
+  it('reads the issue from the first line when --issue is not given', () => {
+    const name = nameOn('issues/hma-i2-2026-10-04', [], '- `eval oracle` refuses an unknown --format (#649)\n');
+    expect(name).toMatch(/^649-eval-oracle-refuses-an-unknown-format-[0-9a-f]{6}\.md$/);
+  });
+
+  it('does not read a date in the branch name as an issue number', () => {
+    expect(nameOn(WORK, ['--issue', '10'], '- a fix\n')).toMatch(/^10-a-fix-[0-9a-f]{6}\.md$/);
+    expect(nameOn(WORK, ['--issue', '2026'], '- a fix\n')).toMatch(/^2026-a-fix-[0-9a-f]{6}\.md$/);
+  });
+
+  it('stays the branch slug when the branch carries any of the entry\'s issues, and when the entry names no issue', () => {
+    expect(nameOn('fix/hma-762-topic', ['--issue', '761, 762'], '- a fix (#761)\n')).toMatch(/^hma-762-topic-[0-9a-f]{6}\.md$/);
+    expect(nameOn('fix/hma-762-topic', [], '- a fix (#762)\n')).toMatch(/^hma-762-topic-[0-9a-f]{6}\.md$/);
+    expect(nameOn('fix/a-topic', [], '- a fix\n')).toMatch(/^a-topic-[0-9a-f]{6}\.md$/);
+  });
+
+  it('is capped at 60 characters, and is the issue alone when the first line has no words', () => {
+    const long = nameOn(WORK, ['--issue', '875'], `- ${'a very long first line '.repeat(6)}\n`);
+    expect(long).toMatch(/^875-a-very-long-first-line-[a-z]+(-[a-z]+)*-[0-9a-f]{6}\.md$/);
+    expect(long.replace(/-[0-9a-f]{6}\.md$/, '').length).toBeLessThanOrEqual(60);
+    expect(long.length).toBeLessThanOrEqual(80);
+    expect(nameOn(WORK, ['--issue', '875'], '- (#875)\n')).toMatch(/^875-[0-9a-f]{6}\.md$/);
+  });
+});
+
 describe('check R1: every file in changelog.d is a valid fragment', () => {
   const bad: Array<[string, string, string]> = [
     ['a file name without the hex suffix', 'fix.md', fragment('fixed', '- x')],
