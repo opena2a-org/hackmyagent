@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 646
+breaking: true
 ---
 #### `secure -b` refuses the publish and contribute flags instead of dropping them (#646)
 

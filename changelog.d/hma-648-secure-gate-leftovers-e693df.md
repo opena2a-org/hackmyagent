@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 648
+breaking: true
 ---
 #### `secure` refuses -l, -c and --aws-* where nothing reads them, and keeps the footer off refusals (#648)
 

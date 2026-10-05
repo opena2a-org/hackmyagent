@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 647
+breaking: true
 ---
 #### `secure -o <file>` with the text format is refused instead of ignored (#647)
 

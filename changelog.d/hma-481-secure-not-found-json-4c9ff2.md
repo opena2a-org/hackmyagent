@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 481
+breaking: true
 ---
 #### `secure` on a missing target exits 2 and writes JSON under `--json` (#481)
 

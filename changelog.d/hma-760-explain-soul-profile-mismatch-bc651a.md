@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 760
+breaking: true
 ---
 #### `explain` answers every id `scan-soul` prints (#760)
 

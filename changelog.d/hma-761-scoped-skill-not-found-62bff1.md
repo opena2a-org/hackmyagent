@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 761
+breaking: true
 ---
 #### check on a scoped name npm does not have is not measured (#761)
 

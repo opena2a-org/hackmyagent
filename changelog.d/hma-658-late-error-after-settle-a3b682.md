@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 658
+breaking: true
 ---
 #### `check`: an error after the verdict settled no longer reads as an unmeasured run (#658)
 
