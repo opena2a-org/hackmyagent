@@ -47,6 +47,15 @@ OPENA2A_CORPUS_PATH=$HOME/.opena2a/corpus npm run release-smoke:corpus
 # A different corpus HEAD needs the counts re-recorded here.
 ```
 
+Soul fixtures are scored twice: by `secure` against the manifest band and golden, and by
+`scan-soul`, which prints a `scan-soul:` line under each `soul/*` row (#503). The run fails
+when scan-soul gives no verdict, passes a malicious fixture, reports a governance violation on
+a benign fixture, or scores a benign fixture at or below a malicious one. A benign fixture that
+scan-soul fails gets a `note:` line and a count under the summary, and is not counted as a
+failure. `soul/benign/hardened-soul` carries that note: its role-play refusal is written as
+prose and SOUL-IH-003 is not detected, the state pinned in
+`__tests__/soul/soul-corpus-direction.test.ts`. Read the note before signing off the release.
+
 Do not set `OPENA2A_CORPUS_UPDATE_GOLDEN=1` on a release branch to make this pass: a golden
 moves only in the PR that moved the score, with the cause named in the commit.
 

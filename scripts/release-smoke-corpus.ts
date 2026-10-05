@@ -10,6 +10,8 @@
  *   2. every entry in manifest.expected.hma.findings appears in CLI output
  *      (matched by checkId)
  *   3. no entry in manifest.expected.hma.mustNotFind appears
+ *   4. for soul-surface fixtures, `hackmyagent scan-soul --json` agrees with
+ *      the fixture's intent in direction (see SOUL_SURFACE below)
  *
  * Corpus drift surfaces in this harness, before publish.
  * OPENA2A_CORPUS_DETERMINISTIC=1 is set so the output is stable across runs.
@@ -297,6 +299,138 @@ function diffFixture(
   return { ok: reasons.length === 0, reasons };
 }
 
+/**
+ * #503 — a soul fixture is also scored by the soul analyzer.
+ *
+ * `secure` and `scan-soul` read the same SOUL.md and can disagree in
+ * direction: soul/benign/hardened-soul sits inside its `secure` band while
+ * `scan-soul` exits 1 on it (conformance none). When this harness drove
+ * `secure` alone, that disagreement never reached its output.
+ *
+ * What fails the run is drift in the soul analyzer's direction:
+ *   - scan-soul gives no verdict (exit other than 0/1, or no JSON score)
+ *   - a malicious fixture passes scan-soul (exit 0)
+ *   - a benign fixture earns governance violations
+ *   - a benign fixture does not score strictly above every malicious one
+ *
+ * A benign fixture that scan-soul fails is printed as a `note:` and counted
+ * in the summary, not failed. That is the current state of hardened-soul,
+ * pinned in __tests__/soul/soul-corpus-direction.test.ts: its role-play
+ * refusal is written as prose the keyword matcher does not detect (#266).
+ * The line is there so the release reads it on every run; it is not a
+ * verdict this harness settles on its own.
+ */
+const SOUL_SURFACE = 'soul';
+
+interface ScanSoulResult {
+  exitCode: number;
+  score: number;
+  conformance: string;
+  criticalMissing: string[];
+  violations: number;
+}
+
+interface SoulRow {
+  fixtureRel: string;
+  intent: string;
+  result: ScanSoulResult;
+}
+
+function runScanSoul(target: string): ScanSoulResult | { error: string } {
+  const env = { ...process.env, OPENA2A_CORPUS_DETERMINISTIC: '1' };
+  const r = spawnSync(process.execPath, [HMA_CLI, 'scan-soul', target, '--json'], {
+    encoding: 'utf8',
+    env,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const stdout = r.stdout ?? '';
+  const start = stdout.indexOf('{');
+  let data:
+    | {
+        score?: unknown;
+        conformance?: unknown;
+        criticalMissing?: unknown;
+        violations?: unknown;
+        gate?: { reason?: unknown };
+      }
+    | undefined;
+  if (start >= 0) {
+    try {
+      data = JSON.parse(stdout.slice(start));
+    } catch {
+      data = undefined;
+    }
+  }
+  const status = r.status;
+  if (status !== 0 && status !== 1) {
+    const why = typeof data?.gate?.reason === 'string' ? ` (${data.gate.reason})` : '';
+    return { error: `scan-soul exited ${status ?? r.signal}${why}, so it gave no verdict` };
+  }
+  if (!data || typeof data.score !== 'number') {
+    return { error: `scan-soul --json printed no score (exit ${status})` };
+  }
+  return {
+    exitCode: status,
+    score: data.score,
+    conformance: String(data.conformance),
+    criticalMissing: Array.isArray(data.criticalMissing) ? data.criticalMissing.map(String) : [],
+    violations: Array.isArray(data.violations) ? data.violations.length : 0,
+  };
+}
+
+function scoreSoulFixture(
+  fixtureRel: string,
+  intent: string,
+  fixtureDir: string,
+): { reasons: string[]; lines: string[]; noted: boolean; row?: SoulRow } {
+  const result = runScanSoul(fixtureScanTarget(fixtureDir));
+  if ('error' in result) {
+    return { reasons: [result.error], lines: [], noted: false };
+  }
+  const reasons: string[] = [];
+  const lines = [
+    `scan-soul: score=${result.score} conformance=${result.conformance} ` +
+      `exit=${result.exitCode} criticalMissing=${result.criticalMissing.join(',') || '-'} ` +
+      `violations=${result.violations}`,
+  ];
+  if (intent === 'malicious' && result.exitCode === 0) {
+    reasons.push(
+      `scan-soul passes a malicious fixture (exit 0, conformance ${result.conformance})`,
+    );
+  }
+  if (intent === 'benign' && result.violations > 0) {
+    reasons.push(
+      `scan-soul reports ${result.violations} governance violation(s) on a benign fixture`,
+    );
+  }
+  const noted = intent === 'benign' && result.exitCode !== 0;
+  if (noted) {
+    const undetected = result.criticalMissing.length
+      ? `; critical control not detected: ${result.criticalMissing.join(', ')}`
+      : '';
+    lines.push(
+      `note: scan-soul fails this benign fixture (exit ${result.exitCode}, ` +
+        `conformance ${result.conformance}${undetected}); printed, not counted`,
+    );
+  }
+  return { reasons, lines, noted, row: { fixtureRel, intent, result } };
+}
+
+function scanSoulDegreeFailures(rows: SoulRow[]): string[] {
+  const failures: string[] = [];
+  for (const b of rows.filter((r) => r.intent === 'benign')) {
+    for (const m of rows.filter((r) => r.intent === 'malicious')) {
+      if (b.result.score <= m.result.score) {
+        failures.push(
+          `scan-soul degree: ${b.fixtureRel} (${b.result.score}) does not score above ` +
+            `${m.fixtureRel} (${m.result.score})`,
+        );
+      }
+    }
+  }
+  return failures;
+}
+
 function main(): void {
   if (!existsSync(HMA_CLI)) {
     fail(
@@ -314,6 +448,7 @@ function main(): void {
   let pass = 0;
   let fail_ = 0;
   let skip = 0;
+  let soulNoted = 0;
   for (const surface of surfaces) {
     const surfaceDir = join(CORPUS_ROOT, surface);
     if (!existsSync(surfaceDir)) {
@@ -321,6 +456,7 @@ function main(): void {
       skip++;
       continue;
     }
+    const soulRows: SoulRow[] = [];
     for (const intent of ['benign', 'buggy', 'malicious']) {
       const intentDir = join(surfaceDir, intent);
       if (!existsSync(intentDir)) continue;
@@ -332,20 +468,39 @@ function main(): void {
         const manifest = loadFixtureManifest(manifestPath);
         const fixtureRel = `${surface}/${intent}/${fixtureName}`;
         const r = diffFixture(fixtureRel, fixtureDir, manifest);
-        if (r.ok) {
+        const soul =
+          surface === SOUL_SURFACE
+            ? scoreSoulFixture(fixtureRel, intent, fixtureDir)
+            : undefined;
+        if (soul?.row) soulRows.push(soul.row);
+        if (soul?.noted) soulNoted++;
+        const reasons = [...(r.ok ? [] : r.reasons), ...(soul?.reasons ?? [])];
+        if (reasons.length === 0) {
           process.stdout.write(`  ok   ${fixtureRel}\n`);
           pass++;
         } else {
           process.stdout.write(`  FAIL ${fixtureRel}\n`);
-          for (const reason of r.reasons) {
+          for (const reason of reasons) {
             process.stdout.write(`         ${reason}\n`);
           }
           fail_++;
         }
+        for (const line of soul?.lines ?? []) {
+          process.stdout.write(`         ${line}\n`);
+        }
       }
+    }
+    for (const failure of scanSoulDegreeFailures(soulRows)) {
+      process.stdout.write(`  FAIL ${failure}\n`);
+      fail_++;
     }
   }
   process.stdout.write(`\n${pass} passed, ${fail_} failed, ${skip} skipped\n`);
+  if (soulNoted > 0) {
+    process.stdout.write(
+      `${soulNoted} benign soul fixture(s) fail scan-soul (the note: lines above; printed, not counted)\n`,
+    );
+  }
   process.exit(fail_ === 0 ? 0 : 1);
 }
 
