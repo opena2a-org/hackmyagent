@@ -150,6 +150,14 @@ const REVIEWED: Record<string, { count: number; why: string }> = {
       + 'and scanned afterwards through the tracked namespace, so these reads and writes are '
       + 'not reads of a scan target — they are what produces one',
   },
+  'hardening/nemoclaw-scanner.ts': {
+    count: 1,
+    why: 'sync reads of ~/.nemoclaw, ~/.openclaw, ~/.openshell, shell history and the target '
+      + 'dotfiles, with no caller: `new NemoClawScanner` appears nowhere in src/. Its successful '
+      + 'reads report nothing to the ledger, which under-claims coverage. A listing, read or stat '
+      + 'that fails with an errno other than not-there withholds the pass of the check that lost '
+      + 'it and is disclosed by the scanner itself as SCAN-UNREAD-001 (#613)',
+  },
   'semantic/llm/budget.ts': { count: 1, why: 'LLM state dir, outside any scan target' },
   'semantic/llm/cache.ts': { count: 1, why: 'LLM state dir, outside any scan target' },
 };
@@ -163,12 +171,6 @@ const REVIEWED: Record<string, { count: number; why: string }> = {
  */
 const UNREVIEWED: Record<string, { count: number; why: string }> = {
   'hardening/contain.ts': { count: 1, why: 'promises-as-fs; reads not traced' },
-  'hardening/nemoclaw-scanner.ts': {
-    count: 1,
-    why: 'sync reads, but no caller: `new NemoClawScanner` appears nowhere in src/ or dist/ '
-      + '(the `secure-nemoclaw` command reads ~/.nemoclaw directly, outside any scan target). '
-      + 'Unreferenced today is not the same as safe if it is ever wired up — hence pinned, not reviewed',
-  },
   'nanomind-core/daemon-lifecycle.ts': {
     count: 1,
     why: 'daemon state, believed outside the target; not traced',

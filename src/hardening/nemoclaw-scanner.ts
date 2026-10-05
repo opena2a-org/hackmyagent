@@ -14,6 +14,7 @@ import * as os from 'os';
 import { commandNaming } from '../ui/shell-quote';
 import type { SecurityFinding, SecurityFindingDraft, Severity } from './security-check';
 import { emitFinding, type RedactedFinding } from './finding-emit';
+import { countsAsUnread } from './coverage-ledger';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -59,11 +60,34 @@ function maskSecret(value: string): string {
   return value.substring(0, 4) + '***';
 }
 
-function isWorldReadable(filePath: string): boolean {
+/**
+ * A path the scan reached and could not list, read or stat for a reason other
+ * than "not there" (`countsAsUnread`: EACCES, EPERM, EIO, ELOOP, or an error
+ * with no errno at all). Nothing about it reached a check, so a check that
+ * lost one has not measured what it would report a pass over.
+ */
+interface LostInput {
+  path: string;
+  code: string;
+  operation: 'list' | 'read' | 'stat';
+}
+
+/**
+ * Records a failed call on `lost` unless its errno means the path is simply
+ * not there. An error carrying no errno is recorded: no evidence of absence
+ * is never absence.
+ */
+function noteLost(lost: LostInput[], target: string, operation: LostInput['operation'], err: unknown): void {
+  const code = (err as NodeJS.ErrnoException | null)?.code ?? '';
+  if (countsAsUnread(code)) lost.push({ path: target, code: code || 'UNKNOWN', operation });
+}
+
+function isWorldReadable(filePath: string, lost: LostInput[]): boolean {
   try {
     const stats = statSync(filePath);
     return (stats.mode & 0o044) !== 0;
-  } catch {
+  } catch (err) {
+    noteLost(lost, filePath, 'stat', err);
     return false;
   }
 }
@@ -95,15 +119,22 @@ function isBoundToNonLoopback(listeners: string[]): boolean {
   return false;
 }
 
-function safeReadFile(filePath: string): string | null {
+/**
+ * `null` when the file cannot be read. A caller that would PASS on `null`
+ * passes `lost`, so a read that failed for a reason other than "not there" is
+ * recorded rather than read as an empty file. A caller that already fails on
+ * `null` (NMC-020, NMC-021) has nothing to withhold and omits it.
+ */
+function safeReadFile(filePath: string, lost?: LostInput[]): string | null {
   try {
     return readFileSync(filePath, 'utf-8');
-  } catch {
+  } catch (err) {
+    if (lost) noteLost(lost, filePath, 'read', err);
     return null;
   }
 }
 
-function listFilesRecursive(dir: string, maxDepth = 3, depth = 0): string[] {
+function listFilesRecursive(dir: string, maxDepth: number, lost: LostInput[], depth = 0): string[] {
   if (depth >= maxDepth) return [];
   const results: string[] = [];
   try {
@@ -113,11 +144,12 @@ function listFilesRecursive(dir: string, maxDepth = 3, depth = 0): string[] {
       if (entry.isFile()) {
         results.push(full);
       } else if (entry.isDirectory() && !entry.name.startsWith('.')) {
-        results.push(...listFilesRecursive(full, maxDepth, depth + 1));
+        results.push(...listFilesRecursive(full, maxDepth, lost, depth + 1));
       }
     }
-  } catch {
-    // permission denied or missing — skip
+  } catch (err) {
+    // Missing is nothing to walk; anything else loses every path beneath it.
+    noteLost(lost, dir, 'list', err);
   }
   return results;
 }
@@ -154,6 +186,39 @@ function finding(
   });
 }
 
+/**
+ * The disclosure for one lost input: the same id and title `secure` uses for
+ * an input it discovered and could not read, so a consumer handles both alike.
+ */
+function lostInputFinding(lost: LostInput): RedactedFinding {
+  const isDir = lost.operation === 'list';
+  const verb = isDir ? 'listed' : lost.operation === 'read' ? 'read' : 'examined';
+  const permission = lost.code === 'EACCES' || lost.code === 'EPERM';
+  return finding(
+    'SCAN-UNREAD-001',
+    'Input Discovered But Not Read',
+    isDir
+      ? 'A directory the NemoClaw scan reached could not be listed, so nothing inside it reached any check'
+      : 'A file the NemoClaw scan reached could not be examined, so no check measured it',
+    'hardening',
+    'medium',
+    false,
+    `${lost.path} could not be ${verb} (${lost.code}); the checks that reach it report no pass until it can be`,
+    {
+      file: lost.path,
+      // A permission denial has a command; EIO or ELOOP does not, and a
+      // `chmod` there would be a dead end.
+      fix: permission
+        ? ((isDir
+          ? commandNaming(lost.path, (q) => `chmod u+rx ${q}`)
+          : commandNaming(lost.path, (q) => `chmod u+r ${q}`))
+          ?? 'Restore read access to the path named in this finding. Its name cannot be shown truthfully in a shell command, so no runnable citation is offered.')
+        : undefined,
+      details: { code: lost.code, operation: lost.operation },
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Detection helpers
 // ---------------------------------------------------------------------------
@@ -177,10 +242,26 @@ function detectInstallation(): {
 // ---------------------------------------------------------------------------
 
 export class NemoClawScanner {
+  /** Inputs the current scan lost, keyed by path so each is disclosed once. */
+  private lostInputs = new Map<string, LostInput>();
+  /** Checks that lost at least one input, and so cannot report a pass. */
+  private checksMissingInput = new Set<string>();
+
+  /** Called by a check with every input it lost, before it returns. */
+  private recordLost(checkId: string, lost: LostInput[]): void {
+    if (lost.length === 0) return;
+    this.checksMissingInput.add(checkId);
+    for (const l of lost) {
+      if (!this.lostInputs.has(l.path)) this.lostInputs.set(l.path, l);
+    }
+  }
+
   async scan(
     targetDir: string,
     options: { autoFix?: boolean; dryRun?: boolean } = {},
   ): Promise<SecurityFinding[]> {
+    this.lostInputs = new Map();
+    this.checksMissingInput = new Set();
     const install = detectInstallation();
 
     if (!install.hasBinary && !install.hasConfig && !install.hasDocker) {
@@ -217,7 +298,14 @@ export class NemoClawScanner {
     // --- 6. Internet Exposure (bonus) ---
     findings.push(...this.checkInternetExposure());
 
-    return findings;
+    // A check that lost an input measured less than it reached, so its pass
+    // is withheld. Its failures were measured and stand. Each lost path is
+    // disclosed once, however many checks lost it.
+    const reported = findings.filter(
+      (f) => !(f.passed === true && this.checksMissingInput.has(f.checkId)),
+    );
+    for (const l of this.lostInputs.values()) reported.push(lostInputFinding(l));
+    return reported;
   }
 
   // =========================================================================
@@ -251,6 +339,7 @@ export class NemoClawScanner {
   private checkNMC001(targetDir: string): SecurityFinding[] {
     const results: SecurityFinding[] = [];
     const configFiles: string[] = [];
+    const lost: LostInput[] = [];
 
     // Gather candidate files
     const nemoConfig = path.join(NEMOCLAW_DIR, 'config');
@@ -264,8 +353,8 @@ export class NemoClawScanner {
           configFiles.push(path.join(targetDir, e));
         }
       }
-    } catch {
-      // skip
+    } catch (err) {
+      noteLost(lost, targetDir, 'list', err);
     }
 
     // Dotfiles in working dir
@@ -276,23 +365,23 @@ export class NemoClawScanner {
           const full = path.join(targetDir, e);
           try {
             if (statSync(full).isFile()) configFiles.push(full);
-          } catch {
-            // skip
+          } catch (err) {
+            noteLost(lost, full, 'stat', err);
           }
         }
       }
-    } catch {
-      // skip
+    } catch (err) {
+      noteLost(lost, targetDir, 'list', err);
     }
 
     // Also scan ~/.nemoclaw/ recursively for any files
     if (existsSync(NEMOCLAW_DIR)) {
-      configFiles.push(...listFilesRecursive(NEMOCLAW_DIR, 2));
+      configFiles.push(...listFilesRecursive(NEMOCLAW_DIR, 2, lost));
     }
 
     let foundAny = false;
     for (const file of configFiles) {
-      const content = safeReadFile(file);
+      const content = safeReadFile(file, lost);
       if (!content) continue;
 
       const lines = content.split('\n');
@@ -339,6 +428,7 @@ export class NemoClawScanner {
       );
     }
 
+    this.recordLost('HMA-NMC-001', lost);
     return results;
   }
 
@@ -359,11 +449,12 @@ export class NemoClawScanner {
     }
 
     const results: SecurityFinding[] = [];
-    const logFiles = listFilesRecursive(logsDir, 2);
+    const lost: LostInput[] = [];
+    const logFiles = listFilesRecursive(logsDir, 2, lost);
     let foundAny = false;
 
     for (const file of logFiles) {
-      const content = safeReadFile(file);
+      const content = safeReadFile(file, lost);
       if (!content) continue;
 
       const lines = content.split('\n');
@@ -410,6 +501,7 @@ export class NemoClawScanner {
       );
     }
 
+    this.recordLost('HMA-NMC-002', lost);
     return results;
   }
 
@@ -498,10 +590,11 @@ export class NemoClawScanner {
     ];
 
     const results: SecurityFinding[] = [];
+    const lost: LostInput[] = [];
     let foundAny = false;
 
     for (const file of historyFiles) {
-      const content = safeReadFile(file);
+      const content = safeReadFile(file, lost);
       if (!content) continue;
 
       const lines = content.split('\n');
@@ -554,6 +647,7 @@ export class NemoClawScanner {
       );
     }
 
+    this.recordLost('HMA-NMC-004', lost);
     return results;
   }
 
@@ -573,8 +667,10 @@ export class NemoClawScanner {
       ];
     }
 
-    const files = listFilesRecursive(blueprintsDir, 3);
-    const worldReadable = files.filter(isWorldReadable);
+    const lost: LostInput[] = [];
+    const files = listFilesRecursive(blueprintsDir, 3, lost);
+    const worldReadable = files.filter((f) => isWorldReadable(f, lost));
+    this.recordLost('HMA-NMC-005', lost);
 
     if (worldReadable.length === 0) {
       return [
@@ -628,8 +724,10 @@ export class NemoClawScanner {
       ];
     }
 
-    const files = listFilesRecursive(sessionsDir, 3);
-    const worldReadable = files.filter(isWorldReadable);
+    const lost: LostInput[] = [];
+    const files = listFilesRecursive(sessionsDir, 3, lost);
+    const worldReadable = files.filter((f) => isWorldReadable(f, lost));
+    this.recordLost('HMA-NMC-006', lost);
 
     if (worldReadable.length === 0) {
       return [
@@ -779,12 +877,16 @@ export class NemoClawScanner {
         'No NemoClaw policies directory at ~/.nemoclaw/policies/ — using defaults');
     }
 
-    const policyFiles = listFilesRecursive(policiesDir, 2);
+    const lost: LostInput[] = [];
+    const policyFiles = listFilesRecursive(policiesDir, 2, lost);
+    // Recorded on every return below, not only the pass: a lost input is
+    // disclosed whether or not another file matched.
     for (const file of policyFiles) {
-      const content = safeReadFile(file);
+      const content = safeReadFile(file, lost);
       if (!content) continue;
 
       if (/egress\s*:\s*allow[_-]?all/i.test(content) || /egress_policy\s*=\s*["']?allow/i.test(content)) {
+        this.recordLost('HMA-NMC-013', lost);
         return finding('HMA-NMC-013', 'Sandbox egress policy set to allow-all',
           'Sandbox containers are allowed unrestricted outbound network access', 'network', 'high', false,
           `Egress policy is set to allow-all in ${file}`, {
@@ -796,6 +898,7 @@ export class NemoClawScanner {
       }
     }
 
+    this.recordLost('HMA-NMC-013', lost);
     return finding('HMA-NMC-013', 'Sandbox egress policy set to allow-all',
       'Sandbox egress policy is restricted', 'network', 'high', true,
       'No allow-all egress policy detected');
@@ -803,7 +906,9 @@ export class NemoClawScanner {
 
   private checkNMC014(): SecurityFinding {
     const configFile = path.join(NEMOCLAW_DIR, 'config');
-    const content = safeReadFile(configFile);
+    const lost: LostInput[] = [];
+    const content = safeReadFile(configFile, lost);
+    this.recordLost('HMA-NMC-014', lost);
 
     if (!content) {
       return finding('HMA-NMC-014', 'Brev remote endpoint without auth',
@@ -867,6 +972,7 @@ export class NemoClawScanner {
     }
 
     const unverified: string[] = [];
+    const lost: LostInput[] = [];
     try {
       const entries = readdirSync(skillsDir, { withFileTypes: true });
       for (const entry of entries) {
@@ -880,9 +986,10 @@ export class NemoClawScanner {
           unverified.push(entry.name);
         }
       }
-    } catch {
-      // skip
+    } catch (err) {
+      noteLost(lost, skillsDir, 'list', err);
     }
+    this.recordLost('HMA-NMC-020', lost);
 
     if (unverified.length === 0) {
       return finding('HMA-NMC-020', 'Skills not verified against registry',
@@ -910,6 +1017,7 @@ export class NemoClawScanner {
     }
 
     const unpinned: string[] = [];
+    const lost: LostInput[] = [];
     try {
       const entries = readdirSync(blueprintsDir, { withFileTypes: true });
       for (const entry of entries) {
@@ -927,9 +1035,10 @@ export class NemoClawScanner {
           unpinned.push(entry.name);
         }
       }
-    } catch {
-      // skip
+    } catch (err) {
+      noteLost(lost, blueprintsDir, 'list', err);
     }
+    this.recordLost('HMA-NMC-021', lost);
 
     if (unpinned.length === 0) {
       return finding('HMA-NMC-021', 'Blueprint not pinned to digest',
@@ -977,12 +1086,13 @@ export class NemoClawScanner {
   private checkNMC023(): SecurityFinding {
     const configDirs = [OPENCLAW_DIR, NEMOCLAW_DIR, OPENSHELL_DIR];
     const httpHeartbeats: Array<{ file: string; url: string }> = [];
+    const lost: LostInput[] = [];
 
     for (const dir of configDirs) {
       if (!existsSync(dir)) continue;
-      const files = listFilesRecursive(dir, 3);
+      const files = listFilesRecursive(dir, 3, lost);
       for (const file of files) {
-        const content = safeReadFile(file);
+        const content = safeReadFile(file, lost);
         if (!content) continue;
 
         const matches = content.match(/heartbeat[_-]?url\s*[=:]\s*http:\/\/[^\s"']+/gi);
@@ -994,6 +1104,8 @@ export class NemoClawScanner {
         }
       }
     }
+
+    this.recordLost('HMA-NMC-023', lost);
 
     if (httpHeartbeats.length === 0) {
       return finding('HMA-NMC-023', 'Heartbeat URLs using HTTP not HTTPS',
@@ -1024,6 +1136,7 @@ export class NemoClawScanner {
     }
 
     const unsigned: string[] = [];
+    const lost: LostInput[] = [];
     try {
       const entries = readdirSync(skillsDir, { withFileTypes: true });
       for (const entry of entries) {
@@ -1043,9 +1156,10 @@ export class NemoClawScanner {
           unsigned.push(entry.name);
         }
       }
-    } catch {
-      // skip
+    } catch (err) {
+      noteLost(lost, skillsDir, 'list', err);
     }
+    this.recordLost('HMA-NMC-024', lost);
 
     if (unsigned.length === 0) {
       return [
