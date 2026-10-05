@@ -122,6 +122,17 @@ export interface BenchmarkCategoryResult {
   controls: BenchmarkControlResult[];
 }
 
+/**
+ * One failing scan record a control cites (#673). `file` and `line` are
+ * present when the record carries them, with the same values the scan's own
+ * record has.
+ */
+export interface BenchmarkFailingRecord {
+  checkId: string;
+  file?: string;
+  line?: number;
+}
+
 export interface BenchmarkControlResult {
   controlId: string;
   name: string;
@@ -136,6 +147,13 @@ export interface BenchmarkControlResult {
   status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
   /** Findings that relate to this control */
   findings: string[];
+  /**
+   * The failing records behind `findings`, one per line and in the same
+   * order (#673): `findings[i]` is the display line for `failingRecords[i]`.
+   * A consumer that attributes failures to files joins on these, not on the
+   * display strings. Empty when no record failed.
+   */
+  failingRecords: BenchmarkFailingRecord[];
   /** Fix instructions if failed */
   remediation?: string;
   /**

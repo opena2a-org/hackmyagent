@@ -136,6 +136,7 @@ export type {
   BenchmarkResult,
   BenchmarkCategoryResult,
   BenchmarkControlResult,
+  BenchmarkFailingRecord,
   BenchmarkName,
 } from './benchmarks';
 

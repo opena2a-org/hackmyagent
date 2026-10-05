@@ -21,6 +21,7 @@ import {
   type BenchmarkCategory,
   type BenchmarkResult,
   type BenchmarkCategoryResult,
+  type BenchmarkFailingRecord,
 } from './index';
 import type { SecurityFinding } from '../hardening/security-check';
 import { escapeForDisplay, escapePathForDisplay } from '../ui/display-safe';
@@ -29,6 +30,8 @@ export interface LocalControlResult {
   control: BenchmarkControl;
   status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
   findings: string[];
+  /** The failing records behind `findings`, parallel to it (#673). */
+  failingRecords: BenchmarkFailingRecord[];
   remediation?: string;
   /** Absent subject artifacts, when status is `not-applicable` (#458). */
   naSubjects?: string[];
@@ -70,6 +73,19 @@ export function failingRecordsForControl<T extends SecurityFinding>(
   return records.filter(
     (f) => !f.notApplicable && !f.passed && cited.has(controlEvidenceLine(f)),
   );
+}
+
+/**
+ * The machine-readable ref for one failing record (#673): its checkId, and
+ * its file and line when it carries them. Raw values, not display-escaped:
+ * JSON serialization is the escape on that channel.
+ */
+function failingRecordRef(checkId: string, finding: SecurityFinding): BenchmarkFailingRecord {
+  return {
+    checkId,
+    ...(finding.file ? { file: finding.file } : {}),
+    ...(finding.file && finding.line !== undefined ? { line: finding.line } : {}),
+  };
 }
 
 
@@ -122,6 +138,7 @@ export function generateBenchmarkReport(
   for (const control of controls) {
     let status: 'passed' | 'failed' | 'unverified' | 'not-applicable';
     const relatedFindings: string[] = [];
+    const failingRecords: BenchmarkFailingRecord[] = [];
     const naSubjects: string[] = [];
     let remediation: string | undefined;
 
@@ -171,6 +188,9 @@ export function generateBenchmarkReport(
             // scan does. The SARIF writer joins records to controls by this
             // exact line (failingRecordsForControl, #670).
             relatedFindings.push(controlEvidenceLine(finding));
+            // #673 — the same record, machine-readable, so a JSON consumer
+            // attributes a per-file failure without parsing the line above.
+            failingRecords.push(failingRecordRef(checkId, finding));
             if (finding.fix) {
               remediation = remediation || finding.fix;
             }
@@ -223,7 +243,7 @@ export function generateBenchmarkReport(
       }
     }
 
-    controlResults.push({ control, status, findings: relatedFindings, remediation, naSubjects });
+    controlResults.push({ control, status, findings: relatedFindings, failingRecords, remediation, naSubjects });
   }
 
   // Compliance percentages. #458 step 0 — a level with no scored control
@@ -275,6 +295,7 @@ export function generateBenchmarkReport(
         level: r.control.level,
         status: r.status,
         findings: r.findings,
+        failingRecords: r.failingRecords,
         remediation: r.remediation,
         // #418 — the catalogue's verification procedure had no reader on any
         // channel. It is the answer for exactly the controls the scan leaves
