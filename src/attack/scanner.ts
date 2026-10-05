@@ -28,6 +28,38 @@ const DEFINITELY_DOWN_CODES: ReadonlySet<string> = new Set([
   'ENETUNREACH',
 ]);
 
+/**
+ * Where each reply format carries the agent's text (#439). A reply with no
+ * text there is not analyzed. Every reader used to fall back to the raw JSON,
+ * so a gateway's `{"error":"unauthorized"}` was matched against the payload's
+ * indicators: `/unauthorized/` read it as four defences an a2a agent never
+ * mounted, and the run scored `0/100 (SECURE)` at exit 0.
+ */
+const REPLY_TEXT_AT = {
+  openai: 'choices[0].message.content',
+  anthropic: 'content[0].text',
+  'mcp-jsonrpc': 'result.content, result.tools or error.message',
+  a2a: 'content, message, response or text',
+  custom: 'response, text or content',
+} as const;
+
+type ReplyFormat = keyof typeof REPLY_TEXT_AT;
+
+/**
+ * A reply as the scanner read it: the agent's text when the format's reader
+ * found some, otherwise the body itself, kept for the report but never analyzed.
+ */
+type Reply = { text: string } | { text: undefined; body: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A string with something in it, or nothing: the only field an analyzer can read. */
+function textOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
 export class AttackScanner {
   private options: AttackOptions;
 
@@ -230,23 +262,24 @@ export class AttackScanner {
     const startTime = Date.now();
 
     try {
-      let response: string;
+      let reply: Reply;
 
       switch (target.type) {
         case 'api':
-          response = await this.sendApiRequest(payload, target, options.timeout || 30000);
+          reply = await this.sendApiRequest(payload, target, options.timeout || 30000);
           break;
         case 'mcp':
-          response = await this.sendMcpRequest(payload, target, options.timeout || 30000);
+          reply = await this.sendMcpRequest(payload, target, options.timeout || 30000);
           break;
         case 'a2a':
-          response = await this.sendA2ARequest(payload, target, options.timeout || 30000);
+          reply = await this.sendA2ARequest(payload, target, options.timeout || 30000);
           break;
         case 'local':
         default:
-          response = await this.simulateLocal(payload, target);
+          reply = { text: await this.simulateLocal(payload, target) };
           break;
       }
+      const response = reply.text ?? reply.body;
 
       // `--local` contacts nothing. `simulateLocal` returns a fixed sentence,
       // so analyzing it measures this tool's own placeholder text and not the
@@ -254,14 +287,15 @@ export class AttackScanner {
       // empty file all scored 2/100 (#430). Record it as unanswered so the
       // same gate that catches an unreachable endpoint catches this too.
       //
-      // An empty body is not an answer either. `extractResponseText` returns
-      // '' when the shape does not match — which is what an auth-rejecting
-      // gateway returns for every payload — and counting that as answered left
-      // `0/100 (SECURE)` at exit 0 reachable for 28 of 28 empty replies, the
-      // exact headline symptom of #406. `UnmeasuredReason.no-response` is
-      // documented as "requests completed but not one produced an analyzable
-      // answer"; this is the line that makes that state reachable.
-      const answered = target.type !== 'local' && response.trim().length > 0;
+      // A reply with no text where its format carries it is not an answer
+      // either. That is what an auth-rejecting gateway returns for every
+      // payload, and counting it as answered left `0/100 (SECURE)` at exit 0,
+      // the exact headline symptom of #406 — for every format, not only the
+      // two whose readers happened to return '' (#439).
+      // `UnmeasuredReason.no-response` is documented as "requests completed
+      // but not one produced an analyzable answer"; this is the line that
+      // makes that state reachable.
+      const answered = target.type !== 'local' && reply.text !== undefined;
 
       // Analyze response
       const analysis = this.analyzeResponse(payload, response);
@@ -277,7 +311,7 @@ export class AttackScanner {
           ? analysis.evidence
           : target.type === 'local'
             ? 'Not answered: --local simulates a response rather than contacting an agent'
-            : 'Not answered: the target returned an empty body, so there was nothing to analyze',
+            : `Not answered: the reply had no text in ${this.replyTextAt(target)}, so there was nothing to analyze`,
         response: response.slice(0, 500), // Truncate for storage
         duration: Date.now() - startTime,
         timestamp: new Date(),
@@ -304,7 +338,7 @@ export class AttackScanner {
     payload: AttackPayload,
     target: AttackTarget,
     timeout: number
-  ): Promise<string> {
+  ): Promise<Reply> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -327,7 +361,7 @@ export class AttackScanner {
       }
 
       const data = await response.json();
-      return this.extractResponseText(data, target);
+      return this.read(data, this.extractResponseText(data, target));
     } catch (error) {
       clearTimeout(timeoutId);
       throw error;
@@ -360,51 +394,92 @@ export class AttackScanner {
   }
 
   /**
-   * Extract text response from API response
+   * The format a target's replies are read in. `-t mcp` and `-t a2a` read
+   * their own protocol whatever `--api-format` says.
    */
-  private extractResponseText(data: any, target: AttackTarget): string {
-    switch (target.apiFormat) {
-      case 'openai':
-        return data.choices?.[0]?.message?.content || '';
-      case 'anthropic':
-        return data.content?.[0]?.text || '';
+  private replyFormat(target: AttackTarget): ReplyFormat {
+    if (target.type === 'mcp') return 'mcp-jsonrpc';
+    if (target.type === 'a2a') return 'a2a';
+    // `--api-format` is not validated, so an unknown value (or `toString`)
+    // reads as custom, as the request builder already treats it.
+    const format = target.apiFormat;
+    return format !== undefined && Object.prototype.hasOwnProperty.call(REPLY_TEXT_AT, format)
+      ? format
+      : 'custom';
+  }
+
+  /** Where a reply of this target's format carries the agent's text. */
+  private replyTextAt(target: AttackTarget): string {
+    const format = this.replyFormat(target);
+    return `${REPLY_TEXT_AT[format]} (${format})`;
+  }
+
+  /** Pair what a reader found with the body it found it in. */
+  private read(data: unknown, text: string | undefined): Reply {
+    return text !== undefined ? { text } : { text: undefined, body: JSON.stringify(data) ?? '' };
+  }
+
+  /**
+   * Extract text response from API response. `undefined` means the reply
+   * had no text where this format carries it (#439).
+   */
+  private extractResponseText(data: unknown, target: AttackTarget): string | undefined {
+    const format = this.replyFormat(target);
+    switch (format) {
+      case 'openai': {
+        const choice = isRecord(data) && Array.isArray(data.choices) ? data.choices[0] : undefined;
+        return isRecord(choice) && isRecord(choice.message) ? textOf(choice.message.content) : undefined;
+      }
+      case 'anthropic': {
+        const block = isRecord(data) && Array.isArray(data.content) ? data.content[0] : undefined;
+        return isRecord(block) ? textOf(block.text) : undefined;
+      }
       case 'mcp-jsonrpc':
         return this.extractMcpResponseText(data);
       case 'a2a':
         return this.extractA2AResponseText(data);
       default:
-        return data.response || data.text || data.content || JSON.stringify(data);
+        // A custom endpoint may answer with a bare JSON string.
+        if (typeof data === 'string') return textOf(data);
+        return isRecord(data) ? textOf(data.response) ?? textOf(data.text) ?? textOf(data.content) : undefined;
     }
   }
 
   /**
    * Extract text from MCP JSON-RPC response
    */
-  private extractMcpResponseText(data: any): string {
-    // JSON-RPC error
+  private extractMcpResponseText(data: unknown): string | undefined {
+    if (!isRecord(data)) return undefined;
+    // JSON-RPC error: the server answered the call by refusing it. A bare
+    // `"error": "unauthorized"` is not a JSON-RPC error object, so it has no
+    // text here.
     if (data.error) {
-      return data.error.message || JSON.stringify(data.error);
+      return isRecord(data.error) ? textOf(data.error.message) : undefined;
     }
+    const result = data.result;
+    if (typeof result === 'string') return textOf(result);
+    if (!isRecord(result)) return undefined;
     // JSON-RPC result with MCP content array
-    if (data.result?.content) {
-      const parts = Array.isArray(data.result.content) ? data.result.content : [data.result.content];
-      return parts
-        .map((p: any) => (typeof p === 'string' ? p : p.text || JSON.stringify(p)))
-        .join('\n');
+    if (result.content !== undefined && result.content !== null) {
+      const parts: unknown[] = Array.isArray(result.content) ? result.content : [result.content];
+      return textOf(parts
+        .map((p) => (typeof p === 'string' ? p : isRecord(p) && typeof p.text === 'string' ? p.text : JSON.stringify(p) ?? ''))
+        .join('\n'));
     }
     // JSON-RPC result with tools array (tools/list)
-    if (data.result?.tools) {
-      return JSON.stringify(data.result.tools);
+    if (Array.isArray(result.tools)) {
+      return JSON.stringify(result.tools);
     }
-    // Fallback
-    return data.result ? JSON.stringify(data.result) : JSON.stringify(data);
+    return undefined;
   }
 
   /**
    * Extract text from A2A message response
    */
-  private extractA2AResponseText(data: any): string {
-    return data.content || data.message || data.response || data.text || JSON.stringify(data);
+  private extractA2AResponseText(data: unknown): string | undefined {
+    if (typeof data === 'string') return textOf(data);
+    if (!isRecord(data)) return undefined;
+    return textOf(data.content) ?? textOf(data.message) ?? textOf(data.response) ?? textOf(data.text);
   }
 
   /**
@@ -414,7 +489,7 @@ export class AttackScanner {
     payload: AttackPayload,
     target: AttackTarget,
     timeout: number
-  ): Promise<string> {
+  ): Promise<Reply> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -437,7 +512,7 @@ export class AttackScanner {
       }
 
       const data = await response.json();
-      return this.extractMcpResponseText(data);
+      return this.read(data, this.extractMcpResponseText(data));
     } catch (error) {
       clearTimeout(timeoutId);
       throw error;
@@ -501,7 +576,7 @@ export class AttackScanner {
     payload: AttackPayload,
     target: AttackTarget,
     timeout: number
-  ): Promise<string> {
+  ): Promise<Reply> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -535,7 +610,7 @@ export class AttackScanner {
       }
 
       const data = await response.json();
-      return this.extractA2AResponseText(data);
+      return this.read(data, this.extractA2AResponseText(data));
     } catch (error) {
       clearTimeout(timeoutId);
       throw error;
@@ -727,6 +802,11 @@ export class AttackScanner {
     // withholds the band, which is what turns `0/100 (SECURE)` at exit 0 into
     // `NOT MEASURED` at exit 2 for an unreachable endpoint (#406) and for
     // `--local` (#430).
+    //
+    // A payload whose reply had no readable text DID reach the target, so
+    // "no payload reached" would send the user to check a target that is up
+    // (#439). Only a result the target replied to carries `response`.
+    const unreadable = results.filter(r => !r.answered && r.response !== undefined).length;
     const verdict = preconditionFailure ?? deriveCheckVerdict(
       {
         critical: bySeverity.critical,
@@ -737,7 +817,9 @@ export class AttackScanner {
       target.type === 'local' ? 'simulation-only' : 'no-response',
       target.type === 'local'
         ? '--local simulates the agent\'s response instead of contacting one, so no behaviour of any target was observed.'
-        : `No payload reached ${escapeForDisplay(target.url || 'the target')}: ${results.length} sent, 0 answered.`,
+        : unreadable > 0
+          ? `${escapeForDisplay(target.url || 'The target')} replied to ${unreadable} of ${results.length} payloads, but no reply had text in ${this.replyTextAt(target)}, so none could be analyzed.`
+          : `No payload reached ${escapeForDisplay(target.url || 'the target')}: ${results.length} sent, 0 answered.`,
     );
 
     return {
