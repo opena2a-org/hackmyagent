@@ -1517,6 +1517,50 @@ export function automatedControlsAt(level: BenchmarkLevel, catalogue: BenchmarkC
     .filter((c) => c.level === level && c.scored && c.verification === 'automated' && c.checkIds.length > 0);
 }
 
+/** The control records one `Not assessed at <level>:` line describes. */
+export interface LevelPopulation {
+  /** Every control record at the level. */
+  inScope: BenchmarkControlResult[];
+  /** The records of `automatedControlsAt(level)`: the line's denominator. */
+  automated: BenchmarkControlResult[];
+  /** How many of `automated` produced a result (any status but `unverified`). */
+  measured: number;
+  /** How many records belong to a manual or forward control. */
+  manualForward: number;
+  /** Records outside `automated` that produced a result anyway. */
+  outside: BenchmarkControlResult[];
+}
+
+/**
+ * #652 — `measured` counts over `automated`, the set the line names as its
+ * denominator. A refute-only control (#639) or an unscored one can produce a
+ * result without entering a level figure; counted over every record, it let
+ * "N of M automated controls" print N > M. Those records are returned in
+ * `outside` so the line names them instead of contradicting their `[-]` row.
+ */
+export function levelPopulation(
+  result: Pick<BenchmarkResult, 'categories'>,
+  level: BenchmarkLevel,
+  catalogue: BenchmarkCategory[] = OASB_1_CATEGORIES,
+): LevelPopulation {
+  const byId = new Map<string, BenchmarkControl>(catalogue.flatMap((c) => c.controls).map((c) => [c.id, c]));
+  const automatedIds = new Set(automatedControlsAt(level, catalogue).map((c) => c.id));
+  const inScope = result.categories.flatMap((c) => c.controls).filter((r) => r.level === level);
+  const automated = inScope.filter((r) => automatedIds.has(r.controlId));
+  const producedResult = (r: BenchmarkControlResult): boolean => r.status !== 'unverified';
+  const manualForward = inScope.filter((r) => {
+    const c = byId.get(r.controlId);
+    return !!c && (c.verification === 'manual' || c.verification === 'forward');
+  }).length;
+  return {
+    inScope,
+    automated,
+    measured: automated.filter(producedResult).length,
+    manualForward,
+    outside: inScope.filter((r) => !automatedIds.has(r.controlId) && producedResult(r)),
+  };
+}
+
 /**
  * The "next level" line printed under a benchmark report, or `null` at L3.
  *
