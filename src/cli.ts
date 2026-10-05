@@ -8696,13 +8696,13 @@ function printAttackReport(report: AttackReport, verbose: boolean): void {
   }
 
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  // Inconclusive explanation (when there are inconclusive results)
+  // Inconclusive explanation (when there are inconclusive results). Only an
+  // answered payload counts as inconclusive, and `--local` answers none and
+  // returned above as unmeasured, so this note always describes a response
+  // the target actually sent.
   if (report.summary.inconclusive > 0) {
     console.log(`Note: ${report.summary.inconclusive} result(s) were inconclusive -- no clear success or block`);
-    console.log(`indicators matched the simulated response.`);
-    if (report.targetType === 'local') {
-      console.log(`Run against a live endpoint (without --local) for active testing with real responses.`);
-    }
+    console.log(`indicators matched the target's response.`);
     console.log();
   }
 
