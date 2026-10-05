@@ -35,7 +35,6 @@ import {
   type BenchmarkControl,
   type BenchmarkCategory,
   type BenchmarkResult,
-  type BenchmarkCategoryResult,
   type BenchmarkControlResult,
   // Attack imports
   AttackScanner,
@@ -428,6 +427,7 @@ import {
   type SuppressionDisclosure,
 } from './output/suppression-disclosure';
 import { generateBenchmarkReport, failingRecordsForControl } from './benchmarks/benchmark-report';
+import { levelPopulation } from './benchmarks/oasb-1';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
@@ -4686,18 +4686,12 @@ function notAssessedLines(result: BenchmarkResult, targetDir: string, flags?: Be
   }
   for (const lv of examined) {
     if (byLevel[lv] !== null) continue;
-    const inScope = result.categories
-      .flatMap((c: BenchmarkCategoryResult) => c.controls)
-      .filter((c: BenchmarkControlResult) => c.level === lv);
-    const automated = inScope.filter((r: BenchmarkControlResult) => {
-      const c = catalogue.get(r.controlId);
-      return !!c && c.scored && c.verification === 'automated' && c.checkIds.length > 0;
-    });
-    const measured = inScope.filter((r: BenchmarkControlResult) => r.status !== 'unverified').length;
-    const manualForward = inScope.filter((r: BenchmarkControlResult) => {
-      const c = catalogue.get(r.controlId);
-      return !!c && (c.verification === 'manual' || c.verification === 'forward');
-    }).length;
+    // #652 — `measured` is counted over `automated`, the set the line names.
+    const { inScope, automated, measured, manualForward, outside } = levelPopulation(result, lv);
+    // A record that produced a result outside that set (refute-only or
+    // unscored) is named, so the line does not contradict its `[-]` row.
+    const outsideClause = outside.length === 0 ? ''
+      : `; ${outside.map((r: BenchmarkControlResult) => r.controlId).join(', ')} ${outside.length === 1 ? 'produced a result that does' : 'produced results that do'} not enter the ${lv} figure`;
     // The words a null at `lv` takes off the table for the REQUESTED level's
     // rating; "at Lx" is said only on the requested level's own line.
     const off = ratingsUnavailableWhenNull(result.level, lv);
@@ -4732,14 +4726,14 @@ function notAssessedLines(result: BenchmarkResult, targetDir: string, flags?: Be
     if (automated.length === 0) {
       const ids = inScope.map((r: BenchmarkControlResult) => r.controlId).join(', ');
       lines.push(
-        `Not assessed at ${lv}: none of the ${plural(inScope.length, `${lv} control`)} (${ids}) has an automated check in this version; ${offClause}. ${verify}${fix}`,
+        `Not assessed at ${lv}: none of the ${plural(inScope.length, `${lv} control`)} (${ids}) has an automated check in this version${outsideClause}; ${offClause}. ${verify}${fix}`,
       );
       continue;
     }
     const ids = automated.map((r: BenchmarkControlResult) => r.controlId).join(', ');
     const manual = manualForward > 0 ? ` (${manualForward} of ${plural(inScope.length, `${lv} control`)} are manual/forward)` : '';
     lines.push(
-      `Not assessed at ${lv}: ${measured} of ${plural(automated.length, `automated ${lv} control`)} (${ids}) produced a result on this tree${manual}; ${offClause}. ${verify}${fix}`,
+      `Not assessed at ${lv}: ${measured} of ${plural(automated.length, `automated ${lv} control`)} (${ids}) produced a result on this tree${manual}${outsideClause}; ${offClause}. ${verify}${fix}`,
     );
   }
   return lines;
