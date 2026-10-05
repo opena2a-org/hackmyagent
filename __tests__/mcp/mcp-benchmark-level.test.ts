@@ -44,6 +44,14 @@ describe('hackmyagent_benchmark validates level (#650)', () => {
     }
   });
 
+  // #865 — a client that serializes an unset optional argument as `null` gets
+  // the default an omitted level gets, not a refusal of the string 'null'.
+  it('treats an explicit null level as unset and assesses L1', async () => {
+    const res = await handleToolCall('hackmyagent_benchmark', { directory: root, level: null }, [root]);
+    expect(res.isError, textOf(res)).toBeFalsy();
+    expect(textOf(res)).toContain('OASB-1 L1 Assessment');
+  });
+
   it('the exported assessor refuses on its own', () => {
     expect(() => assessBenchmarkFindings([], 'L9' as BenchmarkLevel)).toThrow(
       "Invalid level 'L9'. Use: L1, L2, or L3",

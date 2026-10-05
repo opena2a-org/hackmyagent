@@ -501,8 +501,9 @@ export async function handleToolCall(
       case 'hackmyagent_benchmark': {
         // #650 — the low-level Server does not enforce the schema's enum, so the
         // level is checked here, before any scan runs. Presence, not truthiness:
-        // an explicit empty level is refused, as the CLI refuses `-l ''`.
-        const rawLevel = args?.level === undefined ? 'L1' : args.level;
+        // an explicit empty level is refused, as the CLI refuses `-l ''`. A null
+        // level is unset, as clients serialize an omitted optional (#865).
+        const rawLevel = args?.level ?? 'L1';
         const level = String(rawLevel).toUpperCase() as BenchmarkLevel;
         if (!BENCHMARK_LEVELS.includes(level)) {
           return { content: [{ type: 'text', text: `Error: ${invalidLevelMessage(rawLevel)}` }], isError: true };
