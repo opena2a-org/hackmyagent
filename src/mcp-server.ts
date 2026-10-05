@@ -20,6 +20,8 @@ import {
   HardeningScanner,
   VERSION,
   OASB_1_VERSION,
+  getControlsForLevel,
+  type BenchmarkCategoryResult,
   type BenchmarkLevel,
   type SecurityFinding,
 } from './index';
@@ -245,6 +247,18 @@ export interface BenchmarkAssessment {
 
 const BENCHMARK_LEVELS: readonly string[] = ['L1', 'L2', 'L3'];
 
+/**
+ * The compliance denominator: controls the catalogue scores that passed or
+ * failed. Read from the catalogue's `scored` flag rather than as
+ * `passed + failed`, which also counts a measured unscored control.
+ */
+function countScoredMeasured(categories: ReadonlyArray<BenchmarkCategoryResult>, level: BenchmarkLevel): number {
+  const scored = new Set(getControlsForLevel(level).filter((c) => c.scored).map((c) => c.id));
+  return categories
+    .flatMap((c) => c.controls)
+    .filter((c) => (c.status === 'passed' || c.status === 'failed') && scored.has(c.controlId)).length;
+}
+
 /** The refusal the CLI prints for `-b … -l <level>` outside L1-L3, word for word (#650). */
 function invalidLevelMessage(raw: unknown): string {
   return `Invalid level '${escapeForDisplay(String(raw))}'. Use: L1, L2, or L3`;
@@ -291,9 +305,23 @@ export function assessBenchmarkFindings(
   const reason = zeroRead
     ? `Not assessed: no file was read from ${coverage?.directory ? escapeForDisplay(coverage.directory) : 'the directory'}, so no control was measured and no rating is awardable.\n`
     : '';
+  // #531 — the figure is passed / (passed + failed) over the scored controls
+  // that produced a result; an unverified control is outside it. Stated bare,
+  // a run that verified 4 controls read `100% compliance (Certified)` above
+  // one that verified 23 and read 91%, and the host had to infer the
+  // denominator from a count line. The figure names its denominator, and the
+  // unverified controls are named as outside it, on the lines it is read from.
+  const verified = countScoredMeasured(result.categories, level);
+  const controlsWord = (n: number) => `${n} control${n === 1 ? '' : 's'}`;
+  const figure = compliance === null ? 'not measured' : `${compliance}% compliance over ${verified} verified control${verified === 1 ? '' : 's'}`;
+  const scope =
+    compliance !== null && result.unverifiedControls > 0
+      ? `Coverage: ${verified} of ${controlsWord(result.totalControls)} verified. The ${result.unverifiedControls} unverified ${result.unverifiedControls === 1 ? 'control is' : 'controls are'} not in the compliance figure; each is listed as [UNVERIFIED] below.\n`
+      : '';
   const text =
-    `OASB-1 ${level} Assessment: ${compliance === null ? 'not measured' : `${compliance}% compliance`} (${result.rating})\n` +
+    `OASB-1 ${level} Assessment: ${figure} (${result.rating})\n` +
     reason +
+    scope +
     `Passed: ${result.passedControls} | Failed: ${result.failedControls} | Not applicable: ${result.notApplicableControls} | Unverified: ${result.unverifiedControls}\n\n` +
     lines.join('\n');
   return {
