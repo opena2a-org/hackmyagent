@@ -5,14 +5,13 @@
 //    arguments cli.ts uses, asserts the wire shape matches the parity
 //    fixtures' must_match contract. No spawn, no network, runs everywhere.
 // 2. Spawned smoke test — invokes the built `dist/cli.js` against a
-//    non-existent npm package and a non-existent GitHub repo, asserts the
-//    JSON output. Needs network and a built dist. release.yml provides
-//    both before it runs the suite, so this layer runs where a publish
-//    happens.
+//    non-existent npm package, a non-existent GitHub repo and a
+//    non-existent PyPI package, asserts the JSON output. Needs a built
+//    dist and no network: the Registry is a loopback stub and every run
+//    asserts it attempted no other host (see "Local Registry stub" below).
 //
 // The unit layer is the contract gate (closes F3 + F4). The spawn layer
-// is local-only confirmation that the wiring in cli.ts is reaching the
-// builder.
+// confirms that the wiring in cli.ts is reaching the builder.
 //
 // hackmyagent#203: the three npm spawn cases used to shell out to the real
 // `npm pack` against the live registry. Under full-suite parallel load npm
@@ -24,12 +23,13 @@
 // still exercising the full cli.ts routing path.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { buildNotFoundOutput } from '@opena2a/check-core';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { startMockRegistry, type MockRegistry } from '../helpers/hma08-stub-registry';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -94,10 +94,9 @@ afterAll(() => {
   if (stubDir) rmSync(stubDir, { recursive: true, force: true });
 });
 
-/** Env for a spawned CLI run with the npm shim ahead of the real npm on PATH. */
+/** Env overlay for a spawned CLI run with the npm shim ahead of the real npm on PATH. */
 function shimEnv(): NodeJS.ProcessEnv {
   return {
-    ...process.env,
     PATH: `${stubDir}${delimiter}${process.env.PATH ?? ''}`,
     HMA_TEST_NPM_SHIM_MARKER: markerFile!,
   };
@@ -170,10 +169,6 @@ afterAll(() => {
   if (netDir) rmSync(netDir, { recursive: true, force: true });
 });
 
-function netEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, HMA_TEST_NET_MARKER: netMarker! };
-}
-
 function resetNetMarker(): void {
   writeFileSync(netMarker!, '');
 }
@@ -184,6 +179,88 @@ function recordedHosts(): string[] {
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
+}
+
+// --- Local Registry stub ----------------------------------------------------
+//
+// Every spawned case runs `check --no-scan`, and its first act is a Registry
+// trust query. These cases used to send that query to the live Registry, so
+// with egress denied five of them failed on `Registry network error: fetch
+// failed` before reaching the behaviour they pin. REGISTRY_URL
+// now points at a loopback listener that answers every query with a 404, which
+// the client reads as a genuine not-found, and each run asserts that it
+// attempted no host but this one.
+//
+// The listener lives in this process, so the CLI is spawned asynchronously: a
+// synchronous spawn blocks the event loop for the child's whole lifetime and
+// the listener could never accept (check-no-scan-registry-error.test.ts
+// measured a 15 s client timeout with zero hits).
+let registry: MockRegistry | undefined;
+
+beforeAll(async () => {
+  if (!canRunSpawn()) return;
+  registry = await startMockRegistry(() => ({ status: 404, body: JSON.stringify({ error: 'not found' }) }));
+});
+
+afterAll(async () => {
+  if (registry) await registry.close();
+});
+
+interface CliRun {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run the built CLI with the request recorder preloaded and REGISTRY_URL on
+ * the local stub. Usage telemetry is switched off: it is on by default and
+ * posts to the live Registry host, which none of these cases is about.
+ * `overlay` layers case-specific variables (the npm shim) on top. The 30 s
+ * kill is a hang guard only, as the synchronous form's `timeout` was.
+ */
+function runCli(args: string[], overlay: NodeJS.ProcessEnv = {}): Promise<CliRun> {
+  resetNetMarker();
+  registry!.requests.length = 0;
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--require', NET_RECORDER, CLI, ...args], {
+      env: {
+        ...process.env,
+        REGISTRY_URL: registry!.url,
+        OPENA2A_TELEMETRY: 'off',
+        NO_PROXY: 'localhost,127.0.0.1,::1',
+        HMA_TEST_NET_MARKER: netMarker!,
+        ...overlay,
+      },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
+    child.stderr.setEncoding('utf8').on('data', (d: string) => { stderr += d; });
+    const killer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.on('close', (status) => {
+      clearTimeout(killer);
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+/**
+ * The run asked the local stub for a trust record and attempted no other
+ * host. This is what lets the case pass with egress denied, and it is
+ * asserted on every run so that a new network dependency fails here, on a
+ * connected machine, rather than only in a sandbox.
+ */
+function expectOnlyStubRegistry(): void {
+  expect(
+    registry!.requests.some((r) => r.method === 'GET' && r.url.startsWith('/api/v1/trust/query?')),
+    'the local stub Registry received no trust query',
+  ).toBe(true);
+  const stubHost = new URL(registry!.url).host;
+  const hosts = recordedHosts();
+  // Non-vacuity: an empty list would satisfy the absence check below.
+  expect(hosts).toContain(stubHost);
+  expect(hosts.filter((h) => h !== stubHost), 'hosts attempted besides the local stub Registry').toEqual([]);
 }
 
 function canRunNpmShimSpawn(): boolean {
@@ -258,17 +335,14 @@ describe('check --json not-found shape (deterministic — closes F3 + F4 contrac
   });
 });
 
-describe('check --json not-found wired through dist/cli.js (smoke, local-only)', { timeout: 60_000 }, () => {
-  it.runIf(canRunNpmShimSpawn())('F3: bare-name miss emits NotFoundOutput from cli.ts (no stderr fall-through)', () => {
+describe('check --json not-found wired through dist/cli.js (spawned, local Registry stub, no network)', { timeout: 60_000 }, () => {
+  it.runIf(canRunNpmShimSpawn())('F3: bare-name miss emits NotFoundOutput from cli.ts (no stderr fall-through)', async () => {
     const bareName = 'totally-nonexistent-pkg-xyz789';
     resetMarker();
-    const res = spawnSync('node', [CLI, 'check', bareName, '--no-scan', '--json', '--ci'], {
-      encoding: 'utf8',
-      timeout: 30_000,
-      env: shimEnv(),
-    });
+    const res = await runCli(['check', bareName, '--no-scan', '--json', '--ci'], shimEnv());
 
     expectRegistryAnswered(res);
+    expectOnlyStubRegistry();
     expectShimServedPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
@@ -286,16 +360,13 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.error.length).toBeGreaterThan(0);
   });
 
-  it.runIf(canRunNpmShimSpawn())('#161: uppercase bare-name miss routes to npm (not skill-id parser) and emits valid JSON', () => {
+  it.runIf(canRunNpmShimSpawn())('#161: uppercase bare-name miss routes to npm (not skill-id parser) and emits valid JSON', async () => {
     const bareName = 'NONEXISTENT-XYZ-9999';
     resetMarker();
-    const res = spawnSync('node', [CLI, 'check', bareName, '--no-scan', '--json', '--ci'], {
-      encoding: 'utf8',
-      timeout: 30_000,
-      env: shimEnv(),
-    });
+    const res = await runCli(['check', bareName, '--no-scan', '--json', '--ci'], shimEnv());
 
     expectRegistryAnswered(res);
+    expectOnlyStubRegistry();
     expectShimServedPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
@@ -313,16 +384,13 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.errorHint).toBe(`Verify the URL: https://www.npmjs.com/package/${bareName}`);
   });
 
-  it.runIf(canRunNpmShimSpawn())('#161: uppercase bare-name miss renders errorHint in plain (non-JSON) output', () => {
+  it.runIf(canRunNpmShimSpawn())('#161: uppercase bare-name miss renders errorHint in plain (non-JSON) output', async () => {
     const bareName = 'NONEXISTENT-XYZ-9999';
     resetMarker();
-    const res = spawnSync('node', [CLI, 'check', bareName, '--no-scan', '--ci'], {
-      encoding: 'utf8',
-      timeout: 30_000,
-      env: shimEnv(),
-    });
+    const res = await runCli(['check', bareName, '--no-scan', '--ci'], shimEnv());
 
     expectRegistryAnswered(res);
+    expectOnlyStubRegistry();
     expectShimServedPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
@@ -334,14 +402,12 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(stderr).toContain(`Verify the URL: https://www.npmjs.com/package/${bareName}`);
   });
 
-  it.runIf(canRunSpawn())('F4: git-style miss populates errorHint in JSON output', () => {
+  it.runIf(canRunSpawn())('F4: git-style miss populates errorHint in JSON output', async () => {
     const target = 'anthropic/code-review';
-    const res = spawnSync('node', [CLI, 'check', target, '--no-scan', '--json', '--ci'], {
-      encoding: 'utf8',
-      timeout: 30_000,
-    });
+    const res = await runCli(['check', target, '--no-scan', '--json', '--ci']);
 
     expectRegistryAnswered(res);
+    expectOnlyStubRegistry();
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
     // never fetched; the PyPI arm of this same suite already asserted 2. Every
@@ -357,7 +423,7 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.errorHint).toBe(`Verify the URL: https://github.com/${target}`);
   });
 
-  it.runIf(canRunSpawn())('#195: pip:<missing> --no-scan honors --no-scan (no PyPI request), emits ecosystem:pypi not-found', () => {
+  it.runIf(canRunSpawn())('#195: pip:<missing> --no-scan honors --no-scan (no PyPI request), emits ecosystem:pypi not-found', async () => {
     // Closes hackmyagent#195: prior to the fix, `--no-scan` was silently
     // dropped for pip:/pypi: targets — every check pip:<pkg> --no-scan would
     // still hit PyPI for the metadata + tarball download.
@@ -375,31 +441,20 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     //   would still exit 2, and on a fast link would still have come in under
     //   five seconds.
     const bareName = 'opena2a-fixture-pypi-nonexistent-xyz-do-not-publish-20260525';
-    resetNetMarker();
-    const res = spawnSync(
-      'node',
-      ['--require', NET_RECORDER, CLI, 'check', `pip:${bareName}`, '--no-scan', '--json', '--ci'],
-      {
-        encoding: 'utf8',
-        // Generous on purpose. Duration is no longer part of the assertion, so
-        // this is only a hang guard — a slow Registry must not fail the test.
-        timeout: 30_000,
-        env: netEnv(),
-      },
-    );
+    const res = await runCli(['check', `pip:${bareName}`, '--no-scan', '--json', '--ci']);
 
     expectRegistryAnswered(res);
     expect(res.status).toBe(2);
-
-    const hosts = recordedHosts();
 
     // In-run non-vacuity. `not.toContain` passes trivially against an empty
     // list, so a preload that silently stopped loading — renamed env var, a
     // Node change to `fetch`, a lost `--require` — would read as "no PyPI
     // request" and this gate would quietly stop gating. The Registry lookup
-    // runs unconditionally on this path, so its host must be present in the
-    // very run whose absence-claim the next two assertions rest on.
-    expect(hosts).toContain('api.oa2a.org');
+    // runs unconditionally on this path, so the stub's host must be present in
+    // the very run whose absence-claim the next two assertions rest on;
+    // expectOnlyStubRegistry asserts that first.
+    expectOnlyStubRegistry();
+    const hosts = recordedHosts();
 
     expect(hosts).not.toContain('pypi.org');
     expect(hosts).not.toContain('files.pythonhosted.org');
@@ -415,10 +470,10 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     expect(parsed.error.length).toBeGreaterThan(0);
   });
 
-  it.runIf(canRunSpawn())('#397 control: the recorder does observe the PyPI request the #195 gate rules out', () => {
+  it.runIf(canRunSpawn())('#397 control: the recorder does observe the PyPI request the #195 gate rules out', async () => {
     // The control for the assertion above. `expect(hosts).not.toContain('pypi.org')`
     // is only meaningful if a pypi.org request WOULD have shown up in that list,
-    // and the in-run `api.oa2a.org` check proves the recorder is alive but not
+    // and the in-run stub-host check proves the recorder is alive but not
     // that it can see this particular request. This runs the same command with
     // `--no-scan` removed — the one path that fetches PyPI metadata
     // unconditionally — and asserts the host is recorded.
@@ -426,14 +481,11 @@ describe('check --json not-found wired through dist/cli.js (smoke, local-only)',
     // Offline-safe, and deliberately so: the recorder logs at the call site
     // before dispatch, so this asserts the request was attempted, not that it
     // succeeded. Nothing here is asserted about the exit code or the output,
-    // because the point is only that the instrumentation can see PyPI.
+    // because the point is only that the instrumentation can see PyPI. It is
+    // the one case that attempts a host besides the stub, and the only one
+    // that does not need the attempt to succeed.
     const bareName = 'opena2a-fixture-pypi-nonexistent-xyz-do-not-publish-20260525';
-    resetNetMarker();
-    spawnSync(
-      'node',
-      ['--require', NET_RECORDER, CLI, 'check', `pip:${bareName}`, '--json', '--ci'],
-      { encoding: 'utf8', timeout: 30_000, env: netEnv() },
-    );
+    await runCli(['check', `pip:${bareName}`, '--json', '--ci']);
 
     expect(recordedHosts()).toContain('pypi.org');
   });
