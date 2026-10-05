@@ -32,6 +32,7 @@ import {
   type BuildMcpNarrativeInput,
 } from "./mcp-narrative.js";
 import { generateNarrativeSummary } from "./narrative-summary.js";
+import { credentialValueMarker } from "../types/credential-format.js";
 
 /**
  * Map HMA's canonical credential labels to check-core's `type` strings.
@@ -248,8 +249,8 @@ function extractHardcodedSecrets(findings: SecurityFinding[]): HardcodedSecret[]
       typeLabel: label ?? "",
       file: f.file ?? "",
       line: f.line,
-      maskedValue: maskCredential(extractRawValue(f)),
-      shownChars: countShownChars(extractRawValue(f)),
+      maskedValue: maskCredential(extractRawValue(f), label),
+      shownChars: 0,
       totalChars: (extractRawValue(f) ?? "").length,
       shipsInArtifact: shipsInArtifact(f),
       severity: mapSeverity(f.severity),
@@ -274,55 +275,14 @@ function extractRawValue(f: SecurityFinding): string | undefined {
   return detailValue?.value ?? detailValue?.rawValue;
 }
 
-function maskCredential(value?: string): string {
-  if (!value || value.length === 0) return "";
-  // Preserve recognizable prefixes for known formats.
-  const knownPrefixes = [
-    "sk-ant-api03-",
-    "sk-ant-api02-",
-    "sk-proj-",
-    "ghp_",
-    "gho_",
-    "ghs_",
-    "AKIA",
-    "AIza",
-    "xoxb-",
-    "xoxa-",
-    "xoxp-",
-    "sk_live_",
-    "-----BEGIN",
-  ];
-  for (const prefix of knownPrefixes) {
-    if (value.startsWith(prefix)) {
-      const remaining = Math.max(0, value.length - prefix.length);
-      return `${prefix}${"*".repeat(Math.min(remaining, 16))}`;
-    }
-  }
-  // Unknown shape — show first 8 chars + asterisks.
-  return `${value.slice(0, 8)}${"*".repeat(Math.min(value.length - 8, 16))}`;
-}
-
-function countShownChars(value?: string): number {
-  if (!value) return 0;
-  const knownPrefixes = [
-    "sk-ant-api03-",
-    "sk-ant-api02-",
-    "sk-proj-",
-    "ghp_",
-    "gho_",
-    "ghs_",
-    "AKIA",
-    "AIza",
-    "xoxb-",
-    "xoxa-",
-    "xoxp-",
-    "sk_live_",
-    "-----BEGIN",
-  ];
-  for (const prefix of knownPrefixes) {
-    if (value.startsWith(prefix)) return prefix.length;
-  }
-  return Math.min(8, value.length);
+/**
+ * The labelled marker for a secret's value (`Hugging Face token: [REDACTED]`),
+ * or the empty string when the finding carries no value. The marker names the
+ * shape and prints none of the value's bytes, so `shownChars` is always 0.
+ */
+function maskCredential(value: string | undefined, label: string | undefined): string {
+  if (!value) return "";
+  return credentialValueMarker(value, label);
 }
 
 /**

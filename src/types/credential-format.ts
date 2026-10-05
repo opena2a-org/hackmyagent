@@ -787,16 +787,46 @@ const VENDOR_PREFIX_MATCHERS: readonly RegExp[] = [
 ];
 
 /**
+ * The display label of the shape behind each `VENDOR_PREFIX_MATCHERS` entry,
+ * index for index: the vendor alternatives in registry order, then the JWT.
+ */
+const VENDOR_PREFIX_LABELS: readonly string[] = [
+  ...shapesFor('vendor-alternation').map(s => s.label),
+  CREDENTIAL_SHAPES.find(s => s.id === 'jwt')?.label ?? 'JSON Web Token',
+];
+
+function longestVendorPrefix(value: string): { prefix: string; label: string } | undefined {
+  let longest: { prefix: string; label: string } | undefined;
+  for (let i = 0; i < VENDOR_PREFIX_MATCHERS.length; i++) {
+    const m = VENDOR_PREFIX_MATCHERS[i].exec(value);
+    if (m && m[0].length > (longest?.prefix.length ?? 0)) {
+      longest = { prefix: m[0], label: VENDOR_PREFIX_LABELS[i] };
+    }
+  }
+  return longest;
+}
+
+/**
  * The longest recognisable vendor prefix of `value`, or undefined when the
  * value matches no vendor shape. Longest wins, so `sk-ant-api0` beats `sk-`.
  */
 export function matchVendorPrefix(value: string): string | undefined {
-  let longest: string | undefined;
-  for (const re of VENDOR_PREFIX_MATCHERS) {
-    const m = re.exec(value);
-    if (m && m[0].length > (longest?.length ?? 0)) longest = m[0];
-  }
-  return longest;
+  return longestVendorPrefix(value)?.prefix;
+}
+
+/**
+ * What finding text prints in place of a credential value: the labelled
+ * marker `<label>: [REDACTED]`.
+ *
+ * The label is the value's own vendor shape when it has one, else
+ * `fallbackLabel` (the label the caller's finding already carries), else
+ * `Credential`. No byte of the value is printed — not the vendor prefix, which
+ * the label already conveys, and not a starred stand-in for the body, whose
+ * length and position told a reader nothing the label does not.
+ */
+export function credentialValueMarker(value: string, fallbackLabel?: string): string {
+  const label = longestVendorPrefix(value)?.label ?? (fallbackLabel?.trim() || 'Credential');
+  return `${label}: [REDACTED]`;
 }
 
 /* ------------------------------------------------------------------ *

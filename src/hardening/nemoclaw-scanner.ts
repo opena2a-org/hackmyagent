@@ -15,6 +15,7 @@ import { commandNaming } from '../ui/shell-quote';
 import type { SecurityFinding, SecurityFindingDraft, Severity } from './security-check';
 import { emitFinding, type RedactedFinding } from './finding-emit';
 import { countsAsUnread } from './coverage-ledger';
+import { credentialValueMarker } from '../types/credential-format';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,9 +56,12 @@ function isValidContainerName(name: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name);
 }
 
-function maskSecret(value: string): string {
-  if (value.length <= 4) return '***';
-  return value.substring(0, 4) + '***';
+/**
+ * What a finding prints in place of a matched key: the labelled marker, which
+ * names the key and carries none of its bytes.
+ */
+function keyMarker(value: string): string {
+  return credentialValueMarker(value, 'NVIDIA API key');
 }
 
 /**
@@ -399,7 +403,7 @@ export class NemoClawScanner {
                 'secrets',
                 'critical',
                 false,
-                `Found key ${maskSecret(match[0])} in ${file} at line ${i + 1}`,
+                `Found ${keyMarker(match[0])} in ${file} at line ${i + 1}`,
                 {
                   file,
                   line: i + 1,
@@ -472,7 +476,7 @@ export class NemoClawScanner {
                 'secrets',
                 'high',
                 false,
-                `Found key ${maskSecret(match[0])} in ${file} at line ${i + 1}`,
+                `Found ${keyMarker(match[0])} in ${file} at line ${i + 1}`,
                 {
                   file,
                   line: i + 1,
@@ -547,7 +551,7 @@ export class NemoClawScanner {
                     'secrets',
                     'high',
                     false,
-                    `Container "${name}" has key ${maskSecret(match[0])} in env`,
+                    `Container "${name}" has ${keyMarker(match[0])} in env`,
                     {
                       fixable: false,
                       fix: 'Use Docker secrets or a secrets manager instead of environment variables. Recreate the container without the key in env.',
@@ -612,7 +616,7 @@ export class NemoClawScanner {
                 'secrets',
                 'high',
                 false,
-                `Found key ${maskSecret(match[0])} in ${path.basename(file)} at line ${i + 1}`,
+                `Found ${keyMarker(match[0])} in ${path.basename(file)} at line ${i + 1}`,
                 {
                   file,
                   line: i + 1,
