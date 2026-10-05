@@ -12,12 +12,15 @@
  * Design constraints:
  *   - Must complete in < 5ms for unmodified installations
  *   - Uses SHA-256 for all hashes, HMAC-SHA256 as Ed25519 fallback
- *   - Tamper-evident event chain (append-only JSONL with hash linking)
+ *   - Bounded, hash-linked event log of each result (append-only JSONL, rotated by size)
  *   - Model hash verified BEFORE loading into memory
  */
 
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, lstatSync } from 'node:fs';
+import {
+  readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, lstatSync,
+  openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { escapePathForDisplay, escapeForDisplay } from '../../ui/display-safe';
@@ -63,6 +66,10 @@ export interface TamperEvent {
 const NANOMIND_DIR = join(homedir(), '.nanomind');
 const MODELS_DIR = join(NANOMIND_DIR, 'models');
 const EVENT_CHAIN_PATH = join(NANOMIND_DIR, 'integrity-events.jsonl');
+// About 5,000 events per segment at roughly 200 bytes each; one rotated
+// segment is kept, so the log never holds much more than 2 MiB on disk.
+export const EVENT_CHAIN_MAX_BYTES = 1024 * 1024;
+const TAIL_CHUNK_BYTES = 4096;
 // No leading dot: the release artifact review (scripts/release-artifact-review.mjs)
 // refuses any dotfile entry in the published tarball, and this file ships in it.
 const MANIFEST_FILENAME = 'integrity-manifest.json';
@@ -252,33 +259,62 @@ function canonicalManifestPayload(manifest: IntegrityManifest): string {
 }
 
 // ============================================================================
-// Tamper-Evident Event Chain
+// Integrity Event Log (hash-linked, bounded)
 // ============================================================================
 
+export interface EventChainOptions {
+  /** Size at which the live log is rotated (defaults to EVENT_CHAIN_MAX_BYTES). */
+  maxBytes?: number;
+}
+
+/**
+ * Append-only JSONL log of startup integrity results. Each event carries the
+ * SHA-256 of the previous one, so verify() can find a corrupted, dropped or
+ * edited line. The hash is unkeyed and nothing verifies the log at startup:
+ * anyone who can write the file can also rewrite every hash after an edit,
+ * so this is a diagnostic record, not tamper-evidence.
+ *
+ * The log is bounded. When the next line would take the live file past
+ * maxBytes, the file moves to `<path>.1` (replacing the previous one) and a
+ * new chain starts at seq 0 with the genesis prevHash, so each segment
+ * verifies on its own and the two files together stay under about
+ * 2 x maxBytes. A file already far past the bound (written before the bound
+ * existed) is removed at rotation rather than kept as `<path>.1`.
+ */
 export class EventChain {
   private chainPath: string;
+  private maxBytes: number;
 
-  constructor(chainPath: string = EVENT_CHAIN_PATH) {
+  constructor(chainPath: string = EVENT_CHAIN_PATH, options: EventChainOptions = {}) {
     this.chainPath = chainPath;
+    this.maxBytes = options.maxBytes ?? EVENT_CHAIN_MAX_BYTES;
+  }
+
+  /** Path of the most recent rotated segment. */
+  get rotatedPath(): string {
+    return `${this.chainPath}.1`;
   }
 
   /**
-   * Append an event to the chain. Each event references the hash of the
-   * previous event, forming a tamper-evident linked chain.
+   * Append an event. Reads only the tail of the log to link to the previous
+   * event, and rotates the log first when this line would exceed maxBytes.
    */
   append(eventType: TamperEvent['eventType'], detail: string): TamperEvent {
-    const lastEvent = this.getLastEvent();
-    const prevHash = lastEvent
-      ? sha256(JSON.stringify(lastEvent))
-      : GENESIS_PREV_HASH;
-
-    const event: TamperEvent = {
-      seq: lastEvent ? lastEvent.seq + 1 : 0,
-      timestamp: new Date().toISOString(),
+    const { last, size } = this.readTail();
+    const timestamp = new Date().toISOString();
+    const linkTo = (prev: TamperEvent | null): TamperEvent => ({
+      seq: prev ? prev.seq + 1 : 0,
+      timestamp,
       eventType,
       detail,
-      prevHash,
-    };
+      prevHash: prev ? sha256(JSON.stringify(prev)) : GENESIS_PREV_HASH,
+    });
+
+    let event = linkTo(last);
+    if (size > 0 && size + Buffer.byteLength(JSON.stringify(event)) + 1 > this.maxBytes) {
+      this.rotate(size);
+      event = linkTo(null);
+    }
 
     const dir = dirname(this.chainPath);
     if (!existsSync(dir)) {
@@ -289,7 +325,7 @@ export class EventChain {
   }
 
   /**
-   * Read all events from the chain file.
+   * Read all events from the live log (bounded by maxBytes).
    */
   readAll(): TamperEvent[] {
     if (!existsSync(this.chainPath)) return [];
@@ -299,15 +335,62 @@ export class EventChain {
   }
 
   /**
-   * Get the last event in the chain.
+   * Get the last event in the live log, reading only the end of the file.
    */
   getLastEvent(): TamperEvent | null {
-    const events = this.readAll();
-    return events.length > 0 ? events[events.length - 1] : null;
+    return this.readTail().last;
   }
 
   /**
-   * Verify the entire chain is intact. Returns the index of the first
+   * Read the file size and the last line without reading the whole file:
+   * start with the final TAIL_CHUNK_BYTES and double until a line break
+   * before the last line (or the start of the file) is in the window.
+   */
+  private readTail(): { last: TamperEvent | null; size: number } {
+    let fd: number;
+    try {
+      fd = openSync(this.chainPath, 'r');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { last: null, size: 0 };
+      throw err;
+    }
+    try {
+      const size = fstatSync(fd).size;
+      let window = TAIL_CHUNK_BYTES;
+      for (;;) {
+        const start = Math.max(0, size - window);
+        const buf = Buffer.alloc(size - start);
+        readSync(fd, buf, 0, buf.length, start);
+        // A byte 0x0A never occurs inside a multi-byte UTF-8 sequence, so a
+        // character split at `start` can only sit before the line break.
+        const text = buf.toString('utf-8').trimEnd();
+        const lineStart = text.lastIndexOf('\n') + 1;
+        if (lineStart > 0 || start === 0) {
+          const line = text.slice(lineStart).trim();
+          return { last: line ? (JSON.parse(line) as TamperEvent) : null, size };
+        }
+        window *= 2;
+      }
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  private rotate(size: number): void {
+    try {
+      if (size > this.maxBytes * 2) {
+        unlinkSync(this.chainPath);
+      } else {
+        renameSync(this.chainPath, this.rotatedPath);
+      }
+    } catch (err) {
+      // Another process rotated the log between our read and this call.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+
+  /**
+   * Verify the live log's chain is intact. Returns the index of the first
    * broken link, or -1 if the chain is valid.
    *
    * Detects:
