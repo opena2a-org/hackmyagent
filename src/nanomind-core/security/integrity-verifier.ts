@@ -195,6 +195,13 @@ let manifestSymlinkRejection: string | null = null;
 /**
  * Generate a manifest from the current state of dist/ files.
  * Used during build/publish to create the signed manifest.
+ *
+ * The manifest is derived only from `<packageRoot>/package.json` and the
+ * bytes under `<packageRoot>/dist/`. It never reads the builder's home
+ * directory: a model file cached in the builder's `~/.nanomind/models/` is
+ * not shipped, so hashing it would make the published manifest (and every
+ * digest taken of it) depend on whichever machine ran the build. No
+ * `modelHash` is written here for that reason.
  */
 export function generateManifest(
   packageRoot: string,
@@ -213,14 +220,6 @@ export function generateManifest(
     version: pkgJson.version as string,
     files,
   };
-
-  // Add model hash if model exists
-  if (existsSync(MODELS_DIR)) {
-    const modelFiles = readdirSync(MODELS_DIR).filter(f => f.endsWith('.gguf'));
-    if (modelFiles.length > 0) {
-      manifest.modelHash = sha256File(join(MODELS_DIR, modelFiles[0]));
-    }
-  }
 
   // Sign if key provided
   if (signingKey) {
