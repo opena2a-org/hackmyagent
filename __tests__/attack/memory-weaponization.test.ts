@@ -18,7 +18,7 @@ describe('Memory Weaponization Payloads', () => {
 
   it('all IDs follow MEM-XXX convention', () => {
     for (const p of MEMORY_WEAPONIZATION_PAYLOADS) {
-      expect(p.id).toMatch(/^MEM-\d{3}$/);
+      expect(p.id).toMatch(/^ATK-MEM-\d{3}$/);
     }
   });
 
@@ -63,9 +63,9 @@ describe('Memory Weaponization Payloads', () => {
     for (const p of payloads) expect(p.category).toBe('memory-weaponization');
   });
 
-  it('IDs are sequential from MEM-001 to MEM-010', () => {
+  it('IDs are sequential from ATK-MEM-001 to ATK-MEM-010', () => {
     for (let i = 0; i < 10; i++) {
-      expect(MEMORY_WEAPONIZATION_PAYLOADS[i].id).toBe(`MEM-${String(i + 1).padStart(3, '0')}`);
+      expect(MEMORY_WEAPONIZATION_PAYLOADS[i].id).toBe(`ATK-MEM-${String(i + 1).padStart(3, '0')}`);
     }
   });
 

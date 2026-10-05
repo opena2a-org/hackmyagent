@@ -131,9 +131,9 @@ npx hackmyagent secure <directory> --version-id <uuid>
   "completedAt": "2026-02-10T12:00:00Z",
   "vulnerabilities": [
     {
-      "id": "PI-001",
+      "id": "ATK-PI-001",
       "severity": "critical",
-      "title": "prompt-injection: PI-001",
+      "title": "prompt-injection: ATK-PI-001",
       "description": "Attack succeeded - agent executed unauthorized action"
     }
   ],

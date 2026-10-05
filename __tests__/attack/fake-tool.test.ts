@@ -14,7 +14,7 @@ describe('Fake Tool Payloads', () => {
 
   it('all IDs follow FAKETOOL-XXX convention', () => {
     for (const p of FAKE_TOOL_PAYLOADS) {
-      expect(p.id).toMatch(/^FAKETOOL-\d{3}$/);
+      expect(p.id).toMatch(/^ATK-FAKETOOL-\d{3}$/);
     }
   });
 
@@ -59,10 +59,10 @@ describe('Fake Tool Payloads', () => {
     for (const p of payloads) expect(p.category).toBe('fake-tool');
   });
 
-  it('IDs are sequential from FAKETOOL-001 to FAKETOOL-010', () => {
+  it('IDs are sequential from ATK-FAKETOOL-001 to ATK-FAKETOOL-010', () => {
     for (let i = 0; i < 10; i++) {
       expect(FAKE_TOOL_PAYLOADS[i].id)
-        .toBe(`FAKETOOL-${String(i + 1).padStart(3, '0')}`);
+        .toBe(`ATK-FAKETOOL-${String(i + 1).padStart(3, '0')}`);
     }
   });
 

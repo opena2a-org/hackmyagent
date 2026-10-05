@@ -18,7 +18,7 @@ describe('Tool Shadow Payloads', () => {
 
   it('all IDs follow SHADOW-XXX convention', () => {
     for (const p of TOOL_SHADOW_PAYLOADS) {
-      expect(p.id).toMatch(/^SHADOW-\d{3}$/);
+      expect(p.id).toMatch(/^ATK-SHADOW-\d{3}$/);
     }
   });
 
@@ -63,9 +63,9 @@ describe('Tool Shadow Payloads', () => {
     for (const p of payloads) expect(p.category).toBe('tool-shadow');
   });
 
-  it('IDs are sequential from SHADOW-001 to SHADOW-010', () => {
+  it('IDs are sequential from ATK-SHADOW-001 to ATK-SHADOW-010', () => {
     for (let i = 0; i < 10; i++) {
-      expect(TOOL_SHADOW_PAYLOADS[i].id).toBe(`SHADOW-${String(i + 1).padStart(3, '0')}`);
+      expect(TOOL_SHADOW_PAYLOADS[i].id).toBe(`ATK-SHADOW-${String(i + 1).padStart(3, '0')}`);
     }
   });
 

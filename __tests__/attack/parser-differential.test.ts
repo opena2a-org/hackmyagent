@@ -14,7 +14,7 @@ describe('Parser Differential Payloads', () => {
 
   it('all IDs follow PARSE-XXX convention', () => {
     for (const p of PARSER_DIFFERENTIAL_PAYLOADS) {
-      expect(p.id).toMatch(/^PARSE-\d{3}$/);
+      expect(p.id).toMatch(/^ATK-PARSE-\d{3}$/);
     }
   });
 
@@ -59,10 +59,10 @@ describe('Parser Differential Payloads', () => {
     for (const p of payloads) expect(p.category).toBe('parser-differential');
   });
 
-  it('IDs are sequential from PARSE-001 to PARSE-010', () => {
+  it('IDs are sequential from ATK-PARSE-001 to ATK-PARSE-010', () => {
     for (let i = 0; i < 10; i++) {
       expect(PARSER_DIFFERENTIAL_PAYLOADS[i].id)
-        .toBe(`PARSE-${String(i + 1).padStart(3, '0')}`);
+        .toBe(`ATK-PARSE-${String(i + 1).padStart(3, '0')}`);
     }
   });
 

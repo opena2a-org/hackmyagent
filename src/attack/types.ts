@@ -31,7 +31,7 @@ export type AttackIntensity =
 export type AttackSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 export interface AttackPayload {
-  /** Unique identifier (e.g., PI-001) */
+  /** Unique identifier (e.g., ATK-PI-001); the ATK- prefix keeps it distinct from every check id */
   id: string;
   /** Attack category */
   category: AttackCategory;

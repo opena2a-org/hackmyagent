@@ -70,8 +70,8 @@ describe('Attack Payloads', () => {
 
       for (const payload of ALL_PAYLOADS) {
         const expectedPrefix = prefixes[payload.category];
-        expect(payload.id.startsWith(expectedPrefix)).toBe(true);
-        expect(payload.id).toMatch(/^[A-Z][A-Z0-9]{1,8}-\d{3}$/);
+        expect(payload.id.startsWith(`ATK-${expectedPrefix}-`)).toBe(true);
+        expect(payload.id).toMatch(/^ATK-[A-Z][A-Z0-9]{1,8}-\d{3}$/);
       }
     });
 
@@ -190,9 +190,9 @@ describe('Attack Payloads', () => {
 
   describe('getPayloadById', () => {
     it('returns payload for valid ID', () => {
-      const payload = getPayloadById('PI-001');
+      const payload = getPayloadById('ATK-PI-001');
       expect(payload).toBeDefined();
-      expect(payload?.id).toBe('PI-001');
+      expect(payload?.id).toBe('ATK-PI-001');
     });
 
     it('returns undefined for invalid ID', () => {
@@ -373,13 +373,13 @@ describe('AttackScanner', () => {
       const scanner = new AttackScanner({ delay: 0 });
       const report = await scanner.scan(
         { url: '', type: 'local' },
-        { payloadIds: ['PI-001', 'JB-001'], delay: 0 }
+        { payloadIds: ['ATK-PI-001', 'ATK-JB-001'], delay: 0 }
       );
 
       expect(report.results.length).toBe(2);
       const ids = report.results.map(r => r.payload.id);
-      expect(ids).toContain('PI-001');
-      expect(ids).toContain('JB-001');
+      expect(ids).toContain('ATK-PI-001');
+      expect(ids).toContain('ATK-JB-001');
     });
   });
 
