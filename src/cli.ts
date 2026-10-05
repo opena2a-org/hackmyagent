@@ -5164,7 +5164,7 @@ Examples:
   .option('-f, --format <format>', 'Output format: text, json, sarif, html (sarif/html not with -b oasb-2); asff without -b; asp with -b oasb-1', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
   .option('--aws-region <region>', 'AWS region for ASFF format')
-  .option('-o, --output <file>', 'Write the json, sarif, html, asp or asff report to a file instead of stdout (not with text)')
+  .option('-o, --output <file>', 'Write the json, sarif, html, asp or asff report to a file instead of stdout (not with text); a target that does not exist writes the file only for json')
   .option('--fail-below <percent>', 'ADDITIONALLY exit 1 if compliance is below this threshold (0-100). Does not disable the default non-compliance gate; not evaluated when no compliance was measured (exit 2)')
   .option('-v, --verbose', 'Show all checks including passed ones')
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
@@ -5253,6 +5253,15 @@ Examples:
           // truthfully in a runnable command (#273).
           const verify = commandNaming(directory, cited => `  Verify: ls -ld ${cited}`);
           if (verify) console.error(verify);
+          // #882 — `-o` writes nothing here outside json, and `--help` says
+          // so. No not-measured SARIF is written: an upload with no results
+          // closes the repository's open alerts, a clean reading from a run
+          // that scanned nothing. Name the absent file so a CI step that
+          // looks for it is not left guessing why.
+          if (options.output) {
+            console.error(`  No report was written to ${escapePathForDisplay(String(options.output))}: only the json format records a target that does not exist.`);
+            console.error('  For a record of this run, use --format json -o <file>.');
+          }
         }
         process.exit(verdict.exitCode); // exit-unsettled(#350/S002): pre-work refusal; events await the schema reason field (#525)
       }
