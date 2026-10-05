@@ -93,6 +93,21 @@ export interface SecretEntry {
 
 // --- Scan helpers ---
 
+/** A whole value that only names another variable: `${OPENAI_API_KEY}` or `$OPENAI_API_KEY`. */
+const ENV_VAR_REFERENCE = /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/;
+
+/**
+ * The value side of a `.env` line: the text after the first `=`, surrounding
+ * quotes removed, and an unquoted ` # comment` dropped. A `#` with no space
+ * before it stays in the value, so `PASSWORD=abc#123` is still read as a value.
+ */
+function envLineValue(line: string): string {
+  const raw = line.slice(line.indexOf('=') + 1);
+  const quoted = /^\s*(["'])(.*?)\1\s*(?:#.*)?$/.exec(raw);
+  if (quoted) return quoted[2].trim();
+  return raw.replace(/\s+#.*$/, '').trim();
+}
+
 function scanFileForCredentials(filePath: string, agentDir: string): Finding[] {
   const findings: Finding[] = [];
   const maxSize = 10 * 1024 * 1024; // 10MB
@@ -142,10 +157,14 @@ function scanFileForCredentials(filePath: string, agentDir: string): Finding[] {
       }
     }
 
-    // For .env files, also flag by key name even if value format is unknown
+    // For .env files, also flag by key name even if value format is unknown.
+    // The name says the line is meant to hold a credential; only the value
+    // says whether one is there (#539). An empty assignment holds nothing, and
+    // a bare variable reference is the fix this finding recommends.
     if (!found && isEnvFile) {
       const keyMatch = line.match(ENV_KEY_PATTERNS);
-      if (keyMatch) {
+      const value = keyMatch ? envLineValue(line) : '';
+      if (keyMatch && value !== '' && !ENV_VAR_REFERENCE.test(value)) {
         const keyName = keyMatch[1].trim();
         findings.push({
           id: 'CRED-001',
