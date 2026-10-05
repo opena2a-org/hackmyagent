@@ -27,11 +27,11 @@
  * so a root CI container does not leave this class unpinned.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { createSpawnBudget } from '../helpers/spawn-budget';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -48,10 +48,26 @@ let root: string;
 /** Directories whose modes must be restored before the tree can be removed. */
 const restore: string[] = [];
 
+/**
+ * Every spawn in this file draws on one budget that follows the file's own
+ * measured spawn times (#581). The 240s constant it replaces was calibrated on
+ * a quiet machine: with a second suite running beside this one, single spawns
+ * outlasted it and a different handful of cases went red on each run.
+ */
+const budget = createSpawnBudget();
+
+/**
+ * The runner's per-test timeout is off for every describe below. `spawnSync`
+ * blocks the event loop, so that timeout never interrupted a spawn; all it did
+ * was fail a test after the fact for the time its spawns took together. The
+ * determinism case makes five spawns under a 240s cap, so it was reported as
+ * timed out at 50s a spawn with every exit code correct. The spawn budget is
+ * the bound, and it stops a hung command once for the whole file.
+ */
+const NO_RUNNER_CAP = { timeout: 0 };
+
 function run(args: string[]) {
-  const res = spawnSync(process.execPath, [CLI, ...args], {
-    encoding: 'utf-8',
-    timeout: 240_000,
+  const res = budget.run(process.execPath, [CLI, ...args], {
     env: {
       ...process.env,
       NO_COLOR: '1',
@@ -113,7 +129,7 @@ afterAll(() => {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 
-describe('#438 secure settles one verdict over a tree it could not read', { timeout: 300_000 }, () => {
+describe('#438 secure settles one verdict over a tree it could not read', NO_RUNNER_CAP, () => {
   // Each output channel is its own `return` inside the action, and each one
   // shipped its own copy of the exit rule. `--fail-below` is already silently
   // inert on three of them (#494) for exactly that reason, so the channels are
@@ -180,7 +196,7 @@ describe('#438 secure settles one verdict over a tree it could not read', { time
   });
 });
 
-describe('#438 the run says which input it could not read', { timeout: 300_000 }, () => {
+describe('#438 the run says which input it could not read', NO_RUNNER_CAP, () => {
   it('names the file in a finding and offers a runnable fix', () => {
     const dir = makeTree('discloses');
     if (!makeUnreadable(path.join(dir, 'src', 'secrets.js'))) {
@@ -219,7 +235,7 @@ describe('#438 the run says which input it could not read', { timeout: 300_000 }
   });
 });
 
-describe('#438 the gate is deterministic and names every path', { timeout: 300_000 }, () => {
+describe('#438 the gate is deterministic and names every path', NO_RUNNER_CAP, () => {
   it('returns 2 on every one of N consecutive runs', () => {
     // A gate that fires most of the time is not a gate, and the miss is a
     // silent pass on exactly the defect. 60 runs were measured by hand at 0
@@ -231,7 +247,7 @@ describe('#438 the gate is deterministic and names every path', { timeout: 300_0
     }
     const codes = Array.from({ length: 5 }, () => run(['secure', dir]).status);
     expect(codes).toEqual([2, 2, 2, 2, 2]);
-  }, 240_000);
+  });
 
   it('emits one finding per unreadable path, not one naming the first of N', () => {
     // `file` is a single field and SARIF/ASFF consumers key on it, so a summary
@@ -252,10 +268,10 @@ describe('#438 the gate is deterministic and names every path', { timeout: 300_0
       .sort();
     expect(named).toEqual(['src/other.js', 'src/secrets.js']);
     expect(res.body.coverage.unreadableInputs.count).toBe(2);
-  }, 240_000);
+  });
 });
 
-describe('#438 the gate cannot be satisfied by writing into the target', { timeout: 300_000 }, () => {
+describe('#438 the gate cannot be satisfied by writing into the target', NO_RUNNER_CAP, () => {
   it('--fix writing a .gitignore does not clear an unread input', () => {
     // The hazard that killed the reverted files-read gate: `secure --fix`
     // wrote a `.gitignore`, re-read it, and thereby satisfied its own coverage
@@ -277,7 +293,7 @@ describe('#438 the gate cannot be satisfied by writing into the target', { timeo
   });
 });
 
-describe('#438 the unit counts only paths the scan is responsible for', { timeout: 300_000 }, () => {
+describe('#438 the unit counts only paths the scan is responsible for', NO_RUNNER_CAP, () => {
   it('a symlink whose target escapes the tree is not a lost input', () => {
     // Found by adversarial review. `src/evil.js -> /etc/master.passwd` needs no
     // chmod and no privileges — any contributor can commit it — and the read
@@ -303,7 +319,7 @@ describe('#438 the unit counts only paths the scan is responsible for', { timeou
     expect(res.body).not.toBeNull();
     expect(res.body.coverage.unreadableInputs.count).toBe(0);
     expect(res.status).toBe(0);
-  }, 240_000);
+  });
 
   it('CONTROL: a symlink to an unreadable file INSIDE the tree still counts', () => {
     // Without this, the fix above is indistinguishable from "stop counting
@@ -320,7 +336,7 @@ describe('#438 the unit counts only paths the scan is responsible for', { timeou
     expect(res.body).not.toBeNull();
     expect(res.body.coverage.unreadableInputs.count).toBeGreaterThan(0);
     expect(res.status).toBe(EXIT_INCOMPLETE);
-  }, 240_000);
+  });
 
   it('an .hmaignore PATH rule does NOT scope an unread input out of the gate', () => {
     // A path rule legitimately scopes findings ABOUT a file's contents — but it
@@ -351,7 +367,7 @@ describe('#438 the unit counts only paths the scan is responsible for', { timeou
     expect(named.length).toBe(1);
     expect(named[0].file).toContain('secrets.js');
     expect(run(['secure', dir, '--format', 'sarif']).out).toContain('SCAN-UNREAD-001');
-  }, 240_000);
+  });
 
   it('--ignore <checkId> does NOT clear the gate — suppressing a check is not scoping', () => {
     // #450's distinction, and the reason the case above is not a laundering
@@ -364,7 +380,7 @@ describe('#438 the unit counts only paths the scan is responsible for', { timeou
       return;
     }
     expect(run(['secure', dir, '--ignore', 'SCAN-UNREAD-001']).status).toBe(EXIT_INCOMPLETE);
-  }, 240_000);
+  });
 
   it('an .hmaignore CHECK-ID rule does NOT clear the gate either', () => {
     // A different code path from `--ignore` (`hmaIgnore.checkIds`, not the
@@ -377,10 +393,10 @@ describe('#438 the unit counts only paths the scan is responsible for', { timeou
     }
     fs.writeFileSync(path.join(dir, '.hmaignore'), '!SCAN-UNREAD-001\n');
     expect(run(['secure', dir]).status).toBe(EXIT_INCOMPLETE);
-  }, 240_000);
+  });
 });
 
-describe('#438 --fail-below cannot bypass the settlement', { timeout: 300_000 }, () => {
+describe('#438 --fail-below cannot bypass the settlement', NO_RUNNER_CAP, () => {
   it('a threshold that passes does not restore exit 0 over an unread input', () => {
     // The #390 round-1 shape, and the reason the settlement is above the
     // channel branch: both `--fail-below` early returns sit ABOVE each
@@ -440,7 +456,7 @@ const VALID_DEPTHS: string[] = (() => {
   return depths;
 })();
 
-describe('#499 the completeness floor holds at every scan depth', { timeout: 300_000 }, () => {
+describe('#499 the completeness floor holds at every scan depth', NO_RUNNER_CAP, () => {
   it.each(VALID_DEPTHS)('%s: an unreadable input is not a pass', (depth) => {
     const dir = makeTree(`depth-${depth}`);
     if (!makeUnreadable(path.join(dir, 'src', 'secrets.js'))) {
@@ -448,7 +464,7 @@ describe('#499 the completeness floor holds at every scan depth', { timeout: 300
       return;
     }
     expect(run(['secure', dir, '--scan-depth', depth]).status).toBe(EXIT_INCOMPLETE);
-  }, 240_000);
+  });
 
   it.each(VALID_DEPTHS)('%s: the unread input is NAMED, on every channel', (depth) => {
     const dir = makeTree(`depth-named-${depth}`);
@@ -464,7 +480,7 @@ describe('#499 the completeness floor holds at every scan depth', { timeout: 300
     expect(named.length).toBe(1);
     expect(named[0].file).toContain('secrets.js');
     expect(run(['secure', dir, '--scan-depth', depth, '--format', 'sarif']).out).toContain('SCAN-UNREAD-001');
-  }, 240_000);
+  });
 
   it.each(VALID_DEPTHS)('%s CONTROL: the same tree fully readable keeps exit 1', (depth) => {
     // Without this the suite would pass on a change that gated every tree.
@@ -476,7 +492,7 @@ describe('#499 the completeness floor holds at every scan depth', { timeout: 300
     // one.
     const dir = makeTree(`depth-control-${depth}`);
     expect(run(['secure', dir, '--scan-depth', depth]).status).toBe(EXIT_FAIL);
-  }, 240_000);
+  });
 
   it.each(VALID_DEPTHS)('%s CONTROL: a clean readable tree still exits 0', (depth) => {
     // The negative control that keeps this a gate rather than a blanket fail.
@@ -492,7 +508,7 @@ describe('#499 the completeness floor holds at every scan depth', { timeout: 300
     fs.writeFileSync(path.join(dir, 'src', 'util.js'), 'function add(a,b){return a+b;}\nmodule.exports={add};\n');
     fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n.env\n*.pem\n*.key\n');
     expect(run(['secure', dir, '--scan-depth', depth]).status).toBe(0);
-  }, 240_000);
+  });
 });
 
 /**
@@ -511,7 +527,7 @@ describe('#499 the completeness floor holds at every scan depth', { timeout: 300
  * Measured on the broken build: quick `unread 3`, standard `unread 4` — the one
  * real obstruction counted a second, third and fourth time.
  */
-describe('#499 a probe miss is not an unread input', { timeout: 300_000 }, () => {
+describe('#499 a probe miss is not an unread input', NO_RUNNER_CAP, () => {
   function probeTree(name: string): string {
     const dir = path.join(root, name);
     fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
@@ -548,5 +564,5 @@ describe('#499 a probe miss is not an unread input', { timeout: 300_000 }, () =>
 
     // And the one real obstruction is not counted more than once.
     expect(named.length).toBeLessThanOrEqual(1);
-  }, 240_000);
+  });
 });
