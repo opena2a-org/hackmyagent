@@ -15,9 +15,9 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -44,7 +44,7 @@ function run(args: string[]): Promise<{ code: number | null; stdout: string }> {
         ...process.env,
         NO_COLOR: '1',
         OPENA2A_TELEMETRY: 'off',
-        HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+        HOME: tempDir('hma-home-'),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

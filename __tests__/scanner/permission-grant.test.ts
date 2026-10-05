@@ -27,7 +27,6 @@
 // "NEVER", so a file-scoped negation test would silence all of them.
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -39,6 +38,7 @@ import {
 } from '../../src/scanner/permission-grant';
 import { scanAiConfigs } from '../../src/scanner/detect';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // This suite spawns the built CLI to assert over RENDERED output, so a stale
 // `dist/` would measure the previous build. #285's harness gate requires this.
@@ -1183,7 +1183,7 @@ describe('the bypass flag is still found in structured config (#364)', () => {
 
 describe('scanAiConfigs carries the evidence through (#299)', () => {
   function fixture(files: Record<string, string>): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-aiconfig-'));
+    const dir = tempDir('hma-aiconfig-');
     for (const [name, content] of Object.entries(files)) {
       const full = path.join(dir, name);
       fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -1238,7 +1238,7 @@ describe('scanAiConfigs carries the evidence through (#299)', () => {
       // assert on. The exit code is pinned below rather than tolerated.
       const res = spawnSync(process.execPath, [cli, 'detect', dir, '--ci'], {
         encoding: 'utf-8',
-        env: { ...process.env, HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')), NO_COLOR: '1' },
+        env: { ...process.env, HOME: tempDir('hma-home-'), NO_COLOR: '1' },
       });
       const out = `${res.stdout ?? ''}${res.stderr ?? ''}`;
       expect(res.status, `${name}: a HIGH finding must fail the run (#390)`).toBe(1);
@@ -1308,7 +1308,7 @@ describe('scanAiConfigs carries the evidence through (#299)', () => {
 describe('secure cites CLAUDE-002 from the parse (#379)', () => {
   it('carries the allow entry line, not the identical deny entry above it', async () => {
     const { HardeningScanner } = await import('../../src/hardening/scanner');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-379-'));
+    const dir = tempDir('hma-379-');
     try {
       fs.mkdirSync(path.join(dir, '.claude'));
       const text = settings({ permissions: { deny: ['Bash(*)'], allow: ['Bash(npm test)', 'Bash(*)'] } });

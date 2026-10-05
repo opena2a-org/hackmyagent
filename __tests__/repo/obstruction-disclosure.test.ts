@@ -39,9 +39,9 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from
 import type { TestContext } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -60,7 +60,7 @@ function run(args: string[]) {
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   // `stdout` is the machine channel: every JSON and SARIF parse reads it alone,
@@ -131,7 +131,7 @@ function unreadFindings(body: any): any[] {
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-588-'));
+  root = tempDir('hma-588-');
 });
 
 /** Every cell restores its own modes, so no fixture blocks another arm's `mkdir` or the final `rm`. */

@@ -27,9 +27,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -41,13 +41,13 @@ let wildLock: string;
 let empty: string;
 
 beforeAll(() => {
-  wild = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-639-wild-'));
+  wild = tempDir('hma-639-wild-');
   fs.writeFileSync(path.join(wild, 'mcp.json'), MCP);
-  wildLock = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-639-lock-'));
+  wildLock = tempDir('hma-639-lock-');
   fs.writeFileSync(path.join(wildLock, 'mcp.json'), MCP);
   fs.writeFileSync(path.join(wildLock, 'package.json'), '{"name":"fx","version":"1.0.0","private":true,"dependencies":{}}\n');
   fs.writeFileSync(path.join(wildLock, 'package-lock.json'), '{"name":"fx","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fx","version":"1.0.0"}}}\n');
-  empty = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-639-empty-'));
+  empty = tempDir('hma-639-empty-');
 });
 
 afterAll(() => {
@@ -59,7 +59,7 @@ function run(dir: string, args: string[]) {
     encoding: 'utf8',
     timeout: 240_000,
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
@@ -72,7 +72,7 @@ describe('#639 a wildcard MCP grant fails OASB-1 control 2.1', { timeout: 300_00
   it('fixture guard: the scan itself records the wildcard as SEM-MCP-004', () => {
     const r = spawnSync(process.execPath, [CLI, 'secure', wild, '--no-machine-posture', '--format', 'json'], {
       encoding: 'utf8', timeout: 240_000, maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+      env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
     });
     const body = json(r.stdout ?? '');
     const recs = (body.allFindings ?? body.findings).filter((f: any) => f.checkId === 'SEM-MCP-004');

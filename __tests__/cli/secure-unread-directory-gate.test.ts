@@ -36,9 +36,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { TestContext } from 'vitest';
 import { execSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -63,7 +63,7 @@ function run(args: string[]) {
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   // `stdout` is the machine channel: the JSON parse reads it alone, so a
@@ -137,7 +137,7 @@ function makeUnreadable(file: string): boolean {
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-515-'));
+  root = tempDir('hma-515-');
 });
 
 afterAll(() => {

@@ -13,10 +13,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { tempDir } from '../helpers/temp-dir';
 import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
 
 /** Synthesised at runtime — never a literal in the source tree. */
@@ -32,7 +32,7 @@ function git(dir: string, args: string[]) {
 
 describe('#389 the .gitignore --fix generates excludes its own backup directory', () => {
   it('git ignores the backup copy of a redacted credential after --fix', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'hma-389-'));
+    const dir = tempDir('hma-389-');
     try {
       initThrowawayRepo(dir);
       await writeFile(path.join(dir, 'package.json'), '{"name":"f","version":"1.0.0"}\n');

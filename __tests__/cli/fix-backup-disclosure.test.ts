@@ -22,6 +22,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 const CLI = path.resolve(__dirname, '..', '..', 'dist', 'cli.js');
 
@@ -107,7 +108,7 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
   // #885 — the machine-readable benchmark formats wrote the same backup and
   // named it nowhere: no `backupPath` in the document, nothing on stderr.
   it.each(['oasb-1', 'oasb-2'])('secure -b %s --fix --format json: carries backupPath', (benchmark) => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'hma-885-'));
+    const dir = tempDir('hma-885-');
     try {
       writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
       const out = hma(['secure', dir, '-b', benchmark, '--fix', '--format', 'json']);
@@ -122,7 +123,7 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
   });
 
   it.each(['sarif', 'html', 'asp'])('secure -b oasb-1 --fix --format %s: names the backup on stderr', (format) => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'hma-885-'));
+    const dir = tempDir('hma-885-');
     try {
       writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
       const out = hma(['secure', dir, '-b', 'oasb-1', '--fix', '--format', format]);

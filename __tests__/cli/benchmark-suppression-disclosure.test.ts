@@ -10,9 +10,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -22,8 +22,8 @@ let withRules: string;
 let withoutRules: string;
 
 beforeAll(() => {
-  withRules = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-872-'));
-  withoutRules = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-872-ctl-'));
+  withRules = tempDir('hma-872-');
+  withoutRules = tempDir('hma-872-ctl-');
   fs.cpSync(FIXTURE, withRules, { recursive: true });
   fs.cpSync(FIXTURE, withoutRules, { recursive: true });
   fs.writeFileSync(path.join(withRules, '.hmaignore'), '!MCP-001\n!TOOL-001\n!TOOL-002\n!GIT-001\n');
@@ -45,7 +45,7 @@ function run(cwd: string, args: string[]): { stdout: string; stderr: string; sta
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };

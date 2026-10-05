@@ -11,9 +11,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -28,7 +28,7 @@ const SOURCE = [
 let root: string;
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-360-'));
+  root = tempDir('hma-360-');
   fs.mkdirSync(path.join(root, 'lib'));
   for (const f of FILES) fs.writeFileSync(path.join(root, 'lib', `${f}.js`), SOURCE);
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'hma-360', version: '1.0.0' }));
@@ -48,7 +48,7 @@ function run(args: string[]): string {
       ...process.env,
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   return `${r.stdout ?? ''}${r.stderr ?? ''}`;

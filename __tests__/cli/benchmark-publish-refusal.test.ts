@@ -13,9 +13,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -27,7 +27,7 @@ const QUICK = ['--scan-depth', 'quick', '--no-machine-posture'];
 let dir: string;
 
 beforeAll(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-646-'));
+  dir = tempDir('hma-646-');
   fs.writeFileSync(path.join(dir, 'package.json'), '{ "name": "fx646", "version": "1.0.0", "private": true }\n');
   fs.writeFileSync(path.join(dir, 'index.js'), 'module.exports = () => 1;\n');
 });
@@ -41,7 +41,7 @@ function run(args: string[]) {
     encoding: 'utf8',
     timeout: 240_000,
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HOME: tempDir('hma-home-') },
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }

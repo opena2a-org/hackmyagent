@@ -13,10 +13,10 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -25,7 +25,7 @@ beforeAll(assertDistFreshIfPresent);
 const CLI_PATH = resolve(__dirname, '../../dist/cli.js');
 
 function tmpDirWithSoul(content: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'scan-soul-scope-'));
+  const dir = tempDir('scan-soul-scope-');
   writeFileSync(join(dir, 'SOUL.md'), content, 'utf-8');
   return dir;
 }

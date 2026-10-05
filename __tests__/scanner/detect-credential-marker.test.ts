@@ -13,11 +13,11 @@
  * `Credential`.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { scanAiConfigs } from '../../src/scanner/detect';
 import { containsRedactionMarker } from '../../src/types/redacted-evidence';
+import { tempDir } from '../helpers/temp-dir';
 
 // Synthetic bodies: mixed case and digits so no window of one can occur in a
 // label by accident.
@@ -72,7 +72,7 @@ describe('detect credential evidence', () => {
   let root: string;
 
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), 'hma-detect-marker-'));
+    root = tempDir('hma-detect-marker-');
   });
 
   afterAll(() => {
@@ -81,7 +81,7 @@ describe('detect credential evidence', () => {
 
   for (const c of CASES) {
     it(`prints the labelled marker for ${c.name}`, () => {
-      const dir = mkdtempSync(join(root, 'case-'));
+      const dir = tempDir('case-', root);
       mkdirSync(dirname(join(dir, c.file)), { recursive: true });
       writeFileSync(join(dir, c.file), c.content);
 

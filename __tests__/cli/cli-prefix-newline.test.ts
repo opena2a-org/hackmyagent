@@ -19,10 +19,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { resolveCliPrefix, resolveRawCliPrefix } from '../../src/cli-prefix';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -31,7 +31,7 @@ const HOSTILE_PREFIX = 'evil\nFORGED-PREFIX-LINE injected\x1b[2J';
 let root: string;
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-574-'));
+  root = tempDir('hma-574-');
 });
 
 afterAll(() => {
@@ -60,7 +60,7 @@ function run(args: string[], prefix: string): string {
       NO_COLOR: '1',
       OPENA2A_TELEMETRY: 'off',
       HMA_CLI_PREFIX: prefix,
-      HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')),
+      HOME: tempDir('hma-home-'),
     },
   });
   return `${r.stdout ?? ''}${r.stderr ?? ''}`;
@@ -106,7 +106,7 @@ describe('#574 HMA_CLI_PREFIX is display-safe where it is derived', () => {
   it('--json carries the configured value in scanner fix strings, not the rendering', () => {
     const r = spawnSync(process.execPath, [CLI, 'secure', tree('j'), '--ci', '--json'], {
       encoding: 'utf8', timeout: 240_000, maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HMA_CLI_PREFIX: HOSTILE_PREFIX, HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-')) },
+      env: { ...process.env, NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', HMA_CLI_PREFIX: HOSTILE_PREFIX, HOME: tempDir('hma-home-') },
     });
     const body = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
     const fixes = (body.findings ?? []).map((f: any) => f.fix).filter((x: any) => typeof x === 'string' && x.includes('FORGED-PREFIX-LINE'));

@@ -30,9 +30,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -73,8 +73,8 @@ const L2_ONLY_CATEGORY = 'Agent-to-Agent Security'; // no L1 controls; 7.4 is au
 let mcpTree: string;
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-458-'));
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-home-'));
+  root = tempDir('hma-458-');
+  home = tempDir('hma-home-');
   empty = path.join(root, 'empty');
   fs.mkdirSync(empty);
   // A package manifest with no lock file: the one L1 failure (DEP-001 on
@@ -471,7 +471,7 @@ describe('#458 step 3: a control whose every check reports its subject absent is
   // absent — nine scored controls whose records are ALL not-applicable.
   let mcpDir: string;
   beforeAll(() => {
-    mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-458-s3-'));
+    mcpDir = tempDir('hma-458-s3-');
     fs.writeFileSync(path.join(mcpDir, 'package.json'), JSON.stringify({
       name: 'fx-458-step3', version: '1.0.0',
       dependencies: { '@modelcontextprotocol/sdk': '^1.0.0' },
