@@ -174,6 +174,7 @@ const EXPRESSION_SITES: Record<string, string> = {
   'hardening/scanner.ts :: pattern.toUpperCase()': 'user-input',
   'hardening/scanner.ts :: r.checkId': 'pass-through',
   'hardening/scanner.ts :: suffix.toUpperCase()': 'user-input',
+  'hardening/semantic-refilter.ts :: r.checkId': 'pass-through',
   'mcp-server.ts :: f.checkId': 'pass-through',
   'nanomind-core/scanner-bridge.ts :: ast.checkId': 'pass-through',
   'registry/publish.ts :: c.id || c.checkId': 'pass-through',

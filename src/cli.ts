@@ -452,7 +452,7 @@ import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifac
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed, type MeasuredFinding } from './ui/verdict-band';
-import { refilterAfterSemanticMerge } from './hardening/semantic-refilter';
+import { refilterAfterLateSemanticMerge, refilterAfterSemanticMerge } from './hardening/semantic-refilter';
 import { gateSet, deepScanIncomplete, deepScanNotRunLines, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
 import { shouldPrintVersionFooter, watchStreamWrites } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
@@ -7107,14 +7107,63 @@ function detectOpenClawDirectory(providedDir: string): string {
   return process.cwd();
 }
 
-function filterOpenClawFindings(findings: SecurityFinding[]): SecurityFinding[] {
-  return findings.filter((f) => {
-    const checkId = f.checkId.toLowerCase();
-    return OPENCLAW_CATEGORIES.some((cat) => checkId.includes(cat));
-  });
+function isOpenClawCheck(checkId: string): boolean {
+  const id = checkId.toLowerCase();
+  return OPENCLAW_CATEGORIES.some((cat) => id.includes(cat));
 }
 
-function assessRiskLevel(findings: SecurityFinding[]): { level: string; color: string; description: string } {
+function filterOpenClawFindings(findings: SecurityFinding[]): SecurityFinding[] {
+  return findings.filter((f) => isOpenClawCheck(f.checkId));
+}
+
+type SuppressionRow = NonNullable<ScanResult['suppressed']>[number];
+
+function suppressionTotal(rows: readonly SuppressionRow[]): number {
+  return rows.reduce((n, r) => n + r.count, 0);
+}
+
+/**
+ * #460 — the `Suppressed` and `Scope` lines for the `secure-openclaw` and
+ * `secure-nemoclaw` reports, in their `Label: value` style. Same contract as
+ * the `secure` report: every suppressed check named with what it would have
+ * reported, and a path-rule narrowing stated as scope. Prints nothing when
+ * neither record has a row.
+ */
+function printSuppressionDisclosure(suppressed: readonly SuppressionRow[], outOfScope: readonly SuppressionRow[]): void {
+  if (suppressed.length > 0) {
+    const named = suppressed
+      .map((r) => `${escapeForDisplay(r.checkId)} (${r.severity}${r.count > 1 ? ` x${r.count}` : ''})`)
+      .join(' · ');
+    const worst = suppressed[0];
+    const pad = ' '.repeat('Suppressed: '.length);
+    console.log(`Suppressed: ${colors.yellow}${named}${RESET()}`);
+    console.log(
+      `${pad}${colors.dim}Withheld from the list at your request. Still in the risk level and ` +
+      `the exit code — ${escapeForDisplay(worst.checkId)} would have reported ` +
+      `${worst.severity} ${escapeForDisplay(worst.name)}.${RESET()}`,
+    );
+  }
+  if (outOfScope.length > 0) {
+    const total = suppressionTotal(outOfScope);
+    const bySeverity = new Map<string, number>();
+    for (const r of outOfScope) bySeverity.set(r.severity, (bySeverity.get(r.severity) ?? 0) + r.count);
+    const sevSummary = ['critical', 'high', 'medium', 'low']
+      .filter((sev) => bySeverity.has(sev))
+      .map((sev) => `${bySeverity.get(sev)} ${sev}`)
+      .join(', ');
+    const pad = ' '.repeat('Scope: '.length);
+    console.log(
+      `Scope: ${total} finding${total === 1 ? '' : 's'} excluded by .hmaignore path rules` +
+      `${sevSummary ? ` (${sevSummary})` : ''}`,
+    );
+    console.log(`${pad}${colors.dim}Out of scope, so not in the risk level and not in the exit code.${RESET()}`);
+  }
+  if (suppressed.length > 0 || outOfScope.length > 0) console.log();
+}
+
+// Reads only `severity`, so the `.hmaignore` suppressed stubs (#460) count
+// alongside the measured findings without a cast into `SecurityFinding`.
+function assessRiskLevel(findings: readonly { severity: string }[]): { level: string; color: string; description: string } {
   const criticalCount = findings.filter((f) => f.severity === 'critical').length;
   const highCount = findings.filter((f) => f.severity === 'high').length;
   const mediumCount = findings.filter((f) => f.severity === 'medium').length;
@@ -7334,8 +7383,11 @@ Examples:
       try {
         const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
         const nmResult = await orchestrateNanoMind(targetDir, result.findings, { silent: !!options.json, projectType: result.projectType });
-        // Re-apply .hmaignore filters and recalculate score after NanoMind merge
-        const hRefiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, targetDir, result.projectType || 'library');
+        // Re-apply .hmaignore filters and recalculate score after NanoMind merge.
+        // #460 — through the helper that keeps what was suppressed on
+        // `result.suppressed` / `result.outOfScope`, so the verdict below can
+        // count and name it.
+        const hRefiltered = await refilterAfterLateSemanticMerge(scanner, result, nmResult.mergedFindings, targetDir);
         // `mergedFindings` is `SecurityFindingDraft[]`: NanoMind returns the
         // findings it was given PLUS ones it created, and the created ones have
         // never crossed the boundary. Casting the array into `RedactedFinding[]`
@@ -7345,13 +7397,24 @@ Examples:
         // is a no-op on text, and `applied` is absorbing, so the ones that came
         // from `result.findings` keep their honest status.
         result.findings = emitFindings(hRefiltered);
-        const hForScore = hRefiltered.filter((f: any) => countsAgainstScore(f));
+        // #450 — plus the suppressed penalties, or this re-score undoes them.
+        const hForScore = [
+          ...hRefiltered.filter((f: any) => countsAgainstScore(f)),
+          ...expandSuppressed(result.suppressed),
+        ] as any;
         scanner.applyScore(result, hForScore);
       } catch { /* NanoMind unavailable */ }
 
       // Filter to OpenClaw-specific findings
       const allOpenClawFindings = filterOpenClawFindings(result.findings);
       const issues = allOpenClawFindings.filter(isMeasured).filter((f) => countsAgainstScore(f));
+      // #460 — what an `.hmaignore` rule held back, narrowed to this command's
+      // checks by the same predicate as the list. A `!CHECK` suppression
+      // leaves the list and stays in the risk level and the exit code, as on
+      // `secure`; a path rule is scope, disclosed and not counted.
+      const ocSuppressed = (result.suppressed ?? []).filter((r) => isOpenClawCheck(r.checkId));
+      const ocOutOfScope = (result.outOfScope ?? []).filter((r) => isOpenClawCheck(r.checkId));
+      const gatedIssues = [...issues, ...expandSuppressed(ocSuppressed)];
       // #274 — confirmed fixes only; a disproved attempt is counted in `issues`.
       const fixedFindings = allOpenClawFindings.filter((f) => confirmedFix(f));
       // #609 — the complement of the two above. A check that fixes what it
@@ -7377,13 +7440,15 @@ Examples:
       // findings include absence checks (`GIT-001 Missing .gitignore`) that
       // read no file, so a files-read count reported zero coverage for a run
       // that had evaluated its whole suite and withheld a real finding.
+      // A suppressed check was evaluated, so it counts toward coverage: a run
+      // whose every finding is suppressed is measured, not "nothing to examine".
       const ocVerdict = deriveCheckVerdict(
         {
-          critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
-          high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-          issues: issues.length,
+          critical: gatedIssues.filter((f) => f.severity === 'critical').length,
+          high: gatedIssues.filter((f) => f.severity === 'high').length,
+          issues: gatedIssues.length,
         },
-        fullCoverage(allOpenClawFindings.length, 'check'),
+        fullCoverage(allOpenClawFindings.length + suppressionTotal(ocSuppressed), 'check'),
         'nothing-to-examine',
         `No OpenClaw check could be evaluated against ${escapePathForDisplay(targetDir)}.`,
       );
@@ -7392,13 +7457,17 @@ Examples:
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
-          riskLevel: ocVerdict.measured ? assessRiskLevel(issues).level : null,
+          riskLevel: ocVerdict.measured ? assessRiskLevel(gatedIssues).level : null,
           coverage: coverageJson(ocVerdict),
           totalChecks: allOpenClawFindings.length,
           issues: issues.length,
           fixed: fixedFindings.length,
           passed: passedFindings.length,
           findings: allOpenClawFindings,
+          // #460 — the same two records `secure --json` and `check --json`
+          // carry: identity rows only, no file and no evidence.
+          ...(ocSuppressed.length ? { suppressed: ocSuppressed } : {}),
+          ...(ocOutOfScope.length ? { outOfScope: ocOutOfScope } : {}),
           // #610 — the same field `secure --format json` carries through its
           // `...result` spread; absent when `--fix` wrote no backup.
           ...(result.backupPath ? { backupPath: result.backupPath } : {}),
@@ -7425,12 +7494,13 @@ Examples:
       }
 
       // Risk assessment
-      const risk = assessRiskLevel(issues);
+      const risk = assessRiskLevel(gatedIssues);
       console.log(`Risk Level: ${risk.color}${risk.level}${RESET()}`);
       console.log(`${risk.description}\n`);
 
       // Summary stats
       console.log(`Checks: ${allOpenClawFindings.length} total | ${issues.length} issue${issues.length === 1 ? '' : 's'} | ${fixedFindings.length} fixed | ${passedFindings.length} passed\n`);
+      printSuppressionDisclosure(ocSuppressed, ocOutOfScope);
 
       // Show issues
       if (issues.length > 0) {
@@ -7461,6 +7531,9 @@ Examples:
           }
           console.log();
         }
+      } else if (ocSuppressed.length > 0) {
+        // #460 — not "no issues found": every one found is suppressed above.
+        console.log(`No OpenClaw-specific issues listed. The ones found are suppressed (see Suppressed above).\n`);
       } else {
         console.log(`${colors.green}No OpenClaw-specific issues found.${RESET()}\n`);
       }
@@ -7556,7 +7629,8 @@ function filterNemoClawFindings(findings: SecurityFinding[]): SecurityFinding[] 
   });
 }
 
-function assessNemoClawRiskLevel(findings: SecurityFinding[]): { level: string; color: string; description: string } {
+// Reads only `severity`; see `assessRiskLevel`.
+function assessNemoClawRiskLevel(findings: readonly { severity: string }[]): { level: string; color: string; description: string } {
   const criticalCount = findings.filter((f) => f.severity === 'critical').length;
   const highCount = findings.filter((f) => f.severity === 'high').length;
   const mediumCount = findings.filter((f) => f.severity === 'medium').length;
@@ -7643,17 +7717,14 @@ Examples:
         mergedFindings = emitFindings(nmResult.mergedFindings);
       } catch { /* NanoMind unavailable */ }
 
-      // Re-apply .hmaignore filtering after NanoMind merge (paths + check IDs)
+      // Re-apply .hmaignore filtering after NanoMind merge (paths + check IDs).
+      // One parser, one matcher: whole paths, `<path>:<CHECK>` narrowings and
+      // `!CHECK` patterns all read the way `secure` reads them, and matched
+      // findings leave the report. #460 — what they were is kept on
+      // `result.suppressed` / `result.outOfScope`, so the verdict below counts
+      // the suppressed penalties and the report names both.
       try {
-        const { loadHmaIgnore: loadIgnore, matchHmaIgnore: matchIgnore } = await import('./hardening/scanner.js');
-        const ncIgnoreRules = await loadIgnore(targetDir);
-        if (ncIgnoreRules.rules.length > 0) {
-          // One parser, one matcher: whole paths, `<path>:<CHECK>` narrowings
-          // and `!CHECK` patterns all read the way `secure` reads them. This
-          // arm keeps its pre-existing behaviour of dropping the matched
-          // findings from its report outright.
-          mergedFindings = mergedFindings.filter((f: SecurityFinding) => !matchIgnore(f, ncIgnoreRules));
-        }
+        mergedFindings = await refilterAfterLateSemanticMerge(scanner, result, mergedFindings, targetDir);
       } catch { /* ignore filter unavailable */ }
 
       // #458 — bare `!f.passed` would classify a not-applicable record
@@ -7662,6 +7733,11 @@ Examples:
       // contributes no failed record to any consumer.
       const issues = mergedFindings.filter(isMeasured).filter((f) => !f.passed);
       const passedFindings = mergedFindings.filter((f: SecurityFinding) => f.passed);
+      // #460 — this report lists every finding, so every suppressed row
+      // counts: out of the list, still in the risk level and the exit code.
+      const ncSuppressed = result.suppressed ?? [];
+      const ncOutOfScope = result.outOfScope ?? [];
+      const gatedIssues = [...issues, ...expandSuppressed(ncSuppressed)];
 
       // #373, same class as `check` and `secure-openclaw`. Measured
       // `text=1 json=0` on the same target before this line existed.
@@ -7669,13 +7745,14 @@ Examples:
       // both renderers — see the equivalent comment in `secure-openclaw`.
       // Checks evaluated, not files read — see the equivalent note in
       // `secure-openclaw`.
+      // Suppressed checks were evaluated — see the note in `secure-openclaw`.
       const ncVerdict = deriveCheckVerdict(
         {
-          critical: issues.filter((f: SecurityFinding) => f.severity === 'critical').length,
-          high: issues.filter((f: SecurityFinding) => f.severity === 'high').length,
-          issues: issues.length,
+          critical: gatedIssues.filter((f) => f.severity === 'critical').length,
+          high: gatedIssues.filter((f) => f.severity === 'high').length,
+          issues: gatedIssues.length,
         },
-        fullCoverage(mergedFindings.length, 'check'),
+        fullCoverage(mergedFindings.length + suppressionTotal(ncSuppressed), 'check'),
         'nothing-to-examine',
         `No NemoClaw check could be evaluated against ${escapePathForDisplay(targetDir)}.`,
       );
@@ -7684,12 +7761,15 @@ Examples:
       if (options.json) {
         const jsonOutput = {
           target: targetDir,
-          riskLevel: ncVerdict.measured ? assessNemoClawRiskLevel(issues).level : null,
+          riskLevel: ncVerdict.measured ? assessNemoClawRiskLevel(gatedIssues).level : null,
           coverage: coverageJson(ncVerdict),
           totalChecks: mergedFindings.length,
           issues: issues.length,
           passed: passedFindings.length,
           findings: mergedFindings,
+          // #460 — see the equivalent fields in `secure-openclaw --json`.
+          ...(ncSuppressed.length ? { suppressed: ncSuppressed } : {}),
+          ...(ncOutOfScope.length ? { outOfScope: ncOutOfScope } : {}),
         };
         writeJsonStdout(jsonOutput);
         return;
@@ -7701,12 +7781,13 @@ Examples:
       }
 
       // Risk assessment
-      const risk = assessNemoClawRiskLevel(issues);
+      const risk = assessNemoClawRiskLevel(gatedIssues);
       console.log(`Risk Level: ${risk.color}${risk.level}${RESET()}`);
       console.log(`${risk.description}\n`);
 
       // Summary stats
       console.log(`Checks: ${findings.length} total | ${issues.length} issue${issues.length === 1 ? '' : 's'} | ${passedFindings.length} passed\n`);
+      printSuppressionDisclosure(ncSuppressed, ncOutOfScope);
 
       // Show issues
       if (issues.length > 0) {
@@ -7737,6 +7818,9 @@ Examples:
           }
           console.log();
         }
+      } else if (ncSuppressed.length > 0) {
+        // #460 — not "no issues found": every one found is suppressed above.
+        console.log(`No NemoClaw-specific issues listed. The ones found are suppressed (see Suppressed above).\n`);
       } else {
         console.log(`${colors.green}No NemoClaw-specific issues found.${RESET()}\n`);
       }
