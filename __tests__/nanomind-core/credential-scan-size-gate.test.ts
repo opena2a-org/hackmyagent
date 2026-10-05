@@ -281,6 +281,34 @@ describe('HMA-23 credential scan size gate', () => {
     }
   });
 
+  describe('a non-source artifact UNDER the cap is scanned, not refused', () => {
+    // A ~900 KB SOUL.md: large enough to sit near the 1 MiB cap, small enough
+    // that nothing refuses it. Below the cap, the outcome a consumer must get is
+    // the specific credential finding. The refusal finding here would mean the
+    // gate fired early; zero findings would mean the scan never ran for this
+    // type, and the artifact came back `benign` with a raw key inside it.
+    const PROSE_LINE = 'The agent helps users with their tasks and answers questions politely.\n';
+    const PADDING = `# Soul\n\n${PROSE_LINE.repeat(6400)}`;
+    const NEAR_CAP_KEYED = `${PADDING}x = "sk-ant-api03-${fill(1000)}"\n${PADDING}`;
+
+    it('the probe is near the cap and still under it', () => {
+      const bytes = Buffer.byteLength(NEAR_CAP_KEYED, 'utf-8');
+      expect(bytes).toBeGreaterThan(850_000);
+      expect(bytes).toBeLessThan(maxCredentialScanBytesForTest());
+    });
+
+    for (const path of NON_SOURCE_PATHS) {
+      it(`a ~900 KB ${path} carrying a raw Anthropic key yields the Anthropic API key finding and is not benign`, async () => {
+        const result = await compiler().compile(NEAR_CAP_KEYED, path);
+        const surfaces = result.deterministicFindings.map(f => f.surface);
+        expect(surfaces).toContain('Hardcoded Anthropic API key');
+        expect(surfaces).not.toContain('Credential scan not performed (artifact over size limit)');
+        expect(result.warnings.some(w => w.startsWith('Credential scan skipped'))).toBe(false);
+        expect(result.ast.intentClassification).not.toBe('benign');
+      }, 120_000);
+    }
+  });
+
   describe('AC7 — the two caps are one number, guarded', () => {
     it('HMA-23.AC7 MAX_CREDENTIAL_SCAN_BYTES equals MAX_REDACTION_INPUT_BYTES', () => {
       // The two gates were born as independent literals that happened to agree.
