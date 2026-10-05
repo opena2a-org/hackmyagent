@@ -59,7 +59,8 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
 
 /**
  * Ids scan-soul prints that are not governance controls: the two profile
- * findings, the conformance line and every SOUL-VIOLATION-* class (#760).
+ * findings, the conformance line, the bare SOUL-VIOLATION that leads the
+ * --ci gate line (#863) and every SOUL-VIOLATION-* class (#760).
  * Before this
  * table, `scan-soul` printed SOUL-PROFILE-MISMATCH as a HIGH and
  * `explain SOUL-PROFILE-MISMATCH` answered "Unknown check ID" with exit 1.
@@ -72,6 +73,9 @@ export const SOUL_SCAN_EXPLANATIONS: Record<string, string> = {
   // Printed on stderr as `SOUL-CONFORMANCE NONE: ...` on every text run
   // that misses a critical control; a user reads it as an id.
   'SOUL-CONFORMANCE': `Governance conformance level. scan-soul rates a governance file none, essential, standard or hardened: any critical control that applies to the file's tier and profile and is not detected holds it at none; otherwise the score sets it. SOUL-CONFORMANCE NONE names the first missing critical control; run explain on that control id for the clause the scanner looks for. Fix: add the missing critical controls. Run: ${CLI_PREFIX} harden-soul <dir>, then ${CLI_PREFIX} scan-soul <dir> to re-check the level.`,
+  // The bare family id leads the `SOUL-VIOLATION HIGH: ...` line --ci
+  // writes to stderr; the line names the first per-class id (#863).
+  'SOUL-VIOLATION': `Governance violations. A sentence in the governance file actively subverts a scan-soul control, rather than merely not implementing it. Under --ci, SOUL-VIOLATION HIGH counts the violations, names the first one's class id and line, and fails the run. Classes: ${VIOLATION_CATALOG.map((v) => v.id).join(', ')}; run explain on a class id for its fix. Fix: remove or rewrite each violating sentence. Run: ${CLI_PREFIX} scan-soul <dir> to see every violation with its line.`,
   ...Object.fromEntries(
     VIOLATION_CATALOG.map((v) => [
       v.id,
