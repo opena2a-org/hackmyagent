@@ -11,43 +11,77 @@
 npx hackmyagent secure
 ```
 
-This runs all 310 static checks against your current directory. No config files or setup needed.
+This runs all 320 static checks against your current directory. No config files or setup needed.
 
-**Expected output:**
+**Output** from this repository's `test-fixtures/insecure-library` (trimmed where marked `...`; your findings depend on your project):
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
+Scanning .../insecure-library...
 
-Scanning: /home/user/my-agent
-Checks:  310 across 69 categories
-Time:    2.4s
+Discovering assembly components...
 
-  CRITICAL  CRED-001  Hardcoded API key in .env
-            Found: sk-proj-abc... in .env (line 3)
-            Fix:   Move to a secrets manager or environment variable
+  insecure-library-example  v1.0.0 · library · 3 files analyzed
+  1 critical issue found
 
-  HIGH      MCP-003   MCP server bound to 0.0.0.0
-            Found: stdio server in .cursor/mcp.json listening on all interfaces
-            Fix:   Bind to 127.0.0.1
+  Security  ━━━━━━━━━━━━━━━━━━━━ 58/100
 
-  HIGH      GIT-002   .gitignore missing sensitive patterns
-            Found: .env, *.pem not in .gitignore
-            Fix:   Add patterns to .gitignore
+  ── Observations ────────────────────────────────────────────
+  Surfaces    library · 3 semantic artifacts · all 3 artifacts reached 0-2 of 7 analyzer families
+  Checks      320 static declared · 63 of 63 check groups ran · 3 unreachable · 3 semantic (NanoMind AST, 0-2 of 7 analyzer families) · 4 files read by static checks
+  Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 36 checks reported an absent mitigation (not shown)
+  Unexamined  A2A, capabilities, governance, heartbeat, lifecycle, MCP, prompt, skill
+  Categories  credentials (2 high) · sandbox (1 high) · supply-chain (1 medium) · git hygiene (1 critical) · 13 others clear
+  Verdict     Not safe to ship. .env Not Ignored in .env + 5 more. Fix before using in production.
 
-  MEDIUM    PERM-001  Overly permissive file: config.json (0644)
-            Fix:   Set to 0600
 
-  MEDIUM    LOG-001   No audit logging configured
-            Fix:   Add structured logging for agent actions
+  ── Findings ────────────────────────────────────────────────
+  1 critical  3 high  1 medium  1 low
 
-  LOW       PROMPT-002  No system prompt hardening detected
-            Fix:   Add instruction boundaries to system prompt
+  │ CRITICAL  .env Not Ignored
+  │ .env
+  │ .env contains API keys or secrets. Without .gitignore protection, a single git add . can expose all credentials in your repository history.
+  │ →  hackmyagent secure --fix
 
-Summary: 1 critical, 2 high, 2 medium, 1 low
-         3 auto-fixable (run with --fix)
+  │ HIGH  Password embedded in URL
+  │ .env:4
+  │ URL-embedded credentials are logged by proxies, shell history, and process listings. They bypass .env file protections and are easily leaked in stack traces.
+  │ Verify: sed -n '4p' .../insecure-library/.env
+  │ Fix: npx opena2a-cli protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ ...
 
-Exit code: 1 (critical/high issues found)
+  │ HIGH  Hardcoded secret in config
+  │ .env:5
+  │ .env files with hardcoded secrets should be gitignored. If this file is committed, the secret is exposed in version control history.
+  │ Verify: sed -n '5p' .../insecure-library/.env
+  │ Fix: Ensure .env is in .gitignore and rotate this credential.
+
+  │ LOW  Incomplete .gitignore
+  │ .gitignore
+  │ No committable files match the missing patterns yet, but adding them now (.env, secrets.json, *.pem, *.key) means a future key or secrets file is never committed by accident.
+  │ →  hackmyagent secure --fix
+
+  │ HIGH  Sensitive File Permissions
+  │ .env
+  │ Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.
+  │ →  hackmyagent secure --fix
+
+  │ MEDIUM  Dependency Lock File
+  │ package-lock.json
+  │ Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.
+
+  Path forward: 58 -> 97 by fixing 1 critical + 3 high
+
+  ── Next Steps ─────────────────────────────────────────────────
+  Protect credentials:  npx opena2a-cli protect .
+  Auto-fix all issues:  hackmyagent secure . --fix
+  AI analysis:          hackmyagent check . --nanomind  (attack vectors + targeted remediation)
+  All commands:         hackmyagent --help
+  opena2a is a separate CLI — install with: npm i -g opena2a-cli
+
+  Scanned with hackmyagent v0.33.2
 ```
+
+The scan exits `1` here because it found critical and high issues.
 
 ## Step 2: Understand severity levels
 
@@ -58,7 +92,7 @@ Exit code: 1 (critical/high issues found)
 | MEDIUM | Defense-in-depth gaps. Missing logging, weak permissions. | Fix during next sprint. |
 | LOW | Hardening recommendations. Best practices not yet applied. | Address when convenient. |
 
-The exit code is `1` if any critical or high issues are found, `0` if clean.
+The exit code is `1` if any critical or high issues are found, `0` if clean, and `2` if the scan could not examine everything it found, so it reports no pass.
 
 ## Step 3: Preview fixes (dry run)
 
@@ -68,26 +102,27 @@ Before applying changes, see what HMA would do:
 npx hackmyagent secure --fix --dry-run
 ```
 
-**Expected output:**
+**Output** on a copy of the same fixture (trimmed where marked `...`):
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner (dry run)
+Scanning .../insecure-library (dry-run)...
 
-Scanning: /home/user/my-agent
-Checks:  310 across 69 categories
+Discovering assembly components...
 
-  CRITICAL  CRED-001  Hardcoded API key in .env
-            Would fix: Replace sk-proj-abc... with ${OPENAI_API_KEY}
+  insecure-library-example  v1.0.0 · library · 3 files analyzed
+  1 critical issue found
 
-  HIGH      GIT-002   .gitignore missing sensitive patterns
-            Would fix: Append .env, *.pem, *.key to .gitignore
+  Security  ━━━━━━━━━━━━━━━━━━━━ 58/100
 
-  MEDIUM    PERM-001  Overly permissive file: config.json (0644)
-            Would fix: chmod 0600 config.json
+  ...
 
-Dry run complete. 3 fixes would be applied.
-Run without --dry-run to apply.
+  Dry run complete: 3 issues auto-fixable. Run without --dry-run to apply.
+  No changes were made.
+
+  Scanned with hackmyagent v0.33.2
 ```
+
+The report above the cut is the one Step 1 shows. The three findings there marked `→  hackmyagent secure --fix` are the three the dry run counts.
 
 No files are modified during a dry run.
 
@@ -97,14 +132,9 @@ No files are modified during a dry run.
 npx hackmyagent secure --fix
 ```
 
-**Expected output:**
+**Abbreviated sample; your output will differ:**
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
-
-Scanning: /home/user/my-agent
-Checks:  310 across 69 categories
-
   FIXED     CRED-001  Replaced hardcoded key with ${OPENAI_API_KEY} in .env
             Backup: .hackmyagent-backup/.env.1710504000
 
@@ -114,10 +144,6 @@ Checks:  310 across 69 categories
   FIXED     PERM-001  Set config.json permissions to 0600
             Backup: .hackmyagent-backup/config.json.1710504000
 
-  HIGH      MCP-003   MCP server bound to 0.0.0.0
-            (manual fix required -- update server config)
-
-Summary: 3 fixed, 1 remaining (manual)
 Backups saved to .hackmyagent-backup/
 ```
 
@@ -141,7 +167,7 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 ## Tips
 
-- Use `--verbose` to see all 310 static checks, including ones that passed.
+- Use `--verbose` to see all 320 static checks, including ones that passed.
 - Use `--ignore CRED-001,LOG-001` to skip specific checks (e.g., known false positives).
 - Use `--json` to get machine-readable output for scripting.
 - Add `--ci` for non-interactive mode (no color, no prompts).
@@ -150,4 +176,4 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 - [Red-team your MCP servers](red-team-mcp.md) with adversarial payloads
 - [Add HMA to your CI/CD pipeline](ci-pipeline.md)
-- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for all 310 static checks
+- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for all 320 static checks
