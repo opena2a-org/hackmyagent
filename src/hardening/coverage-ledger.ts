@@ -904,6 +904,17 @@ export class CoverageLedger {
    * rejects the walker's `readdir` and a check's `readFile` probe alike) is one
    * obstruction and is reported once, as the directory — the kind whose remedy
    * actually clears it.
+   *
+   * One obstruction reachable under two SPELLINGS is one record too (#621).
+   * The maps are keyed by the path the caller named, and on a case-insensitive
+   * filesystem a walker that read `Src` off the disk and a check that probed
+   * `src` by name fail on the same directory under two keys, neither an
+   * ancestor of the other: one `chmod` clears both, and the count, the
+   * denominator and the penalty were doubled. A link beside its own target is
+   * the same shape on any filesystem. Records are therefore compared on their
+   * on-disk spelling (`onDiskSpelling`) here, at emission — the recording
+   * stays raw, so a later success under the spelling that failed still
+   * subtracts.
    */
   private lostInputs(): { resolved: string; code: string; kind: 'file' | 'directory' }[] {
     const lostDirs = new Map<string, string>(); // resolved dir -> errno
@@ -919,28 +930,91 @@ export class CoverageLedger {
     // onto a recorded ancestor: a sibling, or a parent the scan listed fine,
     // is not an obstruction the ledger observed, and the ledger does not
     // invent one. Pure path ancestry — no probe, so both arms coalesce alike.
-    const underLostDir = (resolved: string): boolean => {
+    const beneath = (resolved: string, dirs: { has(dir: string): boolean }): boolean => {
       let dir = path.dirname(resolved);
       while (dir !== resolved) {
-        if (lostDirs.has(dir)) return true;
+        if (dirs.has(dir)) return true;
         const up = path.dirname(dir);
         if (up === dir) break;
         dir = up;
       }
       return false;
     };
-    const out: { resolved: string; code: string; kind: 'file' | 'directory' }[] = [];
+    // The spelling pass runs SECOND, over what the recorded-path rule above
+    // left standing, and a record is only ever folded into one that is itself
+    // still standing. Each pass follows a strict ancestor order, so a set of
+    // records can shrink to one and never to none. Letting a record the first
+    // rule already attributed serve as an ancestor here would break that: a
+    // lost directory and a link under it that points back up would each be
+    // attributed to the other, and nothing would be reported lost.
+    type Lost = { resolved: string; code: string };
+    const fold = (into: Map<string, Lost>, onDisk: string, resolved: string, code: string): void => {
+      const first = into.get(onDisk);
+      // First errno wins, as at recording; the path reported is the on-disk
+      // spelling when a record carries it, because that is the name a listing
+      // of the parent shows.
+      if (!first) into.set(onDisk, { resolved, code });
+      else if (resolved === onDisk) first.resolved = resolved;
+    };
+    const dirsOnDisk = new Map<string, Lost>(); // on-disk spelling -> the record reported for it
     for (const [resolved, code] of lostDirs) {
-      if (underLostDir(resolved)) continue;
-      out.push({ resolved, code, kind: 'directory' });
+      if (beneath(resolved, lostDirs)) continue;
+      fold(dirsOnDisk, this.onDiskSpelling(resolved), resolved, code);
     }
+    const filesOnDisk = new Map<string, Lost>();
     for (const [resolved, { code, method }] of this.readFailures) {
       if (!countsAsUnread(code)) continue;
       if (this.readsByMethod.get(method)?.has(resolved)) continue;
-      if (lostDirs.has(resolved) || underLostDir(resolved)) continue;
-      out.push({ resolved, code, kind: 'file' });
+      if (lostDirs.has(resolved) || beneath(resolved, lostDirs)) continue;
+      const onDisk = this.onDiskSpelling(resolved);
+      if (dirsOnDisk.has(onDisk) || beneath(onDisk, dirsOnDisk)) continue;
+      fold(filesOnDisk, onDisk, resolved, code);
     }
+    const out: { resolved: string; code: string; kind: 'file' | 'directory' }[] = [];
+    for (const [onDisk, { resolved, code }] of dirsOnDisk) {
+      if (beneath(onDisk, dirsOnDisk)) continue;
+      out.push({ resolved, code, kind: 'directory' });
+    }
+    for (const { resolved, code } of filesOnDisk.values()) out.push({ resolved, code, kind: 'file' });
     return out;
+  }
+
+  /**
+   * The spelling the filesystem holds for a recorded path, anchored on the
+   * root the caller named. Two records that name one directory or file map to
+   * one string, which is what `lostInputs` compares them on.
+   *
+   * `realpath.native`, not `realpathSync`: the JavaScript walk returns each
+   * component as it was typed, so `<t>/src` and `<t>/Src` stay two paths on a
+   * case-insensitive volume, while libc's answers with the stored name.
+   *
+   * A path under a directory this process cannot search does not resolve at
+   * all, so the deepest ancestor that does is resolved and the rest is kept
+   * as recorded — enough to place `<t>/src/index.js` under `<t>/Src`. Best
+   * effort by construction: when nothing resolves, the recorded spelling
+   * stands, and two spellings the filesystem does not unify stay two records,
+   * which errs toward counting.
+   *
+   * Re-anchored on `targetRoot` because the records are: a scan of
+   * `/var/...` on macOS resolves under `/private/var/...`, and a record
+   * already in its on-disk spelling has to map to itself for `lostInputs` to
+   * recognise it as the one to report.
+   */
+  private onDiskSpelling(resolved: string): string {
+    let head = resolved;
+    const tail: string[] = [];
+    let real = this.memoizedRealpath(head);
+    while (real === null) {
+      const up = path.dirname(head);
+      if (up === head) return resolved;
+      tail.unshift(path.basename(head));
+      head = up;
+      real = this.memoizedRealpath(head);
+    }
+    const onDisk = tail.length > 0 ? path.join(real, ...tail) : real;
+    const realRoot = this.memoizedRealpath(this.targetRoot);
+    if (realRoot === null || !CoverageLedger.insideLexical(onDisk, realRoot)) return onDisk;
+    return path.join(this.targetRoot, path.relative(realRoot, onDisk));
   }
 
   /**

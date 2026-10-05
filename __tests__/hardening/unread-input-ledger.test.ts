@@ -13,7 +13,7 @@
  * scored `69/100 exit 1` readable and `98/100 exit 0` at mode 000. The score
  * went UP because the unread file left the assessment entirely.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -282,6 +282,161 @@ describe('#438 CoverageLedger records inputs discovered but not read', () => {
       });
       expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
       expect(ledger.unreadablePaths()).toEqual([{ path: inside('cfg'), code: 'EACCES', kind: 'directory' }]);
+    });
+  });
+
+  describe('two spellings of one obstruction (#621): compared on the on-disk spelling, reported once', () => {
+    // Measured before this change, on a case-insensitive volume: a mode-000
+    // directory `Src` gave `{count: 2, codes: {EACCES: 2}, directories: 2}` and
+    // two findings (`src/` and `Src/`) — the walker recorded the name it read
+    // off the disk, a fixed-path probe recorded the name it asked for, and one
+    // `chmod` cleared both.
+    //
+    // These use a REAL tree, because the comparison is on what the filesystem
+    // holds. Most of them alias a directory with a link rather than with case,
+    // so they pin the rule on a case-sensitive CI volume as well; the case
+    // spelling itself is pinned where the volume folds case.
+    const trees: string[] = [];
+    afterAll(() => {
+      for (const t of trees) fs.rmSync(t, { recursive: true, force: true });
+    });
+    /** A real root holding `data/` and `alias -> data`. */
+    function aliasedTree(): { root: string; data: string; alias: string } {
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hma-ledger-621-')));
+      trees.push(root);
+      fs.mkdirSync(path.join(root, 'data'));
+      fs.symlinkSync('data', path.join(root, 'alias'));
+      return { root, data: path.join(root, 'data'), alias: path.join(root, 'alias') };
+    }
+    /** Whether the fixture volume treats `Src` and `src` as one name. */
+    const FOLDS_CASE = (() => {
+      const probe = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-ledger-case-'));
+      try {
+        fs.mkdirSync(path.join(probe, 'Src'));
+        return fs.existsSync(path.join(probe, 'src'));
+      } finally {
+        fs.rmSync(probe, { recursive: true, force: true });
+      }
+    })();
+
+    it.each([
+      ['the link recorded first', ['alias', 'data']],
+      ['the directory recorded first', ['data', 'alias']],
+    ])('a directory unlistable under two names is ONE directory record, named as the disk names it (%s)', async (_label, order) => {
+      const { root, data } = aliasedTree();
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => {
+        for (const name of order) l.noteListFailure(path.join(root, name), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: data, code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it.skipIf(!FOLDS_CASE).each([
+      ['the probe recorded first', ['src', 'Src']],
+      ['the walker recorded first', ['Src', 'src']],
+    ])('`Src` and `src` on a volume that folds case are ONE directory record (%s)', async (_label, order) => {
+      const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hma-ledger-621-')));
+      trees.push(root);
+      fs.mkdirSync(path.join(root, 'Src'));
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => {
+        for (const name of order) l.noteListFailure(path.join(root, name), 'EACCES');
+        // A probe by name beneath the spelling the disk does not hold.
+        l.noteReadFailure(path.join(root, 'SRC', 'index.js'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: path.join(root, 'Src'), code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('a probe beneath the OTHER name of a lost directory coalesces onto it', async () => {
+      // Nothing under a directory this process cannot search resolves, so the
+      // probe is placed by its deepest ancestor that does.
+      const { root, data, alias } = aliasedTree();
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(data, 'EACCES');
+        l.noteReadFailure(path.join(alias, 'index.js'), 'EACCES');
+        l.noteListFailure(path.join(alias, 'lib'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: data, code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('one directory on BOTH channels under two names counts once, as the directory', async () => {
+      const { root, data, alias } = aliasedTree();
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => {
+        l.noteReadFailure(alias, 'EACCES');
+        l.noteListFailure(data, 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: data, code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('one file unreadable under two names is ONE file record', async () => {
+      const { root } = aliasedTree();
+      fs.writeFileSync(path.join(root, 'key.pem'), 'x\n');
+      fs.symlinkSync('key.pem', path.join(root, 'key-link.pem'));
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => {
+        l.noteReadFailure(path.join(root, 'key-link.pem'), 'EACCES');
+        l.noteReadFailure(path.join(root, 'key.pem'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: path.join(root, 'key.pem'), code: 'EACCES', kind: 'file' }]);
+    });
+
+    it('a root that is itself a link still reports the path under the root the caller named', async () => {
+      // The on-disk spelling resolves under the root's REAL location; the
+      // record has to come back under the named one, or the scanner's
+      // `path.relative(target, path)` walks out of the tree.
+      const { root } = aliasedTree();
+      const named = `${root}-named`;
+      fs.symlinkSync(root, named);
+      trees.push(named);
+      const ledger = new CoverageLedger(named);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(path.join(named, 'alias'), 'EACCES');
+        l.noteListFailure(path.join(named, 'data'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: path.join(named, 'data'), code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('a lone record keeps the spelling it was recorded under', async () => {
+      const { root, alias } = aliasedTree();
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => l.noteListFailure(alias, 'EACCES'));
+      expect(ledger.unreadablePaths()).toEqual([{ path: alias, code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('two DIFFERENT directories on disk stay two records', async () => {
+      const { root, data } = aliasedTree();
+      fs.mkdirSync(path.join(root, 'other'));
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(data, 'EACCES');
+        l.noteListFailure(path.join(root, 'other'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 2, codes: { EACCES: 2 }, directories: 2 });
+    });
+
+    it('a lost directory and a link under it pointing back up never fold into NOTHING', async () => {
+      // The forbidden direction. `b/up -> ..` sits beneath `b` by the path it
+      // was recorded under, while `b` sits beneath `b/up` by where that link
+      // lands; a rule that let each be attributed to the other would report
+      // no lost input at all with two listings refused.
+      const { root } = aliasedTree();
+      fs.mkdirSync(path.join(root, 'b'));
+      fs.symlinkSync('..', path.join(root, 'b', 'up'));
+      const ledger = new CoverageLedger(root);
+      await withFailure(ledger, (l) => {
+        l.noteListFailure(path.join(root, 'b', 'up'), 'EACCES');
+        l.noteListFailure(path.join(root, 'b'), 'EACCES');
+      });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: path.join(root, 'b'), code: 'EACCES', kind: 'directory' }]);
     });
   });
 
