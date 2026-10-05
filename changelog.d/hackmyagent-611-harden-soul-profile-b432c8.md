@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 611
+breaking: true
 ---
 #### `harden-soul --profile` refuses a value that is not a profile (#611)
 

@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 439
+breaking: true
 ---
 #### attack no longer scores a target SECURE when its replies carry no text it can read (#439)
 

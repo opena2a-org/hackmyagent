@@ -55,6 +55,11 @@ Commit that file with the change. The entry can also come from a file:
   code or a changed `--json` field. A breaking or `removed` fragment makes the
   release raise at least the minor version before 1.0.0, and the major version
   from 1.0.0 on.
+  A fix counts when it changes the exit code an invocation ends with, for
+  example a run that exited 0 on a wrong result and now exits 1 or 2, or a flag
+  combination that was accepted and is now refused. An exit code that only a
+  timing race produced is not one a script can rely on, so a fix that removes
+  it does not count.
 - The file name is made from the last part of the current branch name,
   followed by six random hex characters. `--name <slug>` sets the first part.
 

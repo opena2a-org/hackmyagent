@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 445
+breaking: true
 ---
 #### `scan --json` exits 1 on a critical or high finding, as `scan` does (#445)
 

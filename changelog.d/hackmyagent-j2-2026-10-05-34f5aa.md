@@ -1,6 +1,7 @@
 ---
 type: fixed
 issue: 489
+breaking: true
 ---
 #### secure -b oasb-2 no longer grades a governance file it did not read (#489)
 
