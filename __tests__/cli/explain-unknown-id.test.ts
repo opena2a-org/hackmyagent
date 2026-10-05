@@ -219,11 +219,11 @@ describe.runIf(existsSync(CLI))('ids scan-soul prints explain (spawn, #760)', ()
     markerInvalid: ['# Bot', '', '<!-- soul:profile=bogus -->', '', 'A helpful assistant.', ''].join('\n'),
   };
 
-  function printedSoulIds(fixture: string): string[] {
+  function printedSoulIds(fixture: string, flags: readonly string[]): string[] {
     const dir = mkdtempSync(join(tmpdir(), 'explain-scan-soul-'));
     try {
       writeFileSync(join(dir, 'SOUL.md'), fixture, 'utf-8');
-      const res = spawnSync(process.execPath, [CLI, 'scan-soul', dir], {
+      const res = spawnSync(process.execPath, [CLI, 'scan-soul', dir, ...flags], {
         encoding: 'utf-8',
         env: { ...process.env, NO_COLOR: '1', NANOMIND_URL: DEAD_DAEMON },
       });
@@ -234,11 +234,14 @@ describe.runIf(existsSync(CLI))('ids scan-soul prints explain (spawn, #760)', ()
     }
   }
 
+  // --ci adds the stderr gate lines; `SOUL-VIOLATION HIGH:` leads with the
+  // bare family id, which explain refused until #863.
   it.each([
-    ['mismatch', ['SOUL-PROFILE-MISMATCH', 'SOUL-VIOLATION-OVERRIDE-COMPLIANCE', 'SOUL-CONFORMANCE']],
-    ['markerInvalid', ['SOUL-PROFILE-MARKER-INVALID']],
-  ] as const)('every SOUL id scan-soul prints for the %s fixture explains with exit 0', (name, mustPrint) => {
-    const ids = printedSoulIds(FIXTURES[name]);
+    ['mismatch', [], ['SOUL-PROFILE-MISMATCH', 'SOUL-VIOLATION-OVERRIDE-COMPLIANCE', 'SOUL-CONFORMANCE']],
+    ['mismatch', ['--ci'], ['SOUL-VIOLATION', 'SOUL-VIOLATION-OVERRIDE-COMPLIANCE', 'SOUL-PROFILE-MISMATCH']],
+    ['markerInvalid', [], ['SOUL-PROFILE-MARKER-INVALID']],
+  ] as const)('every SOUL id scan-soul %s %j prints explains with exit 0', (name, flags, mustPrint) => {
+    const ids = printedSoulIds(FIXTURES[name], flags);
     // Non-vacuity: the fixture reaches the finding it exists for.
     for (const id of mustPrint) expect(ids, `scan-soul output for ${name}`).toContain(id);
 
@@ -254,6 +257,14 @@ describe.runIf(existsSync(CLI))('ids scan-soul prints explain (spawn, #760)', ()
     expect(stderr).not.toMatch(/Unknown check ID/i);
     expect(stdout).toMatch(/SOUL-PROFILE-MISMATCH/);
     expect(stdout).toMatch(/soul:profile=/);
+    expect(stdout).toMatch(/scan-soul <dir>/);
+    expect(code).toBe(0);
+  });
+
+  it('explain SOUL-VIOLATION describes the family and points at the per-class ids', () => {
+    const { code, stdout, stderr } = runExplain('SOUL-VIOLATION');
+    expect(stderr).not.toMatch(/Unknown check ID/i);
+    expect(stdout).toMatch(/SOUL-VIOLATION-[A-Z]/);
     expect(stdout).toMatch(/scan-soul <dir>/);
     expect(code).toBe(0);
   });
