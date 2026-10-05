@@ -99,6 +99,48 @@ describe('CredVaultPlugin', () => {
       const credFindings = findings.filter((f) => f.id === 'CRED-001');
       expect(credFindings.length).toBe(2);
     });
+
+    // #539: the .env key-name rule fired on the name alone, so a line holding
+    // no credential at all was reported as a HIGH hardcoded credential.
+    describe('.env key-name rule reads the value (#539)', () => {
+      const credLines = async (file: string, body: string) => {
+        fs.writeFileSync(path.join(tmpDir, file), body, 'utf-8');
+        const findings = await plugin.scan(tmpDir);
+        return findings.filter((f) => f.id === 'CRED-001').map((f) => f.line);
+      };
+
+      it.each([
+        ['an empty value', 'API_KEY=\n'],
+        ['an empty quoted value', 'API_KEY=""\n'],
+        ['an empty value with a trailing comment', 'API_KEY= # set in CI\n'],
+        ['a braced reference', 'API_KEY=${OPENAI_API_KEY}\n'],
+        ['a braced reference under a vendor key name', 'OPENAI_API_KEY=${OPENAI_API_KEY}\n'],
+        ['a bare reference', 'PASSWORD=$FOO\n'],
+        ['a quoted reference', 'export DATABASE_URL="${DATABASE_URL}"\n'],
+      ])('does not report %s', async (_label, body) => {
+        expect(await credLines('.env', body)).toEqual([]);
+      });
+
+      it('applies to .env.local as well', async () => {
+        expect(await credLines('.env.local', 'API_KEY=\nMY_API_KEY=${MY_API_KEY}\n')).toEqual([]);
+      });
+
+      it('still reports a literal value under a credential key name', async () => {
+        const body = [
+          'API_KEY=',
+          'API_KEY=${OPENAI_API_KEY}',
+          'API_KEY=a1b2c3d4e5f6',
+          'PASSWORD=abc#123',
+          'JWT_SECRET=${JWT_SECRET:-fallback-literal}',
+          '',
+        ].join('\n');
+        fs.writeFileSync(path.join(tmpDir, '.env'), body, 'utf-8');
+        const findings = (await plugin.scan(tmpDir)).filter((f) => f.id === 'CRED-001');
+        expect(findings.map((f) => f.line)).toEqual([3, 4, 5]);
+        expect(findings.every((f) => f.severity === 'high')).toBe(true);
+        expect(findings[0].title).toBe('Hardcoded credential: API_KEY');
+      });
+    });
   });
 
   describe('fix', () => {
