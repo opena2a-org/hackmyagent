@@ -62,6 +62,34 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
     expect(JSON.parse(r.stdout).coverage.reason).toBe('target-not-found');
   });
 
+  // #866 — RED-ON-BASE (f561c998): with `-o` the document still went to
+  // stdout and the report file was never created, while the measured arm
+  // writes the file. A CI step that parses the report file found nothing.
+  it('RED-ON-BASE: --json -o writes the document to the file and still exits 2', () => {
+    const dir = tmp('hma-866-');
+    const missing = path.join(dir, 'no-such-dir');
+    const report = path.join(dir, 'report.json');
+    const r = run(['secure', missing, '--json', '-o', report]);
+    expect(r.status, r.stderr).toBe(2);
+    expect(fs.existsSync(report), r.stdout).toBe(true);
+    const doc = JSON.parse(fs.readFileSync(report, 'utf8'));
+    expect(doc.measured).toBe(false);
+    expect(doc.exitCode).toBe(2);
+    expect(doc.verdict).toBeNull();
+    expect(doc.target).toBe(missing);
+    expect(doc.coverage.reason).toBe('target-not-found');
+    expect(r.stdout).not.toContain('"target-not-found"');
+    expect(r.stderr).toContain(`Report written to ${report}`);
+  });
+
+  it('--format json -o writes the same document to the file', () => {
+    const dir = tmp('hma-866-fmt-');
+    const report = path.join(dir, 'report.json');
+    const r = run(['secure', path.join(dir, 'no-such-dir'), '--format', 'json', '-o', report]);
+    expect(r.status, r.stderr).toBe(2);
+    expect(JSON.parse(fs.readFileSync(report, 'utf8')).coverage.reason).toBe('target-not-found');
+  });
+
   it('RED-ON-BASE: text mode exits 2 and says nothing was measured', () => {
     const missing = path.join(tmp('hma-481-txt-'), 'no-such-dir');
     const r = run(['secure', missing]);

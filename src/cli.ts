@@ -5184,14 +5184,22 @@ Examples:
           `${escapePathForDisplay(String(originalTarget))} does not exist, so nothing was scanned.`,
         );
         if (options.json || options.format === 'json') {
-          writeJsonStdout({
+          const notMeasuredDoc = {
             hackmyagentVersion: VERSION,
             target: originalTarget,
             verdict: null,
             exitCode: verdict.exitCode,
             measured: false,
             coverage: coverageJson(verdict),
-          });
+          };
+          // #866 — `-o` receives this document the way it receives the
+          // measured one; a CI step that reads the report file found none.
+          if (options.output) {
+            require('fs').writeFileSync(options.output, buildJsonStdoutDocument(notMeasuredDoc, VERSION));
+            console.error(`Report written to ${options.output}`);
+          } else {
+            writeJsonStdout(notMeasuredDoc);
+          }
         } else {
           console.error(unmeasuredBanner(verdict));
           // Omitted rather than printed when the path cannot be cited
