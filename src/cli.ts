@@ -12965,9 +12965,19 @@ program
           const { runOracleEval, printOracleReport, GATE_RECALL, GATE_PRECISION, GATE_F1 } = await import('./eval/oracle.js');
           const oraclePath = opts.oracleDir.replace(/^~/, process.env.HOME ?? '~');
 
-          if (!fsSync.existsSync(oraclePath)) {
-            console.error(`Error: oracle-dir not found: ${escapeForDisplay(String(oraclePath))}`);
-            console.error('  Clone or create the oracle fixture directory first.');
+          // #649 — any format other than 'json' fell to the text report at
+          // exit 0 (`--format sarif`, `--format ''`), so a CI job that asked
+          // for a machine format got prose with nothing in the exit code to
+          // say so. Refused on this site, before any eval (baseline unchanged).
+          const validFormats = ['text', 'json'];
+          const formatInvalid = !validFormats.includes(opts.format);
+          if (formatInvalid || !fsSync.existsSync(oraclePath)) {
+            if (formatInvalid) {
+              console.error(`Error: Invalid format '${escapeForDisplay(String(opts.format))}'. Use: ${validFormats.join(', ')}`);
+            } else {
+              console.error(`Error: oracle-dir not found: ${escapeForDisplay(String(oraclePath))}`);
+              console.error('  Clone or create the oracle fixture directory first.');
+            }
             process.exit(1); // exit-unsettled(#350/S045): pre-work refusal; events await the schema reason field (#525)
           }
 
