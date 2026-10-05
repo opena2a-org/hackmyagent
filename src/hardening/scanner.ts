@@ -8449,8 +8449,8 @@ dist/
 
   /**
    * Effective (non-comment, non-blank, non-negation) `.gitignore` rules,
-   * each trimmed and CR-stripped. Leading `**​/` is stripped (globstar
-   * prefix is match-anywhere, same as the bare form). A leading `/` is
+   * each trimmed and CR-stripped. A leading globstar segment (`**` followed
+   * by `/`) is stripped: it is match-anywhere, same as the bare form. A leading `/` is
    * NOT stripped: a root-anchored rule is narrower than the bare form and
    * must not be treated as equivalent (adversarial-review finding, #250).
    */

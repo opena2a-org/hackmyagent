@@ -4,6 +4,13 @@
 # download paths. Disposition of a specific finding belongs in the issue tracker,
 # not here. Path rules below are a scope statement and are disclosed on the
 # `Scope` line of every scan. `__tests__/hmaignore-scope-only.test.ts` enforces this.
+#
+# No shipped path is excluded. The only whole-path rules are the three test
+# trees; everything under `src/`, `scripts/` and the root documents is scanned
+# by our own build. A finding on shipped source that is the file's own
+# construction is declared below as `<file>:<CHECK-ID> # <reason>`, one file and
+# one check per line, so every other check still runs on that file and the
+# `--json` report still counts what each line matched.
 
 # Intentionally vulnerable test fixtures — git-only, excluded from scans and npm publish
 test-fixtures/
@@ -12,31 +19,9 @@ test/
 # Test files contain intentional attack patterns and vulnerable code samples
 __tests__/
 
-# Attack payloads are intentionally adversarial (prompt injection, jailbreak, etc.)
-src/attack/payloads/
-
-# Scanner contains detection regex patterns that match the threats they detect
-src/hardening/
-
-# NanoMind core contains eval/Function detection regex that triggers NEMO-009
-src/nanomind-core/
-
-# Build scripts — verify-then-use patterns are not exploitable in build context
-scripts/
-
-# Documentation files — contain security terminology that triggers false positives
-CHANGELOG.md
-changelog.d/
-CONTRIBUTING.md
-
-# Plugins use verify-then-act patterns on local files (not exploitable TOCTOU)
-src/plugins/
-
-# Lifecycle scanners use verify-then-scan (read-only, no execution risk)
-src/lifecycle/
-
-# OASB harness manages DVAA (deliberately vulnerable agent) — flagged as malicious
-src/oasb/
-
-# Benchmark files contain intentional attack patterns for testing
-src/benchmarks/
+# By-construction findings on shipped files, each narrowed to one file and one check.
+src/hardening/scanner.ts:UNICODE-STEGO-002 # the display sanitiser skips the variation-selector and tag-character ranges (0xFE00..0xFE0F, 0xE0000..0xE01EF) by codepoint, and that range literal next to a .codePointAt read is the decoder shape the check looks for; a detector firing on its own countermeasure, same class as #468
+src/nanomind-core/analyzers/stego-analyzer.ts:UNICODE-STEGO-002 # the steganography range table lists the variation-selector and tag-character ranges (0xFE00..0xFE0F, 0xE0000..0xE01EF) it detects, so the table reads as a decoder; a detector firing on its own countermeasure, same class as #468
+src/nanomind-core/analyzers/stego-analyzer.ts:UNICODE-STEGO-005 # the homoglyph table names each Cyrillic codepoint with its glyph in a trailing comment, and those glyphs are the confusables the check detects; #468
+src/nanomind-core/inference/tme-classifier.ts:AST-CRED-003 # the three 64-hex values are the SHA-256 pins each downloaded model file is checked against before it is loaded; an integrity digest, not a credential
+CHANGELOG.md:UNICODE-STEGO-002 # release notes describing the decoder detector spell decoder ranges in hex and decimal next to the words .codePointAt and eval; a release note decodes nothing, see #467

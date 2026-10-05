@@ -29,8 +29,9 @@
  * open (see #457).
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { parseHmaIgnore } from '../src/hardening/scanner';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HMAIGNORE = path.join(REPO_ROOT, '.hmaignore');
@@ -60,5 +61,75 @@ describe("#457 — this repo's .hmaignore states scope, never waives a check", (
     expect(
       offenders.map((o) => `${path.basename(HMAIGNORE)}:${o.line} ${o.text}`),
     ).toEqual([]);
+  });
+});
+
+/**
+ * The scanner we ship scans its own shipped source.
+ *
+ * Until this guard, the same file carried whole-directory rules on
+ * `src/hardening/`, `src/nanomind-core/` and `src/attack/payloads/`, plus seven
+ * more shipped-path rules that matched nothing at all. A whole-path rule on
+ * shipped source is invisible in practice: the `Scope` line names the
+ * directory, never what it hid, and a rule that once covered one finding keeps
+ * covering every finding that later lands under it. Two of the findings it hid
+ * were literal zero-width characters in files that ship in `dist/`.
+ *
+ * The test trees stay out by a whole-path rule. Anything else is declared as
+ * `<file>:<CHECK-ID> # <reason>`: one file, one exact check, a reason a reader
+ * can check against that file.
+ */
+describe("this repo's .hmaignore excludes no shipped path", () => {
+  const TEST_TREES = new Set(['test-fixtures/', 'test/', '__tests__/']);
+  const today = new Date().toISOString().slice(0, 10);
+  const parsed = parseHmaIgnore(readFileSync(HMAIGNORE, 'utf-8'), today);
+
+  it('every line parses', () => {
+    expect(parsed.errors.map((e) => `.hmaignore:${e.line} ${e.rule} (${e.error})`)).toEqual([]);
+  });
+
+  it('the only whole-path rules are the three test trees', () => {
+    const wholePath = parsed.rules.filter((r) => r.channel === 'hmaignore-path');
+    expect(wholePath.map((r) => r.path).sort()).toEqual([...TEST_TREES].sort());
+  });
+
+  it('every narrowed rule names one existing file, one exact check and a reason', () => {
+    const narrowed = parsed.rules.filter((r) => r.channel === 'hmaignore-path-check');
+    expect(narrowed.length).toBeGreaterThan(0);
+    const offenders = narrowed
+      .filter((r) => {
+        const target = path.join(REPO_ROOT, r.path ?? '');
+        const isFile = existsSync(target) && statSync(target).isFile();
+        const exactCheck = /^[A-Z][A-Z0-9]*(-[A-Z0-9]+)+$/.test(r.checkId ?? '');
+        return !isFile || !exactCheck || !(r.reason && r.reason.trim().length > 20);
+      })
+      .map((r) => `.hmaignore:${r.line} ${r.rule}`);
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('shipped source carries no literal zero-width codepoint', () => {
+  // U+200B..U+200D, word joiner and BOM: the set UNICODE-STEGO-001 reads as
+  // hidden text. Source that needs one spells it as an escape, which compiles
+  // to the same string and leaves nothing invisible in `dist/`.
+  const ZERO_WIDTH = /[\u200B-\u200D\u2060\uFEFF]/;
+
+  function sourceFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return sourceFiles(full);
+      return /\.(ts|js|mjs|cjs|json)$/.test(entry.name) ? [full] : [];
+    });
+  }
+
+  it('no file under src/ contains one', () => {
+    const files = sourceFiles(path.join(REPO_ROOT, 'src'));
+    expect(files.length).toBeGreaterThan(100);
+    const offenders = files.flatMap((file) =>
+      readFileSync(file, 'utf-8')
+        .split('\n')
+        .flatMap((text, i) => (ZERO_WIDTH.test(text) ? [`${path.relative(REPO_ROOT, file)}:${i + 1}`] : [])),
+    );
+    expect(offenders).toEqual([]);
   });
 });
