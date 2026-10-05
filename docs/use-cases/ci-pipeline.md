@@ -67,36 +67,66 @@ L2 or L3 controls did produce results keeps its measured figure, and a
 
 ## JSON output format
 
-The `--format json` output structure:
+The `--format json` output from this repository's `test-fixtures/insecure-library` (trimmed where marked `...`):
 
-```json
+```
 {
-  "version": "0.10.1",
-  "timestamp": "2026-03-15T10:30:00Z",
-  "directory": "/home/runner/work/my-agent/my-agent",
-  "summary": {
-    "total": 310,
-    "critical": 1,
-    "high": 2,
-    "medium": 3,
-    "low": 1,
-    "passed": 156,
-    "fixable": 3
-  },
+  "hackmyagentVersion": "0.33.2",
+  "timestamp": "2026-10-05T06:11:23.153Z",
+  "platform": "generic",
+  "projectType": "library",
   "findings": [
     {
-      "id": "CRED-001",
-      "severity": "critical",
-      "title": "Hardcoded API key in .env",
+      "checkId": "PERM-001",
+      "name": "Sensitive File Permissions",
+      "description": "Sensitive files have overly permissive permissions",
+      "category": "permissions",
+      "severity": "high",
+      "passed": false,
+      "message": "Files with overly permissive permissions: .env",
       "file": ".env",
-      "line": 3,
-      "description": "Found sk-proj-abc... in .env",
-      "fix": "Move to a secrets manager or environment variable",
-      "fixable": true
-    }
-  ]
+      "fixable": true,
+      "fixed": false,
+      "fix": "hackmyagent secure --fix",
+      "manualFix": "chmod 600 .env",
+      "details": {
+        "files": [
+          ".env"
+        ]
+      },
+      "guidance": "Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.",
+      "attackClass": "NEMO-SANDBOX-ESCAPE",
+      "redactionStatus": "clean",
+      "redactedShapes": []
+    },
+    ...
+  ],
+  "allFindings": [
+    ...
+  ],
+  "score": 58,
+  "rawScore": 58,
+  "scoreClamped": false,
+  "maxScore": 100,
+  "semanticAnalysis": {
+    ...
+  },
+  "coverage": {
+    ...
+  },
+  "verdict": "fail",
+  "exitCode": 1,
+  "measured": true,
+  "counts": {
+    "critical": 1,
+    "high": 3,
+    "medium": 1,
+    "low": 1
+  }
 }
 ```
+
+`exitCode` and `verdict` record the same result as the process exit code.
 
 ## SARIF output for GitHub Security tab
 

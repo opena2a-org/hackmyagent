@@ -17,55 +17,75 @@ From your OpenClaw project directory:
 npx hackmyagent secure
 ```
 
-HMA auto-detects OpenClaw by looking for `gateway.yaml`, `skills/`, and OpenClaw configuration files. All 34 OpenClaw checks run automatically alongside the standard 310 static checks.
+HMA detects OpenClaw from an `openclaw.json`, a `SKILL.md` or `HEARTBEAT.md`, or a `.openclaw`, `.moltbot` or `.clawdbot` directory. All 34 OpenClaw checks run automatically alongside the standard 320 static checks.
 
-**Expected output (OpenClaw-specific findings):**
+**Output** from this repository's `test-fixtures/insecure-openclaw` (your findings depend on your installation):
 
 ```
-HackMyAgent v0.10.1 -- Security Scanner
+Scanning .../insecure-openclaw...
 
-Scanning: /home/user/openclaw-project
-Checks:  310 across 69 categories (34 OpenClaw-specific)
+Discovering assembly components...
+NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
 
-  CRITICAL  CVE-001   CVE-2026-25253 -- OpenClaw WebSocket RCE
-            Found: openclaw v0.3.2 in package-lock.json (affected: < 0.3.5)
-            Fix:   Upgrade to openclaw >= 0.3.5
-            Ref:   https://opena2a.org/blogs/cve-2026-25253-openclaw-rce
+  insecure-openclaw  openclaw · 6 files analyzed
+  22 critical issues found
 
-  CRITICAL  CVE-002   CVE-2026-25157 -- Skill sandbox escape
-            Found: openclaw v0.3.2 (affected: < 0.3.4)
-            Fix:   Upgrade to openclaw >= 0.3.4
+  Security  ━━━━━━━━━━━━━━━━━━━━ 0/100
 
-  HIGH      CVE-003   CVE-2026-24763 -- Gateway auth bypass
-            Found: openclaw v0.3.2 (affected: < 0.3.3)
-            Fix:   Upgrade to openclaw >= 0.3.3
+  ── Observations ────────────────────────────────────────────
+  Surfaces    openclaw · 6 semantic artifacts · 4 of 6 artifacts reached 0-2 of 7 analyzer families
+  Checks      320 static declared · 63 of 63 check groups ran · 3 unreachable · 6 semantic (NanoMind AST, 0-7 of 7 analyzer families) · 6 files read by static checks
+  Coverage    16 of 25 categories examined · 9 unexamined (read no file) · 5 checks reported an absent mitigation (not shown)
+  Unexamined  A2A, capabilities, governance, identity, injection, lifecycle, MCP, memory + 1 more (--verbose)
+  Artifacts   SKILL.md  skill · malicious · no inferred capabilities  (no declared constraints)
+              skills/malicious-skill/SKILL.md  skill · malicious · no inferred capabilities  (no declared constraints)
+  Categories  credentials (1 critical) · network (5 critical) · prompt (6 high) · sandbox (1 high) · supply-chain (1 critical) · skill (7 critical) · CVE (1 medium) · heartbeat (6 critical) · config (1 critical) · git hygiene (1 critical) · 6 others clear
+  Verdict     Not safe to ship. .env Not Ignored in .env + 58 more. Fix before using in production.
 
-  HIGH      GATEWAY-001  Gateway bound to 0.0.0.0
-            Found: gateway.yaml host: 0.0.0.0
-            Fix:   Set host to 127.0.0.1
 
-  HIGH      GATEWAY-003  Plaintext auth token in gateway.yaml
-            Found: auth_token: "my-secret-token"
-            Fix:   Use environment variable: ${OPENCLAW_AUTH_TOKEN}
+  ── Findings ────────────────────────────────────────────────
+  22 critical  15 high  21 medium  1 low
 
-  MEDIUM    GATEWAY-004  Human-in-the-loop approvals disabled
-            Found: approval_required: false in gateway.yaml
-            Fix:   Set approval_required: true
+  │ skill                      7 crit, 1 high, 13 med  SKILL.md, skills
+  │ heartbeat                  6 crit, 2 high, 1 med  HEARTBEAT.md
+  │ gateway                    6 crit  openclaw.json
+  │ Prompt Security            6 high  SKILL.md, skills
+  │ supply                     1 crit, 6 med  SKILL.md, skills
+  │ config                     1 crit, 2 high  openclaw.json
+  │ Credential Protection      3 high  .env
+  │ git                        1 crit, 1 low  .gitignore, .env
+  │ + 2 more categories
 
-  MEDIUM    GATEWAY-005  Sandbox disabled for skills
-            Found: sandbox: false in gateway.yaml
-            Fix:   Set sandbox: true
+  ── Top Issues ──────────────────────────────────────────────
 
-  MEDIUM    SKILL-001    Unsigned skill package
-            Found: skills/data-fetcher/ has no signature
-            Fix:   Sign with hackmyagent fix-all --with-aim
+  │ CRITICAL  .env Not Ignored
+  │ .env
+  │ .env contains API keys or secrets. Without .gitignore protection, a single git add . can expose all credentials in your repository history.
+  │ →  hackmyagent secure --fix
 
-  LOW       CONFIG-003   Debug mode enabled
-            Found: debug: true in gateway.yaml
-            Fix:   Set debug: false for production
+  │ CRITICAL  Remote Fetch Pattern
+  │ SKILL.md:9
+  │ Remote code execution patterns download and execute arbitrary code. Replace with a pinned dependency or vendored script with checksum verification.
+  │ Verify: sed -n '9p' .../insecure-openclaw/SKILL.md
+  │ Fix: Remove the curl|sh or wget|sh pattern from this file
 
-Summary: 2 critical, 2 high, 3 medium, 1 low
-         5 auto-fixable (run with --fix)
+  │ CRITICAL  Remote Fetch Pattern
+  │ skills/malicious-skill/SKILL.md:15
+  │ Remote code execution patterns download and execute arbitrary code. Replace with a pinned dependency or vendored script with checksum verification.
+  │ Verify: sed -n '15p' .../insecure-openclaw/skills/malicious-skill/SKILL.md
+  │ Fix: Remove the curl|sh or wget|sh pattern from this file
+
+  Path forward: 0 -> 100 by fixing 22 critical + 15 high
+
+  ── Next Steps ─────────────────────────────────────────────────
+  Auto-fix governance:  hackmyagent harden-soul .
+  Protect credentials:  npx opena2a-cli protect .
+  Auto-fix all issues:  hackmyagent secure . --fix
+  AI analysis:          hackmyagent check . --nanomind  (attack vectors + targeted remediation)
+  All commands:         hackmyagent --help
+  opena2a is a separate CLI — install with: npm i -g opena2a-cli
+
+  Scanned with hackmyagent v0.33.2
 ```
 
 ## Step 2: CVE detection
@@ -109,26 +129,28 @@ Preview what auto-fix would change:
 npx hackmyagent secure --fix --dry-run
 ```
 
-**Expected output:**
+**Output** on a copy of the same fixture (trimmed where marked `...`):
 
 ```
-  CRITICAL  CVE-001   CVE-2026-25253 -- OpenClaw WebSocket RCE
-            (manual fix required -- upgrade openclaw package)
+Scanning .../insecure-openclaw (dry-run)...
 
-  HIGH      GATEWAY-001  Gateway bound to 0.0.0.0
-            Would fix: Set host to 127.0.0.1 in gateway.yaml
+Discovering assembly components...
+NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
 
-  HIGH      GATEWAY-003  Plaintext auth token in gateway.yaml
-            Would fix: Replace "my-secret-token" with ${OPENCLAW_AUTH_TOKEN}
+  insecure-openclaw  openclaw · 6 files analyzed
+  22 critical issues found
 
-  MEDIUM    GATEWAY-004  Approvals disabled
-            Would fix: Set approval_required: true in gateway.yaml
+  Security  ━━━━━━━━━━━━━━━━━━━━ 0/100
 
-  MEDIUM    GATEWAY-005  Sandbox disabled
-            Would fix: Set sandbox: true in gateway.yaml
+  ...
 
-Dry run complete. 4 fixes would be applied. 1 requires manual action.
+  Dry run complete: 12 issues auto-fixable. Run without --dry-run to apply.
+  No changes were made.
+
+  Scanned with hackmyagent v0.33.2
 ```
+
+The text report groups findings by category. Add `--verbose` to list every finding, or use `--format json`, where each finding carries `"fixable"`.
 
 Apply the fixes:
 
@@ -136,19 +158,18 @@ Apply the fixes:
 npx hackmyagent secure --fix
 ```
 
-**Expected output:**
+**Abbreviated sample; your output will differ:**
 
 ```
-  FIXED     GATEWAY-001  Set host to 127.0.0.1 in gateway.yaml
-            Backup: .hackmyagent-backup/gateway.yaml.1710504000
+  FIXED     GATEWAY-001  Set host to 127.0.0.1 in openclaw.json
+            Backup: .hackmyagent-backup/openclaw.json.1710504000
 
   FIXED     GATEWAY-003  Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN}
-            Backup: .hackmyagent-backup/gateway.yaml.1710504000
+            Backup: .hackmyagent-backup/openclaw.json.1710504000
 
-  FIXED     GATEWAY-004  Set approval_required: true in gateway.yaml
-  FIXED     GATEWAY-005  Set sandbox: true in gateway.yaml
+  FIXED     GATEWAY-004  Set approval_required: true in openclaw.json
+  FIXED     GATEWAY-005  Set sandbox: true in openclaw.json
 
-Summary: 4 fixed, 3 remaining (manual -- upgrade openclaw, sign skills)
 Backups saved to .hackmyagent-backup/
 ```
 
