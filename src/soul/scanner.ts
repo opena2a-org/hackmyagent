@@ -2437,7 +2437,7 @@ export class SoulScanner {
 
   async hardenSoul(
     targetDir: string,
-    options?: { dryRun?: boolean; profile?: string; writeGuard?: GovernanceWriteGuard },
+    options?: { dryRun?: boolean; profile?: string; tier?: string; writeGuard?: GovernanceWriteGuard },
   ): Promise<HardenResult> {
     const dryRun = options?.dryRun ?? false;
 
@@ -2451,6 +2451,16 @@ export class SoulScanner {
       if (!accepted.includes(options.profile.toLowerCase())) {
         throw usageError`Unknown --profile '${options.profile}'. Accepted: ${accepted.join(', ')}.`;
       }
+    }
+
+    // #744 — same rule for the tier: it lands in `<!-- soul:tier=… -->`, which
+    // `detectTier` trusts on every later scan, so an unknown value is refused
+    // before anything is read or written.
+    const forcedTier = options?.tier !== undefined
+      ? options.tier.toUpperCase() as AgentTier
+      : undefined;
+    if (forcedTier !== undefined && !ALL_TIERS.includes(forcedTier)) {
+      throw usageError`Unknown --tier '${options!.tier!}'. Accepted: ${ALL_TIERS.join(', ')}.`;
     }
 
     // Detect tier BEFORE hardening so we can pin it.
@@ -2503,7 +2513,20 @@ export class SoulScanner {
       }
     }
 
-    const preTier = this.detectTier(targetDir, existingContent);
+    // An existing file's tier marker is left as written, because this command
+    // only appends. A `--tier` that disagrees with it could never take effect,
+    // so the run is refused rather than reporting a tier the file does not pin.
+    if (forcedTier !== undefined && /<!--\s*soul:tier=/i.test(existingContent)) {
+      const pinned = existingContent.match(/<!--\s*soul:tier=(\S+)\s*-->/i)?.[1];
+      if (pinned?.toUpperCase() !== forcedTier) {
+        const fileName = govFileCheck ? path.basename(govFileCheck) : 'SOUL.md';
+        throw usageError`--tier ${forcedTier} conflicts with the tier marker already in ${fileName} (soul:tier=${pinned ?? 'unreadable'}).
+harden-soul only appends, so it does not rewrite that marker.
+Edit the marker in ${fileName}, or re-run without --tier.`;
+      }
+    }
+
+    const preTier = forcedTier ?? this.detectTier(targetDir, existingContent);
     const preProfile = options?.profile
       ? options.profile.toLowerCase() as AgentProfile
       : this.detectProfile(existingContent);
