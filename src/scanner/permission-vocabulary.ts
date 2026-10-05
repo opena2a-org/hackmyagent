@@ -420,14 +420,27 @@ export function redactLikelySecrets(s: string): string {
       // token — no `sk-` prefix, no JWT dots — is a KNOWN GAP, filed rather
       // than closed here; a JWT is caught below by its own shape.
       // `__tests__/scanner/permission-grant.test.ts` gates every regex in this
-      // module and in `permission-grant.ts` against the ambiguous pair.
+      // module and in `permission-grant.ts` against the ambiguous pair, and
+      // times each on payloads built from its own character classes.
       /\b(api[_-]?key|apikey|secret|token|password|passwd|pwd|authorization)(\s*[:=]\s*["']?)([A-Za-z0-9_\-.+/]{12,})/gi,
       (_all, key: string, sep: string) => `${key}${sep}[redacted]`,
     )
     .replace(/\b(sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_\-]{8,}/g, '$1[redacted]')
     // A JWT is self-identifying: three base64url runs separated by dots, with a
     // header that always begins `eyJ`. No key name is needed to recognise one.
-    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, '[redacted-jwt]');
+    //
+    // The header run is consumed whether or not the two dotted runs follow,
+    // and the capture decides whether to redact. Written as one match, every
+    // header prefix inside a single base64url run was a fresh start that
+    // rescanned the run to its end looking for the dot — the prefix and a
+    // dash, repeated, took 11s at 200KB, and a permission entry is quoted
+    // through here with no size cap in front of it. Consuming the run loses no
+    // match: a later prefix in the same run has the same dots after it and a
+    // shorter header, so it can only fail where the first one failed.
+    .replace(
+      /\beyJ(?:[A-Za-z0-9_-]{8,}(\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,})?|[A-Za-z0-9_-]{0,7})/g,
+      (match: string, rest: string | undefined) => (rest === undefined ? match : '[redacted-jwt]'),
+    );
 }
 
 /** Normalise a key for comparison: case and separators vary across schemas. */

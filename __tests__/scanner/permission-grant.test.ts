@@ -398,7 +398,15 @@ describe('the prose matcher stays linear on a hostile line', () => {
    * between two of them.
    */
   function patternsIn(src: string): string[] {
-    const found: string[] = [];
+    return fragmentsIn(src).map((f) => f.text);
+  }
+
+  /**
+   * The same scan, keeping a regex literal's flags. `flags` is null for a
+   * backtick fragment, whose flags are whatever its `new RegExp` call says.
+   */
+  function fragmentsIn(src: string): { text: string; flags: string | null }[] {
+    const found: { text: string; flags: string | null }[] = [];
     let i = 0;
     while (i < src.length) {
       const c = src[i];
@@ -413,7 +421,7 @@ describe('the prose matcher stays linear on a hostile line', () => {
         const quote = c;
         const from = ++i;
         while (i < src.length && src[i] !== quote) i += src[i] === '\\' ? 2 : 1;
-        if (quote === '`') found.push(src.slice(from, i));
+        if (quote === '`') found.push({ text: src.slice(from, i), flags: null });
         i++;
         continue;
       }
@@ -426,8 +434,10 @@ describe('the prose matcher stays linear on a hostile line', () => {
           else if (src[i] === ']') inClass = false;
           i++;
         }
-        found.push(src.slice(from, i));
-        i++;
+        const text = src.slice(from, i);
+        const flags = /^[a-z]*/.exec(src.slice(++i))![0];
+        found.push({ text, flags });
+        i += flags.length;
         continue;
       }
       i++;
@@ -496,9 +506,343 @@ describe('the prose matcher stays linear on a hostile line', () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
+  // #380. Found by the probe below, not by the structural check: there is no
+  // ambiguous pair in `\beyJ[…]{8,}\.…`. Every `\beyJ` inside one base64url
+  // run was a new start that scanned the run to its end looking for a dot.
+  it('redacts a 200KB run of JWT headers in bounded time (#380)', () => {
+    const hostile = 'eyJ-'.repeat(50_000);
+    const started = performance.now();
+    redactLikelySecrets(hostile);
+    // 11s at 200KB with every `eyJ` a fresh start; linear now.
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it('cites an allow entry carrying 200KB of JWT headers in bounded time (#380)', () => {
+    // A legal grant: the command-name position is a wildcard. Its entry is
+    // quoted into the finding through the redactor, uncapped until after it.
+    const doc = settings({ permissions: { allow: [`Bash(* ${'-eyJ--------'.repeat(16_667)})`] } });
+    const started = performance.now();
+    const grant = findPermissionGrant(doc, SETTINGS);
+    // 8.7s before the rewrite, measured on this test.
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(grant?.token.startsWith('Bash(* -eyJ')).toBe(true);
+  });
+
+  it('the JWT rewrite redacts exactly what the single-match pattern did (#380)', () => {
+    const singleMatch = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g;
+    const real = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.FAKEsigFAKEsigFAKE';
+    expect(redactLikelySecrets(`Bearer ${real}, then x-${real}`)).toBe('Bearer [redacted-jwt], then x-[redacted-jwt]');
+    // A header too short to start one, followed by a real one that must still
+    // be found: consuming the short run must not swallow the next.
+    expect(redactLikelySecrets(`eyJab.${real}`)).toBe('eyJab.[redacted-jwt]');
+
+    // No piece can spell a key name or a vendor prefix, so the other two
+    // redactions are the identity here and only the JWT pass is compared.
+    const pieces = ['eyJ', 'eyJ', 'aaaaaaaa', '--------', 'a', 'Z9', '-', '_', '.', '.', ' ', ':', '"'];
+    let seed = 380;
+    const next = (n: number): number => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return seed % n;
+    };
+    const differ: string[] = [];
+    for (let k = 0; k < 20_000; k++) {
+      let s = '';
+      for (let len = 1 + next(12); len > 0; len--) s += pieces[next(pieces.length)];
+      if (redactLikelySecrets(s) !== s.replace(singleMatch, '[redacted-jwt]')) differ.push(s);
+    }
+    expect(differ).toEqual([]);
+  });
+
   it('still skips a line too long to be prose', () => {
     const doc = `${'x'.repeat(5000)} unrestricted access`;
     expect(findPermissionGrant(doc, 'CLAUDE.md')).toBeUndefined();
+  });
+
+  // #380. The ambiguous-pair check proves one family, and two CRITICALs in a
+  // row were outside it until they shipped:
+  //
+  //   1. `(?:bearer|basic|token)?` between two `\s*` runs: the pair, but in a
+  //      pattern the guard was not pointed at. `detect` 51s on 200KB.
+  //   2. `[A-Za-z_$][A-Za-z0-9_$.-]*\s*:`, global and unanchored: a greedy
+  //      class before a required literal, so every start inside a run scans
+  //      the run and backtracks. No pair at all. `detect` 52.5s on 200KB.
+  //
+  // and a third was still shipped when this probe was first run: the JWT
+  // redaction above, quadratic on `eyJ-` repeated.
+  //
+  // So every extracted pattern is also TIMED, on payloads built from its own
+  // character classes. That part is load-bearing: the probe written for (2)
+  // used a whitespace run, the alphabet (1) was quadratic on, and passed clean
+  // over a quadratic that needed identifier characters. Nothing here is a
+  // hand-kept list of patterns, so a new one is probed by being written.
+  describe('every extracted pattern is timed on payloads built from its own classes (#380)', () => {
+    type Quant = { min: number; max: number };
+    type RxNode = { alts: RxItem[][] };
+    type RxAtom =
+      | { kind: 'char'; src: string }
+      | { kind: 'assert' }
+      | { kind: 'group'; body: RxNode; look: boolean };
+    type RxItem = { atom: RxAtom; q: Quant };
+
+    /**
+     * Enough of a regex parser to find every repeated atom and the shortest
+     * text that reaches it. A class, an escape and a literal are all one
+     * character position (`char`); anchors, `\b` and backreferences match no
+     * text (`assert`); groups nest, and a lookaround contributes no text.
+     */
+    function parseRegex(src: string): RxNode {
+      let i = 0;
+      const alternation = (): RxNode => {
+        const alts = [sequence()];
+        while (src[i] === '|') {
+          i++;
+          alts.push(sequence());
+        }
+        return { alts };
+      };
+      const sequence = (): RxItem[] => {
+        const items: RxItem[] = [];
+        while (i < src.length && src[i] !== '|' && src[i] !== ')') items.push({ atom: atom(), q: quantifier() });
+        return items;
+      };
+      const atom = (): RxAtom => {
+        const rest = src.slice(i);
+        if (rest[0] === '(') {
+          const open = /^\((?:\?(?:<?[=!]|:|<[A-Za-z_$][\w$]*>))?/.exec(rest)![0];
+          i += open.length;
+          const body = alternation();
+          i++;
+          return { kind: 'group', body, look: /[=!]$/.test(open) };
+        }
+        const zeroWidth = /^(?:\^|\$|\\[bB]|\\[1-9]\d*|\\k<[^>]*>)/.exec(rest);
+        if (zeroWidth) {
+          i += zeroWidth[0].length;
+          return { kind: 'assert' };
+        }
+        const char = /^(?:\[\^?\]?(?:\\[\s\S]|[^\]\\])*\]|\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|u\{[0-9a-fA-F]+\}|c[A-Za-z]|[pP]\{[^}]*\}|[\s\S])|[\s\S])/.exec(rest)![0];
+        i += char.length;
+        return { kind: 'char', src: char };
+      };
+      const quantifier = (): Quant => {
+        const m = /^(?:([*+?])|\{(\d+)(?:(,)(\d*))?\})\??/.exec(src.slice(i));
+        if (!m) return { min: 1, max: 1 };
+        i += m[0].length;
+        if (m[1] === '*') return { min: 0, max: Infinity };
+        if (m[1] === '+') return { min: 1, max: Infinity };
+        if (m[1] === '?') return { min: 0, max: 1 };
+        const min = Number(m[2]);
+        return { min, max: m[3] === undefined ? min : m[4] === '' ? Infinity : Number(m[4]) };
+      };
+      const tree = alternation();
+      if (i !== src.length) throw new Error(`the parser stopped at ${i} of /${src}/`);
+      return tree;
+    }
+
+    const ALPHABET = [...Array.from({ length: 95 }, (_, k) => String.fromCharCode(32 + k)), '\t', '\n'];
+
+    /** Every character of the alphabet one character position accepts. */
+    function membersOf(charSrc: string, flags: string): string[] {
+      const re = new RegExp(`^(?:${charSrc})$`, flags.replace(/[gy]/g, ''));
+      return ALPHABET.filter((ch) => re.test(ch));
+    }
+
+    /** One repetition of an atom: its first member, or its group's shortest text. */
+    function once(atom: RxAtom, flags: string): string {
+      if (atom.kind === 'char') return membersOf(atom.src, flags)[0] ?? '';
+      return atom.kind === 'group' && !atom.look ? shortest(atom.body, flags) : '';
+    }
+
+    /** The shortest text a node accepts, through its first alternative. */
+    function shortest(node: RxNode, flags: string): string {
+      return node.alts[0].map((item) => once(item.atom, flags).repeat(item.q.min)).join('');
+    }
+
+    /** Every repeated atom, with the shortest text that leads up to it. */
+    function runsIn(node: RxNode, lead: string, flags: string, out: { lead: string; atom: RxAtom }[]) {
+      for (const items of node.alts) {
+        let reached = lead;
+        for (const item of items) {
+          if (item.q.max > 1) out.push({ lead: reached, atom: item.atom });
+          if (item.atom.kind === 'group' && !item.atom.look) runsIn(item.atom.body, reached, flags, out);
+          reached += once(item.atom, flags).repeat(item.q.min);
+        }
+      }
+      return out;
+    }
+
+    type Payload = { label: string; at: (size: number) => string };
+
+    /**
+     * Payloads for one pattern, from its own classes.
+     *
+     * For each repeated atom, each member it accepts is used as a run in two
+     * shapes: the lead once and then the run (one start, so the cost is the
+     * backtracking inside it — family 1), and lead-plus-member repeated (a
+     * start every few characters, each scanning on — family 2 and the JWT).
+     * Members that every character position of the pattern treats alike,
+     * and `\b` treats alike, behave alike, so one of each kind is enough.
+     */
+    function payloadsFor(source: string, flags: string): Payload[] {
+      const tree = parseRegex(source);
+      const positions = new Set<string>();
+      (function collect(node: RxNode): void {
+        for (const items of node.alts) {
+          for (const { atom } of items) {
+            if (atom.kind === 'char') positions.add(atom.src);
+            else if (atom.kind === 'group') collect(atom.body);
+          }
+        }
+      })(tree);
+      const testers = [...positions].map((p) => new RegExp(`^(?:${p})$`, flags.replace(/[gy]/g, '')));
+      const kindOf = (ch: string) => testers.map((t) => (t.test(ch) ? '1' : '0')).join('') + (/\w/.test(ch) ? 'w' : '');
+      const fill = (unit: string, size: number) => unit.repeat(Math.ceil(Math.max(size, 0) / unit.length)).slice(0, Math.max(size, 0));
+
+      const out = new Map<string, Payload['at']>();
+      const whole = shortest(tree, flags);
+      if (whole !== '') out.set(`${JSON.stringify(whole)} repeated`, (n) => fill(whole, n));
+      for (const { lead, atom } of runsIn(tree, '', flags, [])) {
+        const seen = new Set<string>();
+        const units =
+          atom.kind === 'char'
+            ? membersOf(atom.src, flags).filter((ch) => !seen.has(kindOf(ch)) && seen.add(kindOf(ch)))
+            : [once(atom, flags)];
+        for (const unit of units.filter((u) => u !== '')) {
+          out.set(`${JSON.stringify(lead)} then ${JSON.stringify(unit)} repeated`, (n) => (lead + fill(unit, n - lead.length)).slice(0, n));
+          if (lead !== '') out.set(`${JSON.stringify(lead + unit)} repeated`, (n) => fill(lead + unit, n));
+        }
+      }
+      return [...out].map(([label, at]) => ({ label, at }));
+    }
+
+    function costMs(source: string, flags: string, text: string): number {
+      const re = new RegExp(source, flags);
+      const started = performance.now();
+      text.replace(re, '');
+      return performance.now() - started;
+    }
+
+    type Over = { label: string; size: number; ms: number };
+
+    /**
+     * Time every payload up a ladder of sizes and return the first that goes
+     * over the budget. The ladder means a quadratic is reported from its
+     * smallest rung rather than after a minute at the largest, and a rung that
+     * looks over is timed twice more and counts only if all three are — one
+     * GC pause on a loaded machine is not a finding.
+     */
+    function firstOver(source: string, flags: string, rungs: readonly number[], budgetMs: number) {
+      let costliest: Over & { payload?: Payload } = { label: '', size: 0, ms: -1 };
+      for (const payload of payloadsFor(source, flags)) {
+        const text = payload.at(rungs[rungs.length - 1]);
+        for (const size of rungs) {
+          const slice = text.slice(0, size);
+          let ms = costMs(source, flags, slice);
+          for (let again = 0; again < 2 && ms > budgetMs; again++) ms = Math.min(ms, costMs(source, flags, slice));
+          if (ms > budgetMs) return { over: { label: payload.label, size, ms }, costliest };
+          if (size === rungs[rungs.length - 1] && ms > costliest.ms) costliest = { label: payload.label, size, ms, payload };
+        }
+      }
+      return { over: undefined as Over | undefined, costliest };
+    }
+
+    // `scanAiConfigs` caps a file at 1MB; CLAUDE-002 in `secure` has no cap at
+    // all. 200KB is a large real config, 4MB is past every cap that exists.
+    const CONFIG = 200_000;
+    const UNCAPPED = 4_000_000;
+    // Measured idle on the patterns of both modules: the costliest payload of
+    // any of them is under 10ms at 200KB and under 100ms at 4MB, so each
+    // budget is ten times or more over the linear case. The floor on the
+    // other side is pinned by the shipped quadratics below, which go over the
+    // 200KB budget before they reach a quarter of that size.
+    const BUDGET_MS = { [CONFIG]: 100, [UNCAPPED]: 1_500 };
+    const LADDER = [CONFIG / 16, CONFIG / 8, CONFIG / 4, CONFIG];
+
+    /** Flags to probe with: a literal's own, a fragment both ways. */
+    const flagsFor = (flags: string | null): string[] =>
+      flags === null ? ['g', 'gi'] : [`${flags.replace(/[gy]/g, '')}g`];
+
+    const moduleFragments = MODULES.map((name) => ({
+      name,
+      fragments: fragmentsIn(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'scanner', name), 'utf-8')),
+    }));
+
+    const SHIPPED_QUADRATICS = [
+      {
+        name: 'the bearer group removed from redactLikelySecrets',
+        source: String.raw`\b(api[_-]?key|authorization)(\s*[:=]\s*["']?(?:bearer|basic|token)?\s*)([A-Za-z0-9]{12,})`,
+        flags: 'gi',
+      },
+      { name: 'the key-token pattern removed after it', source: String.raw`[A-Za-z_$][A-Za-z0-9_$.-]*\s*:`, flags: 'g' },
+      {
+        name: 'the JWT pattern rewritten here',
+        source: String.raw`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}`,
+        flags: 'g',
+      },
+    ];
+
+    // The floor. A budget loose enough to pass a quadratic would pass these,
+    // so each must go over it on a payload the synthesiser built, and must do
+    // so by a quarter of the probed size: a quadratic that is over budget at
+    // 50KB is sixteen times over it at 200KB.
+    it.each(SHIPPED_QUADRATICS)('goes over budget on $name by a quarter of 200KB', ({ source, flags }) => {
+      const { over } = firstOver(source, flags, LADDER.slice(0, -1), BUDGET_MS[CONFIG]);
+      expect(over, 'no payload built from its own classes went over budget').toBeDefined();
+    }, 60_000);
+
+    // Coverage. The probe reads patterns out of the source, so the only way
+    // to escape it is to be something it cannot read.
+    it.each(MODULES)('every fragment in %s is probed or is message text', (name) => {
+      const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'scanner', name), 'utf-8');
+      // A pattern built at run time from a variable is invisible to the
+      // extractor. Write it as a literal, or give this probe a way to reach it.
+      expect(src, 'constructs a RegExp at run time').not.toMatch(/\bRegExp\s*\(/);
+      for (const { text, flags } of moduleFragments.find((m) => m.name === name)!.fragments) {
+        for (const f of flagsFor(flags)) {
+          let compiled = true;
+          try {
+            new RegExp(text, f);
+          } catch {
+            compiled = false;
+          }
+          if (!compiled) {
+            // Only an interpolated template may fail to compile: its raw text
+            // is a message, not the pattern. Anything else needs a probe.
+            expect(flags, `/${text}/ is a regex literal that does not compile`).toBeNull();
+            expect(text, `\`${text}\` does not compile and is not message text`).toContain('${');
+            continue;
+          }
+          expect(payloadsFor(text, f).length, `/${text}/${f} yielded no payload`).toBeGreaterThan(0);
+        }
+      }
+    });
+
+    it.each(MODULES)('every pattern in %s stays inside the budget at 200KB and 4MB', (name) => {
+      const failures: string[] = [];
+      let probed = 0;
+      for (const { text, flags } of moduleFragments.find((m) => m.name === name)!.fragments) {
+        for (const f of flagsFor(flags)) {
+          try {
+            new RegExp(text, f);
+          } catch {
+            continue; // message text, held to that by the coverage test above
+          }
+          probed++;
+          const { over, costliest } = firstOver(text, f, LADDER, BUDGET_MS[CONFIG]);
+          if (over) {
+            failures.push(`/${text}/${f}: ${over.ms.toFixed(0)}ms at ${over.size} chars on ${over.label}`);
+            continue;
+          }
+          // The costliest 200KB payload again at 4MB, the size no cap stops.
+          if (!costliest.payload) continue;
+          const big = costliest.payload.at(UNCAPPED);
+          let ms = costMs(text, f, big);
+          for (let again = 0; again < 2 && ms > BUDGET_MS[UNCAPPED]; again++) ms = Math.min(ms, costMs(text, f, big));
+          if (ms > BUDGET_MS[UNCAPPED]) failures.push(`/${text}/${f}: ${ms.toFixed(0)}ms at ${UNCAPPED} chars on ${costliest.label}`);
+        }
+      }
+      expect(probed, 'nothing was probed').toBeGreaterThan(11);
+      expect(failures).toEqual([]);
+    }, 120_000);
   });
 });
 
