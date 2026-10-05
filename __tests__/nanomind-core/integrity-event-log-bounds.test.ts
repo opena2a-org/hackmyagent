@@ -5,7 +5,7 @@
  * all of it.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventChain, sha256, type TamperEvent } from '../../src/nanomind-core/security/integrity-verifier';
@@ -108,5 +108,26 @@ describe('integrity event log bounds', () => {
     expect(rotated.getLastEvent()).toEqual(before);
     expect(rotated.verify()).toEqual({ valid: true, brokenAt: -1 });
     expect(chain.readAll().map(e => e.seq)).toEqual([0]);
+  });
+
+  it('appends to the live log, linked and without throwing, when the rotation fails', () => {
+    const before = writeChain(path, 25);
+    const maxBytes = statSync(path).size;
+    const chain = new EventChain(path, { maxBytes });
+    // A non-empty directory at <log>.1: rename() cannot replace it.
+    mkdirSync(chain.rotatedPath);
+    writeFileSync(join(chain.rotatedPath, 'keep'), 'x');
+
+    let event: TamperEvent | undefined;
+    expect(() => { event = chain.append('check_pass', 'rotation failed'); }).not.toThrow();
+
+    expect(event?.seq).toBe(before.seq + 1);
+    expect(event?.prevHash).toBe(sha256(JSON.stringify(before)));
+    expect(chain.getLastEvent()).toEqual(event);
+    expect(chain.verify()).toEqual({ valid: true, brokenAt: -1 });
+    expect(readdirSync(chain.rotatedPath)).toEqual(['keep']);
+    // The next append links on as well; the log grows past the cap rather than losing events.
+    expect(chain.append('check_pass', 'still failing').seq).toBe(before.seq + 2);
+    expect(statSync(path).size).toBeGreaterThan(maxBytes);
   });
 });
