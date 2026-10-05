@@ -67,7 +67,8 @@ const NANOMIND_DIR = join(homedir(), '.nanomind');
 const MODELS_DIR = join(NANOMIND_DIR, 'models');
 const EVENT_CHAIN_PATH = join(NANOMIND_DIR, 'integrity-events.jsonl');
 // About 5,000 events per segment at roughly 200 bytes each; one rotated
-// segment is kept, so the log never holds much more than 2 MiB on disk.
+// segment is kept, so after the first rotation the log never holds much more
+// than 2 MiB on disk.
 export const EVENT_CHAIN_MAX_BYTES = 1024 * 1024;
 const TAIL_CHUNK_BYTES = 4096;
 // No leading dot: the release artifact review (scripts/release-artifact-review.mjs)
@@ -277,9 +278,11 @@ export interface EventChainOptions {
  * The log is bounded. When the next line would take the live file past
  * maxBytes, the file moves to `<path>.1` (replacing the previous one) and a
  * new chain starts at seq 0 with the genesis prevHash, so each segment
- * verifies on its own and the two files together stay under about
- * 2 x maxBytes. A file already far past the bound (written before the bound
- * existed) is removed at rotation rather than kept as `<path>.1`.
+ * verifies on its own and, after the first rotation, the two files together
+ * stay under about 2 x maxBytes. A file written before the bound existed is
+ * handled at its first rotation: past 2 x maxBytes it is removed rather than
+ * kept as `<path>.1`; between maxBytes and 2 x maxBytes it is kept, so the
+ * two files can total up to 3 x maxBytes until the next rotation.
  */
 export class EventChain {
   private chainPath: string;
