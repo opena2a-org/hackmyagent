@@ -319,6 +319,48 @@ function scanResultVerdict(
     measuredAbsence,
   );
 }
+
+/**
+ * The verdict for one governance scan, shared by `scan-soul` and the
+ * `secure -b oasb-2` composite so the two report the same tree in the same
+ * words (#390, #489). The unit is governance controls evaluated, and zero of
+ * them over a tree with no governance file is the unmeasured arm: no score,
+ * no conformance level, exit 2.
+ *
+ * Conformance IS the gate. Governance violations and the two profile HIGHs
+ * are deliberately NOT promoted here: they gate `scan-soul`'s exit code under
+ * `--ci` and always have, and widening them to the default channel is a
+ * policy change #390 did not ask for.
+ */
+function governanceVerdict(result: SoulScanResult): CheckVerdict {
+  return deriveCheckVerdict(
+    { critical: result.conformance === 'none' ? 1 : 0, high: 0, issues: 0 },
+    {
+      // MEASURED REQUIRES BYTES READ, not a directory entry that exists.
+      // `scanner.ts` swallows a failed read to `''`, so a `chmod 000`
+      // SOUL.md — and a DIRECTORY named SOUL.md, which `existsSync`
+      // accepts — both arrived here as `result.file` set, and this
+      // reported `examined: 29` over zero bytes read. That is the exact
+      // shape `src/check/verdict.ts` exists to make unrepresentable.
+      examined: result.file && result.fileSize > 0 ? result.totalControls : 0,
+      total: result.totalControls,
+      unit: 'governance control',
+    },
+    // THREE cases, not two. `fileSize === 0` with a file present covers
+    // both an UNREADABLE file and an EMPTY one, and they are different
+    // facts: "no bytes could be read" is false about a 0-byte file that
+    // read fine. `fileReadFailed` is recorded by the scanner at the point
+    // the read throws, so this reports which one actually happened.
+    !result.file
+      ? 'nothing-to-examine'
+      : result.fileReadFailed ? 'target-unreadable' : 'nothing-to-examine',
+    !result.file
+      ? `No governance file was found, so no governance score can be reported for this target.`
+      : result.fileReadFailed
+        ? `${escapePathForDisplay(require('path').basename(result.file))} was found but could not be read, so no governance score can be reported.`
+        : `${escapePathForDisplay(require('path').basename(result.file))} was found but is empty, so there is nothing to grade.`,
+  );
+}
 // Per-invocation start times keyed by subcommand name (preAction → postAction).
 const telemetryStartedAt = new Map<string, number>();
 import { getTaxonomyMap, getCheckCounts } from './hardening/taxonomy';
@@ -5131,9 +5173,11 @@ Exit codes:
   2  the run did not examine everything it found, so it reaches no pass:
      the target does not exist (nothing was scanned; --json still writes
      a document with measured: false), an input was discovered and could
-     not be read, a --deep analysis did not complete, or (benchmark
+     not be read, a --deep analysis did not complete, (benchmark
      mode) no scored L1 control produced
-     a result and the rating is Not Assessed. What DID run is still
+     a result and the rating is Not Assessed, or (-b oasb-2) no
+     governance file was read, so no governance score or conformance
+     is reported. What DID run is still
      reported and scored above, and the score is an upper bound rather
      than a measurement of the tree.
 
@@ -5979,8 +6023,23 @@ Change scope (--range, --staged):
         // A composite over an unmeasured term is not a measurement; the
         // governance side WAS measured and is printed as itself.
         const infraScore: number | null = infraResult.compliance;
-        const govScore = govResult.score;
-        const compositeScore: number | null = infraScore === null ? null : Math.round((infraScore + govScore) / 2);
+        // #489 — the governance side is a measurement only when a governance
+        // file was read. Over a tree with none, scan-soul's result carries a
+        // 0 score and `conformance: 'none'` for a file that does not exist;
+        // this arm printed both as `0/100` and `Conformance: NONE` and exited
+        // 1 while `scan-soul` reported NOT MEASURED at exit 2 on the same
+        // tree. The verdict is the one `scan-soul` derives, so the two read
+        // the same tree in the same words.
+        const govVerdict = governanceVerdict(govResult);
+        const govScore: number | null = govVerdict.measured ? govResult.score : null;
+        const conformance: string | null = govVerdict.measured ? govResult.conformance : null;
+        const compositeScore: number | null = infraScore === null || govScore === null
+          ? null
+          : Math.round((infraScore + govScore) / 2);
+        const compositeUnmeasured = [
+          ...(infraScore === null ? ['OASB-1 not assessed'] : []),
+          ...(govScore === null ? ['OASB-2 governance not measured'] : []),
+        ].join(', ');
 
         if (format === 'json') {
           const compositePayload = {
@@ -5988,9 +6047,12 @@ Change scope (--range, --staged):
             infraScore,
             govScore,
             compositeScore,
-            conformance: govResult.conformance,
+            conformance,
+            govCoverage: coverageJson(govVerdict),
             infraResult,
-            govResult,
+            // Withheld, not zeroed: its score and domain table describe a file
+            // that was not read. `govCoverage` says why.
+            govResult: govVerdict.measured ? govResult : null,
             // #514 — the record that explains an exit-2 run; absent when a
             // ledger kept none, {count: 0, ...} when everything was read.
             ...(result.coverage?.unreadableInputs
@@ -6012,10 +6074,10 @@ Change scope (--range, --staged):
           process.stdout.write('\nOASB Composite Security Assessment\n');
           process.stdout.write('----------------------------------------------------\n');
           process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore === null ? 'not measured' : `${infraScore}%`}\n`);
-          process.stdout.write(`Governance Score (OASB-2):     ${govScore}/100\n`);
+          process.stdout.write(`Governance Score (OASB-2):     ${govScore === null ? 'not measured' : `${govScore}/100`}\n`);
           process.stdout.write('----------------------------------------------------\n');
-          process.stdout.write(`Composite Score:               ${compositeScore === null ? 'not measured (OASB-1 not assessed)' : `${compositeScore}/100`}\n`);
-          process.stdout.write(`Conformance:                   ${govResult.conformance.toUpperCase()}\n`);
+          process.stdout.write(`Composite Score:               ${compositeScore === null ? `not measured (${compositeUnmeasured})` : `${compositeScore}/100`}\n`);
+          process.stdout.write(`Conformance:                   ${conformance === null ? 'not measured' : conformance.toUpperCase()}\n`);
           process.stdout.write('\n');
 
           // Show infra report then governance report
@@ -6030,15 +6092,24 @@ Change scope (--range, --staged):
           });
           printBenchmarkUnreadDisclosure(result);
 
-          process.stdout.write('\nGovernance Domains (scan-soul):\n');
-          for (const domain of govResult.domains) {
-            const label = (domain.domain + ':').padEnd(26);
-            process.stdout.write(`  ${label}${domain.passed}/${domain.total}  (${domain.percentage}%)\n`);
+          if (!govVerdict.measured) {
+            // The nine-domain table is suppressed with the score: it listed
+            // 0/N per domain for controls in a file that was not read.
+            process.stdout.write('\nGovernance (scan-soul):\n');
+            process.stdout.write(`  ${unmeasuredBanner(govVerdict)}\n`);
+            process.stdout.write(`  Searched: ${GOVERNANCE_FILES.join(', ')}\n`);
+            process.stdout.write('\n');
+          } else {
+            process.stdout.write('\nGovernance Domains (scan-soul):\n');
+            for (const domain of govResult.domains) {
+              const label = (domain.domain + ':').padEnd(26);
+              process.stdout.write(`  ${label}${domain.passed}/${domain.total}  (${domain.percentage}%)\n`);
+            }
+            if (govResult.criticalFloor) {
+              process.stdout.write(`\nCritical Floor: APPLIED (${govResult.criticalMissing.join(', ')} missing)\n`);
+            }
+            process.stdout.write('\n');
           }
-          if (govResult.criticalFloor) {
-            process.stdout.write(`\nCritical Floor: APPLIED (${govResult.criticalMissing.join(', ')} missing)\n`);
-          }
-          process.stdout.write('\n');
           printFixBackupDisclosure(result, directory);
         }
 
@@ -6059,7 +6130,10 @@ Change scope (--range, --staged):
         // the flag a CI user is most likely to set, and the one that reads as
         // "add a score floor" — silently switched the conformance gate off and
         // restored the exact averaging the paragraph above rejects.
-        const conformanceFails = govResult.conformance === 'none';
+        //
+        // `conformance` is null when no governance file was read (#489):
+        // nothing was graded, so there is no NONE to fail on.
+        const conformanceFails = conformance === 'none';
         if (conformanceFails) {
           console.error(
             `OASB-2 conformance is NONE. Exiting 1 per "non-compliant in benchmark mode".`,
@@ -6069,7 +6143,7 @@ Change scope (--range, --staged):
         // floor (2), raise-only, exactly as the OASB-1 arm does for its own
         // `Not Assessed`. A measured governance failure (conformance NONE,
         // exit 1 below) outranks it — that arm's recorded precedence.
-        if (compositeScore === null) {
+        if (infraScore === null) {
           const why = result.coverage?.filesExamined === 0
             ? zeroReadReason(targetDir)
             : 'no scored OASB-1 control produced a result in this selection';
@@ -6078,12 +6152,20 @@ Change scope (--range, --staged):
           );
           raiseExitCode(EXIT_UNMEASURED);
         }
+        // #489 — an unmeasured governance side raises the same floor, as
+        // `scan-soul` does over the same tree.
+        if (!govVerdict.measured) {
+          console.error(
+            `OASB-2 governance is not measured: ${govVerdict.detail} Exit code raised to ${EXIT_UNMEASURED} (not measured).`,
+          );
+          raiseExitCode(EXIT_UNMEASURED);
+        }
         // A threshold is a claim about a measurement: `null < N` is `true`
         // in JS for any positive N, so a bare comparison here would exit 1
         // over a number that was never produced (0.32.0 did, via `?? 0`).
         if (failBelow !== undefined) {
           if (compositeScore === null) {
-            console.error(`--fail-below ${failBelow} not evaluated: the composite score was not measured (OASB-1 not assessed).`);
+            console.error(`--fail-below ${failBelow} not evaluated: the composite score was not measured (${compositeUnmeasured}).`);
           } else if (compositeScore < failBelow) {
             console.error(`Composite score ${compositeScore} is below threshold ${failBelow}`);
             await exitRecorded(1, 'findings');
@@ -10498,39 +10580,7 @@ Examples:
       // passed under that mutant, because they all pin trees where the two
       // agree. A decision taken on a derived value is a decision about a
       // different value.
-      const conformanceNone = result.conformance === 'none';
-      const soulVerdict = deriveCheckVerdict(
-        // Conformance IS the gate. Governance violations and the two profile
-        // HIGHs are deliberately NOT promoted here: they gate the exit code
-        // under `--ci` further down and always have, and widening them to the
-        // default channel is a policy change #390 did not ask for.
-        { critical: conformanceNone ? 1 : 0, high: 0, issues: 0 },
-        {
-          // MEASURED REQUIRES BYTES READ, not a directory entry that exists.
-          // `scanner.ts` swallows a failed read to `''`, so a `chmod 000`
-          // SOUL.md — and a DIRECTORY named SOUL.md, which `existsSync`
-          // accepts — both arrived here as `result.file` set, and this
-          // reported `examined: 29` over zero bytes read. That is the exact
-          // shape `src/check/verdict.ts` exists to make unrepresentable, and
-          // it was introduced by this change: main asserted no coverage at all.
-          examined: result.file && result.fileSize > 0 ? result.totalControls : 0,
-          total: result.totalControls,
-          unit: 'governance control',
-        },
-        // THREE cases, not two. `fileSize === 0` with a file present covers
-        // both an UNREADABLE file and an EMPTY one, and they are different
-        // facts: "no bytes could be read" is false about a 0-byte file that
-        // read fine. `fileReadFailed` is recorded by the scanner at the point
-        // the read throws, so this reports which one actually happened.
-        !result.file
-          ? 'nothing-to-examine'
-          : result.fileReadFailed ? 'target-unreadable' : 'nothing-to-examine',
-        !result.file
-          ? `No governance file was found, so no governance score can be reported for this target.`
-          : result.fileReadFailed
-            ? `${escapePathForDisplay(require('path').basename(result.file))} was found but could not be read, so no governance score can be reported.`
-            : `${escapePathForDisplay(require('path').basename(result.file))} was found but is empty, so there is nothing to grade.`,
-      );
+      const soulVerdict = governanceVerdict(result);
 
       // The missing CRITICAL controls, carrying the metadata the failure
       // output needs. Every count below is DERIVED — a third `critical: true`

@@ -59,8 +59,15 @@ function soulTree(): string {
   return dir;
 }
 
-function emptyTree(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'hma-oasb2-empty-'));
+/**
+ * A SOUL.md that is read and conforms to nothing: a MEASURED conformance
+ * failure. An empty tree was this fixture until #489; with no governance file
+ * there is no conformance to fail on, and the governance side is not measured.
+ */
+function noneSoulTree(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-oasb2-none-'));
+  fs.writeFileSync(path.join(dir, 'SOUL.md'), 'name: demo\n');
+  return dir;
 }
 
 beforeAll(() => { assertDistFreshIfPresent(); });
@@ -103,7 +110,7 @@ describe('#458 step 4: the OASB-2 composite refuses to average an unmeasured OAS
   });
 
   it('RED-ON-BASE lines, PIN exit: a measured conformance failure outranks the not-measured floor', () => {
-    const dir = emptyTree();
+    const dir = noneSoulTree();
     const res = run(['secure', dir, '-b', 'oasb-2', ...NULL_L1, ...QUICK]);
     expect(res.out).toContain('Infrastructure Score (OASB-1): not measured');
     expect(res.out).toMatch(/Conformance:\s+NONE/);
