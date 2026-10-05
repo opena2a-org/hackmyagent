@@ -3398,7 +3398,7 @@ function printBenchmarkUnreadDisclosure(result: ScanResult): void {
 }
 
 // SARIF 2.1.0 output for GitHub Security tab and IDE integration
-function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: SecurityFinding[], targetDir: string): string {
+function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: SecurityFinding[], targetDir: string, disclosure: SuppressionDisclosure = {}): string {
   assertRedactionProvenance(findings, 'sarif-benchmark');
   const rules: Array<{
     id: string;
@@ -3477,6 +3477,8 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
     }
   }
 
+  const runProperties = sarifRunProperties(disclosure);
+
   const sarif = {
     $schema: SARIF_SCHEMA_URL,
     version: '2.1.0' as const,
@@ -3490,6 +3492,10 @@ function generateSarifOutput(benchmarkResult: BenchmarkResult, findings: Securit
         },
       },
       results,
+      // #872 — the same record the scan SARIF carries (#465). A withheld
+      // check's records never reach the assessor, so a control it measures
+      // reads unverified with nothing in the results saying why.
+      ...(runProperties ? { properties: runProperties } : {}),
     }],
   };
 
@@ -5954,6 +5960,13 @@ Examples:
                 ...(result.coverage?.unreadableInputs
                   ? { unreadableInputs: result.coverage.unreadableInputs }
                   : {}),
+                // #872 — what `--ignore` / `.hmaignore` withheld from the
+                // assessor, on the keys `secure --json` uses, so a control
+                // that reads unverified because its check was suppressed is
+                // reconciled by the document itself.
+                ...(result.suppressed?.length ? { suppressed: result.suppressed } : {}),
+                ...(result.outOfScope?.length ? { outOfScope: result.outOfScope } : {}),
+                ...(result.hmaignore ? { hmaignore: result.hmaignore } : {}),
               },
               null,
               2,
@@ -5963,7 +5976,7 @@ Examples:
             // The record set the assessor read above, not `result.findings`
             // (#670): a failing record the plain scan does not list still
             // failed its control and gets its own SARIF result.
-            output = generateSarifOutput(benchmarkResult, result.allFindings || result.findings, targetDir);
+            output = generateSarifOutput(benchmarkResult, result.allFindings || result.findings, targetDir, result);
             break;
           case 'html':
             output = generateHtmlReport(benchmarkResult, targetDir, benchmarkRunFlags);
