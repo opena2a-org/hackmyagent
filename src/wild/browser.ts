@@ -7,7 +7,14 @@
  */
 
 import type { InjectionSurface } from './types';
-import { elementMatches, htmlComments, replaceBeforeLastCloser, tagAttributeMatches } from '../types/lazy-scan';
+import {
+  elementMatches,
+  htmlComments,
+  replaceBeforeLastCloser,
+  sameLineMatches,
+  tagAttributeMatches,
+  wordsInOrderOnOneLine,
+} from '../types/lazy-scan';
 
 export interface FetchedPage {
   url: string;
@@ -243,31 +250,48 @@ export function extractContent(page: FetchedPage): ExtractedContent {
 }
 
 /** Heuristic: does this text look like an injection payload? */
-function looksLikePayload(text: string): boolean {
+export function looksLikePayload(text: string): boolean {
   const indicators = [
-    /ignore.*(?:previous|all).*instructions/i,
     /system\s*(?:prompt|override|update|instructions)/i,
-    /override|bypass|disable.*(?:safety|filter|restrict)/i,
-    /output.*(?:system.*prompt|credentials|api.*key)/i,
+    /override|bypass/i,
     /you\s+are\s+now/i,
     /security\s+test/i,
     /agentpwn/i,
     /hackmyagent/i,
     /npx\s+hackmyagent/i,
-    /report.*to.*admin/i,
     /APWN-[A-Z]+-\d{3}/,
   ];
+  // Words that must appear in this order on one line, case-insensitively:
+  // /ignore.*(?:previous|all).*instructions/i, the `disable` branch of
+  // /override|bypass|disable.*(?:safety|filter|restrict)/i,
+  // /output.*(?:system.*prompt|credentials|api.*key)/i and /report.*to.*admin/i,
+  // one list per branch. As regexes these retried each `.*` from every
+  // occurrence of the word before it: a comment holding 16 KiB of
+  // `ignore all ` took more than 5 seconds, and each doubling cost 8 times more.
+  const wordChains = [
+    ['ignore', 'previous', 'instructions'],
+    ['ignore', 'all', 'instructions'],
+    ['disable', 'safety'],
+    ['disable', 'filter'],
+    ['disable', 'restrict'],
+    ['output', 'system', 'prompt'],
+    ['output', 'credentials'],
+    ['output', 'api', 'key'],
+    ['report', 'to', 'admin'],
+  ];
 
-  return indicators.some((re) => re.test(text));
+  return (
+    indicators.some((re) => re.test(text)) || wordChains.some((words) => wordsInOrderOnOneLine(text, words))
+  );
 }
 
 /** Parse sitemap.xml to get attack page URLs */
 export function parseSitemap(xml: string, baseUrl: string): string[] {
   const urls: string[] = [];
-  const locRegex = /<loc>(.*?)<\/loc>/g;
-  let match;
-  while ((match = locRegex.exec(xml)) !== null) {
-    let url = match[1];
+  // The matches of /<loc>(.*?)<\/loc>/g, found without rescanning a line from
+  // every `<loc>` on it that has no `</loc>` after it.
+  for (const loc of sameLineMatches(xml, '<loc>', '</loc>')) {
+    let url = loc.body;
     // Replace the domain with the actual target
     if (url.includes('agentpwn.com')) {
       url = url.replace('https://agentpwn.com', baseUrl);
