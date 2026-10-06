@@ -10,6 +10,7 @@ import type { InjectionSurface } from './types';
 import {
   elementMatches,
   htmlComments,
+  indexOfWordsInOrderOnOneLine,
   replaceBeforeLastCloser,
   sameLineMatches,
   tagAttributeMatches,
@@ -283,6 +284,38 @@ export function looksLikePayload(text: string): boolean {
   return (
     indicators.some((re) => re.test(text)) || wordChains.some((words) => wordsInOrderOnOneLine(text, words))
   );
+}
+
+/**
+ * Does a fetched robots.txt, llms.txt or sitemap.xml carry a payload marker?
+ * Exactly `/agentpwn|hackmyagent|security.*test|APWN-|ignore.*instructions/i.test(text)`.
+ * As a regex, each `.*` branch ran to the end of the line from every
+ * occurrence of its first word, so a file holding 1 MiB of `security ` took
+ * about 48 seconds; the two branches now read each line once.
+ */
+export function fileHasPayload(text: string): boolean {
+  return (
+    /agentpwn|hackmyagent|APWN-/i.test(text) ||
+    wordsInOrderOnOneLine(text, ['security', 'test']) ||
+    wordsInOrderOnOneLine(text, ['ignore', 'instructions'])
+  );
+}
+
+/**
+ * The line a file payload excerpt is cut from: exactly
+ * `text.match(/(?:SECURITY TEST|APWN-|ignore.*instructions|hackmyagent)[^\n]*\/i)?.[0]`.
+ * Every branch is followed by `[^\n]*`, and the `.*` branch holds no `\n`,
+ * so the match runs from the leftmost branch start to the next `\n`.
+ */
+export function filePayloadLine(text: string): string | undefined {
+  const starts = [
+    text.search(/SECURITY TEST|APWN-|hackmyagent/i),
+    indexOfWordsInOrderOnOneLine(text, ['ignore', 'instructions']),
+  ].filter((i) => i >= 0);
+  if (starts.length === 0) return undefined;
+  const start = Math.min(...starts);
+  const end = text.indexOf('\n', start);
+  return text.slice(start, end < 0 ? text.length : end);
 }
 
 /** Parse sitemap.xml to get attack page URLs */
