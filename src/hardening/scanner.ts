@@ -8099,6 +8099,7 @@ dist/
     const vscodeServers = vscodeConfig?.[VSCODE_CLIENT.mcpKey];
     if (vscodeServers && typeof vscodeServers === 'object') {
       for (const [, server] of Object.entries(vscodeServers as Record<string, { args?: string[] }>)) {
+        if (!server || typeof server !== 'object') continue;
         if (serverArgs(server).some((arg) => arg === '/' || arg === '~')) {
           hasRootAccess = true;
           break;
