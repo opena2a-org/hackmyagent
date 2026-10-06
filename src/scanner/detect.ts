@@ -17,7 +17,7 @@ import { SoulScanner, GOVERNANCE_FILES } from '../soul';
 import type { SoulScanResult } from '../soul';
 import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
 import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
-import { matchVendorPrefix } from '../types/credential-format';
+import { credentialValueMarker } from '../types/credential-format';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
 import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
@@ -821,21 +821,6 @@ export function scanMcpServers(targetDir: string): DetectedMcpServer[] {
 const CREDENTIAL_IN_CONFIG = /(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{0,64}(?:api[_-]?key|secret|token|password))["']?\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})/i;
 
 /**
- * Enough of a credential value to recognise it, never enough to use it: the
- * recognised vendor prefix when the value carries one (a constant, not secret
- * body), an ellipsis, and the length. Nothing of the body is shown for an
- * unknown shape, which is the masking invariant `credential-analyzer.ts`
- * states; the Verify line prints the whole line for anyone who needs it. `matched "API_KEY"` alone read as a false positive on the demo
- * tree (Abdel, 2026-09-13); the fragment is what makes the finding checkable
- * at a glance, and the Verify line prints the whole line for anyone who
- * needs it.
- */
-function credentialFragment(value: string): string {
-  const head = matchVendorPrefix(value) ?? '';
-  return `${head}… (${value.length} chars)`;
-}
-
-/**
  * The first line matching `pattern`, reported as the KEY that matched rather
  * than the value.
  *
@@ -893,13 +878,18 @@ export function scanAiConfigs(targetDir: string, withheld?: WithheldLink[]): AiC
         if (credential) {
           risk = 'critical';
           details = `${pattern.tool} config contains credential references`;
-          // The key name as written, then a masked fragment of the value in
-          // the reason slot, so the line reads
-          // `.claude/settings.json:3 — "ANTHROPIC_API_KEY" = <vendor prefix>… (108 chars)`.
+          // The key name as written, then the labelled marker every other
+          // credential finding prints in place of the value, so the citation
+          // after `.claude/settings.json:3` reads
+          // `"ANTHROPIC_API_KEY" = Anthropic API key: [REDACTED]`.
+          // `matched "API_KEY"` alone read as a false positive on a demo tree;
+          // the label is what makes the finding checkable at a glance. No byte
+          // of the value is shown, nor its length: the Verify line prints the
+          // whole line for anyone who needs it.
           evidence = {
             line: credential.line,
             token: credential.token,
-            reason: credential.value ? `= ${credentialFragment(credential.value)}` : undefined,
+            reason: credential.value ? `= ${credentialValueMarker(credential.value)}` : undefined,
           };
         } else if (grant) {
           risk = 'high';
