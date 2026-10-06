@@ -588,6 +588,20 @@ async function readCheckSubject(filePath: string): Promise<SubjectRead> {
 }
 
 /**
+ * The string elements of a server entry's `args`, or none when it is not a
+ * list (#869).
+ *
+ * A server entry is parsed JSON: `"args": "--foo"`, `7` or `{}` passes a
+ * truthiness check and then throws on the first array method, which ended
+ * `secure` with "server.args.findIndex is not a function" and no report for
+ * the whole tree. One malformed entry declares nothing; the other entries, the
+ * rest of the file and the rest of the tree are still read.
+ */
+function serverArgs(server: { args?: unknown }): string[] {
+  return Array.isArray(server.args) ? server.args.filter((a): a is string => typeof a === 'string') : [];
+}
+
+/**
  * #458 — fold the classified reads of a check whose subject is ANY of several
  * candidate files: `read` if any candidate was read, else `unread` if any
  * candidate failed for a reason other than not-there (the coverage ledger
@@ -6476,10 +6490,11 @@ export class HardeningScanner {
           // A server entry that is not an object (`null`, a string) carries
           // no command or args to inspect.
           if (!server || typeof server !== 'object') continue;
-          // Check for root filesystem access
-          if (server.args) {
-            const rootIndex = server.args.findIndex((arg: string) => arg === '/');
-            const homeIndex = server.args.findIndex((arg: string) => arg === '~');
+          // Check for root filesystem access. `args` that is not a list
+          // declares no path (#869); the index is kept for the in-place fix.
+          if (Array.isArray(server.args)) {
+            const rootIndex = server.args.findIndex((arg: unknown) => arg === '/');
+            const homeIndex = server.args.findIndex((arg: unknown) => arg === '~');
 
             if (rootIndex !== -1 || homeIndex !== -1) {
               hasRootAccess = true;
@@ -6503,7 +6518,7 @@ export class HardeningScanner {
             server.command?.includes('shell')
           ) {
             // Shell server without allowedCommands is dangerous
-            if (!server.args?.some((arg: string) => arg.includes('allowed'))) {
+            if (!serverArgs(server).some((arg) => arg.includes('allowed'))) {
               hasUnrestrictedShell = true;
             }
           }
@@ -7640,7 +7655,7 @@ dist/
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
           if (!server || typeof server !== 'object') continue;
-          if (server.args?.some((arg: string) => arg.includes('0.0.0.0'))) {
+          if (serverArgs(server).some((arg) => arg.includes('0.0.0.0'))) {
             boundToAllInterfaces = true;
             break;
           }
@@ -7797,8 +7812,8 @@ dist/
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
           if (!server || typeof server !== 'object') continue;
-          if (server.args) {
-            const argsStr = server.args.join(' ').toLowerCase();
+          if (Array.isArray(server.args)) {
+            const argsStr = serverArgs(server).join(' ').toLowerCase();
             for (const pwd of defaultPasswords) {
               if (argsStr.includes(`password`) && argsStr.includes(pwd)) {
                 hasDefaultCreds = true;
@@ -8084,7 +8099,7 @@ dist/
     const vscodeServers = vscodeConfig?.[VSCODE_CLIENT.mcpKey];
     if (vscodeServers && typeof vscodeServers === 'object') {
       for (const [, server] of Object.entries(vscodeServers as Record<string, { args?: string[] }>)) {
-        if (server.args?.some((arg: string) => arg === '/' || arg === '~')) {
+        if (serverArgs(server).some((arg) => arg === '/' || arg === '~')) {
           hasRootAccess = true;
           break;
         }
@@ -9858,7 +9873,7 @@ dist/
             // Remote server is fine if using HTTPS
             continue;
           }
-          if (server.args?.some((arg: string) => arg.includes('0.0.0.0'))) {
+          if (serverArgs(server).some((arg) => arg.includes('0.0.0.0'))) {
             allLocalhostBound = false;
           }
         }
@@ -9910,7 +9925,7 @@ dist/
       if (mcpConfig?.servers) {
         for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
           if (!server || typeof server !== 'object') continue;
-          if (server.args?.some((arg: string) => arg.includes('log') || arg.includes('verbose'))) {
+          if (serverArgs(server).some((arg) => arg.includes('log') || arg.includes('verbose'))) {
             hasLogging = true;
             break;
           }
