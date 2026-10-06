@@ -22,7 +22,7 @@ import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
-import { quotedCallMatches } from '../types/lazy-scan';
+import { WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
@@ -1645,9 +1645,9 @@ const SKILL_CREDENTIAL_ACCESS_PATTERNS: RegExp[] = [
   /~\/\.kube/gi,
   /~\/\.gnupg/gi,
   /keychain/gi,
-  /wallet.*\.json/gi,
-  /seed.*phrase/gi,
-  /private.*key/gi,
+  new WordChainRegExp(/wallet.*\.json/gi),
+  new WordChainRegExp(/seed.*phrase/gi),
+  new WordChainRegExp(/private.*key/gi),
   // Match .env as a standalone file reference, not as part of process.env or documentation
   // like ".env.example in sync" or "set in .env.local"
   /(?:^|[\s"'`(])\.env(?:\.local|\.production|\.development)?(?:[\s"'`)]|$)/gi,
@@ -1679,8 +1679,8 @@ export const SKILL_REVERSE_SHELL_PATTERNS: RegExp[] = [
   /bash\s+-i\s+/gi,
   /\/dev\/tcp\//gi,
   /\/dev\/udp\//gi,
-  /python.*socket.*connect/gi,
-  /perl.*socket.*connect/gi,
+  new WordChainRegExp(/python.*socket.*connect/gi),
+  new WordChainRegExp(/perl.*socket.*connect/gi),
 ];
 
 const SKILL_CLICKFIX_PATTERNS: RegExp[] = [
@@ -1708,10 +1708,10 @@ const CLAWHAVOC_MALICIOUS_FILES = [
   'agent-setup.exe', 'openclaw-installer.dmg',
 ];
 const CLAWHAVOC_CLICKFIX_PATTERNS: RegExp[] = [
-  /download.*paste.*terminal/i,
+  new WordChainRegExp(/download.*paste.*terminal/i),
   /copy.*(?:command|script).*terminal/i,
   /right[- ]click.*open/i,
-  /run.*\.exe/i,
+  new WordChainRegExp(/run.*\.exe/i),
 ];
 const CLAWHAVOC_ARCHIVE_PASSWORD = /password\s*[:=]\s*["']?(openclaw|claw|agent|setup)["']?/i;
 
@@ -1719,7 +1719,7 @@ const PROMPT_INJECTION_PATTERNS: RegExp[] = [
   /ignore\s+(all\s+)?(previous|prior|above)/gi,
   /disregard\s+(all\s+)?(previous|prior)/gi,
   /system:\s/gi,
-  /<\|.*\|>/gi,  // special tokens
+  new WordChainRegExp(/<\|.*\|>/gi),  // special tokens
   /\[INST\]/gi,
   /\[\/INST\]/gi,
   /<<SYS>>/gi,
@@ -17248,6 +17248,14 @@ dist/
 
     // ---------- NEMO-004: API key passed as CLI argument ----------
     let nemo004Found = false;
+    const cliSecretPatterns = [
+      new WordChainRegExp(/--credential.*\$\{.*key/i),
+      new WordChainRegExp(/--api-key.*\$\{/i),
+      new WordChainRegExp(/--token.*\$\{/i),
+      new WordChainRegExp(/execSync.*--credential/i),
+      new WordChainRegExp(/spawn.*--credential/i),
+      new WordChainRegExp(/subprocess.*--credential/i),
+    ];
     const nemo004Files = [...cappedTsJs, ...cappedPy];
     for (const file of nemo004Files) {
       try {
@@ -17255,14 +17263,7 @@ dist/
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (
-            /--credential.*\$\{.*key/i.test(line) ||
-            /--api-key.*\$\{/i.test(line) ||
-            /--token.*\$\{/i.test(line) ||
-            /execSync.*--credential/i.test(line) ||
-            /spawn.*--credential/i.test(line) ||
-            /subprocess.*--credential/i.test(line)
-          ) {
+          if (cliSecretPatterns.some((p) => p.test(line))) {
             nemo004Found = true;
             findings.push({
               checkId: 'NEMO-004',
@@ -17346,6 +17347,7 @@ dist/
 
     // ---------- NEMO-006: Predictable /tmp paths without mktemp ----------
     let nemo006Found = false;
+    const installToTmp = new WordChainRegExp(/install.*\/tmp\//);
     for (const file of cappedSh) {
       try {
         const content = await fs.readFile(file, 'utf-8');
@@ -17357,7 +17359,7 @@ dist/
           // Match hardcoded /tmp/ writes
           if (
             /\/tmp\//.test(line) &&
-            (/>/.test(line) || />>/.test(line) || /-o\s+\/tmp\//.test(line) || /install.*\/tmp\//.test(line))
+            (/>/.test(line) || />>/.test(line) || /-o\s+\/tmp\//.test(line) || installToTmp.test(line))
           ) {
             nemo006Found = true;
             findings.push({
@@ -19197,11 +19199,11 @@ dist/
         const capPatterns = [
           /(execute|run)\s+shell/i,
           /(shell|system)\s+command/i,
-          /access.*internet/i,
-          /write.*file/i,
-          /delete.*file/i,
-          /financial.*transaction/i,
-          /act.*behalf/i,
+          new WordChainRegExp(/access.*internet/i),
+          new WordChainRegExp(/write.*file/i),
+          new WordChainRegExp(/delete.*file/i),
+          new WordChainRegExp(/financial.*transaction/i),
+          new WordChainRegExp(/act.*behalf/i),
           // "external service" only when NOT preceded by negation in the same sentence
           /(?<!(?:do not|will not|cannot|never|no)\s{0,20})external.*service/i,
         ];
