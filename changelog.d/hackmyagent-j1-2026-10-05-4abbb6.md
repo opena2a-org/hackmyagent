@@ -14,4 +14,7 @@ issue: 355
   `system_prompt.md` or `persona.md` in any subdirectory (outside
   `node_modules` and `.git`). If a directory cannot be
   listed, the check does not report absence; the directory is reported as an
-  unread input instead.
+  unread input instead. If the walk stops at one of its bounds (more than
+  50,000 directory entries, a depth over 25, or more than 500 agent-config
+  files), the check does not report absence either, and no LIFECYCLE-008
+  record is written for that run.
