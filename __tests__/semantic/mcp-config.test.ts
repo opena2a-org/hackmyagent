@@ -185,6 +185,15 @@ describe('McpConfigAnalyzer', () => {
       expect(analyzer.analyze([file]).some((f) => f.id === 'SEM-MCP-004')).toBe(true);
     });
 
+    // A string value was reported as a wildcard whenever it CONTAINED `*`
+    // before the field was read as a list; keep that for the string form.
+    it('a lone string that contains a wildcard is still reported', () => {
+      const file = makeMcpFile(JSON.stringify({
+        mcpServers: { svc: { command: 'node', allowedTools: 'tools/*' } },
+      }));
+      expect(analyzer.analyze([file]).some((f) => f.id === 'SEM-MCP-004')).toBe(true);
+    });
+
     it('the string elements of a mixed args array are still checked', () => {
       const file = makeMcpFile(JSON.stringify({
         mcpServers: { svc: { command: 'chrome', args: [7, '--no-sandbox'] } },

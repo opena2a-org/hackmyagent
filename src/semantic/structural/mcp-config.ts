@@ -164,7 +164,7 @@ export class McpConfigAnalyzer {
         findings.push(...this.checkSecretsInArgs(serverName, serverConfig, file));
 
         // Check wildcard permissions
-        findings.push(...this.checkWildcardPermissions(serverName, serverConfig, file, locate));
+        findings.push(...this.checkWildcardPermissions(serverName, serverConfig, raw, file, locate));
 
         // Check typosquatted packages
         findings.push(...this.checkTyposquatPackages(serverName, serverConfig, file, locate));
@@ -332,17 +332,24 @@ export class McpConfigAnalyzer {
   private checkWildcardPermissions(
     serverName: string,
     config: McpServerConfig,
+    raw: Record<string, unknown>,
     file: AnalysisFile,
     locate: () => Map<string, ServerLocation | null>
   ): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
 
+    // `declared` is the field as written. A list is a wildcard grant when one
+    // of its elements is exactly `*`. A lone string was read as its own bytes
+    // before `stringList` turned it into a one-item list, and `"tools/*"` was
+    // reported then; it still is, so reading the field as a list does not
+    // retire a finding the string form used to produce (#869).
     const checkWildcard = (
       field: string[] | undefined,
+      declared: unknown,
       fieldName: string
     ) => {
       if (!field) return;
-      if (field.includes('*')) {
+      if (field.includes('*') || (typeof declared === 'string' && declared.includes('*'))) {
         findings.push({
           id: 'SEM-MCP-004',
           title: 'Wildcard permission in MCP server',
@@ -361,8 +368,8 @@ export class McpConfigAnalyzer {
       }
     };
 
-    checkWildcard(config.allowedTools, 'allowedTools');
-    checkWildcard(config.allowedCommands, 'allowedCommands');
+    checkWildcard(config.allowedTools, raw.allowedTools, 'allowedTools');
+    checkWildcard(config.allowedCommands, raw.allowedCommands, 'allowedCommands');
 
     return findings;
   }
