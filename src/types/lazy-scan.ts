@@ -14,8 +14,10 @@
  * hide content the pattern matches today. The drivers rely on one property
  * instead: once a match attempt fails because no closer follows, no attempt
  * further right can succeed, so the search can stop. The differential tests
- * in `__tests__/lazy-regex-sibling-sites.test.ts` and
- * `__tests__/lazy-regex-word-chains.test.ts` hold each driver to its pattern.
+ * in `__tests__/lazy-regex-sibling-sites.test.ts`,
+ * `__tests__/lazy-regex-word-chains.test.ts` and
+ * `__tests__/lazy-regex-chain-alternations.test.ts` hold each driver to its
+ * pattern.
  */
 
 export interface HtmlComment {
@@ -492,6 +494,348 @@ export class WordChainRegExp extends RegExp {
     if (advances) this.lastIndex = span.end;
     const match = [text.slice(span.start, span.end)] as unknown as RegExpExecArray;
     match.index = span.start;
+    match.input = text;
+    match.groups = undefined;
+    return match;
+  }
+}
+
+/** Where a match starts and ends. */
+interface Span {
+  start: number;
+  end: number;
+}
+
+/** A piece of a regex source: an escape, class or group whole, else one character. */
+interface Atom {
+  kind: 'char' | 'escape' | 'dot' | 'class' | 'group' | 'quantifier' | 'bar' | 'anchor';
+  text: string;
+}
+
+/** The atoms of a source the RegExp constructor accepted without the u or v flag. */
+function atomsOf(source: string): Atom[] {
+  const malformed = (): never => {
+    throw new SyntaxError(`cannot read /${source}/`);
+  };
+  const classEnd = (i: number): number => {
+    let j = i + 1;
+    while (source[j] !== ']') {
+      if (j >= source.length) malformed();
+      j += source[j] === '\\' ? 2 : 1;
+    }
+    return j + 1;
+  };
+  const groupEnd = (i: number): number => {
+    let depth = 0;
+    for (let j = i; j < source.length; ) {
+      const c = source[j];
+      if (c === '\\') j += 2;
+      else if (c === '[') j = classEnd(j);
+      else {
+        if (c === '(') depth++;
+        else if (c === ')' && --depth === 0) return j + 1;
+        j++;
+      }
+    }
+    return malformed();
+  };
+  const atoms: Atom[] = [];
+  for (let i = 0; i < source.length; ) {
+    const c = source[i];
+    let kind: Atom['kind'] = 'char';
+    let end = i + 1;
+    if (c === '\\') {
+      kind = 'escape';
+      end = i + 2;
+    } else if (c === '[') {
+      kind = 'class';
+      end = classEnd(i);
+    } else if (c === '(') {
+      kind = 'group';
+      end = groupEnd(i);
+    } else if (c === '|') {
+      kind = 'bar';
+    } else if (c === '.') {
+      kind = 'dot';
+    } else if (c === '^' || c === '$') {
+      kind = 'anchor';
+    } else if (c === '*' || c === '+' || c === '?') {
+      kind = 'quantifier';
+      if (source[i + 1] === '?') end = i + 2;
+    } else if (c === '{') {
+      const m = /^\{\d+(?:,\d*)?\}\??/.exec(source.slice(i, i + 32));
+      if (m !== null) {
+        kind = 'quantifier';
+        end = i + m[0].length;
+      }
+    }
+    atoms.push({ kind, text: source.slice(i, end) });
+    i = end;
+  }
+  return atoms;
+}
+
+/** `atoms` cut at every atom `isCut` accepts; the cut atoms are dropped. */
+function splitAtoms(atoms: readonly Atom[], isCut: (i: number) => boolean): Atom[][] {
+  const parts: Atom[][] = [[]];
+  for (let i = 0; i < atoms.length; i++) {
+    if (isCut(i)) parts.push([]);
+    else parts[parts.length - 1].push(atoms[i]);
+  }
+  return parts;
+}
+
+const LINE_TERMINATORS = ['\n', '\r', '\u2028', '\u2029'];
+
+/** A character, or an escaped punctuation character, other than a line terminator. */
+const isLiteral = (a: Atom): boolean =>
+  (a.kind === 'char' && !LINE_TERMINATORS.includes(a.text)) ||
+  (a.kind === 'escape' && /^\\[^A-Za-z0-9]$/.test(a.text));
+
+/** The lengths one atom of a chain word can match, or null for an atom a chain word may not hold. */
+function atomLengths(atom: Atom, flags: string): number[] | null {
+  if (isLiteral(atom) || atom.kind === 'dot') return [1];
+  if (atom.kind === 'class') {
+    const cls = new RegExp(atom.text, flags);
+    return LINE_TERMINATORS.some((t) => cls.test(t)) ? null : [1];
+  }
+  if (atom.kind === 'group' && atom.text.startsWith('(?:')) {
+    const inner = atomsOf(atom.text.slice(3, -1));
+    const alternatives = splitAtoms(inner, (i) => inner[i].kind === 'bar');
+    return alternatives.every((a) => a.every(isLiteral)) ? alternatives.map((a) => a.length) : null;
+  }
+  return null;
+}
+
+/**
+ * A chain word's source and, when every match of it has the same length,
+ * that length; null when the atoms are not a chain word.
+ */
+function parseWord(atoms: readonly Atom[], first: boolean, flags: string): { source: string; length: number | null } | null {
+  let i = 0;
+  // Only the first word is searched in the whole text, where a lookbehind
+  // sees what the pattern's own lookbehind sees.
+  if (first && atoms[0]?.kind === 'group' && /^\(\?<[=!]/.test(atoms[0].text)) i = 1;
+  if (i === atoms.length) return null;
+  let length: number | null = 0;
+  for (; i < atoms.length; i++) {
+    const lengths = atomLengths(atoms[i], flags);
+    if (lengths === null) return null;
+    length = length !== null && lengths.every((n) => n === lengths[0]) ? length + lengths[0] : null;
+  }
+  return { source: atoms.map((a) => a.text).join(''), length };
+}
+
+/** For the line holding `from`, where heads can end and where their match ends. */
+interface ChainLine {
+  input: string;
+  /** The head the facts were worked out from; they hold for every later head on the line. */
+  from: number;
+  lineEnd: number;
+  /** A head ending at or before this offset starts a match; -1 for none. */
+  lastHeadEnd: number;
+  /** Where every match from a head on this line ends. */
+  end: number;
+}
+
+/** `rest` holds a global regex for each word after the first. */
+type Branch =
+  | { kind: 'plain'; find: RegExp; at: RegExp }
+  | { kind: 'chain'; head: RegExp; headAt: RegExp; headLength: number; rest: RegExp[]; line?: ChainLine };
+
+/**
+ * The last offset in `region` where `word` (global) matches without passing
+ * the region's end, or -1. At each offset the regex tries every alternative
+ * that fits, so no offset where one of them fits is missed.
+ */
+function lastStart(word: RegExp, region: string): number {
+  let last = -1;
+  word.lastIndex = 0;
+  for (let m = word.exec(region); m !== null; m = word.exec(region)) {
+    last = m.index;
+    word.lastIndex = m.index + 1;
+  }
+  return last;
+}
+
+/**
+ * The facts for the line holding `head`, from the last line worked out when
+ * that is the same line.
+ *
+ * The later words are placed as late as they fit, last word first. A head
+ * starts a match exactly when it ends at or before the latest place left for
+ * the second word. Every `.*` is greedy, so the match ends where the last
+ * word's last occurrence on the line ends, whichever head starts it.
+ */
+function chainLine(branch: Extract<Branch, { kind: 'chain' }>, text: string, head: number): ChainLine {
+  const known = branch.line;
+  if (known !== undefined && known.input === text && known.from <= head && head < known.lineEnd) return known;
+  LINE_BREAK.lastIndex = head;
+  const lineEnd = LINE_BREAK.exec(text)?.index ?? text.length;
+  const line = text.slice(head, lineEnd);
+  let bound = line.length;
+  let end = -1;
+  for (let k = branch.rest.length - 1; k >= 0 && bound >= 0; k--) {
+    const word = branch.rest[k];
+    const start = lastStart(word, k === branch.rest.length - 1 ? line : line.slice(0, bound));
+    if (start >= 0 && k === branch.rest.length - 1) {
+      // The length the word's own alternatives pick at that offset.
+      word.lastIndex = start;
+      end = start + (word.exec(line) as RegExpExecArray)[0].length;
+    }
+    bound = start;
+  }
+  branch.line = { input: text, from: head, lineEnd, lastHeadEnd: bound < 0 ? -1 : head + bound, end: head + end };
+  return branch.line;
+}
+
+/** The leftmost match of one branch at or after `from`, or only at `from` when sticky. */
+function branchSpan(branch: Branch, text: string, from: number, sticky: boolean): Span | null {
+  if (branch.kind === 'plain') {
+    const re = sticky ? branch.at : branch.find;
+    re.lastIndex = from;
+    const m = re.exec(text);
+    return m === null ? null : { start: m.index, end: m.index + m[0].length };
+  }
+  const finder = sticky ? branch.headAt : branch.head;
+  for (let at = from; at <= text.length; ) {
+    finder.lastIndex = at;
+    const head = finder.exec(text);
+    if (head === null) return null;
+    const line = chainLine(branch, text, head.index);
+    if (head.index + branch.headLength <= line.lastHeadEnd) return { start: head.index, end: line.end };
+    // Every later head on the line ends later still.
+    if (sticky) return null;
+    at = line.lineEnd + 1;
+  }
+  return null;
+}
+
+/** The branches of an alternation of chains, or null when the source has another shape. */
+function parseChainAlternation(source: string, flags: string): Branch[] | null {
+  const atoms = atomsOf(source);
+  const branches: Branch[] = [];
+  for (const branch of splitAtoms(atoms, (i) => atoms[i].kind === 'bar')) {
+    const isSeparator = (i: number): boolean =>
+      branch[i].kind === 'dot' && branch[i + 1]?.kind === 'quantifier' && branch[i + 1].text === '*';
+    const separators = branch.filter((_, i) => isSeparator(i)).length;
+    if (separators === 0) {
+      const text = branch.map((a) => a.text).join('');
+      if (refusedPlainBranch(text)) return null;
+      branches.push({ kind: 'plain', find: new RegExp(text, 'g' + flags), at: new RegExp(text, 'y' + flags) });
+      continue;
+    }
+    const words: Atom[][] = [[]];
+    for (let i = 0; i < branch.length; i++) {
+      if (isSeparator(i)) {
+        words.push([]);
+        i++;
+      } else {
+        words[words.length - 1].push(branch[i]);
+      }
+    }
+    const parsed = words.map((w, k) => parseWord(w, k === 0, flags));
+    if (parsed.some((p) => p === null)) return null;
+    const [first, ...rest] = parsed as { source: string; length: number | null }[];
+    // A head of one length: the earliest head on a line ends earliest.
+    if (first.length === null || first.length === 0) return null;
+    branches.push({
+      kind: 'chain',
+      head: new RegExp(first.source, 'g' + flags),
+      headAt: new RegExp(first.source, 'y' + flags),
+      headLength: first.length,
+      rest: rest.map((w) => new RegExp(w.source, 'g' + flags)),
+    });
+  }
+  return branches.some((b) => b.kind === 'chain') ? branches : null;
+}
+
+/**
+ * Whether a branch without `.*` holds what a branch of the alternation may
+ * not: a capture, a back reference, or a repeated `.`.
+ */
+function refusedPlainBranch(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\') {
+      if (/[1-9k]/.test(text[i + 1] ?? '')) return true;
+      i++;
+    } else if (c === '[') {
+      for (i++; text[i] !== ']'; i++) if (text[i] === '\\') i++;
+    } else if (c === '(') {
+      if (text[i + 1] !== '?') return true;
+      if (text[i + 2] === '<' && text[i + 3] !== '=' && text[i + 3] !== '!') return true;
+    } else if (c === '.' && /[*+{]/.test(text[i + 1] ?? '')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A RegExp for an alternation whose branches are `WORD.*WORD` chains or
+ * patterns without `.*`, with no flags other than g, i and y, that returns
+ * exactly what the pattern returns.
+ *
+ * A chain word is literal text, `.`, classes that cannot match a line break,
+ * and `(?:a|b)` groups of literal alternatives; the first word has one
+ * length and may open with a lookbehind. Other branches hold no capture, no
+ * back reference and no repeated `.`, and run as their own regex.
+ *
+ * As a regex, each `.*` runs to the end of the line and backs off to look for
+ * the next word, from every occurrence of the word before it, so a line that
+ * repeats a chain's first words costs the square of its length, or the cube
+ * with three words. Here each branch finds its own leftmost match and the
+ * earliest one wins, the earlier branch on a tie, which is the order the
+ * regex tries them in. A chain works out each line once (see chainLine), and
+ * each branch keeps its last match while it still lies ahead, so a run of
+ * exec calls reads the text once per branch. exec is the only method
+ * overridden, as in WordChainRegExp.
+ */
+export class WordChainAlternationRegExp extends RegExp {
+  private readonly branches: Branch[];
+  private readonly found: ({ input: string; from: number; span: Span | null } | undefined)[];
+
+  constructor(pattern: RegExp | string, flags?: string) {
+    super(pattern, flags);
+    const branches = /^[giy]*$/.test(this.flags) ? parseChainAlternation(this.source, this.ignoreCase ? 'i' : '') : null;
+    if (branches === null) {
+      throw new SyntaxError(`/${this.source}/${this.flags} is not an alternation of WORD.*WORD chains with flags from g, i and y`);
+    }
+    this.branches = branches;
+    this.found = branches.map(() => undefined);
+  }
+
+  /** Branch `i`'s leftmost match at or after `from`, reusing the last one while it still applies. */
+  private leftmost(i: number, text: string, from: number): Span | null {
+    const known = this.found[i];
+    if (known !== undefined && known.input === text && known.from <= from && (known.span === null || known.span.start >= from)) {
+      return known.span;
+    }
+    const span = branchSpan(this.branches[i], text, from, false);
+    this.found[i] = { input: text, from, span };
+    return span;
+  }
+
+  exec(input: string): RegExpExecArray | null {
+    const text = String(input);
+    const advances = this.global || this.sticky;
+    const from = advances ? toLength(this.lastIndex) : 0;
+    let best = null as Span | null;
+    if (from <= text.length) {
+      // A later branch wins only by starting earlier.
+      for (let i = 0; i < this.branches.length && best?.start !== from; i++) {
+        const span: Span | null = this.sticky ? branchSpan(this.branches[i], text, from, true) : this.leftmost(i, text, from);
+        if (span !== null && (best === null || span.start < best.start)) best = span;
+      }
+    }
+    if (best === null) {
+      if (advances) this.lastIndex = 0;
+      return null;
+    }
+    if (advances) this.lastIndex = best.end;
+    const match = [text.slice(best.start, best.end)] as unknown as RegExpExecArray;
+    match.index = best.start;
     match.input = text;
     match.groups = undefined;
     return match;

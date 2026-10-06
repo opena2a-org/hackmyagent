@@ -22,7 +22,7 @@ import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
-import { WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
+import { WordChainAlternationRegExp, WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
@@ -1709,8 +1709,8 @@ const CLAWHAVOC_MALICIOUS_FILES = [
 ];
 const CLAWHAVOC_CLICKFIX_PATTERNS: RegExp[] = [
   new WordChainRegExp(/download.*paste.*terminal/i),
-  /copy.*(?:command|script).*terminal/i,
-  /right[- ]click.*open/i,
+  new WordChainAlternationRegExp(/copy.*(?:command|script).*terminal/i),
+  new WordChainAlternationRegExp(/right[- ]click.*open/i),
   new WordChainRegExp(/run.*\.exe/i),
 ];
 const CLAWHAVOC_ARCHIVE_PASSWORD = /password\s*[:=]\s*["']?(openclaw|claw|agent|setup)["']?/i;
@@ -13489,7 +13489,7 @@ dist/
       }
 
       // SKILL-011: Browser Data Access (context-aware)
-      const browserDataPattern = /chrome|firefox|cookies|localStorage|sessionStorage|browser.*data|chromium|safari.*cookies/gi;
+      const browserDataPattern = new WordChainAlternationRegExp(/chrome|firefox|cookies|localStorage|sessionStorage|browser.*data|chromium|safari.*cookies/gi);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         browserDataPattern.lastIndex = 0;
@@ -17200,13 +17200,14 @@ dist/
 
     // ---------- NEMO-003: Hot-reload policy paths reachable from user input ----------
     let nemo003Found = false;
+    const policyReload = new WordChainAlternationRegExp(/policy.*reload|reload.*policy|hot.*reload/i);
     for (const file of cappedTsJs) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (/policy.*reload|reload.*policy|hot.*reload/i.test(line)) {
+          if (policyReload.test(line)) {
             // Check surrounding 10 lines for user input references
             const windowStart = Math.max(0, i - 5);
             const windowEnd = Math.min(lines.length, i + 6);
@@ -17446,13 +17447,14 @@ dist/
     // Heuristic: look for verify/validate in one file AND exec/spawn in the same directory tree
     const dirVerifyMap = new Map<string, { verifyFile: string; verifyLine: number }>();
     const dirExecMap = new Map<string, { execFile: string; execLine: number }>();
+    const verifyIntegrity = new WordChainAlternationRegExp(/verify.*digest|validate.*hash|check.*integrity/i);
     for (const file of cappedTsJs) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
         const dir = path.dirname(file);
         for (let i = 0; i < lines.length; i++) {
-          if (/verify.*digest|validate.*hash|check.*integrity/i.test(lines[i])) {
+          if (verifyIntegrity.test(lines[i])) {
             if (!dirVerifyMap.has(dir)) {
               dirVerifyMap.set(dir, { verifyFile: file, verifyLine: i + 1 });
             }
@@ -18079,7 +18081,7 @@ dist/
         if (content.length > 10 * 1024 * 1024) continue;
 
         const hasTaskEndpoint = /\/tasks\/send|\/tasks\/get|\/tasks\/cancel/.test(content);
-        const hasAuthMiddleware = /auth|authenticate|verify.*token|api.?key|bearer/i.test(content);
+        const hasAuthMiddleware = new WordChainAlternationRegExp(/auth|authenticate|verify.*token|api.?key|bearer/i).test(content);
 
         if (hasTaskEndpoint && !hasAuthMiddleware) {
           const lines = content.split('\n');
@@ -19094,7 +19096,7 @@ dist/
 
       // ── SOUL-BYPASS: instructs bypassing security tools ───────────────────
       const bypassPattern = /(bypass|skip|disable|ignore)\s+(?:hma|hackmyagent|oasb|security.check|analm|security.scan|scan.check)/i;
-      const skipChecksPattern = /HMA_SKIP_CHECKS|SKIP_CHECKS\s*=\s*true|security.*validation.*disabled|checks.*disabled/i;
+      const skipChecksPattern = new WordChainAlternationRegExp(/HMA_SKIP_CHECKS|SKIP_CHECKS\s*=\s*true|security.*validation.*disabled|checks.*disabled/i);
       const bypassMatch = bypassPattern.exec(content) ?? skipChecksPattern.exec(content);
       if (bypassMatch) {
         findings.push({
@@ -19163,7 +19165,7 @@ dist/
       const complianceTerms = [
         /ISO 27001/i, /SOC 2/i, /\bGDPR\b/i, /\bHIPAA\b/i, /\bCCPA\b/i,
         /AES.256/i, /PCI.?DSS/i, /\bindependently audit/i, /Trust Level [0-9]/i,
-        /OpenA2A Registry.*(?:trusted|verified|certified)/i,
+        new WordChainAlternationRegExp(/OpenA2A Registry.*(?:trusted|verified|certified)/i),
       ];
       const complianceMatches = complianceTerms
         .map(p => p.exec(content))
@@ -19205,7 +19207,7 @@ dist/
           new WordChainRegExp(/financial.*transaction/i),
           new WordChainRegExp(/act.*behalf/i),
           // "external service" only when NOT preceded by negation in the same sentence
-          /(?<!(?:do not|will not|cannot|never|no)\s{0,20})external.*service/i,
+          new WordChainAlternationRegExp(/(?<!(?:do not|will not|cannot|never|no)\s{0,20})external.*service/i),
         ];
         for (const p of capPatterns) {
           const m = p.exec(content);
@@ -19218,7 +19220,7 @@ dist/
         return undefined;
       })();
       const hasBroadCapability = broadCapabilityOffset !== undefined;
-      const irrevocableMatch = /irrevocable\s+consent|grants.*irrevocable|permanent.*consent/i.exec(content);
+      const irrevocableMatch = new WordChainAlternationRegExp(/irrevocable\s+consent|grants.*irrevocable|permanent.*consent/i).exec(content);
       const hasConsentLanguage = /\bconsent\b|\bauthori[sz]/i.test(content);
 
       if (hasBroadCapability && !hasConsentLanguage) {
@@ -19269,7 +19271,7 @@ dist/
       // Only fire for SOUL files that declare capabilities (empty/scope-only SOULs are fine).
       // Use the matched capability declaration as the citation line — that's the
       // statement the user needs to either constrain or remove.
-      const declaredCapMatch = /##\s*capabilit|i can |i am able to|this agent can|i execute|i can run|shell|internet|network|access.*file|delete.*file|external/i.exec(content);
+      const declaredCapMatch = new WordChainAlternationRegExp(/##\s*capabilit|i can |i am able to|this agent can|i execute|i can run|shell|internet|network|access.*file|delete.*file|external/i).exec(content);
       if (constraintCount < 2 && declaredCapMatch) {
         findings.push({
           checkId: 'SOUL-COMPLETENESS',
