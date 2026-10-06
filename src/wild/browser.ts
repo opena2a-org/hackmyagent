@@ -214,9 +214,11 @@ export function extractContent(page: FetchedPage): ExtractedContent {
     // O(n) total instead of O(n^2) (HMA-44); script elements cannot nest.
     .replace(/<script(?:(?!<script)[\s\S])*?<\/script>/gi, '');
   // No style element can end past the last `</style>`, so the strip runs only
-  // up to it and a flood of `<style` after it costs nothing.
-  const visibleText = replaceBeforeLastCloser(withoutScripts, /<style[\s\S]*?<\/style>/gi, /<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
+  // up to it and a flood of `<style` after it costs nothing. The tag strip
+  // works the same way: no tag ends past the last `>`, and before it every
+  // `<` either fails at once on `<>` or reaches the next `>`.
+  const withoutStyles = replaceBeforeLastCloser(withoutScripts, /<style[\s\S]*?<\/style>/gi, /<\/style>/gi, '');
+  const visibleText = replaceBeforeLastCloser(withoutStyles, /<[^>]+>/g, />/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 500);
