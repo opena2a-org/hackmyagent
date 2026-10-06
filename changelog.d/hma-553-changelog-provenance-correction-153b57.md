@@ -9,15 +9,18 @@ issue: 553
   stdout chokepoint, the `--output` file arms, the SARIF/HTML/ASFF/ASP generators, the
   registry publish builders' input and the MCP tool payloads it lists do read it. Three paths
   that carry finding-derived text do not, read on this tree:
-  - the MCP deep-scan result: `buildDeepScanLayer1` asserts the layer-1 findings
-    (`src/mcp-server.ts:205`), but the structural findings and discovered files it is built
-    with (the `structural.discoverFiles` and `structural.analyze` results handed to
+  - the MCP deep-scan result: `buildDeepScanLayer1` asserts the layer-1 findings (its
+    `assertRedactionProvenance(findings, 'mcp-deep-scan')` call in `src/mcp-server.ts`), but
+    the structural findings and discovered files it is built with (the
+    `structural.discoverFiles` and `structural.analyze` results handed to
     `buildDeepScanResult` in the `hackmyagent_deep_scan` case of `src/mcp-server.ts`) are
     not asserted. Handing file content to the host
     model is that tool's stated purpose, so this is a statement of scope, not a leak report;
-  - the registry publish builder asserts its input (`src/registry/publish.ts:175`), then
-    derives an attack result's `message` from the response text
-    (`src/registry/publish.ts:211`), which never crosses that read;
+  - the registry publish builder asserts its input (the
+    `assertRedactionProvenance(data, 'registry-publish')` call in `buildPublishPayload`,
+    `src/registry/publish.ts`), then derives an attack result's `message` from the response
+    text (`r.response?.substring(0, 500)` in that function's `data.attackReport.results`
+    loop), which never crosses that read;
   - the narrative channel: `grep -rn assertRedactionProvenance src/narrative/` prints nothing
     and exits 1.
   Nothing about what those paths emit changes here; the sentence stops outrunning the code.
