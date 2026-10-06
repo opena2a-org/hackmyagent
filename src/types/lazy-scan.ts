@@ -1,11 +1,11 @@
 /**
  * Linear-time drivers for patterns that a scanned file can flood with openers.
  *
- * A lazy body (or a greedy run such as `[^>]+` or `\S+`) that never meets its
- * closer scans to the end of the input, and a regex retries that scan from
- * every later opener, so N openers with no closer cost O(N * n). The scanned
- * bytes come from the party being scanned, which makes that a way to stall a
- * scan.
+ * A lazy body (or a greedy run such as `[^>]+`, `\S+` or `.*`) that never
+ * meets its closer scans to the end of the input, and a regex retries that
+ * scan from every later opener, so N openers with no closer cost O(N * n).
+ * The scanned bytes come from the party being scanned, which makes that a way
+ * to stall a scan.
  *
  * Each driver here returns exactly what its pattern returns: the same matches,
  * at the same offsets, with the same captures. None bounds the body or stops it
@@ -284,5 +284,85 @@ export function* tagAttributeMatches(text: string, spec: TagAttributeSpec): Gene
     } else {
       from = gt + 1;
     }
+  }
+}
+
+/** A match of a pattern shaped `OPEN(BODY)CLOSE`. */
+export interface Delimited {
+  /** Offset of the opener. */
+  index: number;
+  /** Offset just past the closer. */
+  end: number;
+  /** Text between opener and closer, capture 1. */
+  body: string;
+}
+
+/**
+ * The matches of `/OPEN(.*?)CLOSE/g` for literal, case-sensitive OPEN and
+ * CLOSE with no line break in them.
+ *
+ * `.` stops at a line break, so an opener matches up to the first closer on
+ * its own line. When that closer is missing, every later opener on the line
+ * misses it too, so the search resumes on the next line. The next closer and
+ * the next line break are each searched for once and reused while they still
+ * lie ahead, so neither search is repeated from every opener.
+ */
+export function* sameLineMatches(text: string, open: string, close: string): Generator<Delimited> {
+  const lineBreak = /[\n\r\u2028\u2029]/g;
+  let nextClose = -1;
+  let nextBreak = -1;
+  for (let from = 0; ; ) {
+    const start = text.indexOf(open, from);
+    if (start < 0) return;
+    const bodyStart = start + open.length;
+    if (nextClose < bodyStart) {
+      nextClose = text.indexOf(close, bodyStart);
+      // No later opener has a closer after it either.
+      if (nextClose < 0) return;
+    }
+    if (nextBreak < bodyStart) {
+      lineBreak.lastIndex = bodyStart;
+      nextBreak = lineBreak.exec(text)?.index ?? text.length;
+    }
+    if (nextClose < nextBreak) {
+      yield { index: start, end: nextClose + close.length, body: text.slice(bodyStart, nextClose) };
+      from = nextClose + close.length;
+    } else {
+      from = nextBreak + 1;
+    }
+  }
+}
+
+/**
+ * `new RegExp(words.join('.*'), 'i').test(text)`, for plain words with no
+ * line break in them.
+ *
+ * As a regex, each `.*` runs to the end of the line and backs off one
+ * character at a time to look for the next word, from every occurrence of the
+ * word before it, which costs up to the cube of the line's length when the
+ * last word is missing. Taking each word's first occurrence after the previous one
+ * finds a match whenever there is one, and when a line has none its other
+ * occurrences of the first word have none either, so each line is read once.
+ */
+export function wordsInOrderOnOneLine(text: string, words: readonly string[]): boolean {
+  const finders = words.map((w) => new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'));
+  const lineBreak = /[\n\r\u2028\u2029]/g;
+  for (let from = 0; ; ) {
+    finders[0].lastIndex = from;
+    const first = finders[0].exec(text);
+    if (first === null) return false;
+    lineBreak.lastIndex = first.index;
+    const lineEnd = lineBreak.exec(text)?.index ?? text.length;
+    const rest = text.slice(first.index + first[0].length, lineEnd);
+    let at = 0;
+    let k = 1;
+    for (; k < finders.length; k++) {
+      finders[k].lastIndex = at;
+      const m = finders[k].exec(rest);
+      if (m === null) break;
+      at = m.index + m[0].length;
+    }
+    if (k === finders.length) return true;
+    from = lineEnd + 1;
   }
 }
