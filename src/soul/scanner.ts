@@ -47,6 +47,7 @@ import { GOVERNANCE_FILES } from './governance-files';
 import { resolveInsideTree, describeResolveRefusal, readStaysInsideTree } from '../hardening/contain';
 import type { WithheldLink } from '../hardening/coverage-ledger';
 import { usageError } from '../checker/errors';
+import { permissiveProfileMarker } from '../types/lazy-scan';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1973,11 +1974,15 @@ export class SoulScanner {
     // the mismatch detector below cares about marker-driven narrowing
     // even when `--profile` is not set.
     //
-    // Two regexes:
+    // Two matchers:
     //   STRICT_MARKER  -- the canonical form `<!-- soul:profile=NAME -->`.
     //                     If this matches AND the value is in PROFILE_DOMAINS,
     //                     the marker is honored.
-    //   PERMISSIVE_MARKER -- catches "any attempt at the marker". An
+    //   permissiveProfileMarker -- catches "any attempt at the marker",
+    //                        the match of
+    //                        /<!--[\s\S]*?soul:profile=([^>]*?)\s*-->/i
+    //                        found without retrying the lazy gap from
+    //                        every `<!--` that leads nowhere. An
     //                        empty value, leading-space-before-value,
     //                        or other malformed shapes that fail the
     //                        strict match are still surfaced via
@@ -1985,7 +1990,6 @@ export class SoulScanner {
     //                        (empty / leading-space markers returning
     //                        HARDENED 100/100) cannot defeat the clamp.
     const STRICT_MARKER = /<!--\s*soul:profile=(\S+)\s*-->/i;
-    const PERMISSIVE_MARKER = /<!--[\s\S]*?soul:profile=([^>]*?)\s*-->/i;
     // #206 R3.1: strip fenced code blocks before running the marker
     // regexes so a SOUL.md that DOCUMENTS marker syntax (e.g.
     // ``` <!-- soul:profile=xyz --> ```) does not fire
@@ -1995,7 +1999,7 @@ export class SoulScanner {
       .replace(/```[\s\S]*?```/g, '')
       .replace(/~~~[\s\S]*?~~~/g, '');
     const strictMarkerMatch = contentForMarkerCheck.match(STRICT_MARKER);
-    const permissiveMarkerMatch = contentForMarkerCheck.match(PERMISSIVE_MARKER);
+    const permissiveMarker = permissiveProfileMarker(contentForMarkerCheck);
     const strictMarkerValue = strictMarkerMatch ? strictMarkerMatch[1].toLowerCase() : undefined;
     const profileFromMarker = strictMarkerValue !== undefined
       && Object.keys(PROFILE_DOMAINS).includes(strictMarkerValue);
@@ -2003,9 +2007,9 @@ export class SoulScanner {
     // a recognized profile is `markerInvalidFromMarker`. The
     // attemptedValue prefers the permissive capture (trimmed) so the
     // user sees what they actually wrote, including empty strings.
-    const markerInvalidFromMarker = !!(permissiveMarkerMatch && !profileFromMarker);
+    const markerInvalidFromMarker = !!(permissiveMarker && !profileFromMarker);
     const markerInvalidAttemptedValue = markerInvalidFromMarker
-      ? (permissiveMarkerMatch![1] ?? '').trim().toLowerCase()
+      ? permissiveMarker!.value.trim().toLowerCase()
       : undefined;
 
     // #206 adversarial round 2: the CLI `--profile X` flag had no value

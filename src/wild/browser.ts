@@ -7,6 +7,7 @@
  */
 
 import type { InjectionSurface } from './types';
+import { elementMatches, htmlComments, replaceBeforeLastCloser } from '../types/lazy-scan';
 
 export interface FetchedPage {
   url: string;
@@ -100,11 +101,11 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   let hasCallback = false;
   let hasCanary = false;
 
-  // 1. HTML comments
-  const commentRegex = /<!--\s*([\s\S]*?)\s*-->/g;
-  let match;
-  while ((match = commentRegex.exec(html)) !== null) {
-    const content = match[1].trim();
+  // 1. HTML comments. The matches of /<!--\s*([\s\S]*?)\s*-->/g, found by a
+  // scan that stops at the first `<!--` with no `-->` after it instead of
+  // retrying from every later one.
+  for (const comment of htmlComments(html)) {
+    const content = comment.body.trim();
     if (looksLikePayload(content)) {
       surfaces.push({
         type: 'html-comment',
@@ -114,9 +115,11 @@ export function extractContent(page: FetchedPage): ExtractedContent {
     }
   }
 
-  // 2. Invisible spans (off-screen positioned elements)
-  const invisibleRegex = /<span[^>]*style="[^"]*(?:position:\s*absolute|left:\s*-\d+px|display:\s*none)[^"]*"[^>]*>([\s\S]*?)<\/span>/gi;
-  while ((match = invisibleRegex.exec(html)) !== null) {
+  // 2. Invisible spans (off-screen positioned elements). elementMatches runs
+  // the pattern only up to the last `</span>` and skips openers that cannot
+  // match, so a flood of `<span` with no closer stays linear.
+  const invisibleRegex = /<span[^>]*style="[^"]*(?:position:\s*absolute|left:\s*-\d+px|display:\s*none)[^"]*"[^>]*>([\s\S]*?)<\/span>/iy;
+  for (const match of elementMatches(html, invisibleRegex, /<span/gi, /<\/span>/gi)) {
     const content = match[1].trim();
     if (content.length > 10) {
       surfaces.push({
@@ -128,8 +131,8 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   }
 
   // 3. JSON-LD with suspicious fields
-  const jsonLdRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
-  while ((match = jsonLdRegex.exec(html)) !== null) {
+  const jsonLdRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/iy;
+  for (const match of elementMatches(html, jsonLdRegex, /<script/gi, /<\/script>/gi)) {
     try {
       const data = JSON.parse(match[1]);
       if (data['ai-instructions'] || data['security-test'] || data['security-callback']) {
@@ -146,6 +149,7 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   }
 
   // 4. Meta tags with AI instructions
+  let match;
   const metaRegex = /<meta[^>]*name="(?:ai-instructions|security-test-id|security-test-severity)"[^>]*content="([^"]*)"[^>]*\/?>/gi;
   while ((match = metaRegex.exec(html)) !== null) {
     surfaces.push({
@@ -205,11 +209,13 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   const severityMatch = html.match(/severity['":\s]+(critical|high|medium|low)/i);
 
   // Extract visible text (strip HTML tags, roughly)
-  const visibleText = html
+  const withoutScripts = html
     // Bounded at the next `<script` so a flood of unclosed openers costs
     // O(n) total instead of O(n^2) (HMA-44); script elements cannot nest.
-    .replace(/<script(?:(?!<script)[\s\S])*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script(?:(?!<script)[\s\S])*?<\/script>/gi, '');
+  // No style element can end past the last `</style>`, so the strip runs only
+  // up to it and a flood of `<style` after it costs nothing.
+  const visibleText = replaceBeforeLastCloser(withoutScripts, /<style[\s\S]*?<\/style>/gi, /<\/style>/gi, '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
