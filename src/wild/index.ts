@@ -10,7 +10,7 @@
  *   const report = await scanner.scan();
  */
 
-import { fetchPage, fetchTextFile, extractContent, parseSitemap } from './browser';
+import { fetchPage, fetchTextFile, extractContent, fileHasPayload, filePayloadLine, parseSitemap } from './browser';
 import { computeResilienceScore } from './scorer';
 import type { WildScanOptions, WildScanReport, WildPageResult, FileFetchResult } from './types';
 import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
@@ -89,15 +89,13 @@ export class WildScanner {
     for (const file of ['robots.txt', 'llms.txt', 'sitemap.xml']) {
       try {
         const result = await fetchTextFile(`${baseUrl}/${file}`, this.options.timeout);
-        const hasPayload = /agentpwn|hackmyagent|security.*test|APWN-|ignore.*instructions/i.test(result.text);
+        const hasPayload = fileHasPayload(result.text);
         fileFetches.push({
           file,
           url: `${baseUrl}/${file}`,
           statusCode: result.statusCode,
           hasPayload,
-          payloadExcerpt: hasPayload
-            ? result.text.match(/(?:SECURITY TEST|APWN-|ignore.*instructions|hackmyagent)[^\n]*/i)?.[0]?.slice(0, 100)
-            : undefined,
+          payloadExcerpt: hasPayload ? filePayloadLine(result.text)?.slice(0, 100) : undefined,
         });
         if (this.options.verbose) {
           const status = hasPayload ? 'PAYLOAD FOUND' : 'clean';

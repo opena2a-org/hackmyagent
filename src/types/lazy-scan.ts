@@ -345,12 +345,24 @@ export function* sameLineMatches(text: string, open: string, close: string): Gen
  * occurrences of the first word have none either, so each line is read once.
  */
 export function wordsInOrderOnOneLine(text: string, words: readonly string[]): boolean {
+  return indexOfWordsInOrderOnOneLine(text, words) >= 0;
+}
+
+/**
+ * `text.search(new RegExp(words.join('.*'), 'i'))`, for plain words with no
+ * line break in them: the offset of the leftmost match, or -1.
+ *
+ * The search is the one in wordsInOrderOnOneLine. The first line it accepts
+ * is the first line holding a match, and it accepts that line from its first
+ * occurrence of the first word, which is where the leftmost match starts.
+ */
+export function indexOfWordsInOrderOnOneLine(text: string, words: readonly string[]): number {
   const finders = words.map((w) => new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'));
   const lineBreak = /[\n\r\u2028\u2029]/g;
   for (let from = 0; ; ) {
     finders[0].lastIndex = from;
     const first = finders[0].exec(text);
-    if (first === null) return false;
+    if (first === null) return -1;
     lineBreak.lastIndex = first.index;
     const lineEnd = lineBreak.exec(text)?.index ?? text.length;
     const rest = text.slice(first.index + first[0].length, lineEnd);
@@ -362,7 +374,7 @@ export function wordsInOrderOnOneLine(text: string, words: readonly string[]): b
       if (m === null) break;
       at = m.index + m[0].length;
     }
-    if (k === finders.length) return true;
+    if (k === finders.length) return first.index;
     from = lineEnd + 1;
   }
 }
