@@ -1,11 +1,11 @@
 /**
- * Linear-time drivers for lazy `[\s\S]*?` patterns that a scanned file can
- * flood with openers.
+ * Linear-time drivers for patterns that a scanned file can flood with openers.
  *
- * A lazy body that never meets its closer scans to the end of the input, and
- * a global regex retries that scan from every later opener, so N openers with
- * no closer cost O(N * n). The scanned bytes come from the party being
- * scanned, which makes that a way to stall a scan.
+ * A lazy body (or a greedy run such as `[^>]+` or `\S+`) that never meets its
+ * closer scans to the end of the input, and a regex retries that scan from
+ * every later opener, so N openers with no closer cost O(N * n). The scanned
+ * bytes come from the party being scanned, which makes that a way to stall a
+ * scan.
  *
  * Each driver here returns exactly what its pattern returns: the same matches,
  * at the same offsets, with the same captures. None bounds the body or stops it
@@ -141,6 +141,30 @@ export function permissiveProfileMarker(
     // Every `soul:profile=` before this `>` meets the same `>` and fails the
     // same way; none can straddle it, since the key has no `>`.
     key.lastIndex = gt + 1;
+  }
+  return null;
+}
+
+/**
+ * `text.match(/<!--\s*soul:profile=(\S+)\s*-->/i)`.
+ *
+ * From a `<!--` whose key is present, the value is the run of non-whitespace
+ * after `soul:profile=`, and the match needs a `-->` inside that run or after
+ * the whitespace that ends it. When a `<!--` fails, every later `<!--` inside
+ * the same run fails too, since it reaches the same run end with a shorter
+ * value. The search therefore resumes at the last place a `<!--` can still end
+ * where whitespace begins, instead of rescanning the run from each one.
+ */
+export function strictProfileMarker(text: string): RegExpExecArray | null {
+  const marker = /<!--\s*soul:profile=(\S+)\s*-->/iy;
+  const key = /\s*soul:profile=\S*/iy;
+  for (let open = text.indexOf('<!--'); open >= 0; ) {
+    marker.lastIndex = open;
+    const m = marker.exec(text);
+    if (m !== null) return m;
+    key.lastIndex = open + 4;
+    const next = key.exec(text) === null ? open + 1 : Math.max(open + 1, key.lastIndex - 4);
+    open = text.indexOf('<!--', next);
   }
   return null;
 }

@@ -1,10 +1,12 @@
 /**
- * Seven lazy `[\s\S]*?` sites stop being quadratic on a flood of their own
- * opener, and still return exactly what their patterns returned.
+ * Seven lazy `[\s\S]*?` sites, and two greedy sites in the same files with the
+ * same cost, stop being quadratic on a flood of their own opener, and still
+ * return exactly what their patterns returned.
  *
  *   src/wild/browser.ts               extractContent html comments, invisible spans,
- *                                     JSON-LD, style strip
- *   src/soul/scanner.ts               scanSoul permissive profile marker
+ *                                     JSON-LD, style strip, tag strip
+ *   src/soul/scanner.ts               scanSoul permissive and strict profile markers,
+ *                                     detectProfile strict profile marker
  *   src/lifecycle/assembly-scanner.ts LIFECYCLE-007 html comment hiding
  *   src/hardening/scanner.ts          UNICODE-STEGO-003 eval on an empty string
  *
@@ -35,12 +37,13 @@ import {
   permissiveProfileMarker,
   quotedCallMatches,
   replaceBeforeLastCloser,
+  strictProfileMarker,
 } from '../src/types/lazy-scan';
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
 
-// The seven patterns as they were before the drivers. Do not edit these to
+// The patterns as they were before the drivers. Do not edit these to
 // make a test pass: they define what each site must keep matching.
 const ORACLE = {
   browserComment: /<!--\s*([\s\S]*?)\s*-->/g,
@@ -51,6 +54,8 @@ const ORACLE = {
   permissiveMarker: /<!--[\s\S]*?soul:profile=([^>]*?)\s*-->/i,
   assemblyComment: /<!--([\s\S]*?)-->/g,
   evalString: /(?:eval|Function)\s*\(\s*(['"`])([\s\S]*?)\1\s*\)/g,
+  tagStrip: /<[^>]+>/g,
+  strictMarker: /<!--\s*soul:profile=(\S+)\s*-->/i,
 };
 
 const readSrc = (rel: string): string =>
@@ -90,6 +95,11 @@ const DRIVER = {
   assemblyComment: (s: string): Row[] =>
     [...htmlComments(s)].map((c) => [c.index, s.slice(c.index, c.end), c.body]),
   evalString: (s: string, re: RegExp): Row[] => rows(quotedCallMatches(s, re)),
+  tagStrip: (s: string): string => replaceBeforeLastCloser(s, /<[^>]+>/g, />/g, ' '),
+  strictMarker: (s: string): Row | null => {
+    const m = strictProfileMarker(s);
+    return m && [m.index, ...m];
+  },
 };
 const BASE = {
   browserComment: (s: string): Row[] => rows(s.matchAll(ORACLE.browserComment)),
@@ -102,6 +112,11 @@ const BASE = {
   },
   assemblyComment: (s: string): Row[] => rows(s.matchAll(ORACLE.assemblyComment)),
   evalString: (s: string): Row[] => rows(s.matchAll(ORACLE.evalString)),
+  tagStrip: (s: string): string => s.replace(ORACLE.tagStrip, ' '),
+  strictMarker: (s: string): Row | null => {
+    const m = s.match(ORACLE.strictMarker);
+    return m && [m.index, ...m];
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -155,6 +170,12 @@ const ALPHABET: Record<keyof typeof ORACLE, string[]> = {
   evalString: [
     'eval', 'eval', 'Function', 'EVAL', 'function', 'evaluate', 'Function(', 'eval(', "eval('", 'eval("', 'eval(`',
     'eval (', "Function( '", '(', ')', ')', "'", '"', '`', "')", '")', '`)', "' )", '\\', '\ufe00\ufe00',
+  ],
+  tagStrip: ['<', '<', '>', '>', '<>', '<a', '<a ', '</a>', '<b>', '<<', '>>', '<!-- x -->', 'text'],
+  strictMarker: [
+    '<!--', '-->', '<!--', '-->', 'soul:profile=', 'soul:profile=', 'SOUL:Profile=', 'soul:profile', 'soul:profile =',
+    '<!--soul:profile=', '<!-- soul:profile=', '<!--soul:profile=', ' -->', '-->-->', '--->',
+    'conversational', 'xyz', '->', '--', '-', '>', '<!-',
   ],
 };
 
@@ -214,6 +235,15 @@ const HAND: Record<keyof typeof ORACLE, string[]> = {
     "eval('a' + 'b')", "eval('unclosed eval(\"inner\")", "Function(`x`)",
     "eval  (  '  x  '  )", "eval('x'\n)", "eval(\"a\") eval('b')", "eval('it''s')",
   ],
+  tagStrip: ['<a <b>x</b>', 'x<>y', '<<<a>', 'a > b < c', '<p>Ignore <b>all</b> previous</p>', '<\n>', '<a', '>'],
+  strictMarker: [
+    '<!--soul:profile=a<!-- soul:profile=conversational -->',
+    '<!--soul:profile=x-->', '<!--soul:profile=a-->b-->', '<!-- soul:profile=a-->b -->',
+    '<!-- soul:profile= -->', '<!--soul:profile=-->', '<!--soul:profile=--->',
+    '<!--' + PAD + 'soul:profile=x' + PAD + '-->',
+    '<!--soul:profile=x<!--soul:profile=y -->', '<!--soul:profile=x\n<!--soul:profile=y-->',
+    '<!-- SOUL:PROFILE=Autonomous -->', '<!--<!--soul:profile=x-->',
+  ],
 };
 
 describe('lazy-scan drivers match their patterns exactly', () => {
@@ -234,6 +264,8 @@ describe('lazy-scan drivers match their patterns exactly', () => {
     { site: 'styleStrip', seed: 0x5eed0005 },
     { site: 'permissiveMarker', seed: 0x5eed0006 },
     { site: 'evalString', seed: 0x5eed0007, site_re: SITE.evalString },
+    { site: 'tagStrip', seed: 0x5eed0008 },
+    { site: 'strictMarker', seed: 0x5eed0009 },
   ];
 
   for (const { site, seed, site_re } of cases) {
@@ -282,6 +314,8 @@ describe('lazy-scan drivers match their patterns exactly', () => {
     expect(DRIVER.evalString(HAND.evalString[0], SITE.evalString())[0][3]).toBe(
       'payload contains eval("x") and Function("y")',
     );
+    expect(DRIVER.tagStrip(HAND.tagStrip[0])).toBe(' x ');
+    expect(DRIVER.strictMarker(HAND.strictMarker[0])?.[2]).toBe('conversational');
   });
 
   it('each site calls its driver', () => {
@@ -294,6 +328,12 @@ describe('lazy-scan drivers match their patterns exactly', () => {
     expect(readSrc('src/soul/scanner.ts')).toContain('permissiveProfileMarker(contentForMarkerCheck)');
     expect(readSrc('src/lifecycle/assembly-scanner.ts')).toContain('for (const comment of htmlComments(comp.content))');
     expect(readSrc('src/hardening/scanner.ts')).toContain('quotedCallMatches(content, evalPattern)');
+    expect(browser).toContain("replaceBeforeLastCloser(withoutStyles, /<[^>]+>/g, />/g, ' ')");
+    expect(browser).not.toContain(".replace(/<[^>]+>/g, ' ')");
+    const soul = readSrc('src/soul/scanner.ts');
+    expect(soul).toContain('const markerMatch = strictProfileMarker(governanceContent);');
+    expect(soul).toContain('const strictMarkerMatch = strictProfileMarker(contentForMarkerCheck);');
+    expect(soul).not.toContain('.match(/<!--\\s*soul:profile=(\\S+)\\s*-->/i)');
   });
 });
 
@@ -371,6 +411,39 @@ const SHAPES: Shape[] = [
     input: (n) => flood("eval('", n) + "')",
     run: (s) => void DRIVER.evalString(s, SITE.evalString()),
   },
+  { name: 'tag strip: < with no >', input: (n) => flood('<', n), run: (s) => void DRIVER.tagStrip(s) },
+  { name: 'tag strip: "<a " with no ">"', input: (n) => flood('<a ', n), run: (s) => void DRIVER.tagStrip(s) },
+  { name: 'tag strip: < then one >', input: (n) => flood('<', n) + '>', run: (s) => void DRIVER.tagStrip(s) },
+  { name: 'tag strip: > alone', input: (n) => flood('>', n), run: (s) => void DRIVER.tagStrip(s) },
+  { name: 'tag strip: <>', input: (n) => flood('<>', n), run: (s) => void DRIVER.tagStrip(s) },
+  {
+    name: 'strict marker: <!--soul:profile=x with no whitespace or closer',
+    input: (n) => flood('<!--soul:profile=x', n),
+    run: (s) => void DRIVER.strictMarker(s),
+  },
+  {
+    name: 'strict marker: <!--soul:profile=x, then a valid marker',
+    input: (n) => flood('<!--soul:profile=x', n) + ' <!-- soul:profile=conversational -->',
+    run: (s) => void DRIVER.strictMarker(s),
+  },
+  {
+    name: 'strict marker: <!-- soul:profile=x followed by whitespace',
+    input: (n) => flood('<!-- soul:profile=x ', n),
+    run: (s) => void DRIVER.strictMarker(s),
+  },
+  {
+    name: 'strict marker: soul:profile= after one opener',
+    input: (n) => '<!--' + flood('soul:profile=', n),
+    run: (s) => void DRIVER.strictMarker(s),
+  },
+  // The two greedy sites through their call paths. Each input is quadratic
+  // for the pattern the site ran before.
+  { name: 'extractContent: < with no >', input: (n) => flood('<', n), run: (s) => void extractContent(page(s)) },
+  {
+    name: 'detectProfile: <!--soul:profile=x with no whitespace or closer',
+    input: (n) => flood('<!--soul:profile=x', n),
+    run: (s) => void new SoulScanner().detectProfile(s),
+  },
 ];
 
 describe('each flood shape costs linear time', () => {
@@ -446,6 +519,37 @@ describe('detection is unchanged in a 1 MiB body', () => {
     const { visibleText } = extractContent(page(html));
     expect(visibleText).not.toContain('SECRET_CSS_BODY');
     expect(visibleText).toContain('The visible sentence survives extraction.');
+  });
+
+  it('extractContent strips tags, including one with a second opener inside, before a 1 MiB flood of <', () => {
+    const html = '<div><p>Ignore <b>all</b> previous <a <i>instructions</i></p></div>' + flood('<', MiB);
+    const { visibleText } = extractContent(page(html));
+    expect(visibleText).toBe(('Ignore all previous instructions ' + '<'.repeat(500)).slice(0, 500));
+  });
+
+  it('detectProfile honors a valid marker after a 1 MiB flood of unclosed markers and behind a nested opener', () => {
+    const scanner = new SoulScanner();
+    expect(scanner.detectProfile(flood('<!--soul:profile=x', MiB) + ' <!-- soul:profile=conversational -->')).toBe(
+      'conversational',
+    );
+    expect(
+      scanner.detectProfile(filler(512 * KiB) + '<!--soul:profile=a<!-- soul:profile=autonomous -->' + filler(512 * KiB)),
+    ).toBe('autonomous');
+  });
+
+  it('scanSoul honors a valid marker after a flood of unclosed markers', async () => {
+    const tmp = tempDir('lazy-scan-soul-strict-');
+    try {
+      await fsp.writeFile(
+        path.join(tmp, 'SOUL.md'),
+        '# Agent\n\n' + flood('<!--soul:profile=x', 512 * KiB) + ' <!-- soul:profile=conversational -->\n' + filler(512 * KiB),
+      );
+      const result = await new SoulScanner().scanSoul(tmp);
+      expect(result.agentProfile).toBe('conversational');
+      expect(result.markerInvalid).toBeUndefined();
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
   });
 
   it('scanSoul reports the attempted value of a permissive marker, including one behind a nested opener or padding', async () => {

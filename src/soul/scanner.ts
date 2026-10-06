@@ -47,7 +47,7 @@ import { GOVERNANCE_FILES } from './governance-files';
 import { resolveInsideTree, describeResolveRefusal, readStaysInsideTree } from '../hardening/contain';
 import type { WithheldLink } from '../hardening/coverage-ledger';
 import { usageError } from '../checker/errors';
-import { permissiveProfileMarker } from '../types/lazy-scan';
+import { permissiveProfileMarker, strictProfileMarker } from '../types/lazy-scan';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1517,8 +1517,10 @@ export class SoulScanner {
    * Respects a `<!-- soul:profile=PROFILE -->` marker if present.
    */
   detectProfile(governanceContent: string): AgentProfile {
-    // Check for explicit profile marker first
-    const markerMatch = governanceContent.match(/<!--\s*soul:profile=(\S+)\s*-->/i);
+    // Check for explicit profile marker first: the match of
+    // /<!--\s*soul:profile=(\S+)\s*-->/i, found without rescanning the
+    // value from every `<!--` inside it.
+    const markerMatch = strictProfileMarker(governanceContent);
     if (markerMatch) {
       const markerProfile = markerMatch[1].toLowerCase();
       if (Object.keys(PROFILE_DOMAINS).includes(markerProfile)) {
@@ -1975,9 +1977,11 @@ export class SoulScanner {
     // even when `--profile` is not set.
     //
     // Two matchers:
-    //   STRICT_MARKER  -- the canonical form `<!-- soul:profile=NAME -->`.
-    //                     If this matches AND the value is in PROFILE_DOMAINS,
-    //                     the marker is honored.
+    //   strictProfileMarker -- the canonical form `<!-- soul:profile=NAME -->`,
+    //                     the match of /<!--\s*soul:profile=(\S+)\s*-->/i
+    //                     found without rescanning the value from every
+    //                     `<!--` inside it. If this matches AND the value
+    //                     is in PROFILE_DOMAINS, the marker is honored.
     //   permissiveProfileMarker -- catches "any attempt at the marker",
     //                        the match of
     //                        /<!--[\s\S]*?soul:profile=([^>]*?)\s*-->/i
@@ -1989,7 +1993,6 @@ export class SoulScanner {
     //                        markerInvalid so the round-2 bypass class
     //                        (empty / leading-space markers returning
     //                        HARDENED 100/100) cannot defeat the clamp.
-    const STRICT_MARKER = /<!--\s*soul:profile=(\S+)\s*-->/i;
     // #206 R3.1: strip fenced code blocks before running the marker
     // regexes so a SOUL.md that DOCUMENTS marker syntax (e.g.
     // ``` <!-- soul:profile=xyz --> ```) does not fire
@@ -1998,7 +2001,7 @@ export class SoulScanner {
     const contentForMarkerCheck = contentForTier
       .replace(/```[\s\S]*?```/g, '')
       .replace(/~~~[\s\S]*?~~~/g, '');
-    const strictMarkerMatch = contentForMarkerCheck.match(STRICT_MARKER);
+    const strictMarkerMatch = strictProfileMarker(contentForMarkerCheck);
     const permissiveMarker = permissiveProfileMarker(contentForMarkerCheck);
     const strictMarkerValue = strictMarkerMatch ? strictMarkerMatch[1].toLowerCase() : undefined;
     const profileFromMarker = strictMarkerValue !== undefined
