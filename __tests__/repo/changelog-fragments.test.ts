@@ -211,8 +211,9 @@ describe('new', () => {
 /**
  * #875: five fragments were filed as `hma-i1-2026-10-04-<hex>.md` and
  * `hma-i2-2026-10-04-<hex>.md`, after the branches they were written on, which
- * say nothing about the change. The branch names a fragment only when it
- * carries one of the entry's issue numbers; otherwise the entry names itself.
+ * say nothing about the change. The branch names a fragment when it carries
+ * one of the entry's issue numbers, or when the entry names no issue;
+ * otherwise the entry names itself.
  */
 describe('new: the default name', () => {
   const WORK = 'issues/hma-i1-2026-10-04';
@@ -247,6 +248,22 @@ describe('new: the default name', () => {
     expect(nameOn(WORK, ['--issue', '2026'], '- a fix\n')).toMatch(/^2026-a-fix-[0-9a-f]{6}\.md$/);
   });
 
+  it('does not read a year and month in the branch name as issue numbers (#895)', () => {
+    expect(nameOn('release-2026-10', ['--issue', '10'], '- a fix (#10)\n')).toMatch(/^10-a-fix-[0-9a-f]{6}\.md$/);
+    expect(nameOn('release-2026-10', ['--issue', '2026'], '- a fix\n')).toMatch(/^2026-a-fix-[0-9a-f]{6}\.md$/);
+    expect(nameOn('fix/875-2026-10', ['--issue', '875'], '- a fix\n')).toMatch(/^875-2026-10-[0-9a-f]{6}\.md$/);
+  });
+
+  it('reads issue numbers from the first line only (#895)', () => {
+    expect(nameOn('fix/a-topic', [], '- a fix\n\nsee #77\n')).toMatch(/^a-topic-[0-9a-f]{6}\.md$/);
+  });
+
+  it('keeps an issue number past 2^53 as written (#895)', () => {
+    const big = '99999999999999999999';
+    expect(nameOn(WORK, ['--issue', big], '- a fix\n')).toMatch(new RegExp(`^${big}-a-fix-[0-9a-f]{6}\\.md$`));
+    expect(nameOn(WORK, [], `- a fix (#${big})\n`)).toMatch(new RegExp(`^${big}-a-fix-[0-9a-f]{6}\\.md$`));
+  });
+
   it('stays the branch slug when the branch carries any of the entry\'s issues, and when the entry names no issue', () => {
     expect(nameOn('fix/hma-762-topic', ['--issue', '761, 762'], '- a fix (#761)\n')).toMatch(/^hma-762-topic-[0-9a-f]{6}\.md$/);
     expect(nameOn('fix/hma-762-topic', [], '- a fix (#762)\n')).toMatch(/^hma-762-topic-[0-9a-f]{6}\.md$/);
@@ -259,6 +276,12 @@ describe('new: the default name', () => {
     expect(long.replace(/-[0-9a-f]{6}\.md$/, '').length).toBeLessThanOrEqual(60);
     expect(long.length).toBeLessThanOrEqual(80);
     expect(nameOn(WORK, ['--issue', '875'], '- (#875)\n')).toMatch(/^875-[0-9a-f]{6}\.md$/);
+  });
+
+  it('is cut at the last word boundary inside 60 characters, and mid-word only for a single longer word (#895)', () => {
+    const words = nameOn(WORK, ['--issue', '875'], `- ${'abcdefghij '.repeat(6)}\n`);
+    expect(words).toMatch(/^875-abcdefghij-abcdefghij-abcdefghij-abcdefghij-abcdefghij-[0-9a-f]{6}\.md$/);
+    expect(nameOn(`fleet/${'x'.repeat(70)}`, [], '- a fix\n')).toMatch(/^x{60}-[0-9a-f]{6}\.md$/);
   });
 });
 

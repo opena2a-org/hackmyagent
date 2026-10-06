@@ -367,8 +367,12 @@ const typeHeading = l => {
   return m ? (TYPE_BY_LABEL.get(m[1].toLowerCase()) ?? null) : null;
 };
 
+/** Lowercase words joined by single hyphens, cut at a word boundary to at most SLUG_MAX characters. */
 function slugify(s) {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, SLUG_MAX).replace(/-+$/, '');
+  const slug = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (slug.length <= SLUG_MAX) return slug;
+  const cut = slug.lastIndexOf('-', SLUG_MAX);
+  return cut > 0 ? slug.slice(0, cut) : slug.slice(0, SLUG_MAX);
 }
 
 function branchSlug() {
@@ -390,9 +394,12 @@ function slugFromOption(name) {
   return name;
 }
 
-/** Issue numbers referenced as `#<n>` in an entry's first line, in order of appearance. */
+/**
+ * Issue numbers referenced as `#<n>` in an entry's first line, in order of
+ * appearance. Kept as decimal strings, so a number past 2^53 is not rounded.
+ */
 function firstLineIssues(body) {
-  return [...new Set([...body.split('\n')[0].matchAll(/#(\d+)\b/g)].map(m => Number(m[1])).filter(n => n > 0))];
+  return [...new Set([...body.split('\n')[0].matchAll(/#(\d+)\b/g)].map(m => m[1].replace(/^0+/, '')).filter(Boolean))];
 }
 
 /** Issue numbers named in a promoted `#### title` line, in order of appearance. */
@@ -412,11 +419,12 @@ function defaultSlug(body, issueText) {
   const branch = branchSlug();
   const issues = issueText === undefined
     ? firstLineIssues(body)
-    : issueText.split(',').map(s => s.trim()).filter(p => /^[1-9]\d*$/.test(p)).map(Number);
+    : issueText.split(',').map(s => s.trim()).filter(p => /^[1-9]\d*$/.test(p));
   if (!issues.length) return branch;
-  // A date in the branch name is not an issue number.
-  const parts = branch.replace(/(^|-)\d{4}-\d{2}-\d{2}(?=-|$)/g, '$1').split('-');
-  if (issues.some(n => parts.includes(String(n)))) return branch;
+  // A date in the branch name is not an issue number: a four-digit year with
+  // a month and, optionally, a day (`2026-10`, `2026-10-04`).
+  const parts = branch.replace(/(^|-)\d{4}-\d{1,2}(-\d{1,2})?(?=-|$)/g, '$1').split('-');
+  if (issues.some(n => parts.includes(n))) return branch;
   return slugify(`${issues[0]} ${body.split('\n')[0].replace(/#\d+\b/g, ' ')}`);
 }
 
