@@ -14,8 +14,8 @@
  * hide content the pattern matches today. The drivers rely on one property
  * instead: once a match attempt fails because no closer follows, no attempt
  * further right can succeed, so the search can stop. The differential tests
- * in `__tests__/lazy-regex-sibling-sites.test.ts` hold each driver to its
- * pattern.
+ * in `__tests__/lazy-regex-sibling-sites.test.ts` and
+ * `__tests__/lazy-regex-word-chains.test.ts` hold each driver to its pattern.
  */
 
 export interface HtmlComment {
@@ -357,24 +357,143 @@ export function wordsInOrderOnOneLine(text: string, words: readonly string[]): b
  * occurrence of the first word, which is where the leftmost match starts.
  */
 export function indexOfWordsInOrderOnOneLine(text: string, words: readonly string[]): number {
-  const finders = words.map((w) => new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'));
-  const lineBreak = /[\n\r\u2028\u2029]/g;
-  for (let from = 0; ; ) {
-    finders[0].lastIndex = from;
-    const first = finders[0].exec(text);
-    if (first === null) return -1;
-    lineBreak.lastIndex = first.index;
-    const lineEnd = lineBreak.exec(text)?.index ?? text.length;
-    const rest = text.slice(first.index + first[0].length, lineEnd);
-    let at = 0;
+  const finders = words.map((w) => new RegExp(escapeRegExp(w), 'gi'));
+  return wordChainSpan(text, finders, 0)?.start ?? -1;
+}
+
+const escapeRegExp = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const LINE_BREAK = /[\n\r\u2028\u2029]/g;
+
+/**
+ * Where the leftmost match of `WORD.*WORD...` (two or more words) at or
+ * after `from` starts and ends, or null. `finders` holds one global regex per
+ * word. With `firstAt`, a sticky regex for the first word, the match must
+ * start at `from`.
+ *
+ * The search takes the first occurrence of the first word and each later
+ * word's first occurrence after the one before it, on that line. When the
+ * line has no match, its later occurrences of the first word have none
+ * either, so the search moves to the next line. Every `.*` is greedy, so the
+ * match ends where the last occurrence of the last word on the line ends.
+ */
+function wordChainSpan(
+  text: string,
+  finders: readonly RegExp[],
+  from: number,
+  firstAt?: RegExp,
+): { start: number; end: number } | null {
+  const first = firstAt ?? finders[0];
+  const last = finders[finders.length - 1];
+  for (let at = from; at <= text.length; ) {
+    first.lastIndex = at;
+    const head = first.exec(text);
+    if (head === null) return null;
+    const start = head.index;
+    LINE_BREAK.lastIndex = start;
+    const lineEnd = LINE_BREAK.exec(text)?.index ?? text.length;
+    const line = text.slice(start, lineEnd);
+    let lastAt = 0;
+    let pos = head[0].length;
     let k = 1;
     for (; k < finders.length; k++) {
-      finders[k].lastIndex = at;
-      const m = finders[k].exec(rest);
+      finders[k].lastIndex = pos;
+      const m = finders[k].exec(line);
       if (m === null) break;
-      at = m.index + m[0].length;
+      lastAt = m.index;
+      pos = m.index + m[0].length;
     }
-    if (k === finders.length) return first.index;
-    from = lineEnd + 1;
+    if (k === finders.length) {
+      let end = pos;
+      last.lastIndex = lastAt + 1;
+      for (let m = last.exec(line); m !== null; m = last.exec(line)) {
+        end = m.index + m[0].length;
+        last.lastIndex = m.index + 1;
+      }
+      return { start, end: start + end };
+    }
+    if (firstAt) return null;
+    at = lineEnd + 1;
+  }
+  return null;
+}
+
+/** The words of a regex source shaped `WORD.*WORD...`, or null. */
+function wordChainWords(source: string): string[] | null {
+  const words: string[] = [];
+  let word = '';
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    if (c === '\\') {
+      const escaped = source[i + 1];
+      if (escaped === undefined || !/[\\/.$^*+?()[\]{}|-]/.test(escaped)) return null;
+      word += escaped;
+      i++;
+    } else if (c === '.' && source[i + 1] === '*') {
+      if (word === '') return null;
+      words.push(word);
+      word = '';
+      i++;
+    } else if ('.*+?()[]{}|^$\n\r\u2028\u2029'.includes(c)) {
+      return null;
+    } else {
+      word += c;
+    }
+  }
+  if (word === '' || words.length === 0) return null;
+  words.push(word);
+  return words;
+}
+
+function toLength(value: unknown): number {
+  const n = Math.trunc(Number(value));
+  return Number.isNaN(n) || n <= 0 ? 0 : Math.min(n, Number.MAX_SAFE_INTEGER);
+}
+
+/**
+ * A RegExp for a pattern shaped `WORD.*WORD`, with two or more literal words
+ * and no flags other than g, i and y, that returns exactly what the pattern
+ * returns without running it.
+ *
+ * As a regex, each `.*` runs to the end of the line and backs off one
+ * character at a time to look for the next word, from every occurrence of the
+ * word before it. A line that repeats the first word without the last costs
+ * the square of its length with two words and the cube with three. exec finds
+ * the same match with wordChainSpan instead, and sets lastIndex as the
+ * built-in exec does. It is the only method overridden: test, match,
+ * matchAll, replace, search and split all go through it, so code that holds
+ * the object as a RegExp needs no change.
+ */
+export class WordChainRegExp extends RegExp {
+  private readonly finders: RegExp[];
+  private readonly firstAt: RegExp;
+
+  constructor(pattern: RegExp | string, flags?: string) {
+    super(pattern, flags);
+    const words = /^[giy]*$/.test(this.flags) ? wordChainWords(this.source) : null;
+    if (words === null) {
+      throw new SyntaxError(`/${this.source}/${this.flags} is not WORD.*WORD with flags from g, i and y`);
+    }
+    const caseFlag = this.ignoreCase ? 'i' : '';
+    this.finders = words.map((w) => new RegExp(escapeRegExp(w), 'g' + caseFlag));
+    this.firstAt = new RegExp(escapeRegExp(words[0]), 'y' + caseFlag);
+  }
+
+  exec(input: string): RegExpExecArray | null {
+    const text = String(input);
+    const advances = this.global || this.sticky;
+    const from = advances ? toLength(this.lastIndex) : 0;
+    const span =
+      from <= text.length ? wordChainSpan(text, this.finders, from, this.sticky ? this.firstAt : undefined) : null;
+    if (span === null) {
+      if (advances) this.lastIndex = 0;
+      return null;
+    }
+    if (advances) this.lastIndex = span.end;
+    const match = [text.slice(span.start, span.end)] as unknown as RegExpExecArray;
+    match.index = span.start;
+    match.input = text;
+    match.groups = undefined;
+    return match;
   }
 }
