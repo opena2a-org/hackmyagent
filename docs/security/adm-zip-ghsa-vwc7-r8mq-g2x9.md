@@ -19,13 +19,15 @@ a finding that instrument's severity floor cannot reach.
 ## The edge into this tree
 
 `adm-zip` is here because one package declares it, and only one:
-`onnxruntime-node@1.27.0` declares `adm-zip: ^0.5.16`
-(`package-lock.json:2628`). That package carries `"hasInstallScript": true`,
-so its postinstall runs on a plain `npm install`.
+`onnxruntime-node@1.27.0` declares `adm-zip: ^0.5.16` in the `dependencies`
+of its `node_modules/onnxruntime-node` entry in `package-lock.json`. That entry
+carries `"hasInstallScript": true`, so its postinstall runs on a plain
+`npm install`.
 
-This tree's own `overrides` block pins `adm-zip: ^0.6.0` (`package.json:69`),
-which resolves `node_modules/adm-zip` to `0.6.1` here
-(`package-lock.json:1244-1246`). That pin governs **this** tree and no other:
+This tree's own `overrides` block in `package.json` pins `adm-zip: ^0.6.0`,
+which resolves the `node_modules/adm-zip` entry in `package-lock.json` to
+`0.6.1` here. Both manifests are cited by entry rather than by line, so a
+lockfile update that moves lines does not move the citation. That pin governs **this** tree and no other:
 npm applies an `overrides` block only to the tree that declares it, and
 `overrides` are not published, so a consumer installing `hackmyagent` resolves
 `adm-zip` from `onnxruntime-node`'s own `^0.5.16` range and not from this pin.

@@ -12,7 +12,8 @@
  * Two halves:
  *
  *   - the record says what it must say, and every file:line it cites really
- *     carries what it says it carries;
+ *     carries what it says it carries — the two manifests are cited by entry
+ *     rather than by line, so a lockfile update cannot strand a citation;
  *   - the four lockfile readings it states still match `package-lock.json`,
  *     with a planted fault per reading to prove the comparison is doing work.
  *
@@ -82,14 +83,16 @@ describe('the adm-zip advisory is recorded as known-open, with its evidence inli
   it('QGF-254.AC3 it states the single edge into this tree, inline', () => {
     expect(flat).toContain('onnxruntime-node@1.27.0');
     expect(flat).toContain('adm-zip: ^0.5.16');
-    expect(flat).toContain('package-lock.json:2628');
+    expect(flat).toContain(
+      '`dependencies` of its `node_modules/onnxruntime-node` entry in `package-lock.json`',
+    );
     expect(flat).toContain('"hasInstallScript": true');
   });
 
   it('QGF-254.AC3 it states that this tree pins the package and that the pin reaches no consumer', () => {
     expect(flat).toContain('adm-zip: ^0.6.0');
-    expect(flat).toContain('package.json:69');
-    expect(flat).toContain('package-lock.json:1244-1246');
+    expect(flat).toContain('`overrides` block in `package.json`');
+    expect(flat).toContain('the `node_modules/adm-zip` entry in `package-lock.json`');
     expect(flat).toContain('0.6.1');
     expect(flat).toContain('only to the tree that declares it');
     expect(flat).toContain('`overrides` are not published');
@@ -160,11 +163,17 @@ describe('the adm-zip advisory is recorded as known-open, with its evidence inli
     expect(entries, `the waiver list now holds: ${entries.join(' | ')}`).toEqual([]);
   });
 
-  it('QGF-254.AC3 the three manifest citations really are those lines today', () => {
-    expect(lines('package.json')[68].trim()).toBe('"adm-zip": "^0.6.0",');
-    expect(lines('package-lock.json')[2627].trim()).toBe('"adm-zip": "^0.5.16",');
-    expect(lines('package-lock.json')[1243].trim()).toBe('"node_modules/adm-zip": {');
-    expect(lines('package-lock.json')[1244].trim()).toBe('"version": "0.6.1",');
+  it('QGF-254.AC3 the manifest citations really carry those values today', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package-lock.json'), 'utf8'));
+    const found = manifestCitationDrift(pkg, lock);
+    expect(found, `the advisory record's manifest citations no longer hold:\n${found.join('\n')}`).toEqual([]);
+  });
+
+  it('cites neither manifest by line number', () => {
+    // A lockfile update rewrites line numbers wholesale; a citation pinned to
+    // one is a citation that blocks the update it has nothing to say about.
+    expect(record).not.toMatch(/package(-lock)?\.json:\d/);
   });
 
   it('QGF-254.AC3 it carries the advisory facts only beside their read date and re-read command', () => {
@@ -185,6 +194,56 @@ describe('the adm-zip advisory is recorded as known-open, with its evidence inli
 
   it('QGF-254.AC3 it cites the ruling behind these readings by its stamp', () => {
     expect(flat).toContain('2026-09-19T18:08:05Z');
+  });
+});
+
+/**
+ * Every manifest value the record cites, read by entry rather than by line.
+ * One line per citation that no longer holds, naming the entry and what it
+ * now carries.
+ */
+function manifestCitationDrift(pkg: any, lock: any): string[] {
+  const onnx = lock.packages?.['node_modules/onnxruntime-node'];
+  const cited: Array<[string, unknown, unknown]> = [
+    ['package.json overrides["adm-zip"]', pkg.overrides?.['adm-zip'], '^0.6.0'],
+    ['package-lock.json node_modules/onnxruntime-node version', onnx?.version, '1.27.0'],
+    ['package-lock.json node_modules/onnxruntime-node hasInstallScript', onnx?.hasInstallScript, true],
+    ['package-lock.json node_modules/onnxruntime-node dependencies["adm-zip"]', onnx?.dependencies?.['adm-zip'], '^0.5.16'],
+    ['package-lock.json node_modules/adm-zip version', lock.packages?.['node_modules/adm-zip']?.version, '0.6.1'],
+  ];
+  return cited
+    .filter(([, actual, stated]) => actual !== stated)
+    .map(([where, actual, stated]) => `${where}: the record cites ${JSON.stringify(stated)}, the tree carries ${JSON.stringify(actual)}`);
+}
+
+describe('the manifest citations are anchored on content, not on lines', () => {
+  const pkg = (): any => JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+  const lockText = fs.readFileSync(path.join(REPO_ROOT, 'package-lock.json'), 'utf8');
+
+  it('still holds when a lockfile update moves every cited line', () => {
+    const lock = JSON.parse(lockText);
+    // An entry sorted ahead of both cited ones, and a different indent: every
+    // line number the record used to cite is now somewhere else.
+    lock.packages = { 'node_modules/aaa-new-dependency': { version: '1.0.0' }, ...lock.packages };
+    const moved = JSON.stringify(lock, null, 4);
+    expect(moved.split('\n').length).not.toBe(lockText.split('\n').length);
+    expect(manifestCitationDrift(pkg(), JSON.parse(moved))).toEqual([]);
+  });
+
+  it('reds when a cited value moves, naming the entry', () => {
+    const lock = JSON.parse(lockText);
+    lock.packages['node_modules/onnxruntime-node'].dependencies['adm-zip'] = '^0.5.17';
+    const found = manifestCitationDrift(pkg(), lock).join('\n');
+    expect(found).toContain('node_modules/onnxruntime-node dependencies["adm-zip"]');
+    expect(found).toContain('the tree carries "^0.5.17"');
+  });
+
+  it('reds when the override moves, naming it', () => {
+    const p = pkg();
+    p.overrides['adm-zip'] = '^0.7.0';
+    const found = manifestCitationDrift(p, JSON.parse(lockText)).join('\n');
+    expect(found).toContain('package.json overrides["adm-zip"]');
+    expect(found).toContain('the tree carries "^0.7.0"');
   });
 });
 
