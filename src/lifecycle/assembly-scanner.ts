@@ -23,6 +23,7 @@
 // 'no such surface here' — an instrumentation hole rendered as reassurance.
 import { fs } from '../hardening/tracked-fs';
 import * as path from 'path';
+import { htmlComments } from '../types/lazy-scan';
 import type {
   SecurityFindingDraft,
   AssemblyComponent,
@@ -504,9 +505,10 @@ function scanAssembledPrompt(
 
   // 7. Detect HTML/markdown comment hiding
   for (const comp of components) {
-    const commentMatches = comp.content.matchAll(/<!--([\s\S]*?)-->/g);
-    for (const match of commentMatches) {
-      const commentContent = match[1];
+    // The matches of /<!--([\s\S]*?)-->/g, without retrying the lazy body
+    // from every `<!--` that has no `-->` after it.
+    for (const comment of htmlComments(comp.content)) {
+      const commentContent = comment.body;
       // Check if the comment contains instruction-like content
       if (/ignore|override|disregard|new\s+instructions?|system\s*:|you\s+are/i.test(commentContent)) {
         findings.push({

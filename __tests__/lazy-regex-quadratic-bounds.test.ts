@@ -279,7 +279,7 @@ describe('HMA-44.AC4 the speed-up is not bought by refusing to look', () => {
 });
 
 describe('HMA-44.AC5 nothing else moves', () => {
-  it('HMA-44.AC5 the six fence strippers and the seven out-of-scope [\\s\\S]*? literals are byte-identical in the four touched files', () => {
+  it('HMA-44.AC5 the six fence strippers are byte-identical, and the seven sibling literals still run through their exact drivers', () => {
     const soulSrc = readSrc('src/soul/scanner.ts');
     const browserSrc = readSrc('src/wild/browser.ts');
     const hardeningSrc = readSrc('src/hardening/scanner.ts');
@@ -290,14 +290,16 @@ describe('HMA-44.AC5 nothing else moves', () => {
     expect(count(soulSrc, '/```[\\s\\S]*?```/g')).toBe(3);
     expect(count(soulSrc, '/~~~[\\s\\S]*?~~~/g')).toBe(3);
 
-    // The seven other unbounded-lazy literals in these files are a follow-up
-    // unit's, not this contract's: still present, still unbounded.
-    expect(browserSrc).toContain('/<!--\\s*([\\s\\S]*?)\\s*-->/g');
-    expect(browserSrc).toContain('>([\\s\\S]*?)<\\/span>/gi');
-    expect(browserSrc).toContain('"[^>]*>([\\s\\S]*?)<\\/script>/gi');
+    // The seven other unbounded-lazy literals in these files were not bounded
+    // the way these four were: each now runs through a driver in
+    // src/types/lazy-scan.ts that returns exactly its original matches, which
+    // __tests__/lazy-regex-sibling-sites.test.ts proves against the original
+    // literals. Here: the patterns the sites still carry are unbounded.
+    expect(browserSrc).toContain('>([\\s\\S]*?)<\\/span>/iy');
+    expect(browserSrc).toContain('"[^>]*>([\\s\\S]*?)<\\/script>/iy');
     expect(browserSrc).toContain('/<style[\\s\\S]*?<\\/style>/gi');
-    expect(soulSrc).toContain('/<!--[\\s\\S]*?soul:profile=([^>]*?)\\s*-->/i');
-    expect(assemblySrc).toContain('/<!--([\\s\\S]*?)-->/g');
-    expect(hardeningSrc).toContain("/(?:eval|Function)\\s*\\(\\s*(['\"`])([\\s\\S]*?)\\1\\s*\\)/g");
+    expect(soulSrc).toContain('permissiveProfileMarker(contentForMarkerCheck)');
+    expect(assemblySrc).toContain('htmlComments(comp.content)');
+    expect(hardeningSrc).toContain("/(?:eval|Function)\\s*\\(\\s*(['\"`])([\\s\\S]*?)\\1\\s*\\)/y");
   });
 });

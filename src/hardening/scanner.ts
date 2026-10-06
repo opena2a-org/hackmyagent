@@ -22,6 +22,7 @@ import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
+import { quotedCallMatches } from '../types/lazy-scan';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
@@ -16856,9 +16857,11 @@ dist/
 
       // UNICODE-STEGO-003: Eval on Empty String
       // Find eval() or Function() calls where the string argument has few visible chars but many bytes
-      const evalPattern = /(?:eval|Function)\s*\(\s*(['"`])([\s\S]*?)\1\s*\)/g;
-      let evalMatch;
-      while ((evalMatch = evalPattern.exec(content)) !== null) {
+      // quotedCallMatches yields this pattern's global matches, skipping the
+      // calls whose quote is never closed instead of running the lazy body to
+      // the end of the file from each of them.
+      const evalPattern = /(?:eval|Function)\s*\(\s*(['"`])([\s\S]*?)\1\s*\)/y;
+      for (const evalMatch of quotedCallMatches(content, evalPattern)) {
         const matchedStr = evalMatch[2];
         // Count truly visible characters by excluding invisible Unicode ranges:
         // - Control characters (U+0000-001F, U+007F-009F)
