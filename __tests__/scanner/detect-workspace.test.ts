@@ -192,9 +192,9 @@ describe('detect from a workspace root', () => {
     expect(out).toContain('SOUL.md:4');
     expect(out).toMatch(/Verify: sed -n '4p' support-triage-agent\/SOUL\.md/);
 
-    // A credential citation names the key and shows a masked fragment of the
-    // value with its length, never the value itself.
-    expect(out).toMatch(/CLAUDE\.md:3 — "ANTHROPIC_API_KEY" = sk-ant-api0… \(\d+ chars\)/);
+    // A credential citation names the key and the labelled marker of the
+    // value, never the value itself.
+    expect(out).toMatch(/CLAUDE\.md:3 \u2014 "ANTHROPIC_API_KEY" = Anthropic API key: \[REDACTED\]/);
     expect(out).not.toContain(FAKE_ANTHROPIC);
     expect(out).not.toContain(FAKE_ANTHROPIC.slice(-6));
 
@@ -310,7 +310,7 @@ describe('detect from a workspace root', () => {
     const started = Date.now();
     const { out } = run([long]);
     expect(Date.now() - started).toBeLessThan(15_000);
-    expect(out).toMatch(/"password" = … \(30 chars\)/);
+    expect(out).toMatch(/"password" = Credential: \[REDACTED\]/);
     expect(out).not.toContain('battery');
     rmSync(long, { recursive: true, force: true });
   });
