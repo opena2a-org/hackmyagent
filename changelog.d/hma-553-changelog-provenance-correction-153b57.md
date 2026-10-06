@@ -11,7 +11,9 @@ issue: 553
   that carry finding-derived text do not, read on this tree:
   - the MCP deep-scan result: `buildDeepScanLayer1` asserts the layer-1 findings
     (`src/mcp-server.ts:205`), but the structural findings and discovered files it is built
-    with (`src/mcp-server.ts:417-426`) are not asserted. Handing file content to the host
+    with (the `structural.discoverFiles` and `structural.analyze` results handed to
+    `buildDeepScanResult` in the `hackmyagent_deep_scan` case of `src/mcp-server.ts`) are
+    not asserted. Handing file content to the host
     model is that tool's stated purpose, so this is a statement of scope, not a leak report;
   - the registry publish builder asserts its input (`src/registry/publish.ts:175`), then
     derives an attack result's `message` from the response text
