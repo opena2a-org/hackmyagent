@@ -197,3 +197,92 @@ export function* quotedCallMatches(text: string, call: RegExp): Generator<RegExp
     opener.lastIndex = open.index + 1;
   }
 }
+
+export interface TagAttributeSpec {
+  /** Global; matches the tag's opener, such as `<meta`. */
+  opener: RegExp;
+  /** Global, optional; an attribute that must come before the captured one. */
+  key?: RegExp;
+  /** Global; the captured attribute's name through its opening quote. */
+  attribute: RegExp;
+  /** Fewest characters the quoted value may have. */
+  minLength: number;
+}
+
+export interface TagAttribute {
+  /** Offset of the opener. */
+  index: number;
+  /** Offset just past the `>` that ends the match. */
+  end: number;
+  /** The quoted value, capture 1. */
+  value: string;
+}
+
+/**
+ * The matches of a global pattern shaped
+ * `OPENER[^>]*KEY[^>]*ATTRIBUTE([^"]{MIN,})"[^>]*\/?>` (or without
+ * `KEY[^>]*`), as an exec loop would return them.
+ *
+ * OPENER, KEY and ATTRIBUTE match text with no `>`, matches of KEY cannot
+ * overlap one another, nor can matches of ATTRIBUTE, and ATTRIBUTE ends with
+ * `"`. The value may cross a `>`.
+ *
+ * Whether a value succeeds depends only on where its attribute sits: its
+ * quote must close at least MIN characters later, before the last `>` in the
+ * text. Backtracking picks the last such attribute between the first KEY
+ * after the opener and the first `>` after it, so that one is found by binary
+ * search instead of re-running both `[^>]*` for every KEY. Every later opener
+ * before that `>` sees a subset of the same attributes, so when the first one
+ * fails the search resumes after the `>`.
+ */
+export function* tagAttributeMatches(text: string, spec: TagAttributeSpec): Generator<TagAttribute> {
+  const lastGt = text.lastIndexOf('>');
+  if (lastGt < 0) return;
+  const keys: { start: number; end: number }[] = [];
+  if (spec.key) {
+    spec.key.lastIndex = 0;
+    for (let m = spec.key.exec(text); m !== null; m = spec.key.exec(text)) {
+      keys.push({ start: m.index, end: m.index + m[0].length });
+    }
+  }
+  const values: { start: number; from: number; quote: number }[] = [];
+  spec.attribute.lastIndex = 0;
+  for (let m = spec.attribute.exec(text); m !== null; m = spec.attribute.exec(text)) {
+    const from = m.index + m[0].length;
+    const quote = text.indexOf('"', from);
+    if (quote >= 0 && quote < lastGt && quote - from >= spec.minLength) values.push({ start: m.index, from, quote });
+  }
+  if (values.length === 0) return;
+  const firstAtOrAfter = (list: { start: number }[], pos: number): number => {
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (list[mid].start < pos) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  let from = 0;
+  for (;;) {
+    spec.opener.lastIndex = from;
+    const open = spec.opener.exec(text);
+    if (open === null) return;
+    const bodyStart = open.index + open[0].length;
+    const gt = text.indexOf('>', bodyStart);
+    if (gt < 0) return;
+    let earliest: number | undefined = bodyStart;
+    if (spec.key) {
+      const key = keys[firstAtOrAfter(keys, bodyStart)];
+      earliest = key !== undefined && key.start < gt ? key.end : undefined;
+    }
+    const value = earliest === undefined ? undefined : values[firstAtOrAfter(values, gt) - 1];
+    if (earliest !== undefined && value !== undefined && value.start >= earliest) {
+      const end = text.indexOf('>', value.quote + 1) + 1;
+      yield { index: open.index, end, value: text.slice(value.from, value.quote) };
+      from = end;
+    } else {
+      from = gt + 1;
+    }
+  }
+}

@@ -7,7 +7,7 @@
  */
 
 import type { InjectionSurface } from './types';
-import { elementMatches, htmlComments, replaceBeforeLastCloser } from '../types/lazy-scan';
+import { elementMatches, htmlComments, replaceBeforeLastCloser, tagAttributeMatches } from '../types/lazy-scan';
 
 export interface FetchedPage {
   url: string;
@@ -148,13 +148,19 @@ export function extractContent(page: FetchedPage): ExtractedContent {
     }
   }
 
-  // 4. Meta tags with AI instructions
-  let match;
-  const metaRegex = /<meta[^>]*name="(?:ai-instructions|security-test-id|security-test-severity)"[^>]*content="([^"]*)"[^>]*\/?>/gi;
-  while ((match = metaRegex.exec(html)) !== null) {
+  // 4. Meta tags with AI instructions. The matches of
+  // /<meta[^>]*name="(?:ai-instructions|security-test-id|security-test-severity)"[^>]*content="([^"]*)"[^>]*\/?>/gi,
+  // found without re-running both [^>]* from every `<meta` and every name.
+  const metaTags = tagAttributeMatches(html, {
+    opener: /<meta/gi,
+    key: /name="(?:ai-instructions|security-test-id|security-test-severity)"/gi,
+    attribute: /content="/gi,
+    minLength: 0,
+  });
+  for (const meta of metaTags) {
     surfaces.push({
       type: 'meta-tag',
-      content: match[1].slice(0, 200),
+      content: meta.value.slice(0, 200),
       stealthScore: 6,
     });
   }
@@ -170,6 +176,7 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   }
 
   // 6. ARIA labels with suspicious content
+  let match;
   const ariaRegex = /aria-label="([^"]{50,})"/gi;
   while ((match = ariaRegex.exec(html)) !== null) {
     if (looksLikePayload(match[1])) {
@@ -181,13 +188,14 @@ export function extractContent(page: FetchedPage): ExtractedContent {
     }
   }
 
-  // 7. Image alt text with suspicious content
-  const imgAltRegex = /<img[^>]*alt="([^"]{50,})"[^>]*\/?>/gi;
-  while ((match = imgAltRegex.exec(html)) !== null) {
-    if (looksLikePayload(match[1])) {
+  // 7. Image alt text with suspicious content. The matches of
+  // /<img[^>]*alt="([^"]{50,})"[^>]*\/?>/gi, found the same way.
+  const imageAlts = tagAttributeMatches(html, { opener: /<img/gi, attribute: /alt="/gi, minLength: 50 });
+  for (const img of imageAlts) {
+    if (looksLikePayload(img.value)) {
       surfaces.push({
         type: 'image-alt',
-        content: match[1].slice(0, 200),
+        content: img.value.slice(0, 200),
         stealthScore: 6,
       });
     }
