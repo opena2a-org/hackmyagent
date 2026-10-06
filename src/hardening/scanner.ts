@@ -22,7 +22,7 @@ import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
 import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
-import { WordChainAlternationRegExp, WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
+import { HeadTailRegExp, WordChainAlternationRegExp, WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
@@ -1687,8 +1687,8 @@ const SKILL_CLICKFIX_PATTERNS: RegExp[] = [
   /copy\s+(and\s+)?paste\s+(this\s+)?(into|in)\s+(your\s+)?terminal/gi,
   /run\s+this\s+command/gi,
   /execute\s+(the\s+following|this)/gi,
-  /curl.*\|\s*(ba)?sh/gi,
-  /wget.*\|\s*(ba)?sh/gi,
+  new HeadTailRegExp(/curl.*\|\s*(ba)?sh/gi),
+  new HeadTailRegExp(/wget.*\|\s*(ba)?sh/gi),
 ];
 
 const HEARTBEAT_DANGEROUS_CAPS: string[] = [
@@ -9386,10 +9386,10 @@ dist/
     // DEP-004: Check for npm scripts security
     let hasDangerousScripts = false;
     const dangerousScriptRegexes = [
-      /curl\b.*\|\s*sh/i,        // curl ... | sh (with anything between)
-      /curl\b.*\|\s*bash/i,      // curl ... | bash
-      /wget\b.*\|\s*sh/i,        // wget ... | sh
-      /wget\b.*\|\s*bash/i,      // wget ... | bash
+      new HeadTailRegExp(/curl\b.*\|\s*sh/i),     // curl ... | sh (with anything between)
+      new HeadTailRegExp(/curl\b.*\|\s*bash/i),   // curl ... | bash
+      new HeadTailRegExp(/wget\b.*\|\s*sh/i),     // wget ... | sh
+      new HeadTailRegExp(/wget\b.*\|\s*bash/i),   // wget ... | bash
       /\beval\s*\(/,             // eval(
       /\$\(curl\b/,             // $(curl
       /\$\(wget\b/,             // $(wget
@@ -17081,6 +17081,8 @@ dist/
     }
 
     // ---------- NEMO-001: Curl-pipe install without checksum ----------
+    const curlPipeToShell = new HeadTailRegExp(/curl.*\|\s*(ba)?sh/i);
+    const curlPipeToSudo = new HeadTailRegExp(/curl.*\|\s*sudo/i);
     let nemo001Found = false;
     for (const file of cappedSh) {
       try {
@@ -17088,7 +17090,7 @@ dist/
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
-          if (/curl.*\|\s*(ba)?sh/i.test(line) || /curl.*\|\s*sudo/i.test(line)) {
+          if (curlPipeToShell.test(line) || curlPipeToSudo.test(line)) {
             // Check surrounding 20 lines for checksum verification
             const windowStart = Math.max(0, i - 10);
             const windowEnd = Math.min(lines.length, i + 11);
@@ -18390,7 +18392,7 @@ dist/
     const findings: SecurityFindingDraft[] = [];
     const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
 
-    const pattern = /\b(curl|wget)\b[^|]*\|\s*(ba)?sh\b/g;
+    const pattern = new HeadTailRegExp(/\b(curl|wget)\b[^|]*\|\s*(ba)?sh\b/g);
 
     for (const file of files.slice(0, 100)) {
       try {
@@ -19373,7 +19375,7 @@ dist/
               // store/save/persist/insert/upsert verbs remain ungated.
               const recvMatch = /([A-Za-z_$][\w$.[\]'"]*)\.push\s*\(/.exec(lines[i]);
               const parts = (recvMatch ? recvMatch[1] : '')
-                .replace(/\[[^\]]*\]/g, '.')
+                .replace(new HeadTailRegExp(/\[[^\]]*\]/g), '.')
                 // Standard identifier tokenizer: split on dots/quotes/whitespace,
                 // snake_case underscores, camelCase humps, acronym→word humps
                 // (DBStore→DB,Store), and digit boundaries (memory2→memory,2).

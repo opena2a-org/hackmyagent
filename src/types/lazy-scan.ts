@@ -15,9 +15,9 @@
  * instead: once a match attempt fails because no closer follows, no attempt
  * further right can succeed, so the search can stop. The differential tests
  * in `__tests__/lazy-regex-sibling-sites.test.ts`,
- * `__tests__/lazy-regex-word-chains.test.ts` and
- * `__tests__/lazy-regex-chain-alternations.test.ts` hold each driver to its
- * pattern.
+ * `__tests__/lazy-regex-word-chains.test.ts`,
+ * `__tests__/lazy-regex-chain-alternations.test.ts` and
+ * `__tests__/lazy-regex-head-tail.test.ts` hold each driver to its pattern.
  */
 
 export interface HtmlComment {
@@ -838,6 +838,255 @@ export class WordChainAlternationRegExp extends RegExp {
     match.index = best.start;
     match.input = text;
     match.groups = undefined;
+    return match;
+  }
+}
+
+/** An ASCII punctuation character, which has no case variant. */
+const isPunctuation = (c: string): boolean => /^[!-/:-@[-`{-~]$/.test(c);
+
+/** The character a literal atom matches. */
+const literalChar = (a: Atom): string => a.text[a.text.length - 1];
+
+/**
+ * The length every match of a head has, or null when the atoms are not a
+ * head: literal characters, escaped punctuation, `\b`, `\B`, classes, and
+ * groups (capturing or not) of literal alternatives of one length. No part of
+ * a head may match a character in `excluded`.
+ */
+function headLength(atoms: readonly Atom[], flags: string, excluded: readonly string[]): number | null {
+  let length = 0;
+  for (const atom of atoms) {
+    if (atom.text === '\\b' || atom.text === '\\B') continue;
+    if (isLiteral(atom)) {
+      if (excluded.includes(literalChar(atom))) return null;
+      length += 1;
+    } else if (atom.kind === 'class') {
+      const cls = new RegExp(atom.text, flags);
+      if (excluded.some((c) => cls.test(c))) return null;
+      length += 1;
+    } else if (atom.kind === 'group' && /^\((?!\?)|^\(\?:/.test(atom.text)) {
+      const inner = atomsOf(atom.text.slice(atom.text.startsWith('(?:') ? 3 : 1, -1));
+      const alternatives = splitAtoms(inner, (i) => inner[i].kind === 'bar');
+      if (!alternatives.every((a) => a.every((x) => isLiteral(x) && !excluded.includes(literalChar(x))))) return null;
+      if (alternatives.some((a) => a.length !== alternatives[0].length)) return null;
+      length += alternatives[0].length;
+    } else {
+      return null;
+    }
+  }
+  return length > 0 ? length : null;
+}
+
+/**
+ * Whether every unbounded run in a tail repeats one escape or class that
+ * cannot match the tail's first character, and no group repeats without a
+ * bound. A tail attempt can then only begin at that character and none of its
+ * runs crosses the next one, so the attempts from different places read
+ * different text.
+ */
+function tailRunsAvoid(atoms: readonly Atom[], flags: string, opener: string): boolean {
+  for (let i = 0; i < atoms.length; i++) {
+    const atom = atoms[i];
+    const quantifier = atoms[i + 1]?.kind === 'quantifier' ? atoms[i + 1].text : '';
+    const unbounded = /^(?:[*+]|\{\d+,\})/.test(quantifier);
+    if (atom.kind === 'group') {
+      const open = /^\((?:\?(?::|=|!|<=|<!))?/.exec(atom.text)![0];
+      // A named group is refused with the rest: nothing here needs one.
+      if (unbounded || (atom.text.startsWith('(?<') && !/^\(\?<[=!]/.test(atom.text))) return false;
+      if (!tailRunsAvoid(atomsOf(atom.text.slice(open.length, -1)), flags, opener)) return false;
+    } else if (unbounded) {
+      if (atom.kind !== 'escape' && atom.kind !== 'class') return false;
+      if (new RegExp(atom.text, flags).test(opener)) return false;
+    }
+    if (quantifier !== '') i++;
+  }
+  return true;
+}
+
+/** Whether a source holds a back reference, which a tail run on its own would read differently. */
+function hasBackReference(source: string): boolean {
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === '\\') {
+      if (/[1-9k]/.test(source[i + 1] ?? '')) return true;
+      i++;
+    } else if (source[i] === '[') {
+      for (i++; i < source.length && source[i] !== ']'; i++) if (source[i] === '\\') i++;
+    }
+  }
+  return false;
+}
+
+interface HeadTail {
+  head: string;
+  headLength: number;
+  /** The character `[^c]*` stops at, or null for `.*`. */
+  stop: string | null;
+  tail: string;
+}
+
+/** The parts of a source shaped `HEAD.*TAIL` or `HEAD[^c]*TAIL`, or null. */
+function parseHeadTail(source: string, flags: string): HeadTail | null {
+  if (hasBackReference(source)) return null;
+  const atoms = atomsOf(source);
+  if (atoms.some((a) => a.kind === 'bar' || a.kind === 'anchor')) return null;
+  const negatedOne = (a: Atom): string | null => {
+    const m = a.kind === 'class' ? /^\[\^(?:\\(.)|([^\\\]]))\]$/.exec(a.text) : null;
+    return m === null ? null : (m[1] ?? m[2]);
+  };
+  const gap = atoms.findIndex(
+    (a, i) => (a.kind === 'dot' || negatedOne(a) !== null) && atoms[i + 1]?.kind === 'quantifier' && atoms[i + 1].text === '*',
+  );
+  if (gap <= 0) return null;
+  const stop = atoms[gap].kind === 'dot' ? null : negatedOne(atoms[gap]);
+  const head = atoms.slice(0, gap);
+  const tail = atoms.slice(gap + 2);
+  if (tail.length === 0 || !isLiteral(tail[0])) return null;
+  const opener = literalChar(tail[0]);
+  if (!isPunctuation(opener) || (stop !== null && stop !== opener)) return null;
+  const length = headLength(head, flags, stop === null ? LINE_TERMINATORS : [stop]);
+  if (length === null || !tailRunsAvoid(tail, flags, opener)) return null;
+  const text = (list: readonly Atom[]): string => list.map((a) => a.text).join('');
+  return { head: text(head), headLength: length, stop, tail: text(tail) };
+}
+
+/**
+ * A RegExp for a pattern shaped `HEAD.*TAIL` or `HEAD[^c]*TAIL`, with no flags
+ * other than g, i and y, that returns exactly what the pattern returns,
+ * captures included.
+ *
+ * HEAD has one length and cannot match a line break (after `[^c]*`, cannot
+ * match `c`): literal text, `\b`, classes and groups of literal alternatives of
+ * one length. TAIL starts with a literal punctuation character (`c` itself
+ * after `[^c]*`), holds no back reference, and repeats without a bound only
+ * escapes and classes that cannot match that character.
+ *
+ * As a regex, the gap runs to the end of the line (or to the next `c`) and
+ * backs off to look for TAIL, from every HEAD, so a line that repeats HEAD
+ * without TAIL costs the square of its length. Whether TAIL can start at an
+ * offset does not depend on the HEAD before it, so a HEAD starts a match
+ * exactly when TAIL can start somewhere between the HEAD's end and the end of
+ * its line (for `[^c]*`, at the first `c` after the HEAD). The latest such
+ * offset on a line is found once, so when the first HEAD on a line ends after
+ * it, every later HEAD on that line, ending later still, is passed over with
+ * it; for `[^c]*`, every HEAD before the same `c` shares its answer. The
+ * pattern itself then runs once, sticky, from the HEAD that starts the match,
+ * which returns the match and captures the built-in exec returns. exec is the
+ * only method overridden, as in WordChainRegExp.
+ */
+export class HeadTailRegExp extends RegExp {
+  private readonly parts: HeadTail;
+  private readonly head: RegExp;
+  private readonly headAt: RegExp;
+  private readonly tail: RegExp;
+  private readonly tailAt: RegExp;
+  private readonly whole: RegExp;
+  /** The first offset at or after `from` where TAIL can start; Infinity for none. */
+  private nextTailFound?: { input: string; from: number; start: number };
+  /** For the line holding `from`: where it ends and the latest offset TAIL can start on it at or after `from`. */
+  private lineFound?: { input: string; from: number; lineEnd: number; lastTail: number };
+  /** The first `c` at or after `from`; -1 for none. */
+  private stopFound?: { input: string; from: number; at: number };
+  /** Whether TAIL can start at `at`. */
+  private tailFound?: { input: string; at: number; ok: boolean };
+
+  constructor(pattern: RegExp | string, flags?: string) {
+    super(pattern, flags);
+    const parts = /^[giy]*$/.test(this.flags) ? parseHeadTail(this.source, this.ignoreCase ? 'i' : '') : null;
+    if (parts === null) {
+      throw new SyntaxError(`/${this.source}/${this.flags} is not HEAD.*TAIL or HEAD[^c]*TAIL with flags from g, i and y`);
+    }
+    this.parts = parts;
+    const caseFlag = this.ignoreCase ? 'i' : '';
+    this.head = new RegExp(parts.head, 'g' + caseFlag);
+    this.headAt = new RegExp(parts.head, 'y' + caseFlag);
+    this.tail = new RegExp(parts.tail, 'g' + caseFlag);
+    this.tailAt = new RegExp(parts.tail, 'y' + caseFlag);
+    this.whole = new RegExp(this.source, 'y' + caseFlag);
+  }
+
+  private nextTail(text: string, from: number): number {
+    const known = this.nextTailFound;
+    if (known !== undefined && known.input === text && known.from <= from && from <= known.start) return known.start;
+    this.tail.lastIndex = from;
+    const start = this.tail.exec(text)?.index ?? Infinity;
+    this.nextTailFound = { input: text, from, start };
+    return start;
+  }
+
+  private line(text: string, head: number): { lineEnd: number; lastTail: number } {
+    const known = this.lineFound;
+    if (known !== undefined && known.input === text && known.from <= head && head < known.lineEnd) return known;
+    LINE_BREAK.lastIndex = head;
+    const lineEnd = LINE_BREAK.exec(text)?.index ?? text.length;
+    let lastTail = -1;
+    for (let t = this.nextTail(text, head); t <= lineEnd; t = this.nextTail(text, t + 1)) lastTail = t;
+    this.lineFound = { input: text, from: head, lineEnd, lastTail };
+    return this.lineFound;
+  }
+
+  private nextStop(text: string, from: number): number {
+    const known = this.stopFound;
+    if (known !== undefined && known.input === text && known.from <= from && (known.at < 0 || from <= known.at)) return known.at;
+    const at = text.indexOf(this.parts.stop as string, from);
+    this.stopFound = { input: text, from, at };
+    return at;
+  }
+
+  private tailStartsAt(text: string, at: number): boolean {
+    const known = this.tailFound;
+    if (known !== undefined && known.input === text && known.at === at) return known.ok;
+    this.tailAt.lastIndex = at;
+    const ok = this.tailAt.test(text);
+    this.tailFound = { input: text, at, ok };
+    return ok;
+  }
+
+  /** Whether the HEAD at `head` starts a match; otherwise where the next HEAD worth trying may start, or -1 for none. */
+  private tryHead(text: string, head: number): true | number {
+    const headEnd = head + this.parts.headLength;
+    if (this.parts.stop === null) {
+      const { lineEnd, lastTail } = this.line(text, head);
+      // Every later HEAD on the line ends later still.
+      return headEnd <= lastTail ? true : lineEnd + 1;
+    }
+    const stop = this.nextStop(text, headEnd);
+    if (stop < 0) return -1;
+    // Every HEAD before this `c` meets it too, and none can hold it.
+    return this.tailStartsAt(text, stop) ? true : stop + 1;
+  }
+
+  /** Where the leftmost match at or after `from` starts (only at `from` when sticky), or -1. */
+  private matchStart(text: string, from: number): number {
+    if (this.sticky) {
+      this.headAt.lastIndex = from;
+      return this.headAt.test(text) && this.tryHead(text, from) === true ? from : -1;
+    }
+    for (let at = from; at <= text.length; ) {
+      this.head.lastIndex = at;
+      const head = this.head.exec(text);
+      if (head === null) return -1;
+      const next = this.tryHead(text, head.index);
+      if (next === true) return head.index;
+      if (next < 0) return -1;
+      at = next;
+    }
+    return -1;
+  }
+
+  exec(input: string): RegExpExecArray | null {
+    const text = String(input);
+    const advances = this.global || this.sticky;
+    const from = advances ? toLength(this.lastIndex) : 0;
+    const start = from <= text.length ? this.matchStart(text, from) : -1;
+    if (start < 0) {
+      if (advances) this.lastIndex = 0;
+      return null;
+    }
+    // A match starts here, so the sticky pattern finds the one the built-in exec would.
+    this.whole.lastIndex = start;
+    const match = this.whole.exec(text) as RegExpExecArray;
+    if (advances) this.lastIndex = this.whole.lastIndex;
     return match;
   }
 }
