@@ -13,7 +13,7 @@
  *   AST-PROMPT-004: Authority confusion (unclear trust hierarchy)
  */
 
-import type { SecurityAST, Constraint, RiskSurface } from '../types.js';
+import type { SecurityAST, Capability, Constraint, RiskSurface } from '../types.js';
 import type { ASTFinding } from './capability-analyzer.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
@@ -251,12 +251,13 @@ function checkCapabilityCreep(ast: SecurityAST, artifactContent?: string): ASTFi
     // as declaredCapabilities. Detect creep by checking if text-extracted caps
     // significantly expand beyond the frontmatter-declared capabilities.
     // Text-extracted caps have longer scope strings (natural language).
-    const manifestCaps = ast.declaredCapabilities.filter(
-      c => c.scope === '' || c.scope === c.name,
-    );
-    const textCaps = ast.declaredCapabilities.filter(
-      c => c.scope !== '' && c.scope !== c.name,
-    );
+    // A skill's Permissions list is a manifest too, though its grants carry
+    // their value as scope (#471); counted as text, they would report the
+    // manifest as creep beyond itself.
+    const isManifestCap = (c: Capability) =>
+      c.scope === '' || c.scope === c.name || c.source === 'skill-permissions';
+    const manifestCaps = ast.declaredCapabilities.filter(isManifestCap);
+    const textCaps = ast.declaredCapabilities.filter(c => !isManifestCap(c));
     declaredCount = manifestCaps.length;
     undeclaredCount = textCaps.length;
     highRiskUndeclared = textCaps.filter(

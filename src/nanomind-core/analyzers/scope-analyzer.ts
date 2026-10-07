@@ -6,7 +6,8 @@
  * wildcard access, undeclared permissions, and scope-purpose mismatches.
  *
  * Checks:
- *   AST-SCOPE-001: Wildcard tool access in MCP configurations
+ *   AST-SCOPE-001: Wildcard tool access in MCP configurations, and unbounded
+ *                  grants in a skill's Permissions list
  *   AST-SCOPE-002: Undeclared tool permissions (inferred but not declared)
  *   AST-SCOPE-003: Scope-purpose mismatch (capabilities inconsistent with purpose)
  */
@@ -17,6 +18,13 @@ import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { findLineFromString } from '../../types/text-position.js';
 import { nonAgentGateApplies } from './family-coverage.js';
+import {
+  MAX_SKILL_PERMISSION_GRANTS,
+  SKILL_PERMISSIONS_SOURCE,
+  isUnboundedGrantValue,
+  parseSkillPermissions,
+  permissionDomainPurposeWords,
+} from '../compiler/skill-permissions.js';
 
 // ============================================================================
 // Public API
@@ -51,6 +59,7 @@ export function analyzeScope(
   const findings: ASTFinding[] = [];
 
   findings.push(...checkWildcardToolAccess(ast, artifactContent));
+  findings.push(...checkUnboundedSkillGrants(ast, artifactContent));
   findings.push(...checkUndeclaredPermissions(ast, artifactContent));
   findings.push(...checkScopePurposeMismatch(ast, artifactContent));
   findings.push(...checkAdversarialConfigDirectives(ast, artifactContent));
@@ -161,6 +170,120 @@ function checkWildcardToolAccess(ast: SecurityAST, artifactContent?: string): AS
 }
 
 // ============================================================================
+// AST-SCOPE-001: Unbounded skill permission grants (#471)
+// ============================================================================
+
+/**
+ * Grades the grants a skill declares in its Permissions list. Only an
+ * UNBOUNDED grant is reported (`shell: *`, `filesystem: /`, `network: all`):
+ * `filesystem: /var/log/*.log` is bounded by its directory, and a glob in an
+ * ordinary skill is not a finding.
+ *
+ * A grant is a capability signal, not a malice signal, so the finding is
+ * MEDIUM. It reaches HIGH only when the purpose-mismatch analysis that drives
+ * AST-SCOPE-003 finds the grant contradicts the skill's stated purpose:
+ * `shell: *` in a build skill is not the same as `shell: *` in a skill that
+ * formats dates. A declaration alone never reaches CRITICAL.
+ *
+ * The line comes from the grant itself, resolved by the compiler, never from a
+ * text search: a fenced example above the real list can spell the same grant.
+ */
+function checkUnboundedSkillGrants(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
+  const findings: ASTFinding[] = [];
+  const grants = ast.declaredCapabilities.filter(c => c.source === SKILL_PERMISSIONS_SOURCE);
+  const purposeKeywords = mismatchPurposeKeywords(ast);
+
+  for (const cap of grants) {
+    if (!isUnboundedGrantValue(cap.scope)) continue;
+
+    let contradicts = false;
+    if (purposeKeywords) {
+      const capKeywords = extractCapabilityKeywords(cap.name, cap.scope);
+      for (const word of permissionDomainPurposeWords(cap.name)) capKeywords.add(word);
+      contradicts = setIntersection(purposeKeywords, capKeywords).size === 0;
+    }
+    // The domain is named canonically (`exec` is read as `shell`), so the text
+    // quotes the value and names the domain rather than re-spelling the line.
+    const value = `"${cap.scope}"`;
+
+    findings.push({
+      // The HIGH description quotes the declared purpose; forward its
+      // redaction provenance as AST-SCOPE-003 does.
+      ...(contradicts ? purposeRedactionProvenance(ast) : {}),
+      checkId: 'AST-SCOPE-001',
+      name: 'Unbounded Skill Permission',
+      description: contradicts
+        ? `The skill grants itself unbounded ${cap.name} access (${value}), and its stated ` +
+          `purpose "${truncate(ast.declaredPurpose, 100)}" does not involve ${cap.name} access. ` +
+          'A grant the purpose does not explain is how a trojan skill carries a capability ' +
+          'past a reader of its description.'
+        : `The skill grants itself ${cap.name} access with no narrower bound (${value}). ` +
+          'A declared grant is a capability, not evidence of intent; an unbounded one hands a ' +
+          'prompt injection everything in that domain instead of what the skill uses.',
+      category: 'Scope Security',
+      severity: contradicts ? 'high' : 'medium',
+      passed: false,
+      message: contradicts
+        ? `Unbounded ${cap.name} grant ${value} does not match purpose "${truncate(ast.declaredPurpose, 50)}"`
+        : `Unbounded ${cap.name} grant ${value}`,
+      fixable: false,
+      file: ast.artifactPath,
+      line: cap.line,
+      fix:
+        `Narrow the ${cap.name} grant ${value} in the Permissions list to ` +
+        (NARROWER_GRANT[cap.name] ?? `the specific ${cap.name} resource the skill uses`) +
+        (contradicts ? ', or remove it if the skill does not need it.' : '.'),
+      guidance:
+        'Principle of least privilege: declare the narrowest grant the skill works with. ' +
+        'Readers and orchestrators decide whether to install a skill from this list.',
+      attackClass: 'SCOPE-WILDCARD',
+      confidence: contradicts ? 0.65 : 0.9,
+      evidence: cap.evidence,
+    });
+  }
+
+  // Grants past the bound were not read. Say so, at the first of them,
+  // rather than report a partial list as the whole.
+  if (grants.length >= MAX_SKILL_PERMISSION_GRANTS && artifactContent) {
+    const { unread, firstUnreadLine } = parseSkillPermissions(artifactContent);
+    if (unread > 0) {
+      findings.push({
+        checkId: 'AST-SCOPE-001',
+        name: 'Skill Permission List Not Fully Read',
+        description:
+          `The Permissions list declares ${MAX_SKILL_PERMISSION_GRANTS + unread} grants. The first ` +
+          `${MAX_SKILL_PERMISSION_GRANTS} were checked; the other ${unread} were not read, so none ` +
+          'of them is reported, however broad.',
+        category: 'Scope Security',
+        severity: 'low',
+        passed: false,
+        message: `${unread} permission grants past the first ${MAX_SKILL_PERMISSION_GRANTS} were not read`,
+        fixable: false,
+        file: ast.artifactPath,
+        line: firstUnreadLine,
+        fix:
+          `Reduce the Permissions list to the grants the skill uses; ${MAX_SKILL_PERMISSION_GRANTS} ` +
+          'are read, and a real skill declares a handful.',
+        attackClass: 'SCOPE-WILDCARD',
+        confidence: 1,
+      });
+    }
+  }
+
+  return findings;
+}
+
+/** A narrower grant to suggest in place of an unbounded one, per domain. */
+const NARROWER_GRANT: Readonly<Record<string, string>> = {
+  filesystem: 'the directory the skill works in, for example "filesystem: ./reports"',
+  shell: 'the commands the skill runs, for example "shell: git status"',
+  network: 'the hosts the skill calls, for example "network: api.example.com"',
+  env: 'the variables the skill reads, for example "env: LOG_LEVEL"',
+  database: 'the tables the skill uses, for example "database: reports"',
+  browser: 'the sites the skill opens, for example "browser: docs.example.com"',
+};
+
+// ============================================================================
 // AST-SCOPE-002: Undeclared tool permissions
 // ============================================================================
 
@@ -245,23 +368,9 @@ function checkUndeclaredPermissions(ast: SecurityAST, artifactContent?: string):
 function checkScopePurposeMismatch(ast: SecurityAST, artifactContent?: string): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
-  const purpose = ast.declaredPurpose.toLowerCase();
-
-  // Skip if purpose is generic / unknown
-  if (
-    purpose === 'unknown purpose' ||
-    purpose.length < 10 ||
-    purpose.includes('does whatever') ||
-    purpose.includes('general purpose')
-  ) {
+  const purposeKeywords = mismatchPurposeKeywords(ast);
+  if (!purposeKeywords) {
     return findings;
-  }
-
-  // Extract purpose domain keywords
-  const purposeKeywords = extractPurposeKeywords(purpose);
-
-  if (purposeKeywords.size < 2) {
-    return findings; // Not enough context to judge mismatch
   }
 
   // Check all capabilities (declared + inferred) for relevance to purpose
@@ -577,6 +686,26 @@ function escapeRegex(s: string): string {
  */
 function normalizeCapName(name: string): string {
   return name.toLowerCase().replace(/-/g, '_');
+}
+
+/**
+ * The purpose keywords a mismatch can be judged against, or undefined when the
+ * purpose is generic, unknown, or too thin to judge. Shared by AST-SCOPE-003
+ * and the skill-grant grading so the two never disagree on what the purpose is.
+ */
+function mismatchPurposeKeywords(ast: SecurityAST): Set<string> | undefined {
+  const purpose = ast.declaredPurpose.toLowerCase();
+  if (
+    purpose === 'unknown purpose' ||
+    purpose.length < 10 ||
+    purpose.includes('does whatever') ||
+    purpose.includes('general purpose')
+  ) {
+    return undefined;
+  }
+  const keywords = extractPurposeKeywords(purpose);
+  // Not enough context to judge mismatch.
+  return keywords.size < 2 ? undefined : keywords;
 }
 
 /**

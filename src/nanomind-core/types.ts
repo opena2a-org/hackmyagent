@@ -124,6 +124,15 @@ export interface Capability {
   riskLevel: 'low' | 'medium' | 'high' | 'critical';
   /** Evidence: text span that declares or implies this capability */
   evidence?: string;
+  /**
+   * 1-based source line of the declaration, when the compiler resolves it at
+   * compile time. Set for skill permission grants (#471): the same grant text
+   * can occur more than once in a file (an example above the real list), and
+   * re-deriving the line from `evidence` cites the first copy.
+   */
+  line?: number;
+  /** Set when the declaration came from a skill's Permissions list (#471). */
+  source?: 'skill-permissions';
 }
 
 // ============================================================================

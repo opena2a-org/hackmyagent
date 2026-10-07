@@ -104,6 +104,18 @@ function isExplicitlyRestrictedBenign(ast: SecurityAST): boolean {
   );
 }
 
+/**
+ * The declared capabilities the governance checks count. A skill's
+ * Permissions grants (#471) are left out: they are graded once, by
+ * AST-SCOPE-001 against the skill's stated purpose, and counted here as well
+ * they made an honest Permissions list cost an ordinary skill new governance
+ * findings, up to HIGH, from a declaration alone. Grants carry `medium` risk,
+ * so the high/critical selectors below never see them either.
+ */
+function governedDeclaredCapabilities(ast: SecurityAST): Capability[] {
+  return ast.declaredCapabilities.filter(c => c.source !== 'skill-permissions');
+}
+
 function isAgentLevelArtifact(ast: SecurityAST, effectiveConstraints?: Constraint[]): boolean {
   // Skills with high/critical declared capabilities are genuinely dangerous:
   // they expose shell, database, or API access. Absence of governance on
@@ -189,7 +201,7 @@ function checkDomainCoverage(ast: SecurityAST, effectiveConstraints: Constraint[
   const findings: ASTFinding[] = [];
 
   // No capabilities = no governance needed (pure documentation, etc.)
-  if (ast.declaredCapabilities.length === 0 && ast.inferredCapabilities.length === 0) {
+  if (governedDeclaredCapabilities(ast).length === 0 && ast.inferredCapabilities.length === 0) {
     return findings;
   }
 
@@ -353,7 +365,7 @@ function checkMissingGovernance(ast: SecurityAST, effectiveConstraints: Constrai
   // AST-GOVERN-002 only covered declared capabilities.
   if (effectiveConstraints.length === 0) {
     // Only flag if there are capabilities (avoid noise on pure docs)
-    if (ast.declaredCapabilities.length > 0 || ast.inferredCapabilities.length > 0) {
+    if (governedDeclaredCapabilities(ast).length > 0 || ast.inferredCapabilities.length > 0) {
       // Severity depends on artifact type:
       //   soul/system_prompt/agent_config: high — these explicitly govern behavior and MUST have constraints
       //   skill/mcp_config with no constraint language: medium — capability declaration without a SOUL.md
@@ -441,7 +453,7 @@ function checkOverrideResistance(ast: SecurityAST, effectiveConstraints: Constra
 
   // Only relevant for artifacts that have capabilities or are behavioral
   const hasBehavior =
-    ast.declaredCapabilities.length > 0 ||
+    governedDeclaredCapabilities(ast).length > 0 ||
     ast.inferredCapabilities.length > 0 ||
     ast.artifactType === 'soul' ||
     ast.artifactType === 'system_prompt';
@@ -505,7 +517,7 @@ function checkGovernanceRatio(ast: SecurityAST, effectiveConstraints: Constraint
   const findings: ASTFinding[] = [];
 
   const totalCaps =
-    ast.declaredCapabilities.length + ast.inferredCapabilities.length;
+    governedDeclaredCapabilities(ast).length + ast.inferredCapabilities.length;
   const totalConstraints = effectiveConstraints.length;
 
   // No capabilities = no ratio to check
