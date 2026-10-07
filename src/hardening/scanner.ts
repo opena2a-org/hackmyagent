@@ -1031,6 +1031,16 @@ export interface ScanOptions {
    */
   isNpmPackage?: boolean;
   /**
+   * Read `.hmaignore` from `targetDir` (default true). Set false when the
+   * target is a tree the operator did not author — a package, archive or
+   * repository fetched to be judged (#455). An ignore file inside it was
+   * written by the subject of the audit, so honouring it would let the
+   * artifact under evaluation choose the scope of its own evaluation. The run
+   * then behaves exactly as on a tree with no `.hmaignore`; `ignore` and
+   * `ignorePaths` still apply, because those come from the operator.
+   */
+  readHmaIgnore?: boolean;
+  /**
    * Run the decode-then-rescan pass (`checkEncodedPayloads`). Default true at
    * `standard` and `deep`; `quick` skips it with every other non-quick check.
    *
@@ -3130,6 +3140,17 @@ export async function loadHmaIgnore(targetDir: string, today: string = utcToday(
 }
 
 /**
+ * The `.hmaignore` a scan honours: the target's own file, or — when the
+ * caller says the target is not the operator's (`readHmaIgnore: false`,
+ * #455) — the record of a tree without one, so nothing the subject wrote can
+ * narrow, suppress or disclose anything.
+ */
+async function loadOperatorHmaIgnore(targetDir: string, readHmaIgnore: boolean | undefined): Promise<ParsedHmaIgnore> {
+  if (readHmaIgnore === false) return { present: false, file: '.hmaignore', rules: [], errors: [] };
+  return loadHmaIgnore(targetDir);
+}
+
+/**
  * Check if a file path matches any .hmaignore path pattern. Exported so CLI
  * can filter findings after NanoMind merge.
  */
@@ -4280,8 +4301,9 @@ export class HardeningScanner {
     targetDir: string,
     projectType: ProjectType,
     additionalIgnorePaths?: string[],
+    options: Pick<ScanOptions, 'readHmaIgnore'> = {},
   ): Promise<T[]> {
-    const parsed = await loadHmaIgnore(targetDir);
+    const parsed = await loadOperatorHmaIgnore(targetDir, options.readHmaIgnore);
     const extraPaths = additionalIgnorePaths || [];
 
     // Reset FIRST, and on the no-op path too: a reused scanner instance must not
@@ -4558,8 +4580,9 @@ export class HardeningScanner {
     const isDeepScan = scanDepth === 'deep';
 
     // Load .hmaignore: whole-path exclusions, `<path>:<CHECK>` narrowings and
-    // `!CHECK-ID` suppressions, through the one parser
-    const hmaIgnore = await loadHmaIgnore(targetDir);
+    // `!CHECK-ID` suppressions, through the one parser — unless the target is
+    // not the operator's tree (#455)
+    const hmaIgnore = await loadOperatorHmaIgnore(targetDir, options.readHmaIgnore);
     // Merge whole-path rules with any programmatic ignorePaths
     const allIgnoredPaths = [
       ...hmaIgnore.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL).map((r) => r.path as string),
@@ -5378,6 +5401,7 @@ export class HardeningScanner {
           scanDepth: verifyDepth,
           ignorePaths: options.ignorePaths,
           isNpmPackage: options.isNpmPackage,
+          readHmaIgnore: options.readHmaIgnore,
         });
 
         // A finding's `file` is one stand-in for what can be a multi-file
@@ -19815,6 +19839,8 @@ dist/
         // The line that terminates the recursion.
         decodeRescan: false,
         cliName: options.cliName,
+        // A decoded `.hmaignore` is the subject's bytes too (#455).
+        readHmaIgnore: options.readHmaIgnore,
       });
 
       const already = new Set<string>();

@@ -14309,6 +14309,16 @@ async function suggestSimilarPackages(name: string): Promise<string[]> {
 }
 
 /**
+ * #455 — the scan options for a tree `check` fetched on the user's behalf: a
+ * cloned repository, an extracted npm or PyPI archive, a downloaded URL. The
+ * `.hmaignore` inside such a tree was written by the package under evaluation,
+ * so it is never read: the subject of the audit does not choose the scope of
+ * its own audit. A local tree the operator points `check` or `secure` at still
+ * honours its `.hmaignore` — there the operator and the author are the same.
+ */
+const FETCHED_TREE = { readHmaIgnore: false } as const;
+
+/**
  * Clone a GitHub repo (shallow), run full HMA secure scan, display results, clean up.
  * Checks the registry first; only clones if data is missing or stale.
  */
@@ -14397,7 +14407,7 @@ async function checkGitHubRepo(
 
     // Run full HMA scan + NanoMind (same pipeline as `secure` and `checkNpmPackage`)
     const scanner = new HardeningScanner();
-    const result = await scanner.scan({ targetDir: repoDir, autoFix: false });
+    const result = await scanner.scan({ targetDir: repoDir, autoFix: false, ...FETCHED_TREE });
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
@@ -14408,7 +14418,7 @@ async function checkGitHubRepo(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(repoDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir, result.projectType || 'library');
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, repoDir, result.projectType || 'library', undefined, FETCHED_TREE);
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
         refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
@@ -14775,7 +14785,7 @@ async function checkPyPiPackage(
 
     // Run full HMA scan + NanoMind (same pipeline as checkNpmPackage)
     const scanner = new HardeningScanner();
-    const result = await scanner.scan({ targetDir: extractDir, autoFix: false });
+    const result = await scanner.scan({ targetDir: extractDir, autoFix: false, ...FETCHED_TREE });
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
@@ -14786,7 +14796,7 @@ async function checkPyPiPackage(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(extractDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir, result.projectType || 'library');
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, extractDir, result.projectType || 'library', undefined, FETCHED_TREE);
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
         refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
@@ -15058,7 +15068,7 @@ async function checkRawUrl(
 
     // Run full HMA scan + NanoMind
     const scanner = new HardeningScanner();
-    const result = await scanner.scan({ targetDir: scanDir, autoFix: false });
+    const result = await scanner.scan({ targetDir: scanDir, autoFix: false, ...FETCHED_TREE });
 
     let analystFindings: any[] | undefined;
     let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
@@ -15068,7 +15078,7 @@ async function checkRawUrl(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(scanDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir, result.projectType || 'library');
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, scanDir, result.projectType || 'library', undefined, FETCHED_TREE);
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
         refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
@@ -15298,7 +15308,7 @@ async function checkNpmPackage(
 
     // Run full HMA scan + NanoMind (same pipeline as `secure`)
     const scanner = new HardeningScanner();
-    const result = await scanner.scan({ targetDir: packageDir, autoFix: false });
+    const result = await scanner.scan({ targetDir: packageDir, autoFix: false, ...FETCHED_TREE });
 
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
     let analystFindings: any[] | undefined;
@@ -15309,7 +15319,7 @@ async function checkNpmPackage(
     try {
       const { orchestrateNanoMind } = await import('./nanomind-core/orchestrate.js');
       const nmResult = await orchestrateNanoMind(packageDir, result.findings, { silent: true, nanomind: resolveNanomindFlag(options), projectType: result.projectType || 'library', findingVisible: (f) => scanner.findingAppliesTo(f, result.projectType || 'library') });
-      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir, result.projectType || 'library');
+      const refiltered = await scanner.reapplyIgnoreFilters(nmResult.mergedFindings, packageDir, result.projectType || 'library', undefined, FETCHED_TREE);
       const projectType = result.projectType || 'library';
       result.findings = emitFindings(
         refiltered.filter((f: any) => scanner.isReportableFinding(f, projectType)),
