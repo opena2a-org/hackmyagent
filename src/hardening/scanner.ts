@@ -44,6 +44,7 @@ import {
 } from './contain';
 import { withheldLinkRecords } from './withheld-links';
 import { privateKeyFieldsInJson } from './embedded-private-key';
+import { onlyRegExpExecCalls, regExpIdentifiers } from './regexp-exec';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One definition of which file each MCP client loads and which top-level key
 // it loads from, shared with the command that WRITES those files (#757,
@@ -17626,6 +17627,7 @@ dist/
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
+        let regExpIdents: Set<string> | undefined;
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           // Match exec( or execSync( with template literal containing user-controlled vars
@@ -17635,6 +17637,9 @@ dist/
             !/\bexecFile/.test(line) &&
             /`[^`]*\$\{[^}]*(name|Name|id|Id|input|arg|param|flag|option)/i.test(line)
           ) {
+            // RegExp.prototype.exec runs a pattern match, not a shell.
+            regExpIdents ??= regExpIdentifiers(content);
+            if (onlyRegExpExecCalls(line, regExpIdents)) continue;
             nemo005Found = true;
             findings.push({
               checkId: 'NEMO-005',
