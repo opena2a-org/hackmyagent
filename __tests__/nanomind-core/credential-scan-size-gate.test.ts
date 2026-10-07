@@ -206,7 +206,22 @@ describe('HMA-23 credential scan size gate', () => {
       // BODY. Anchored on `]` so it reads only widths applied to a character
       // class: the AWS rule's `.{0,16}` is a proximity window between the name
       // anchor and the value, not a width, and capping it is not this defect.
+      //
+      // One capped range is a hand-off, not a cap (#316): the OpenAI-style band
+      // stops at 47 exactly where the legacy shape, with the same head and the
+      // same class, starts at 48, so no body length falls between the two. It
+      // is admitted only while that stays structurally true.
+      const handOffs: Record<string, string> = { 'OpenAI-style sk- key': 'OpenAI legacy key' };
       for (const { label, regex } of patterns) {
+        const capped = /\]\{(\d+),(\d+)\}/.exec(regex.source);
+        if (capped && label in handOffs) {
+          const sibling = patterns.find(p => p.label === handOffs[label]);
+          expect(sibling, `${label} hands off to a pattern the list no longer carries`).toBeDefined();
+          const head = regex.source.slice(0, capped.index + 1);
+          expect(sibling!.regex.source, `${label} hands off with a gap or to a different shape`)
+            .toBe(`${head}{${Number(capped[2]) + 1},}`);
+          continue;
+        }
         expect(regex.source, `${label} acquired a capped-range body quantifier`)
           .not.toMatch(/\]\{\d+,\d+\}/);
       }
