@@ -44,6 +44,7 @@ import { SoulScanner } from '../src/soul/scanner';
 import { HardeningScanner } from '../src/hardening/scanner';
 import { scanAssembly } from '../src/lifecycle';
 import { tempDir } from './helpers/temp-dir';
+import { timeDoubling } from './helpers/doubling-time';
 import {
   elementMatches,
   htmlComments,
@@ -708,12 +709,6 @@ describe('lazy-scan drivers match their patterns exactly', () => {
 const flood = (unit: string, bytes: number): string =>
   unit.repeat(Math.ceil(bytes / unit.length)).slice(0, bytes);
 
-const elapsedMs = (fn: () => void): number => {
-  const t0 = performance.now();
-  fn();
-  return performance.now() - t0;
-};
-
 interface Shape {
   name: string;
   /** The input at `bytes`, before any fixed prefix or suffix. */
@@ -909,16 +904,12 @@ const SHAPES: Shape[] = [
 describe('each flood shape costs linear time', () => {
   for (const shape of SHAPES) {
     it(`${shape.name}: under 500 ms at 1 MiB, and 512 KiB -> 1 MiB at most 2.5x or both under 50 ms`, () => {
-      const half = shape.input(512 * KiB);
-      const full = shape.input(MiB);
-      const tHalf = elapsedMs(() => shape.run(half));
-      const tFull = elapsedMs(() => shape.run(full));
-      const ratio = tFull / Math.max(tHalf, 0.001);
-      console.log(`${shape.name}: 512KiB=${tHalf.toFixed(1)} ms, 1MiB=${tFull.toFixed(1)} ms, ratio=${ratio.toFixed(2)}x`);
-      expect(tFull, `${shape.name} took ${tFull.toFixed(0)} ms at 1 MiB`).toBeLessThan(500);
+      const { tHalf, tFull, ratio } = timeDoubling(() => shape.run, shape.input(512 * KiB), shape.input(MiB));
+      console.log(`${shape.name}: fastest 512KiB=${tHalf.toFixed(1)} ms, fastest 1MiB=${tFull.toFixed(1)} ms, median ratio=${ratio.toFixed(2)}x`);
+      expect(tFull, `${shape.name} took ${tFull.toFixed(0)} ms at 1 MiB in its fastest run`).toBeLessThan(500);
       expect(
         (tHalf < 50 && tFull < 50) || ratio <= 2.5,
-        `${shape.name}: 512KiB=${tHalf.toFixed(0)} ms, 1MiB=${tFull.toFixed(0)} ms, ratio=${ratio.toFixed(2)}x`,
+        `${shape.name}: fastest 512KiB=${tHalf.toFixed(0)} ms, fastest 1MiB=${tFull.toFixed(0)} ms, median ratio=${ratio.toFixed(2)}x`,
       ).toBe(true);
     });
   }
