@@ -1,9 +1,33 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { HardeningScanner } from '../../src/hardening/scanner';
+import { HardeningScanner, hasStegoRangeLiteral } from '../../src/hardening/scanner';
 import type { SecurityFinding } from '../../src/hardening/security-check';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+
+// The tag-range decoder shared by the reconstitution-spelling block and the
+// range-literal spelling block below: one reader, ten ways to rebuild a string.
+const READER = [
+  'function extract(s) {',
+  '  const out = [];',
+  '  for (let i = 0; i < s.length; i++) {',
+  '    const cp = s.codePointAt(i);',
+  '    if (cp >= 0xE0100 && cp <= 0xE01EF) out.push(cp - 0xE0100);',
+  '  }',
+];
+
+const SPELLINGS: Array<[string, string]> = [
+  ['mapped-reference', "  return out.map(String.fromCodePoint).join('');"],
+  ['array-from', "  return Array.from(out, String.fromCodePoint).join('');"],
+  ['bracket-access', "  return String['fromCodePoint'](...out);"],
+  ['aliased-binding', '  const rebuild = String.fromCodePoint;\n  return rebuild(...out);'],
+  ['destructured', '  const { fromCharCode } = String;\n  return fromCharCode(...out);'],
+  ['reflect-apply', '  return Reflect.apply(String.fromCodePoint, String, out);'],
+  ['buffer-from', "  return Buffer.from(out).toString('utf-8');"],
+  ['text-decoder', '  return new TextDecoder().decode(Uint8Array.from(out));'],
+  ['json-unicode-escape', '  return JSON.parse(\'"\' + out.map(c => "\\\\u" + c.toString(16).padStart(4, "0")).join("") + \'"\');'],
+  ['indexed-alphabet', "  const A = 'abcdefghijklmnopqrstuvwxyz';\n  return out.map(c => A[c % 26]).join('');"],
+];
 
 describe('UNICODE-STEGO checks', () => {
   let scanner: HardeningScanner;
@@ -479,9 +503,10 @@ describe('UNICODE-STEGO checks', () => {
    * cases so the gate cannot come back silently.
    *
    * Red-proof status is stated per test rather than as a blanket claim, because a
-   * blanket claim was made here once and was false: the KNOWN GAP decimal case passes
-   * identically against pre-fix code, so it asserts a gap and proves nothing about
-   * this change.
+   * blanket claim was made here once and was false: the decimal-spelling case was a
+   * KNOWN GAP asserting zero, which passed identically against pre-fix code and so
+   * proved nothing about this change. Since #467 it asserts the finding, and it fails
+   * against any build that reads the range literal by its hex spelling only.
    */
   describe('UNICODE-STEGO-002: the path is not read, and severity is corroborated', () => {
     it('does not BLOCK a log sanitiser that names the ranges it defends against', async () => {
@@ -628,14 +653,13 @@ describe('UNICODE-STEGO checks', () => {
       expect(['critical', 'high']).not.toContain(neutral[0].severity);
     });
 
-    it('KNOWN GAP: the decimal spelling of a working decoder is not detected', async () => {
-      // Tracked, not fixed here. The hex pattern is a spelling test, so a decoder
-      // that writes 917760 instead of 0xE0100 evades it while doing strictly more
-      // than any fixture that fires: it reconstitutes AND executes. The signature
-      // therefore selects for honest spelling, which correlates with defensive code.
-      // Closing it belongs with the AST work, not with a wider regex, because a
-      // wider regex reopens the false-positive class this change closed.
-      // Upstream: hackmyagent#467.
+    it('detects the decimal spelling of a working decoder at the severity of its hex twin', async () => {
+      // Was a KNOWN GAP asserting zero (#467). The range literal was a spelling test,
+      // so a decoder that writes 917760 instead of 0xE0100 evaded it while doing
+      // strictly more than any fixture that fires: it reconstitutes AND executes. The
+      // literal is now matched by value; a non-hex spelling counts only as an operand
+      // of a comparison, which is what keeps decimal range tables out (see the
+      // range-literal spelling block below).
       const content = [
         'function decode(input) {',
         '  const out = [];',
@@ -647,17 +671,28 @@ describe('UNICODE-STEGO checks', () => {
         '}',
         'eval(decode(process.argv[2]));',
       ].join('\n');
+      const hexTwin = content.replace(/917760/g, '0xE0100').replace(/917999/g, '0xE01EF');
+      // Fixture integrity: the twin differs only in spelling, and the decimal file
+      // carries no hex literal that could explain a finding on its own.
+      expect(hexTwin).not.toBe(content);
+      expect(content).not.toMatch(/0x/i);
       await fs.writeFile(path.join(tempDir, 'decimal-decoder.js'), content);
+      await fs.writeFile(path.join(tempDir, 'hex-decoder.js'), hexTwin);
 
       const findings = await scanForUnicodeStego();
-      const stego002 = findings.filter(
+      const decimal = findings.filter(
         (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'decimal-decoder.js'
       );
+      const hex = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'hex-decoder.js'
+      );
 
-      // Asserted as ZERO deliberately. If a future change makes this fire, this test
-      // fails and the gap closes with a person reading it, rather than the marker
-      // rotting into a comment nobody re-runs.
-      expect(stego002.length).toBe(0);
+      expect(hex.length).toBe(1);
+      expect(hex[0].severity).toBe('critical');
+      expect(decimal.length).toBe(1);
+      expect(decimal[0].severity).toBe(hex[0].severity);
+      expect(decimal[0].line).toBe(hex[0].line);
+      expect(decimal[0].message).toContain('execution sink');
     });
 
     it('escalates to critical when the decoded string can reach an execution sink', async () => {
@@ -866,28 +901,6 @@ describe('UNICODE-STEGO checks', () => {
    * gets rediscovered.
    */
   describe('UNICODE-STEGO-002: reconstitution spelling does not gate the finding', () => {
-    const READER = [
-      'function extract(s) {',
-      '  const out = [];',
-      '  for (let i = 0; i < s.length; i++) {',
-      '    const cp = s.codePointAt(i);',
-      '    if (cp >= 0xE0100 && cp <= 0xE01EF) out.push(cp - 0xE0100);',
-      '  }',
-    ];
-
-    const SPELLINGS: Array<[string, string]> = [
-      ['mapped-reference', "  return out.map(String.fromCodePoint).join('');"],
-      ['array-from', "  return Array.from(out, String.fromCodePoint).join('');"],
-      ['bracket-access', "  return String['fromCodePoint'](...out);"],
-      ['aliased-binding', '  const rebuild = String.fromCodePoint;\n  return rebuild(...out);'],
-      ['destructured', '  const { fromCharCode } = String;\n  return fromCharCode(...out);'],
-      ['reflect-apply', '  return Reflect.apply(String.fromCodePoint, String, out);'],
-      ['buffer-from', "  return Buffer.from(out).toString('utf-8');"],
-      ['text-decoder', '  return new TextDecoder().decode(Uint8Array.from(out));'],
-      ['json-unicode-escape', '  return JSON.parse(\'"\' + out.map(c => "\\\\u" + c.toString(16).padStart(4, "0")).join("") + \'"\');'],
-      ['indexed-alphabet', "  const A = 'abcdefghijklmnopqrstuvwxyz';\n  return out.map(c => A[c % 26]).join('');"],
-    ];
-
     for (const [label, rebuildLine] of SPELLINGS) {
       it(`still detects a decoder that reconstitutes via ${label}`, async () => {
         const content = [...READER, rebuildLine, '}', 'eval(extract(process.argv[2]));'].join('\n');
@@ -974,6 +987,407 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego002.length).toBe(1);
       expect(stego002[0].severity).toBe('medium');
       expect(['critical', 'high']).not.toContain(stego002[0].severity);
+    });
+  });
+
+  /**
+   * #467: the range literal is matched by VALUE, not by spelling. A literal counts
+   * when its value lies in U+FE00-FE0F or U+E0100-E01EF, written in hex, decimal,
+   * `0o` or `0b`, numeric separators allowed. A hex literal counts wherever it
+   * appears, as before; any other spelling counts only as an operand of a
+   * comparison (`<` `<=` `>` `>=` `==` `===` `!=` `!==`), because decimal range
+   * tables are common and are not decoders. The `.codePointAt(` requirement, the
+   * corroborators and both severities are unchanged.
+   *
+   * Red-proof: the decimal rewrites below report nothing against a build that reads
+   * the hex spelling only, so every positive case in the spelling-invariance table,
+   * and the decimal sanitiser, fails there. The false-positive controls are not
+   * red-proofs: their scan results are the same on that build. They pin that the
+   * change did not widen past the comparison operand.
+   */
+  describe('UNICODE-STEGO-002: the range literal is matched by value, not spelling', () => {
+    // A mechanical rewrite, so the decimal twin differs from its hex fixture in
+    // spelling and nothing else.
+    const toDecimal = (text: string): string =>
+      text.replace(/0x([0-9a-fA-F]+)/g, (_match, digits: string) => String(parseInt(digits, 16)));
+    const toDecimalBytes = (content: string | Buffer): string | Buffer =>
+      typeof content === 'string'
+        ? toDecimal(content)
+        // latin1 maps every byte to one char and back, so the raw invisible
+        // codepoints in a payload fixture survive the rewrite byte for byte.
+        : Buffer.from(toDecimal(content.toString('latin1')), 'latin1');
+
+    describe('hasStegoRangeLiteral', () => {
+      it('accepts every spelling of an in-range value as a comparison operand', () => {
+        for (const line of [
+          'if (cp >= 65024) {}',
+          'if (cp <= 65039) {}',
+          'if (cp >= 917760 && cp <= 917999) {}',
+          'if (cp >= 917_760) {}',
+          'if (cp >= 917760n) {}',
+          'if (cp >= 0o177000) {}', // 65024
+          'if (cp >= 0O3400400) {}', // 917760
+          'if (cp >= 0b1111_1110_0000_0000) {}', // 65024
+          'if (cp >= 0xE_0100) {}',
+          'if (cp >= 0XFE00) {}',
+          'if (cp >= 0xFe0F) {}',
+          'if (65024 <= cp) {}',
+          'if 65024 <= cp <= 65039:',
+          'if (cp<65039) {}',
+          'if (cp > 65024) {}',
+          'if (cp == 65024) {}',
+          'if (cp === 65024) {}',
+          'if (cp != 65024) {}',
+          'if (cp !== 65024) {}',
+          'if (65024 === cp) {}',
+          'if (65024 !== cp) {}',
+        ]) {
+          expect(hasStegoRangeLiteral(line), line).toBe(true);
+        }
+      });
+
+      it('accepts a hex literal wherever it appears, as the hex-only pattern did', () => {
+        for (const line of [
+          'const VS_LOW = 0xFE00;',
+          '  [0xe0100, 0xe01ef], // DI: VARIATION SELECTOR-17 to -256',
+          'out.push(cp - 0xE0100);',
+        ]) {
+          expect(hasStegoRangeLiteral(line), line).toBe(true);
+        }
+      });
+
+      it('does not accept a non-hex spelling outside a comparison', () => {
+        for (const line of [
+          'out.push(cp - 917760);',
+          '  [65024, 65039, 0],',
+          'const VS_LOW = 65024;',
+          'x = 65024;',
+          'x << 65024;',
+          'x >>= 65024;',
+          'x >>> 65024;',
+          '65024 >> 1;',
+          '65024 << 1;',
+          'const f = () => 65024;',
+          'range(65024, 65040)',
+          'const VS_LOW = 0o177000;',
+        ]) {
+          expect(hasStegoRangeLiteral(line), line).toBe(false);
+        }
+      });
+
+      it('does not accept a value outside the two ranges, in any spelling', () => {
+        for (const line of [
+          'if (cp >= 65023) {}',
+          'if (cp < 65040) {}',
+          'if (cp >= 917759) {}',
+          'if (cp < 918000) {}',
+          'if (cp < 0xFE10) {}',
+          'if (cp < 0xE01F0) {}',
+          'const big = 0xFE0F12;',
+          'if (cp >= 065024) {}', // sloppy-mode octal 27156, not 65024
+          'if (cp >= x65024) {}',
+          'if (cp >= 65024.5) {}',
+          'if (cp >= 1_65024) {}',
+        ]) {
+          expect(hasStegoRangeLiteral(line), line).toBe(false);
+        }
+      });
+    });
+
+    // Every existing STEGO-002 hex fixture whose in-range literal is a comparison
+    // operand, copied verbatim, with the severity its hex spelling gets today.
+    const decoderBody = (rangeLine: string, rebuild: string, tail: string[] = []): string =>
+      [
+        'function decode(input) {',
+        '  const result = [];',
+        '  for (let i = 0; i < input.length; i++) {',
+        '    const cp = input.codePointAt(i);',
+        rangeLine,
+        '  }',
+        rebuild,
+        '}',
+        ...tail,
+      ].join('\n');
+    const INVARIANCE: Array<{ name: string; content: string | Buffer; severity: 'critical' | 'medium' | null }> = [
+      {
+        name: 'decoder.js',
+        content: decoderBody(
+          '    if (cp >= 0xFE00 && cp <= 0xFE0F) {\n      result.push(cp - 0xFE00);\n    }',
+          '  return String.fromCharCode(...result);'
+        ),
+        severity: 'medium',
+      },
+      {
+        name: 'decoder-tags.ts',
+        content: [
+          'function decode(s) {',
+          '  const out = [];',
+          '  for (let i = 0; i < s.length; i++) {',
+          '    const cp = s.codePointAt(i);',
+          '    if (cp >= 0xE0100) { out.push(cp - 0xE0100); }',
+          '  }',
+          '  return String.fromCodePoint(...out);',
+          '}',
+        ].join('\n'),
+        severity: 'medium',
+      },
+      {
+        name: 'tag-range-reader.ts',
+        content: [
+          'function classify(s) {',
+          '  for (let i = 0; i < s.length; i++) {',
+          '    const cp = s.codePointAt(i);',
+          '    if (cp >= 0xE0100) { return cp; }',
+          '  }',
+          '}',
+        ].join('\n'),
+        severity: 'medium',
+      },
+      {
+        name: 'safe-codepoint.js',
+        content: [
+          'function getCodePoint(str) {',
+          '  return str.codePointAt(0);',
+          '}',
+          'console.log(getCodePoint("A")); // 65 = 0x41',
+        ].join('\n'),
+        severity: null,
+      },
+      {
+        name: 'util-helper.ts',
+        content: [
+          'export function findHiddenCodepoints(source: string): number[] {',
+          '  const hits: number[] = [];',
+          '  for (let i = 0; i < source.length; i++) {',
+          '    const cp = source.codePointAt(i)!;',
+          '    if (cp >= 0xFE00 && cp <= 0xFE0F) hits.push(cp);',
+          '    if (cp >= 0xE0100 && cp <= 0xE01EF) hits.push(cp);',
+          '  }',
+          '  return hits;',
+          '}',
+        ].join('\n'),
+        severity: 'medium',
+      },
+      {
+        name: 'live-decoder.js',
+        content: decoderBody(
+          '    if (cp >= 0xFE00 && cp <= 0xFE0F) { result.push(cp - 0xFE00); }',
+          '  return String.fromCharCode(...result);',
+          ['eval(decode(process.argv[2]));']
+        ),
+        severity: 'critical',
+      },
+      {
+        name: 'fn-ctor-decoder.js',
+        content: decoderBody(
+          '    if (cp >= 0xFE00 && cp <= 0xFE0F) { result.push(cp - 0xFE00); }',
+          '  return String.fromCharCode(...result);',
+          ['new Function(decode(process.argv[2]))();']
+        ),
+        severity: 'critical',
+      },
+      {
+        name: 'payload-carrier.js',
+        content: Buffer.concat([
+          Buffer.from(
+            decoderBody(
+              '    if (cp >= 0xFE00 && cp <= 0xFE0F) { result.push(cp - 0xFE00); }',
+              '  return String.fromCharCode(...result);',
+              ['const payload = "seed']
+            )
+          ),
+          Buffer.from([0xEF, 0xB8, 0x80]), // U+FE00 VARIATION SELECTOR-1
+          Buffer.from('";\nmodule.exports = decode(payload);\n'),
+        ]),
+        severity: 'critical',
+      },
+      {
+        name: 'zw-only-shape.js',
+        content: Buffer.concat([
+          Buffer.from(
+            [
+              'function decode(input) {',
+              '  const out = [];',
+              '  for (let i = 0; i < input.length; i++) {',
+              '    const cp = input.codePointAt(i);',
+              '    if (cp >= 0xFE00 && cp <= 0xFE0F) { out.push(cp - 0xFE00); }',
+              '  }',
+              '  return String.fromCharCode(...out);',
+              '}',
+              'const note = "see the ',
+            ].join('\n')
+          ),
+          Buffer.from([0xE2, 0x80, 0x8B]), // U+200B, the only invisible char
+          Buffer.from(' docs";\nmodule.exports = decode;\n'),
+        ]),
+        severity: 'medium',
+      },
+      ...SPELLINGS.map(([label, rebuildLine]) => ({
+        name: `decoder-${label}.js`,
+        content: [...READER, rebuildLine, '}', 'eval(extract(process.argv[2]));'].join('\n'),
+        severity: 'critical' as const,
+      })),
+    ];
+
+    for (const { name, content, severity } of INVARIANCE) {
+      it(`grades ${name} rewritten in decimal exactly as its hex spelling`, async () => {
+        const decimalContent = toDecimalBytes(content);
+        const decimalName = `decimal-${name}`;
+        // Fixture integrity: the rewrite changed the spelling and left no hex.
+        expect(decimalContent.toString()).not.toBe(content.toString());
+        expect(decimalContent.toString()).not.toMatch(/0x/i);
+        await fs.writeFile(path.join(tempDir, name), content);
+        await fs.writeFile(path.join(tempDir, decimalName), decimalContent);
+
+        const findings = await scanForUnicodeStego();
+        const hex = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && f.file === name);
+        const decimal = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && f.file === decimalName);
+
+        expect(hex.map((f) => f.severity)).toEqual(severity === null ? [] : [severity]);
+        expect(decimal.map((f) => f.severity)).toEqual(hex.map((f) => f.severity));
+        expect(decimal.map((f) => f.line)).toEqual(hex.map((f) => f.line));
+      });
+    }
+
+    // Three existing hex fixtures hold their in-range literal OUTSIDE a comparison:
+    // log-safe.mjs and logger.js in a table or a constant, table-first.js in named
+    // constants the comparison then reads. A hex literal counts anywhere, so each is
+    // MEDIUM; a decimal one counts only as a comparison operand, so their decimal
+    // twins raise nothing. That is the boundary the operand rule draws, pinned here
+    // rather than discovered: table-first.js in decimal IS a decoder the rule does
+    // not see, because its comparison reads a name, not a literal.
+    it('does not count a decimal literal outside a comparison, where a hex one still counts', async () => {
+      const outsideComparison: Array<[string, string]> = [
+        [
+          'log-safe.mjs',
+          [
+            'const HAZARD_RANGES = [',
+            '  [0xfe00, 0xfe0f], // DI: VARIATION SELECTOR-1 to -16',
+            '  [0xe0100, 0xe01ef], // DI: VARIATION SELECTOR-17 to -256',
+            '];',
+            'export function safeLog(value) {',
+            '  let out = "";',
+            '  for (const ch of String(value ?? "")) {',
+            '    const cp = ch.codePointAt(0);',
+            '    out += HAZARD_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi) ? "?" : ch;',
+            '  }',
+            '  return out;',
+            '}',
+          ].join('\n'),
+        ],
+        [
+          'logger.js',
+          [
+            'export function formatWidth(str) {',
+            '  return str.codePointAt(0);',
+            '}',
+            'const VARIATION_SELECTOR_START = 0xFE00;',
+            'export { VARIATION_SELECTOR_START };',
+          ].join('\n'),
+        ],
+        [
+          'table-first.js',
+          [
+            'const VS_LOW = 0xFE00;',
+            'const VS_HIGH = 0xFE0F;',
+            'function decode(input) {',
+            '  const out = [];',
+            '  for (const ch of input) {',
+            '    const cp = ch.codePointAt(0);',
+            '    if (cp >= VS_LOW && cp <= VS_HIGH) out.push(cp - VS_LOW);',
+            '  }',
+            '  return String.fromCodePoint(...out);',
+            '}',
+          ].join('\n'),
+        ],
+      ];
+      for (const [name, content] of outsideComparison) {
+        await fs.writeFile(path.join(tempDir, name), content);
+        await fs.writeFile(path.join(tempDir, `decimal-${name}`), toDecimal(content));
+      }
+
+      const findings = await scanForUnicodeStego();
+      for (const [name] of outsideComparison) {
+        const hex = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && f.file === name);
+        const decimal = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && f.file === `decimal-${name}`);
+        expect(hex.map((f) => f.severity), name).toEqual(['medium']);
+        expect(decimal, `decimal-${name}`).toEqual([]);
+      }
+    });
+
+    it('raises nothing on a decimal width table with no reconstitution and no sink', async () => {
+      // A terminal-width lookup: the codepoint arrives as an argument, as it does
+      // in the width tables real libraries ship, and is compared against decimal
+      // bounds. Nothing is rebuilt and nothing is executed.
+      const table = [
+        'export function charWidth(cp) {',
+        '  if (cp >= 65024 && cp <= 65039) return 0;',
+        '  if (cp >= 917760 && cp <= 917999) return 0;',
+        '  return 1;',
+        '}',
+      ].join('\n');
+      // Fixture integrity: the bounds ARE range literals by value, so a pass is not
+      // explained by the matcher missing them; and neither corroborator nor any
+      // reconstitution is present.
+      expect(hasStegoRangeLiteral('  if (cp >= 65024 && cp <= 65039) return 0;')).toBe(true);
+      expect(table).not.toMatch(/(?:^|[^\w.$])(?:eval|(?:new\s+)?Function)\s*\(/);
+      expect(table).not.toMatch(/String\.from(?:CodePoint|CharCode)/);
+      await fs.writeFile(path.join(tempDir, 'char-width.js'), table);
+
+      const findings = await scanForUnicodeStego();
+      expect(findings.filter((f) => f.file === 'char-width.js')).toEqual([]);
+    });
+
+    it('raises nothing on a decimal range table read by .codePointAt', async () => {
+      // The false-positive class the operand rule exists for: an east-asian-width
+      // style table of decimal [start, end, width] rows in the same file as the
+      // `.codePointAt(` that feeds it.
+      const content = [
+        'const ZERO_WIDTH = [',
+        '  [8203, 8205, 0],',
+        '  [65024, 65039, 0],',
+        '  [917760, 917999, 0],',
+        '];',
+        'export function width(ch) {',
+        '  const cp = ch.codePointAt(0);',
+        '  const row = ZERO_WIDTH.find(([lo, hi]) => cp >= lo && cp <= hi);',
+        '  return row ? row[2] : 1;',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'width-table.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      expect(findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'width-table.js')).toEqual([]);
+    });
+
+    it('grades a sanitiser that strips the range by decimal bounds MEDIUM, as its hex twin', async () => {
+      const content = [
+        'export function stripInvisible(text) {',
+        '  let out = "";',
+        '  for (const ch of text) {',
+        '    const cp = ch.codePointAt(0);',
+        '    if ((cp >= 65024 && cp <= 65039) || (cp >= 917760 && cp <= 917999)) continue;',
+        '    out += ch;',
+        '  }',
+        '  return out;',
+        '}',
+      ].join('\n');
+      const hexTwin = content
+        .replace(/917760/g, '0xE0100')
+        .replace(/917999/g, '0xE01EF')
+        .replace(/65024/g, '0xFE00')
+        .replace(/65039/g, '0xFE0F');
+      expect(hexTwin).not.toBe(content);
+      await fs.writeFile(path.join(tempDir, 'strip-decimal.js'), content);
+      await fs.writeFile(path.join(tempDir, 'strip-hex.js'), hexTwin);
+
+      const findings = await scanForUnicodeStego();
+      const decimal = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'strip-decimal.js');
+      const hex = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'strip-hex.js');
+
+      expect(hex.map((f) => f.severity)).toEqual(['medium']);
+      expect(decimal.map((f) => f.severity)).toEqual(['medium']);
+      expect(decimal[0].message).toContain('uncorroborated');
     });
   });
 

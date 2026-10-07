@@ -3758,6 +3758,56 @@ function isEmojiVariationSelector(buf: Buffer, vsStart: number): boolean {
 }
 
 /**
+ * An integer literal in any spelling JavaScript or Python accepts: hex, octal,
+ * binary or decimal, numeric separators allowed, an optional BigInt `n`. Group 1
+ * is a hex body, 2 octal, 3 binary, 4 decimal. A decimal with a leading zero is
+ * not matched: in sloppy JavaScript `065024` is the octal 27156, so reading it
+ * as 65024 would answer for a value the code does not hold.
+ */
+const STEGO_INTEGER_LITERAL =
+  /(?<![\w$.])(?:0[xX]((?:_?[0-9a-fA-F])+)|0[oO]((?:_?[0-7])+)|0[bB]((?:_?[01])+)|([1-9](?:_?[0-9])*|0))n?(?![\w$]|\.\d)/g;
+/** A comparison operator (`<` `<=` `>` `>=` `==` `===` `!=` `!==`) just before the literal; a shift, `=>` or `>>=` is not one. */
+const STEGO_COMPARISON_BEFORE = /(?:^|[^<>=!])(?:[<>]=?|[!=]==?)\s*$/;
+/** A comparison operator just after the literal. */
+const STEGO_COMPARISON_AFTER = /^\s*(?:[<>]=?|[!=]==?)(?![<>=])/;
+
+/**
+ * UNICODE-STEGO-002's range literal, matched by VALUE rather than spelling
+ * (#467). A decoder that writes `917760` where another writes `0xE0100` does
+ * the same thing, so a test of the hex spelling alone was evaded by a
+ * one-character edit. A literal counts when its value lies in U+FE00-FE0F or
+ * U+E0100-E01EF. A hex literal counts wherever it appears, which is what the
+ * hex-only pattern this replaces did. Any other spelling counts only as an
+ * operand of a comparison: decimal range tables (`[65024, 65039, 0]`, the
+ * shape of a width table) are common, and admitting every bare decimal would
+ * reopen the false-positive class the hex requirement kept closed.
+ */
+export function hasStegoRangeLiteral(line: string): boolean {
+  STEGO_INTEGER_LITERAL.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = STEGO_INTEGER_LITERAL.exec(line)) !== null) {
+    const [, hex, octal, binary, decimal] = m;
+    const value = hex !== undefined
+      ? parseInt(hex.replace(/_/g, ''), 16)
+      : octal !== undefined
+        ? parseInt(octal.replace(/_/g, ''), 8)
+        : binary !== undefined
+          ? parseInt(binary.replace(/_/g, ''), 2)
+          : parseInt(decimal.replace(/_/g, ''), 10);
+    const inRange = (value >= 0xFE00 && value <= 0xFE0F) || (value >= 0xE0100 && value <= 0xE01EF);
+    if (!inRange) continue;
+    if (hex !== undefined) return true;
+    if (
+      STEGO_COMPARISON_BEFORE.test(line.slice(0, m.index)) ||
+      STEGO_COMPARISON_AFTER.test(line.slice(m.index + m[0].length))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * True when the codepoint directly before the variation selector at vsStart is
  * Extended_Pictographic (U+00A9, U+25B6, U+2B50, U+3030, ...). This is the
  * base an emoji (U+FE0F) or text (U+FE0E) presentation selector attaches to.
@@ -17013,15 +17063,14 @@ dist/
       }
 
       // UNICODE-STEGO-002: GlassWorm Decoder Pattern
-      // Detect .codePointAt( combined with hex literals in the variation selector or tag range
+      // Detect .codePointAt( combined with an integer literal whose value lies in
+      // the variation selector or tag range, in any spelling (hasStegoRangeLiteral)
       const content = rawBuffer.toString('utf-8');
       const lines = content.split('\n');
       let hasCodePointAt = false;
-      let hasHexLiteral = false;
+      let hasRangeLiteral = false;
       let codePointAtLine = 0;
-      let hexLiteralLine = 0;
-
-      const hexPattern = /0x(?:FE0[0-9A-Fa-f]|fe0[0-9a-f]|E010[0-9A-Fa-f]|e010[0-9a-f]|E01[0-9A-Ea-e][0-9A-Fa-f]|e01[0-9a-e][0-9a-f])/;
+      let rangeLiteralLine = 0;
 
       // #475, the execution-sink corroborator. BOTH PATTERNS ARE THE ONES THIS
       // CHECK HAS ALWAYS USED, character for character. What moved is the text
@@ -17105,9 +17154,9 @@ dist/
           hasCodePointAt = true;
           codePointAtLine = i + 1;
         }
-        if (!hasHexLiteral && hexPattern.test(line)) {
-          hasHexLiteral = true;
-          hexLiteralLine = i + 1;
+        if (!hasRangeLiteral && hasStegoRangeLiteral(line)) {
+          hasRangeLiteral = true;
+          rangeLiteralLine = i + 1;
         }
         // A line that carries neither sink token, cannot open or close a
         // block comment, and has no pending cross-line sink token leaves both
@@ -17217,7 +17266,7 @@ dist/
       // finding's severity never depends on the order the tree is walked in:
       //   1. an execution sink here, so a decoded string can reach eval/Function;
       //   2. a variation-selector or tag-character payload here — the invisible
-      //      classes this decoder shape actually reconstitutes (its hex range is
+      //      classes this decoder shape actually reconstitutes (its range is
       //      FE0x / E01xx). A lone zero-width char or a mid-file BOM is NOT such a
       //      payload: a single U+200B is not a decodable string, and one common
       //      benign use is escaping a comment delimiter (a `**/` inside a JSDoc),
@@ -17235,11 +17284,11 @@ dist/
         hasVariationSelectors || hasTagCharsIn001 || hasEmojiPresentationSelectors;
       const corroborated = hasExecutionSink || hasDecodablePayload;
 
-      if (hasCodePointAt && hasHexLiteral) {
+      if (hasCodePointAt && hasRangeLiteral) {
         // Report the EARLIER of the two signals. Reporting the first `.codePointAt(`
         // sent readers to the wrong line whenever the range literal that actually
         // discriminates the finding sat above it.
-        const reportedLine = Math.min(codePointAtLine, hexLiteralLine);
+        const reportedLine = Math.min(codePointAtLine, rangeLiteralLine);
         const corroboration = hasExecutionSink
           ? 'an execution sink (eval/Function) in the same file'
           : hasVariationSelectors || hasTagCharsIn001
@@ -17264,8 +17313,8 @@ dist/
           severity: corroborated ? 'critical' : 'medium',
           passed: false,
           message: corroboration
-            ? `Found GlassWorm decoder pattern in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), corroborated by ${corroboration}`
-            : `Found GlassWorm decoder shape in ${relativePath} (codepoint range literal at line ${hexLiteralLine}, .codePointAt at line ${codePointAtLine}), uncorroborated${
+            ? `Found GlassWorm decoder pattern in ${relativePath} (codepoint range literal at line ${rangeLiteralLine}, .codePointAt at line ${codePointAtLine}), corroborated by ${corroboration}`
+            : `Found GlassWorm decoder shape in ${relativePath} (codepoint range literal at line ${rangeLiteralLine}, .codePointAt at line ${codePointAtLine}), uncorroborated${
                 skippedSinkLine > 0
                   ? ` — note: line ${skippedSinkLine} contains an eval( or Function( token but was not read, because it exceeds the ${MAX_LINE_LENGTH}-character per-line limit`
                   : ''
