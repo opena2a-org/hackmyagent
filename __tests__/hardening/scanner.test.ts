@@ -3663,8 +3663,18 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
         return false;
       } catch { return true; }
     }
+    // Checks that read `<target>/package.json` and nothing else: their passed
+    // records name no file but are not claims over the tree.
+    const PACKAGE_JSON_CHECKS: Record<string, string> = {
+      'CRED-003': 'No secrets found in package.json',
+      'DEP-002': 'No known vulnerable packages in direct dependencies',
+      'DEP-003': 'All dependency versions are properly specified',
+      'DEP-004': 'npm scripts appear safe',
+    };
     const passedTreeClaims = (result: ScanResult) =>
-      ((result as any).allFindings as SecurityFinding[]).filter((f) => f.passed === true && !f.file);
+      ((result as any).allFindings as SecurityFinding[]).filter(
+        (f) => f.passed === true && !f.file && !(f.checkId in PACKAGE_JSON_CHECKS),
+      );
     afterEach(async () => {
       try { await fs.chmod(hidden(), 0o755); } catch { /* absent */ }
     });
@@ -3689,6 +3699,33 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
       for (const f of claims) {
         expect(f.message, f.checkId).toContain(CAVEAT);
         expect(f.message.split('SCAN-UNREAD-001').length - 1, f.checkId).toBe(1);
+      }
+    });
+
+    it('a passed record that names a file keeps its message', async (ctx) => {
+      await makeTree();
+      await fs.writeFile(path.join(tempDir, '.mcp.json'), '{"mcpServers":{}}\n');
+      if (!(await withLateUnlistableDir())) { ctx.skip(); }
+      const result = await scanner.scan({ targetDir: tempDir });
+      expect(result.coverage.unreadableInputs.directories).toBe(1);
+      const named = ((result as any).allFindings as SecurityFinding[]).filter((f) => f.passed === true && f.file);
+      expect(named.map((f) => f.checkId)).toContain('MCP-008');
+      for (const f of named) {
+        expect(f.message, `${f.checkId} ${f.file}`).not.toContain('SCAN-UNREAD-001');
+      }
+      expect(named.find((f) => f.checkId === 'MCP-008')?.message).toBe('MCP servers properly bound to localhost');
+    });
+
+    it('a passed record from a check that reads only package.json keeps its message', async (ctx) => {
+      await makeTree();
+      if (!(await withLateUnlistableDir())) { ctx.skip(); }
+      const result = await scanner.scan({ targetDir: tempDir });
+      expect(result.coverage.unreadableInputs.directories).toBe(1);
+      const all = (result as any).allFindings as SecurityFinding[];
+      for (const [checkId, message] of Object.entries(PACKAGE_JSON_CHECKS)) {
+        const f = all.find((r) => r.checkId === checkId);
+        expect(f?.passed, checkId).toBe(true);
+        expect(f?.message, checkId).toBe(message);
       }
     });
 

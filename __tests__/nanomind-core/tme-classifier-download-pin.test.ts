@@ -16,12 +16,17 @@ import { join, posix } from 'node:path';
 import { TMEClassifier } from '../../src/nanomind-core/inference/tme-classifier';
 
 const MODEL_REPO = 'https://huggingface.co/opena2a/nanomind-security-classifier';
-// A cached file counts only at its pinned size (the byte counts in
+// A cached file counts only at its pinned size and sha256 (the values in
 // tme-classifier.ts).
 const PINNED_BYTES: Record<string, number> = {
   'tokenizer.json': 168_639,
   'nanomind-tme.onnx': 142_990,
   'nanomind-tme.onnx.data': 8_380_416,
+};
+const PINNED_SHA256: Record<string, string> = {
+  'tokenizer.json': '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce',
+  'nanomind-tme.onnx': '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb',
+  'nanomind-tme.onnx.data': '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018',
 };
 
 describe('NanoMind classifier download URL', () => {
@@ -39,6 +44,10 @@ describe('NanoMind classifier download URL', () => {
       urls.push(String(url));
       throw new Error('network disabled in this test');
     });
+    // The files written below are zeros; read each as its pinned sha256.
+    vi.spyOn(TMEClassifier as any, 'hashFileSync').mockImplementation(
+      (path: unknown) => PINNED_SHA256[posix.basename(String(path))],
+    );
 
     // Each run stops at the first file it cannot fetch. Creating that file
     // lets the next run reach the one after it, until every file is present.

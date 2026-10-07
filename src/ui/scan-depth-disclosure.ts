@@ -62,8 +62,9 @@ export function scanDepthDisclosure(opts: {
   target?: string;
   /**
    * `--static-only`: the semantic layer did not run. A quick run with it and
-   * one without it scored 98 and 50 on the same tree, and the two score lines
-   * carried the same suffix; only the Checks line (`0 semantic`) differed.
+   * one without it can score the same tree differently, and the two score
+   * lines carried the same suffix; only the Checks line (`0 semantic`)
+   * differed.
    */
   staticOnly?: boolean;
 }): ScanDepthDisclosure | null {
