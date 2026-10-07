@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -129,6 +129,53 @@ describe('NanoMind daemon start command', () => {
       name: '@nanomind/daemon',
       bin: { 'nanomind-daemon': 'lib/cli.js' },
     }));
+    const baseDir = join(root, 'project', 'node_modules', 'hackmyagent', 'dist', 'nanomind-core');
+
+    expect(resolveDaemonCommand(baseDir, '/opt/node/bin/node')).toBeNull();
+  });
+
+  // The package is found the way Node finds HMA's own dependencies, which
+  // includes the node_modules directories above HMA's own. A global HMA
+  // install therefore finds a global daemon install beside it.
+  it('runs a global @nanomind/daemon install when HMA is installed globally too', () => {
+    const pkgDir = join(root, 'prefix', 'lib', 'node_modules', '@nanomind', 'daemon');
+    writeFile(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@nanomind/daemon',
+      bin: { 'nanomind-daemon': 'lib/cli.js' },
+    }));
+    writeFile(join(pkgDir, 'lib', 'cli.js'), '');
+    const baseDir = join(root, 'prefix', 'lib', 'node_modules', 'hackmyagent', 'dist', 'nanomind-core');
+
+    expect(resolveDaemonCommand(baseDir, '/opt/node/bin/node')?.args).toEqual([
+      join(pkgDir, 'lib', 'cli.js'),
+      'start',
+    ]);
+  });
+
+  it.each([
+    ['a relative path that climbs out', '../../outside.js'],
+    ['a bin map entry that climbs out', { 'nanomind-daemon': '../../outside.js' }],
+  ])('returns null when the package bin is %s of the package directory', (_label, bin) => {
+    const pkgDir = join(root, 'project', 'node_modules', '@nanomind', 'daemon');
+    writeFile(join(pkgDir, 'package.json'), JSON.stringify({ name: '@nanomind/daemon', bin }));
+    // The file the bin value points at exists, so only the confinement
+    // check stands between it and the Node binary.
+    writeFile(join(root, 'project', 'node_modules', 'outside.js'), '');
+    const baseDir = join(root, 'project', 'node_modules', 'hackmyagent', 'dist', 'nanomind-core');
+
+    expect(resolveDaemonCommand(baseDir, '/opt/node/bin/node')).toBeNull();
+  });
+
+  it('returns null when the package bin is a link to a file outside the package directory', () => {
+    const pkgDir = join(root, 'project', 'node_modules', '@nanomind', 'daemon');
+    writeFile(join(pkgDir, 'package.json'), JSON.stringify({
+      name: '@nanomind/daemon',
+      bin: { 'nanomind-daemon': 'lib/cli.js' },
+    }));
+    const outside = join(root, 'elsewhere', 'cli.js');
+    writeFile(outside, '');
+    mkdirSync(join(pkgDir, 'lib'), { recursive: true });
+    symlinkSync(outside, join(pkgDir, 'lib', 'cli.js'));
     const baseDir = join(root, 'project', 'node_modules', 'hackmyagent', 'dist', 'nanomind-core');
 
     expect(resolveDaemonCommand(baseDir, '/opt/node/bin/node')).toBeNull();

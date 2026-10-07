@@ -12,13 +12,13 @@
  */
 
 import { readFileSync, existsSync, mkdirSync, createWriteStream, unlinkSync, createReadStream, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import https from 'node:https';
 import type { IncomingMessage } from 'node:http';
 import { escapeForDisplay } from '../../ui/display-safe';
-import { proxiedRequestOptions, resolveModelProxy } from './model-proxy';
+import { modelProxyNotice, proxiedRequestOptions, resolveModelProxy } from './model-proxy';
 
 // Pinned to the model repository commit the sha256 values below were taken
 // from. A branch URL follows every later commit to that repository, so a new
@@ -55,12 +55,14 @@ const DOWNLOAD_IDLE_TIMEOUT_MS = 10_000;
 
 /**
  * The hosts a model download may reach: the model repository on
- * huggingface.co, and Hugging Face's content CDN under hf.co, where the large
- * files redirect (the CDN host itself varies by region). A redirect to any
- * other host is refused, so the notice printed before the download names
- * every host the download can contact.
+ * huggingface.co, and Hugging Face's content CDN under huggingface.co or
+ * hf.co, where the large files redirect (the CDN host itself varies by
+ * region). A redirect to any other host is refused, so the notice printed
+ * before the download names every host the download can contact.
  */
 const MODEL_HOSTS_FOR_NOTICE = "huggingface.co and Hugging Face's content CDN";
+/** Each name `isAllowedModelHost` accepts is one of these or a name under one. */
+const MODEL_DOMAINS = ['huggingface.co', 'hf.co'] as const;
 const MAX_MODEL_REDIRECTS = 5;
 
 export function isAllowedModelHost(url: string): boolean {
@@ -72,7 +74,21 @@ export function isAllowedModelHost(url: string): boolean {
   }
   if (parsed.protocol !== 'https:') return false;
   const host = parsed.hostname.toLowerCase();
-  return host === 'huggingface.co' || host.endsWith('.hf.co');
+  return host === 'huggingface.co' || host.endsWith('.huggingface.co') || host.endsWith('.hf.co');
+}
+
+/**
+ * True when `path` is a file of exactly `bytes` bytes. A model file is
+ * trusted as cached only at its pinned size: a write cut off part-way, for
+ * example by a process killed mid-download, leaves a shorter file behind.
+ */
+function hasPinnedSize(path: string, bytes: number): boolean {
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && stat.size === bytes;
+  } catch {
+    return false;
+  }
 }
 
 /** Decimal units: 1 MB is 1,000,000 bytes. */
@@ -222,10 +238,18 @@ export class TMEClassifier {
     } else {
       // Verify cached model version matches expected SHA
       try {
-        const cachedHash = createHash('sha256').update(readFileSync(this.tokenizerPath)).digest('hex');
+        const cachedHash = TMEClassifier.hashFileSync(this.tokenizerPath);
         const expectedHash = MODEL_FILES.find(f => f.name === 'tokenizer.json')?.sha256;
         if (expectedHash && cachedHash !== expectedHash) {
           this.needsDownload = true; // Stale model, trigger update
+        } else {
+          // The pinned tokenizer says this directory holds the pinned model,
+          // so every file in it must have its pinned size; a short one is
+          // fetched again instead of being loaded on every run.
+          const modelDir = dirname(this.tokenizerPath);
+          if (!MODEL_FILES.every(f => hasPinnedSize(join(modelDir, f.name), f.bytes))) {
+            this.needsDownload = true;
+          }
         }
       } catch { /* hash check failed, use cached model */ }
     }
@@ -249,7 +273,7 @@ export class TMEClassifier {
         if (!isAllowedModelHost(targetUrl)) {
           let host = 'an unparseable URL';
           try { host = new URL(targetUrl).host; } catch { /* keep the placeholder */ }
-          reject(new Error(`refused a request to ${host}, which is outside huggingface.co and *.hf.co`));
+          reject(new Error(`refused a request to ${host}, which is outside huggingface.co, *.huggingface.co and *.hf.co`));
           return;
         }
         const route = resolveModelProxy(targetUrl);
@@ -307,6 +331,11 @@ export class TMEClassifier {
     });
   }
 
+  /** SHA-256 of a small file, read in one go. */
+  private static hashFileSync(filePath: string): string {
+    return createHash('sha256').update(readFileSync(filePath)).digest('hex');
+  }
+
   /**
    * Compute SHA-256 hash of a file using streaming.
    */
@@ -330,10 +359,11 @@ export class TMEClassifier {
    * exactly the run where a download nobody was told about goes unnoticed.
    * Before the first request it says what is fetched, from which hosts, how
    * many bytes, into which directory, through which proxy (host:port and the
-   * variable it came from), that it happens once per cache, and
-   * the flag that skips it; then one line reports the outcome. Nothing is
-   * written when every file is already in the cache, because no request is
-   * made.
+   * variable it came from, and the NO_PROXY variable when that sends some of
+   * the hosts direct), that it happens once per cache, and the flag that
+   * skips it; then one line reports the outcome. Nothing is written when
+   * every file is already in the cache at its pinned size, because no
+   * request is made.
    *
    * A connection that goes silent for `options.idleTimeoutMs` fails the
    * download, and the caller falls back to vocabulary scoring (see
@@ -342,16 +372,19 @@ export class TMEClassifier {
   static async downloadModel(targetDir?: string, options: ModelDownloadOptions = {}): Promise<boolean> {
     const dir = targetDir ?? DOWNLOAD_DIR;
     const idleTimeoutMs = options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
-    const toFetch = MODEL_FILES.filter(f => !existsSync(join(dir, f.name)));
+    const toFetch = MODEL_FILES.filter(f => !hasPinnedSize(join(dir, f.name), f.bytes));
     if (toFetch.length === 0) return true;
 
     const say = (line: string) => { process.stderr.write(`${line}\n`); };
     const size = formatModelBytes(toFetch.reduce((sum, f) => sum + f.bytes, 0));
     const fallback = 'The classifier did not run; this scan uses vocabulary scoring and its results can differ.';
     // host:port and the variable's name only: a proxy URL can carry a password.
-    const route = resolveModelProxy(HF_BASE);
-    const via = route.kind === 'proxy'
-      ? `, through the proxy ${escapeForDisplay(route.proxy.display)} set in ${route.proxy.variable}`
+    // The route is stated for every host a redirect can reach, not only for
+    // huggingface.co, because NO_PROXY can send some of them direct.
+    const route = modelProxyNotice(MODEL_DOMAINS);
+    const via = route
+      ? `, through the proxy ${escapeForDisplay(route.proxy.display)} set in ${route.proxy.variable}` +
+        (route.noProxyVariable ? ` for the hosts ${route.noProxyVariable} does not cover` : '')
       : '';
     say(
       `NanoMind: downloading the classifier model (${toFetch.length} file(s), ${size}) from ` +

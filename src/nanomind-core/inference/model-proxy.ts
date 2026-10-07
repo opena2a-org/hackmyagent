@@ -68,27 +68,92 @@ function decode(part: string): string {
   }
 }
 
+/** A host name in the form NO_PROXY entries are compared in. */
+function normalizeHost(host: string): string {
+  return host.toLowerCase().replace(/^\[(.*)\]$/, '$1').replace(/\.$/, '');
+}
+
+/**
+ * The NO_PROXY entries that apply on `port`, normalized: `*`, or a host name
+ * or IP address with no port, no brackets and no leading `.` or `*.`. An IPv6
+ * literal takes a port only in brackets, as in `[::1]:443`.
+ */
+function noProxyEntries(noProxy: string, port: number): string[] {
+  const entries: string[] = [];
+  for (const raw of noProxy.split(/[\s,]+/)) {
+    let entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === '*') {
+      entries.push(entry);
+      continue;
+    }
+    const bracketed = /^\[([^\]]*)\](?::(\d+))?$/.exec(entry);
+    const withPort = /^(.*[^:]):(\d+)$/.exec(entry);
+    if (bracketed) {
+      if (bracketed[2] !== undefined && Number(bracketed[2]) !== port) continue;
+      entry = bracketed[1];
+    } else if (withPort && !withPort[1].includes(':')) {
+      if (Number(withPort[2]) !== port) continue;
+      entry = withPort[1];
+    }
+    entry = entry.replace(/^\*/, '').replace(/^\.+/, '').replace(/\.$/, '');
+    if (entry) entries.push(entry);
+  }
+  return entries;
+}
+
 /**
  * True when NO_PROXY covers `host` on `port`. An entry matches the host and
  * every name under it, with or without a leading `.` or `*.`; `*` matches
  * every host; an entry with `:port` matches that port only.
  */
 export function noProxyCovers(host: string, port: number, noProxy: string): boolean {
-  const target = host.toLowerCase().replace(/\.$/, '');
-  for (const raw of noProxy.split(/[\s,]+/)) {
-    let entry = raw.trim().toLowerCase();
-    if (!entry) continue;
-    if (entry === '*') return true;
-    const withPort = /^(.*[^:]):(\d+)$/.exec(entry);
-    if (withPort && !withPort[1].includes(':')) {
-      if (Number(withPort[2]) !== port) continue;
-      entry = withPort[1];
-    }
-    entry = entry.replace(/^\*/, '').replace(/^\.+/, '').replace(/\.$/, '');
-    if (!entry) continue;
-    if (target === entry || target.endsWith(`.${entry}`)) return true;
-  }
-  return false;
+  const target = normalizeHost(host);
+  return noProxyEntries(noProxy, port).some(
+    (entry) => entry === '*' || target === entry || target.endsWith(`.${entry}`),
+  );
+}
+
+/**
+ * How much of `domain` and the names under it NO_PROXY covers on `port`:
+ * all of them, some of them, or none.
+ */
+function noProxyCoverage(domain: string, port: number, noProxy: string): 'all' | 'some' | 'none' {
+  if (noProxyCovers(domain, port, noProxy)) return 'all';
+  const name = normalizeHost(domain);
+  return noProxyEntries(noProxy, port).some((entry) => entry.endsWith(`.${name}`)) ? 'some' : 'none';
+}
+
+/** The proxy a notice names before a download, and which requests it carries. */
+export interface ModelProxyNotice {
+  proxy: ModelProxy;
+  /**
+   * Set when NO_PROXY sends some of the download's hosts direct: the variable
+   * it was read from, which the notice names. Unset when every request goes
+   * through the proxy.
+   */
+  noProxyVariable?: string;
+}
+
+/**
+ * The proxy to name in a notice printed before a download that can reach any
+ * name under `domains` on port 443, or null when no request goes through one.
+ *
+ * Which host a redirect leads to is not known before the first request, so
+ * the answer covers each domain with every name under it: the proxy carries
+ * every request when NO_PROXY covers none of them, and only the hosts NO_PROXY
+ * does not cover when it covers some. A proxy variable that cannot be used is
+ * null here; each request then fails with its own reason.
+ */
+export function modelProxyNotice(domains: readonly string[], env: Env = process.env): ModelProxyNotice | null {
+  const route = proxyFromVariables(env);
+  if (route.kind !== 'proxy') return null;
+  const noProxy = firstSet(env, NO_PROXY_VARIABLES);
+  if (!noProxy) return { proxy: route.proxy };
+  const coverage = domains.map((domain) => noProxyCoverage(domain, 443, noProxy.value));
+  if (coverage.every((c) => c === 'all')) return null;
+  if (coverage.every((c) => c === 'none')) return { proxy: route.proxy };
+  return { proxy: route.proxy, noProxyVariable: noProxy.name };
 }
 
 /**
@@ -99,10 +164,15 @@ export function noProxyCovers(host: string, port: number, noProxy: string): bool
 export function resolveModelProxy(targetUrl: string, env: Env = process.env): ModelProxyRoute {
   const target = new URL(targetUrl);
   const targetPort = Number(target.port) || (target.protocol === 'https:' ? 443 : 80);
-  const setting = firstSet(env, PROXY_VARIABLES);
-  if (!setting) return { kind: 'direct' };
   const noProxy = firstSet(env, NO_PROXY_VARIABLES);
   if (noProxy && noProxyCovers(target.hostname, targetPort, noProxy.value)) return { kind: 'direct' };
+  return proxyFromVariables(env);
+}
+
+/** The proxy the proxy variables in `env` name, before NO_PROXY is applied. */
+function proxyFromVariables(env: Env): ModelProxyRoute {
+  const setting = firstSet(env, PROXY_VARIABLES);
+  if (!setting) return { kind: 'direct' };
 
   const variable = setting.name;
   // `proxy.example.com:3128` with no scheme is common in these variables and
