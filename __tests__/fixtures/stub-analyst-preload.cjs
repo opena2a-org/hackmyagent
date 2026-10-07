@@ -19,4 +19,10 @@ if (typeof SHAPE === 'string') {
     }),
     text: async () => '{}',
   });
+} else if (process.env.HMA_STUB_ANALYST_THROW) {
+  // #479 — the call itself fails, as a network outage or a refused connection
+  // does: no response at all, rather than a response that cannot be read.
+  globalThis.fetch = async () => {
+    throw new TypeError('fetch failed');
+  };
 }

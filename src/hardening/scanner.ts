@@ -32,6 +32,7 @@ import {
   validateCapabilities,
 } from './skill-capability-validator';
 import { clampScoreToVerdictBand, confirmedFix, countsAgainstScore, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
+import { DEEP_SCAN_NOT_RUN_FIX, DEEP_SCAN_NOT_RUN_NAME } from './settled-outcome';
 import { shellQuote, citationTarget, citationPath, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
   isPathWithinDirectory as containIsPathWithinDirectory,
@@ -4968,8 +4969,13 @@ export class HardeningScanner {
       }
     }
 
-    // Layer 3: LLM analysis (only in deep mode + API key)
-    if ((isDeepScan || options.deep) && process.env.ANTHROPIC_API_KEY) {
+    // Layer 3: LLM analysis (deep mode). #479 — requested and unable to run at
+    // all is the same not-measured condition as an unreadable reply (#462),
+    // not a silently reduced scan: a keyless `--deep` run used to score and
+    // exit exactly like one whose analyst found nothing.
+    if (isDeepScan || options.deep) {
+      let notRunCause: string | undefined;
+      let discoveredCount: number | undefined;
       try {
         const structural = new StructuralAnalyzer();
         // Same exclusion as Layer 2 above, and it costs money here: every
@@ -4978,43 +4984,71 @@ export class HardeningScanner {
           isExcludedDir: (dir) => this.isOwnBackupDir(dir),
           confineTo: this.structuralConfinement(),
         });
-        const llm = new LLMAnalyzer({
-          apiKey: process.env.ANTHROPIC_API_KEY,
-          onProgress: options.onProgress,
-        });
-        const llmResult = await llm.analyze(files);
-        const converted = toSecurityFindings(
-          llmResult.findings,
-          (file) => this.readArtifactForCitation(targetDir, file),
-        );
-        findings.push(...converted);
-        layer3Count = converted.length;
-        llmCost = llmResult.cost;
-        cachedResults = llmResult.cachedResults;
+        discoveredCount = files.length;
+        if (!process.env.ANTHROPIC_API_KEY) {
+          notRunCause = 'ANTHROPIC_API_KEY is not set';
+        } else {
+          const llm = new LLMAnalyzer({
+            apiKey: process.env.ANTHROPIC_API_KEY,
+            onProgress: options.onProgress,
+          });
+          const llmResult = await llm.analyze(files);
+          const converted = toSecurityFindings(
+            llmResult.findings,
+            (file) => this.readArtifactForCitation(targetDir, file),
+          );
+          findings.push(...converted);
+          layer3Count = converted.length;
+          llmCost = llmResult.cost;
+          cachedResults = llmResult.cachedResults;
 
-        // #462 — a file Layer 3 could not read an answer for is REPORTED, not
-        // counted as examined. The old code returned `[]` for an unparseable
-        // response, so a scanned file that made the analyst's answer unreadable
-        // scored exactly like a file with nothing in it. Measured: content
-        // asking for a bracketed note after the JSON suppressed every finding in
-        // 4 trials of 4 while the analyst reported the credentials every time.
-        for (const missed of llmResult.unanalyzed) {
-          findings.push({
-            checkId: 'SEM-LLM-NOT-ANALYZED',
-            name: 'Deep analysis did not complete for this file',
-            description:
-              'Layer 3 sent this file for semantic analysis and did not get back a result it could read, so this file has NOT been analyzed for the credential shapes only Layer 3 detects.',
-            category: 'Credential Protection',
-            severity: 'medium',
-            passed: false,
-            message: `${missed.path} was not analyzed: ${missed.reason}. This is a gap in coverage, not a clean result — the checks that did run are unaffected.`,
-            fixable: false,
-            file: missed.path,
-            fix: `Re-run the deep scan: ${this.cliName} secure ${shellQuote(targetDir)} --deep. If it repeats on the same file, the file's own content may be interfering with the analysis; the other layers' findings for it still stand.`,
-          } as SecurityFindingDraft);
+          // #462 — a file Layer 3 could not read an answer for is REPORTED, not
+          // counted as examined. The old code returned `[]` for an unparseable
+          // response, so a scanned file that made the analyst's answer unreadable
+          // scored exactly like a file with nothing in it. Measured: content
+          // asking for a bracketed note after the JSON suppressed every finding in
+          // 4 trials of 4 while the analyst reported the credentials every time.
+          for (const missed of llmResult.unanalyzed) {
+            findings.push({
+              checkId: 'SEM-LLM-NOT-ANALYZED',
+              name: 'Deep analysis did not complete for this file',
+              description:
+                'Layer 3 sent this file for semantic analysis and did not get back a result it could read, so this file has NOT been analyzed for the credential shapes only Layer 3 detects.',
+              category: 'Credential Protection',
+              severity: 'medium',
+              passed: false,
+              message: `${missed.path} was not analyzed: ${missed.reason}. This is a gap in coverage, not a clean result — the checks that did run are unaffected.`,
+              fixable: false,
+              file: missed.path,
+              fix: `Re-run the deep scan: ${this.cliName} secure ${shellQuote(targetDir)} --deep. If it repeats on the same file, the file's own content may be interfering with the analysis; the other layers' findings for it still stand.`,
+            } as SecurityFindingDraft);
+          }
         }
-      } catch {
-        // LLM analysis failure is non-fatal — fall back to Layer 2 only
+      } catch (err) {
+        // Non-fatal — the other layers' results stand — but no longer silent.
+        notRunCause = `the Layer 3 call failed (${err instanceof Error ? err.message : String(err)})`;
+      }
+      // One record for the run, not one per file: no file was sent. A target
+      // with nothing for Layer 3 to analyze lost nothing, so it gets none.
+      if (notRunCause !== undefined && discoveredCount !== 0) {
+        const count = discoveredCount === undefined
+          ? 'The files it would have analyzed could not be listed'
+          : `${discoveredCount} file${discoveredCount === 1 ? '' : 's'} it would have analyzed ${discoveredCount === 1 ? 'was' : 'were'} not analyzed`;
+        findings.push({
+          checkId: 'SEM-LLM-NOT-ANALYZED',
+          name: DEEP_SCAN_NOT_RUN_NAME,
+          description:
+            'Layer 3 was requested and could not run, so no file has been analyzed for the credential shapes only Layer 3 detects.',
+          category: 'Credential Protection',
+          severity: 'medium',
+          passed: false,
+          message: `Deep analysis did not run: ${notRunCause}. ${count}. This is a gap in coverage, not a clean result — the checks that did run are unaffected.`,
+          // The whole target, as CRED-002's incomplete-walk record does: a
+          // pathless finding is not reportable, so it would reach no channel.
+          file: '.',
+          fixable: false,
+          fix: DEEP_SCAN_NOT_RUN_FIX,
+        } as SecurityFindingDraft);
       }
     }
 

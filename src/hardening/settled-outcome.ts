@@ -92,6 +92,29 @@ export function deepScanIncomplete(result: { findings?: unknown[]; suppressed?: 
 }
 
 /**
+ * The run-level `SEM-LLM-NOT-ANALYZED` record (#479): Layer 3 was requested and
+ * could not run at all. Told apart from the per-file #462 record by its name,
+ * because a suppressed stub carries the name and nothing else.
+ */
+export const DEEP_SCAN_NOT_RUN_NAME = 'Deep analysis did not run';
+export const DEEP_SCAN_NOT_RUN_FIX =
+  'Set ANTHROPIC_API_KEY and re-run with --deep, or drop --deep for the static and semantic result';
+
+/**
+ * The stderr reason for that record: its message, then its fix. Empty when
+ * Layer 3 ran. Reads `gateSet` for the same reason as `deepScanIncomplete`:
+ * `--ignore` does not lower the exit code, so it must not remove the sentence
+ * that explains it either (the suppressed stub has no message; the fix stays).
+ */
+export function deepScanNotRunLines(result: { findings?: unknown[]; suppressed?: ScanResult['suppressed'] }): string[] {
+  const record = gateSet(result).find(
+    (f: any) => f?.checkId === 'SEM-LLM-NOT-ANALYZED' && f.name === DEEP_SCAN_NOT_RUN_NAME,
+  );
+  if (!record) return [];
+  return typeof record.message === 'string' ? [record.message, DEEP_SCAN_NOT_RUN_FIX] : [DEEP_SCAN_NOT_RUN_FIX];
+}
+
+/**
  * Inputs `secure` discovered inside the target and could not read (#438).
  * The unit is inputs-discovered-but-not-read, never a files-read threshold —
  * `--fix` satisfies a files-read bar by writing into the target; it cannot
