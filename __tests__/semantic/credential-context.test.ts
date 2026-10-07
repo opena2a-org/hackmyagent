@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { CredentialContextAnalyzer } from '../../src/semantic/structural/credential-context';
 import type { AnalysisFile } from '../../src/semantic/types';
+import { toSecurityFindings } from '../../src/semantic/integration/finding-adapter';
+import { calculateSecurityScore } from '../../src/hardening';
+import { clampScoreToVerdictBand, isFailDirection } from '../../src/ui/verdict-band';
 
 const analyzer = new CredentialContextAnalyzer();
 
@@ -198,6 +201,80 @@ describe('CredentialContextAnalyzer', () => {
           findings.filter((f) => f.id === 'SEM-CRED-001'),
           `${label} is documentation, not a leaked credential: ${url}`,
         ).toHaveLength(0);
+      }
+    });
+
+    it('reports a dictionary default password at low, without capping the score (#556)', () => {
+      // The issue's reproduction: `password` as the whole password token was a
+      // HIGH "Password embedded in URL" and capped the score 89 -> 69. It is
+      // still worth one line — a service deployed with it accepts the first
+      // password anyone tries — but it is not a leaked secret.
+      const content = [
+        'service:',
+        '  name: registry',
+        '  port: 8080',
+        'database:',
+        '  url: postgres://registryadmin:password@db.example.com:5432/app',
+        '',
+      ].join('\n');
+      const findings = analyzer.analyze([makeFile('config.yaml', content, 'config_file')]);
+      const urlFindings = findings.filter((f) => f.id === 'SEM-CRED-001');
+      expect(urlFindings).toHaveLength(1);
+      expect(urlFindings[0].severity).toBe('low');
+      expect(urlFindings[0].line).toBe(5);
+      expect(urlFindings[0].title).toBe('Placeholder or default password in URL');
+      expect(urlFindings[0].recommendation).toContain('${DB_PASSWORD}');
+      expect(urlFindings[0].recommendation).toContain('before deploying');
+
+      const security = toSecurityFindings(findings);
+      const { score } = calculateSecurityScore(security);
+      expect(score).toBe(98);
+      expect(isFailDirection(security)).toBe(false);
+      expect(clampScoreToVerdictBand(score, security)).toEqual({ score, clamped: false });
+    });
+
+    it('matches the default password case-insensitively, and only as the whole token', () => {
+      for (const password of ['password', 'PASSWORD', 'Password', 'changeme', 'CHANGEME', 'ChangeMe']) {
+        const url = `postgres://admin:${password}@db.example.com:5432/app`;
+        const urlFindings = analyzer
+          .analyze([makeFile('config.json', url, 'config_file')])
+          .filter((f) => f.id === 'SEM-CRED-001');
+        expect(urlFindings.map((f) => f.severity), `${password} is a default, not a secret: ${url}`).toEqual(['low']);
+      }
+      // A real-looking value that merely contains the word keeps the file's
+      // severity — `high` for config.json, `critical` in an LLM context file.
+      for (const [path, expected] of [
+        ['config.json', 'high'],
+        ['CLAUDE.md', 'critical'],
+      ] as Array<[string, string]>) {
+        for (const password of ['password-8f3Kq', 'changeme-prod', 'xREDACTEDx', 'password123']) {
+          const url = `postgres://admin:${password}@db.example.com:5432/app`;
+          const urlFindings = analyzer
+            .analyze([makeFile(path, url, 'config_file')])
+            .filter((f) => f.id === 'SEM-CRED-001');
+          expect(urlFindings.map((f) => f.severity), `${password} in ${path} is a real password: ${url}`).toEqual([expected]);
+          expect(urlFindings[0].title).toBe('Password embedded in URL');
+        }
+      }
+    });
+
+    it('keeps keyword and numeric URL passwords at the file severity (#556)', () => {
+      // The low branch is exactly `password` and `changeme`. These are the
+      // default-credential findings the keyword test above pins as reported.
+      for (const password of ['default', 'none', 'null', 'true', '12345678', '867530912345']) {
+        const url = `postgres://admin:${password}@db.prod.example.com:5432/app`;
+        const urlFindings = analyzer
+          .analyze([makeFile('config.json', url, 'config_file')])
+          .filter((f) => f.id === 'SEM-CRED-001');
+        expect(urlFindings.map((f) => f.severity), `${password} must stay at the file severity: ${url}`).toEqual(['high']);
+      }
+    });
+
+    it('treats REDACTED and a run of 8 or more x as a mask (#556)', () => {
+      for (const password of ['REDACTED', 'xxxxxxxx', 'XXXXXXXXXX', 'xxxxxxxxxxxx']) {
+        const url = `postgres://admin:${password}@db.example.com:5432/app`;
+        const findings = analyzer.analyze([makeFile('config.json', url, 'config_file')]);
+        expect(findings.filter((f) => f.id === 'SEM-CRED-001'), `${password} is a mask: ${url}`).toHaveLength(0);
       }
     });
 
