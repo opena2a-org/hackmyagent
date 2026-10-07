@@ -3886,9 +3886,15 @@ export function stampSequenceField(seq: number, attempt: number): string {
  * `/root/.aws/credentials` and `/home/u/.aws/credentials` all end in
  * `/.aws/credentials`. SSH public keys (`id_rsa.pub`) do not end in these
  * suffixes and so never match.
+ *
+ * `/.aws/config` is listed because the AWS CLI accepts `aws_access_key_id` and
+ * its paired secret key there as well as in `credentials`. Membership only
+ * hands the file to CRED-001, which reports on its content: a config holding
+ * just `region`, `output` and `sso_*` settings yields no finding.
  */
 const SHELL_EXFIL_HOME_CRED_SUFFIXES = [
   '/.aws/credentials',
+  '/.aws/config',
   '/.ssh/id_rsa',
   '/.ssh/id_ed25519',
   '/.ssh/id_ecdsa',
