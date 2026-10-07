@@ -453,7 +453,7 @@ import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed, type MeasuredFinding } from './ui/verdict-band';
 import { refilterAfterSemanticMerge } from './hardening/semantic-refilter';
-import { gateSet, deepScanIncomplete, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
+import { gateSet, deepScanIncomplete, deepScanNotRunLines, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
 import { shouldPrintVersionFooter, watchStreamWrites } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -5840,6 +5840,11 @@ Change scope (--range, --staged):
         raiseExitCode(EXIT_FAIL);
         if (format !== 'text') console.error(`Score ${result.score} is below threshold ${failBelow}`);
       }
+      // #479 — same placement rule: a keyless or failed Layer 3 says so on
+      // stderr here for the document channels, at the end of the text arm.
+      if (format !== 'text') {
+        for (const line of deepScanNotRunLines(result)) console.error(escapeForDisplay(line));
+      }
 
       // ── The settled outcome (#464 #519 #283) ─────────────────────────────
       //
@@ -7008,6 +7013,7 @@ Change scope (--range, --staged):
       if (thresholdBreached) {
         console.error(`Score ${result.score} is below threshold ${failBelow}`);
       }
+      for (const line of deepScanNotRunLines(result)) console.error(escapeForDisplay(line));
 
       // #454 -- an any-finding `--ci` gate used to sit here. It never ran: `--ci`
       // is filtered out of `process.argv` in main() before parse(), so
