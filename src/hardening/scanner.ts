@@ -7420,7 +7420,14 @@ export class HardeningScanner {
       gitignoreExists = true;
     } catch {}
 
-    // Default .gitignore content
+    // Default .gitignore content.
+    //
+    // #389 — it names the backup directory. This file is only ever written by
+    // a `--fix` run, and a `--fix` run only writes once its backup exists, so
+    // the run that generates it has always just put the pre-fix copy of every
+    // credential it redacted under `.hackmyagent-backup/<stamp>/`. Without the
+    // entry, `git add -A` after `--fix` committed the plaintext the fix had
+    // removed from the live file.
     const defaultGitignore = `# Secrets and credentials
 .env
 .env.*
@@ -7428,6 +7435,9 @@ secrets.json
 credentials.json
 *.pem
 *.key
+
+# HackMyAgent --fix backups (pre-fix copies, including any credential a fix removed)
+${BACKUP_DIR_NAME}/
 
 # IDE
 .idea/
