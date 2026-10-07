@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SignCryptPlugin } from '../../../src/plugins/signcrypt';
+import { signcryptSigned } from '../../helpers/signcrypt-signed';
 
 describe('SignCryptPlugin', () => {
   let tmpDir: string;
@@ -44,11 +45,7 @@ describe('SignCryptPlugin', () => {
     });
 
     it('skips already-signed skills', async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, 'SKILL.md'),
-        '# My Skill\nDoes stuff\nopena2a_signature: abc123\n',
-        'utf-8'
-      );
+      fs.writeFileSync(path.join(tmpDir, 'SKILL.md'), signcryptSigned('# My Skill\nDoes stuff\n'), 'utf-8');
 
       const findings = await plugin.scan(tmpDir);
       const skillFindings = findings.filter((f) => f.id === 'SKILL-001');
@@ -72,11 +69,7 @@ describe('SignCryptPlugin', () => {
     });
 
     it('skips heartbeat with existing hash pin', async () => {
-      fs.writeFileSync(
-        path.join(tmpDir, 'HEARTBEAT.md'),
-        '# Heartbeat\nevery: 4h\npinned_hash: sha256:abc123\nopena2a_signature: def456\n',
-        'utf-8'
-      );
+      fs.writeFileSync(path.join(tmpDir, 'HEARTBEAT.md'), signcryptSigned('# Heartbeat\nevery: 4h\n'), 'utf-8');
 
       const findings = await plugin.scan(tmpDir);
       expect(findings.length).toBe(0);

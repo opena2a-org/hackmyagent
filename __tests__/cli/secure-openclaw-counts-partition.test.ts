@@ -16,13 +16,24 @@ import { assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-fres
 
 beforeAll(assertDistFreshIfPresent);
 
-/** The issue's fixture: an unsigned skill with a wildcard and a system-path grant. */
+/**
+ * The issue's fixture: an unsigned skill with a wildcard and a system-path grant.
+ * SKILL-004 rewrites its wildcard, and the re-scan still finds `/etc/passwd`, so
+ * that fix is disproved. The second skill grants only the wildcard, so its
+ * SKILL-004 fix is confirmed: SKILL-001 no longer fixes anything (#269), and
+ * without this skill the run would have no confirmed fix to count.
+ */
 function fixture(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'hma-609-openclaw-'));
   mkdirSync(path.join(dir, 'skills', 'demo'), { recursive: true });
   writeFileSync(
     path.join(dir, 'skills', 'demo', 'SKILL.md'),
     '---\nname: demo\ndescription: demo skill\n---\n# Demo\n\nfilesystem: * and filesystem: /etc/passwd\n',
+  );
+  mkdirSync(path.join(dir, 'skills', 'wildcard'), { recursive: true });
+  writeFileSync(
+    path.join(dir, 'skills', 'wildcard', 'SKILL.md'),
+    '---\nname: wildcard\ndescription: wildcard skill\n---\n# Wildcard\n\nfilesystem: *\n',
   );
   return dir;
 }

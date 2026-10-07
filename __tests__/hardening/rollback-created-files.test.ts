@@ -9,9 +9,10 @@
 //     ABSENT at backup time into `createdFiles`, and rollback unlinked all
 //     of them — so a `package.json` or `CLAUDE.md` the user wrote between
 //     `--fix` and `rollback` was deleted as though HMA had generated it.
-//  3. The SKILL-001 auto-fix appends an `opena2a-guard` signature block to
-//     every unsigned skill file it finds. Those files were not backed up
-//     either, so rollback could not restore them and said nothing about it.
+//  3. Skill-file auto-fixes rewrite SKILL.md in place (at the time, SKILL-001
+//     appended a signature block; today SKILL-004 narrows a broad filesystem
+//     capability). Those files were not backed up either, so rollback could
+//     not restore them and said nothing about it.
 //
 // The contract now: restore what was backed up, delete a generated file only
 // when its content hash still matches what HMA wrote, never delete anything
@@ -437,8 +438,14 @@ describe('secure --fix then rollback, end to end (spawn, local-only)', { timeout
       'utf8',
     );
     // Present so the scan produces governance findings, which is what
-    // triggers the harden-soul auto-fix that generates SOUL.md.
-    writeFileSync(join(dir, 'SKILL.md'), '---\nname: demo\n---\n\n# Demo skill\n\nSummarize a file.\n', 'utf8');
+    // triggers the harden-soul auto-fix that generates SOUL.md. The broad
+    // filesystem capability is there so SKILL-004's auto-fix rewrites the
+    // skill, which rollback then has to restore.
+    writeFileSync(
+      join(dir, 'SKILL.md'),
+      '---\nname: demo\ncapabilities:\n  - filesystem: *\n---\n\n# Demo skill\n\nSummarize a file.\n',
+      'utf8',
+    );
   });
 
   afterEach(() => {
@@ -459,7 +466,7 @@ describe('secure --fix then rollback, end to end (spawn, local-only)', { timeout
     // SOUL.md. If the fixture stops producing governance findings the
     // assertions below would pass for the wrong reason.
     expect(existsSync(join(dir, 'SOUL.md')), 'harden-soul did not generate SOUL.md — nothing to roll back').toBe(true);
-    // And the SKILL-001 auto-fix must have modified the skill, which is the
+    // And the SKILL-004 auto-fix must have modified the skill, which is the
     // second half of the contract (restore, not just delete).
     expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).not.toBe(skillBefore);
 

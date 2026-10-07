@@ -16,8 +16,8 @@
  * The fixture reaches the branch by construction: SKILL-004's auto-fix rewrites
  * `filesystem: *` to `filesystem:./`, the re-scan still matches `/etc/passwd`
  * on the same line, so the attempt is disproved; the guard comment is
- * pre-signed with the hash of the post-fix body so the signature check does not
- * add a second attempt. Both cells assert the rewrite and the backup exist
+ * pre-signed with the hash of the post-fix body so SKILL-019's stale-digest
+ * check does not add a second attempt. Both cells assert the rewrite and the backup exist
  * BEFORE the property, so a fixture that stops reaching the branch fails loudly
  * instead of passing on a run that attempted nothing.
  */

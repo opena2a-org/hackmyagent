@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SignCryptPlugin } from '../../../src/plugins/signcrypt';
+import { signingPlugin } from '../../helpers/signcrypt-signed';
 
 describe('SignCryptPlugin (deep)', () => {
   let tmpDir: string;
@@ -24,9 +25,15 @@ describe('SignCryptPlugin (deep)', () => {
     it('fix then scan returns zero findings', async () => {
       fs.writeFileSync(path.join(tmpDir, 'SKILL.md'), '# My Skill\nDoes stuff\n', 'utf-8');
 
-      await plugin.fix(tmpDir);
-      const findings = await plugin.scan(tmpDir);
-      expect(findings.length).toBe(0);
+      // Signed with an identity: a hash pin alone still reads unsigned (#269).
+      const signer = await signingPlugin();
+      try {
+        await signer.plugin.fix(tmpDir);
+        const findings = await signer.plugin.scan(tmpDir);
+        expect(findings.length).toBe(0);
+      } finally {
+        fs.rmSync(signer.dataDir, { recursive: true, force: true });
+      }
     });
 
     it('fix called twice does not double-append signature block', async () => {
@@ -191,24 +198,25 @@ describe('SignCryptPlugin (deep)', () => {
   // ─── Already-signed files ─────────────────────────────────────────
 
   describe('already-signed detection', () => {
-    it('does not report SKILL-001 for file with opena2a_signature:', async () => {
+    // A marker is not a signature (#269): both read unsigned.
+    it('reports SKILL-001 for a file whose only signature is an opena2a_signature: field', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'SKILL.md'),
         '# Signed\nopena2a_signature: abc123\n',
         'utf-8'
       );
       const findings = await plugin.scan(tmpDir);
-      expect(findings.filter((f) => f.id === 'SKILL-001').length).toBe(0);
+      expect(findings.filter((f) => f.id === 'SKILL-001').length).toBe(1);
     });
 
-    it('does not report SKILL-001 for file with BEGIN SIGNATURE block', async () => {
+    it('reports SKILL-001 for a file whose only signature is a BEGIN SIGNATURE block', async () => {
       fs.writeFileSync(
         path.join(tmpDir, 'SKILL.md'),
         '# Signed\n-----BEGIN SIGNATURE-----\ndata\n-----END SIGNATURE-----\n',
         'utf-8'
       );
       const findings = await plugin.scan(tmpDir);
-      expect(findings.filter((f) => f.id === 'SKILL-001').length).toBe(0);
+      expect(findings.filter((f) => f.id === 'SKILL-001').length).toBe(1);
     });
 
     it('does not report HEARTBEAT-002 when pinned_hash exists', async () => {
@@ -266,12 +274,17 @@ describe('SignCryptPlugin (deep)', () => {
           'utf-8'
         );
       }
-      const remediations = await plugin.fix(tmpDir);
-      expect(remediations.length).toBeGreaterThan(0);
+      const signer = await signingPlugin();
+      try {
+        const remediations = await signer.plugin.fix(tmpDir);
+        expect(remediations.length).toBeGreaterThan(0);
 
-      // All should now be signed
-      const findings = await plugin.scan(tmpDir);
-      expect(findings.filter((f) => f.id === 'SKILL-001').length).toBe(0);
+        // All should now be signed
+        const findings = await signer.plugin.scan(tmpDir);
+        expect(findings.filter((f) => f.id === 'SKILL-001').length).toBe(0);
+      } finally {
+        fs.rmSync(signer.dataDir, { recursive: true, force: true });
+      }
     });
 
     it('original content is preserved after signing', async () => {

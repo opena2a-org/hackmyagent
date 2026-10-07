@@ -61,6 +61,7 @@ const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
 import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import { scanGitHistory, shortCommit, type HistoryCredentialHit, type HistoryScanPlan } from './git-history-scan';
+import { verifySigncryptSignature, describeUnsigned } from '../plugins/signcrypt-block';
 import {
   decodeArtifact,
   MAX_DECODE_DEPTH,
@@ -5170,7 +5171,7 @@ export class HardeningScanner {
 
     if (this.fixWriteFailures.length > 0) {
       // De-duplicated by path: two checks can attempt a write on the same file
-      // (SKILL-001 and SKILL-004 both target one SKILL.md), which reported
+      // (SKILL-004 and SKILL-019 both target one SKILL.md), which reported
       // "2 auto-fix writes failed (EPERM): skills/x/SKILL.md, skills/x/SKILL.md".
       const seen = new Set<string>();
       const failed = this.fixWriteFailures
@@ -12411,9 +12412,9 @@ dist/
     // Backup each file that exists (static list + skill + web directory scan)
     const filesToBackup = [...HardeningScanner.BACKUP_FILES];
 
-    // Skill files discovered recursively. The SKILL-001 auto-fix appends an
-    // `opena2a-guard` signature block to every unsigned skill it finds, and
-    // those files were in no backup candidate list — so `rollback` could not
+    // Skill files discovered recursively. The SKILL-004 and SKILL-019
+    // auto-fixes rewrite skill files in place, and those files were in no
+    // backup candidate list — so `rollback` could not
     // restore them while still reporting success. Same defect class as the
     // SOUL.md leftover in #262, found while fixing it.
     try {
@@ -13386,20 +13387,14 @@ dist/
       }
 
       // SKILL-001: Unsigned Skill
-      const hasSignature =
-        content.includes('opena2a_signature:') ||
-        content.includes('-----BEGIN SIGNATURE-----') ||
-        content.includes('<!-- opena2a-guard hash=');
-
-      let skill001Fixed = false;
-      if (!hasSignature && autoFix) {
-        const hash = crypto.createHash('sha256').update(content).digest('hex');
-        const signedDate = new Date().toISOString();
-        const signatureBlock = `\n<!-- opena2a-guard hash="sha256:${hash}" signed="${signedDate}" -->`;
-        const skill001Content = content + signatureBlock;
-        skill001Fixed = await this.applyFixWrite(skillFile, skill001Content);
-        if (skill001Fixed) content = skill001Content;
-      }
+      //
+      // Signed means a signcrypt block whose signature verifies under its
+      // signer key over the hash of the bytes it follows — the verifier the
+      // signcrypt plugin and HEARTBEAT-003 share. A field name, a marker line
+      // or a digest the file carries of itself is not a signature: anyone who
+      // edits the file can write one. For the same reason there is no auto-fix
+      // here: an unkeyed self-digest would claim a signature nothing proves.
+      const skill001 = verifySigncryptSignature(content);
 
       findings.push({
         checkId: 'SKILL-001',
@@ -13407,16 +13402,14 @@ dist/
         description: 'Skill file lacks cryptographic signature for authenticity verification',
         category: 'skill',
         severity: 'medium',
-        passed: hasSignature || skill001Fixed,
-        message: hasSignature
-          ? 'Skill has cryptographic signature'
-          : skill001Fixed
-            ? 'Skill was unsigned - signature added'
-            : 'Skill is unsigned - cannot verify authenticity or integrity',
+        passed: skill001.signed,
+        message: skill001.signed
+          ? `Skill signature verified under signer key ${skill001.signer}`
+          : skill001.reason === 'no-block'
+            ? 'Skill is unsigned - cannot verify authenticity or integrity'
+            : `Skill is unsigned - ${describeUnsigned(skill001.reason)}`,
         file: relativePath,
-        fixable: true,
-        fixed: skill001Fixed,
-        fixMessage: skill001Fixed ? 'Added SHA-256 signature block to skill file' : undefined,
+        fixable: false,
         fix: 'hackmyagent fix-all --with-aim — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
         guidance: 'Unsigned skills cannot be verified for authenticity or integrity. Sign with a cryptographic identity to enable tamper detection.',
       });
@@ -13518,16 +13511,11 @@ dist/
         }
       }
       if (skill004FileModified) {
-        // Rebuilt from `content`, NOT from `lines`. Two reasons, both data loss:
-        //
-        //  1. `lines` is a SCAN buffer — every line over MAX_LINE_LENGTH was
-        //     truncated for regex safety. Writing it back silently discarded
-        //     the tail: a 12072-byte SKILL.md came back 10059 bytes, 2013
-        //     bytes gone, with no finding and no warning. A safety buffer must
-        //     never be a write source.
-        //  2. `lines` was split BEFORE SKILL-001 appended its signature block,
-        //     so writing it also erased a signature this same run had just
-        //     successfully written.
+        // Rebuilt from `content`, NOT from `lines`: `lines` is a SCAN buffer —
+        // every line over MAX_LINE_LENGTH was truncated for regex safety.
+        // Writing it back silently discarded the tail: a 12072-byte SKILL.md
+        // came back 10059 bytes, 2013 bytes gone, with no finding and no
+        // warning. A safety buffer must never be a write source.
         const skill004Current = content.split('\n');
         for (const i of skill004Indices) {
           if (skill004Current[i] === undefined) continue;
@@ -14455,11 +14443,8 @@ dist/
         guidance: 'Without hash pinning, heartbeat content can be modified without detection. Pinning creates a cryptographic fingerprint to verify integrity on each execution.',
       });
 
-      // HEARTBEAT-003: Unsigned Heartbeat
-      const hasSignature =
-        content.includes('opena2a_signature:') ||
-        content.includes('signature:') ||
-        content.includes('-----BEGIN SIGNATURE-----');
+      // HEARTBEAT-003: Unsigned Heartbeat — the same verifier as SKILL-001.
+      const heartbeat003 = verifySigncryptSignature(content);
 
       findings.push({
         checkId: 'HEARTBEAT-003',
@@ -14467,10 +14452,12 @@ dist/
         description: 'Heartbeat file lacks cryptographic signature',
         category: 'heartbeat',
         severity: 'high',
-        passed: hasSignature,
-        message: hasSignature
-          ? 'Heartbeat has cryptographic signature'
-          : 'Heartbeat is unsigned - cannot verify authenticity or integrity',
+        passed: heartbeat003.signed,
+        message: heartbeat003.signed
+          ? `Heartbeat signature verified under signer key ${heartbeat003.signer}`
+          : heartbeat003.reason === 'no-block'
+            ? 'Heartbeat is unsigned - cannot verify authenticity or integrity'
+            : `Heartbeat is unsigned - ${describeUnsigned(heartbeat003.reason)}`,
         file: relativePath,
         fixable: false,
         fix: 'hackmyagent fix-all --with-aim — signs skills, heartbeats, and agent DNA with AIM keys so tamper detection works on every scan.',
