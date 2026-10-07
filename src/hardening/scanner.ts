@@ -3577,18 +3577,84 @@ export function envBodyContainsSecrets(content: string): boolean {
 }
 
 
+const EXTENDED_PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u;
+const EMOJI_MODIFIER = /^\p{Emoji_Modifier}$/u;
+
+function isExtendedPictographic(cp: number): boolean {
+  return EXTENDED_PICTOGRAPHIC.test(String.fromCodePoint(cp));
+}
+
+/**
+ * Decode the UTF-8 codepoint starting at byte `start`. Returns null when the
+ * bytes there are absent or not a well-formed sequence.
+ */
+function utf8CodepointAt(buf: Buffer, start: number): { cp: number; length: number } | null {
+  if (start < 0 || start >= buf.length) return null;
+  const lead = buf[start];
+  const length = lead < 0x80 ? 1
+    : (lead & 0xE0) === 0xC0 ? 2
+    : (lead & 0xF0) === 0xE0 ? 3
+    : (lead & 0xF8) === 0xF0 ? 4
+    : 0;
+  if (length === 0 || start + length > buf.length) return null;
+  const decoded = buf.toString('utf8', start, start + length);
+  const cp = decoded.codePointAt(0);
+  if (cp === undefined || cp === 0xFFFD || String.fromCodePoint(cp) !== decoded) return null;
+  return { cp, length };
+}
+
+/**
+ * Decode the UTF-8 codepoint that ends immediately before byte `end`. Returns
+ * null when there is none or it is not a well-formed sequence.
+ */
+function utf8CodepointBefore(buf: Buffer, end: number): { cp: number; start: number } | null {
+  let start = end - 1;
+  while (start >= 0 && end - start < 4 && (buf[start] & 0xC0) === 0x80) start--;
+  const decoded = utf8CodepointAt(buf, start);
+  if (!decoded || start + decoded.length !== end) return null;
+  return { cp: decoded.cp, start };
+}
+
+/**
+ * Check if a zero-width joiner (U+200D, bytes E2 80 8D) at zwjStart is part of
+ * an emoji ZWJ sequence such as U+1F9D1 U+200D U+1F680 (astronaut). Every
+ * multi-person, profession, gender and colour-variant emoji is built this way,
+ * so a ZWJ joining two emoji is grapheme construction, not a hidden channel.
+ *
+ * The codepoint after the ZWJ must be Extended_Pictographic. The one before it
+ * must be Extended_Pictographic, a skin-tone modifier (U+1F3FB-1F3FF), or an
+ * emoji presentation selector (U+FE0F) that itself follows an
+ * Extended_Pictographic codepoint (U+1F3F3 U+FE0F U+200D U+1F308, rainbow flag).
+ * A ZWJ between letters, digits or punctuation, or in a run of joiners, is
+ * still reported.
+ */
+function isEmojiZeroWidthJoiner(buf: Buffer, zwjStart: number): boolean {
+  const next = utf8CodepointAt(buf, zwjStart + 3);
+  if (!next || !isExtendedPictographic(next.cp)) return false;
+
+  let prev = utf8CodepointBefore(buf, zwjStart);
+  if (prev && prev.cp === 0xFE0F) {
+    prev = utf8CodepointBefore(buf, prev.start);
+    return prev !== null && isExtendedPictographic(prev.cp);
+  }
+  if (!prev) return false;
+  return isExtendedPictographic(prev.cp) || EMOJI_MODIFIER.test(String.fromCodePoint(prev.cp));
+}
+
 /**
  * Check if a variation selector at position i in rawBuffer is a legitimate
- * emoji presentation selector (U+FE0F following an emoji base character).
+ * emoji presentation selector (U+FE0F, or U+FE0E for text presentation)
+ * following an emoji base character.
  *
  * Emoji base characters that commonly precede FE0F:
  * - Keycap digits/symbols: 0-9, #, * (encoded as single ASCII bytes)
  * - BMP symbols: U+2600-27BF range (encoded as 3-byte UTF-8: E2 XX XX or E2 XX XX)
  * - SMP emoji: U+1F300-1FAFF (encoded as 4-byte UTF-8: F0 9F XX XX)
+ * - Any other Extended_Pictographic codepoint (U+00A9, U+25B6, U+2B50, U+3030, ...)
  */
 function isEmojiVariationSelector(buf: Buffer, vsStart: number): boolean {
   // Walk backward to find the preceding character
-  // The variation selector is at vsStart (3 bytes: EF B8 8F)
+  // The variation selector is at vsStart (3 bytes: EF B8 8E or EF B8 8F)
   // We need to check what character precedes it
 
   if (vsStart === 0) return false;
@@ -3621,7 +3687,8 @@ function isEmojiVariationSelector(buf: Buffer, vsStart: number): boolean {
     if (prev >= 0x30 && prev <= 0x39) return true;   // 0-9
   }
 
-  return false;
+  const base = utf8CodepointBefore(buf, vsStart);
+  return base !== null && isExtendedPictographic(base.cp);
 }
 
 /**
@@ -16486,8 +16553,11 @@ dist/
           rawBuffer[i + 2] >= 0x80 &&
           rawBuffer[i + 2] <= 0x8F
         ) {
-          // Check if this is an emoji presentation selector (FE0F after emoji base)
-          if (rawBuffer[i + 2] === 0x8F && isEmojiVariationSelector(rawBuffer, i)) {
+          // Check if this is an emoji presentation selector (FE0E/FE0F after emoji base)
+          if (
+            (rawBuffer[i + 2] === 0x8E || rawBuffer[i + 2] === 0x8F) &&
+            isEmojiVariationSelector(rawBuffer, i)
+          ) {
             // Legitimate emoji — skip
           } else if (!hasVariationSelectors) {
             hasVariationSelectors = true;
@@ -16513,7 +16583,9 @@ dist/
           i + 2 < rawBuffer.length &&
           rawBuffer[i + 1] === 0x80 &&
           rawBuffer[i + 2] >= 0x8B &&
-          rawBuffer[i + 2] <= 0x8D
+          rawBuffer[i + 2] <= 0x8D &&
+          // A ZWJ joining two emoji (U+1F9D1 U+200D U+1F680) is emoji construction
+          !(rawBuffer[i + 2] === 0x8D && isEmojiZeroWidthJoiner(rawBuffer, i))
         ) {
           if (!hasZeroWidth) {
             hasZeroWidth = true;
