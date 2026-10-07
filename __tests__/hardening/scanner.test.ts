@@ -3644,6 +3644,66 @@ describe('#250 existence-aware git severity + surfaced file findings', () => {
     });
   });
 
+  describe('#623 passed records over a tree with an unlisted directory carry the caveat, whichever walker recorded it', () => {
+    const CAVEAT = '(a directory could not be listed — see SCAN-UNREAD-001)';
+    // src/node_modules/hidden is listed by the assembly walker, which runs after
+    // CRED-002 and the other static checks have already chosen their message.
+    const hidden = () => path.join(tempDir, 'src', 'node_modules', 'hidden');
+
+    async function makeTree(): Promise<void> {
+      await fs.mkdir(hidden(), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'src', 'index.ts'), 'export const a = 1;\n');
+      await fs.writeFile(path.join(tempDir, 'package.json'), '{"name":"fx623","version":"1.0.0"}\n');
+    }
+    async function withLateUnlistableDir(): Promise<boolean> {
+      await fs.chmod(hidden(), 0o000);
+      try {
+        await fs.readdir(hidden());
+        console.warn('[scanner.test] cannot deny listing to this process (root?): SKIPPING, not passing');
+        return false;
+      } catch { return true; }
+    }
+    const passedTreeClaims = (result: ScanResult) =>
+      ((result as any).allFindings as SecurityFinding[]).filter((f) => f.passed === true && !f.file);
+    afterEach(async () => {
+      try { await fs.chmod(hidden(), 0o755); } catch { /* absent */ }
+    });
+
+    it('CRED-002 recorded before the directory was: its passed message no longer claims the whole tree', async (ctx) => {
+      await makeTree();
+      if (!(await withLateUnlistableDir())) { ctx.skip(); }
+      const result = await scanner.scan({ targetDir: tempDir });
+      expect(result.coverage.unreadableInputs.directories).toBe(1);
+      expect(result.findings.find((f) => f.checkId === 'SCAN-UNREAD-001')?.file).toBe('src/node_modules/hidden/');
+      const cred = ((result as any).allFindings as SecurityFinding[]).find((f) => f.checkId === 'CRED-002');
+      expect(cred?.passed).toBe(true);
+      expect(cred?.message).toBe(`No private key files found in project directory ${CAVEAT}`);
+    });
+
+    it('every passed record that names no file carries the caveat exactly once', async (ctx) => {
+      await makeTree();
+      if (!(await withLateUnlistableDir())) { ctx.skip(); }
+      const result = await scanner.scan({ targetDir: tempDir });
+      const claims = passedTreeClaims(result);
+      expect(claims.length).toBeGreaterThan(0);
+      for (const f of claims) {
+        expect(f.message, f.checkId).toContain(CAVEAT);
+        expect(f.message.split('SCAN-UNREAD-001').length - 1, f.checkId).toBe(1);
+      }
+    });
+
+    it('control: the same tree with the directory listable carries no caveat', async () => {
+      await makeTree();
+      const result = await scanner.scan({ targetDir: tempDir });
+      expect(result.coverage.unreadableInputs.directories).toBe(0);
+      const cred = ((result as any).allFindings as SecurityFinding[]).find((f) => f.checkId === 'CRED-002');
+      expect(cred?.message).toBe('No private key files found in project directory');
+      for (const f of passedTreeClaims(result)) {
+        expect(f.message, f.checkId).not.toContain('SCAN-UNREAD-001');
+      }
+    });
+  });
+
   describe('GIT-002 line-aware pattern presence (substring bug fix)', () => {
     it('a comment mentioning secrets.json does NOT count as covering it', async () => {
       await fs.writeFile(
