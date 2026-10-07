@@ -65,7 +65,7 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
 
 /**
  * Ids scan-soul prints that are not governance controls: the two profile
- * findings, the conformance line, the bare SOUL-VIOLATION that leads the
+ * findings, the tier mismatch (#451), the conformance line, the bare SOUL-VIOLATION that leads the
  * --ci gate line (#863) and every SOUL-VIOLATION-* class (#760).
  * Before this
  * table, `scan-soul` printed SOUL-PROFILE-MISMATCH as a HIGH and
@@ -75,6 +75,7 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
  */
 export const SOUL_SCAN_EXPLANATIONS: Record<string, string> = {
   'SOUL-PROFILE-MISMATCH': `Declared profile narrows scope past the body content. The SOUL.md declares a profile (a <!-- soul:profile=... --> marker, or --profile when the file has no marker) whose domain set skips governance domains the body itself calls for: its headings or tool mentions suggest a broader profile, and scan-soul does not evaluate the skipped domains under the declared one. Fix: remove the marker and let scan-soul detect the profile from the body, or revise the body to match the declared profile. Run: ${CLI_PREFIX} scan-soul <dir> to see the declared and inferred profiles, the body signals and the skipped domains.`,
+  'SOUL-TIER-MISMATCH': `Declared tier narrows scope past the body content. The governance file declares a tier (a <!-- soul:tier=... --> marker, or --tier) below the tier its own text calls for, read from the file without its tier marker and without the sections harden-soul writes. A lower tier applies fewer controls and can leave whole domains out, so the score covers less of the file than it appears to; scan-soul reports it as HIGH and holds the score below the hardened band. Fix: set the marker to the tier the body suggests, or remove it. Run: ${CLI_PREFIX} scan-soul <dir> to see both tiers and what the declared tier left unevaluated.`,
   'SOUL-PROFILE-MARKER-INVALID': `Unrecognized profile declaration. A <!-- soul:profile=... --> marker (or a --profile flag) names a value that is not a recognized profile, is empty, or is malformed, so scan-soul ignored it and evaluated the file with the profile it detected from body keywords. Recognized profiles: ${Object.keys(PROFILE_DOMAINS).join(', ')}. Fix: replace the value with a recognized profile, or remove the marker and let scan-soul detect from the body. Run: ${CLI_PREFIX} scan-soul <dir> to see the attempted value and the profile used.`,
   // Printed on stderr as `SOUL-CONFORMANCE NONE: ...` on every text run
   // that misses a critical control; a user reads it as an id.
