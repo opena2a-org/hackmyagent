@@ -36,7 +36,7 @@
  * verb and a URL, with no true-positive loss ON THE MEASURED CORPUS — the
  * malicious fixtures pair on `credential`, which stays bare. In general a bare
  * `session` exfil with no qualifier word is an accepted narrowing, as is the
- * cross-leaf split documented on `findStructuredCredentialTransmission` (#571).
+ * cross-leaf split documented on `findStructuredCredentialTransmission`.
  * The read pass (`DATA_TYPE_NOUNS`, for AST-CRED-001) keeps bare `session`;
  * only the forwarding pairing is narrowed.
  */
@@ -185,6 +185,37 @@ export function stripJsonc(text: string): string {
   return out.join('');
 }
 
+/** A `$NAME` or `${NAME}` shell variable reference. */
+const ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+
+type EnvObject = Record<string, unknown>;
+
+function isEnvObject(value: unknown): value is EnvObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * The values `env` defines as strings for each distinct variable the command
+ * line references, in order of first reference. Values are returned as
+ * written: a reference inside a value is not expanded again, and a name `env`
+ * does not define stays unresolved (the process environment is never read).
+ */
+function referencedEnvValues(argv: string[], env: EnvObject | undefined): string[] {
+  if (!env) return [];
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const segment of argv) {
+    for (const m of segment.matchAll(ENV_REFERENCE)) {
+      const name = m[1] ?? m[2];
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const value = Object.prototype.hasOwnProperty.call(env, name) ? env[name] : undefined;
+      if (typeof value === 'string' && value.length > 0) values.push(value);
+    }
+  }
+  return values;
+}
+
 /**
  * Walk a parsed JSON document and return its leaf string values in document
  * order. Keys are dropped. Two structures collapse to a single leaf because
@@ -197,6 +228,15 @@ export function stripJsonc(text: string): string {
  *     one cross-field merge kept;
  *     the general "any sibling leaf" pairing is refused, because it read a
  *     benign A2A card's `description` against its sibling `url`.
+ *
+ * A string `command` (with or without `args`) that references `$NAME` or
+ * `${NAME}` also carries what that reference reads: when the nearest `env`
+ * object — on the command's own object or an ancestor — defines `NAME` as a
+ * string, that value is appended once as an extra segment of the command leaf
+ * (#571). It is appended, not substituted, so every segment stays a verbatim
+ * value of the document and keeps its own line. A command with no such
+ * reference produces exactly the leaf it did before; an `env` value nothing
+ * references is never read with a command.
  */
 export function collectStructuredLeaves(root: unknown): StructuredLeaf[] {
   const leaves: StructuredLeaf[] = [];
@@ -207,7 +247,7 @@ export function collectStructuredLeaves(root: unknown): StructuredLeaf[] {
   const scalarStrings = (arr: unknown[]): string[] =>
     arr.filter((v): v is string => typeof v === 'string');
 
-  const visit = (value: unknown, parent: number): void => {
+  const visit = (value: unknown, parent: number, env?: EnvObject): void => {
     if (typeof value === 'string') {
       leaves.push({ segments: [value], text: value, parent });
       return;
@@ -219,12 +259,13 @@ export function collectStructuredLeaves(root: unknown): StructuredLeaf[] {
         return;
       }
       const id = nextId++;
-      for (const item of value) visit(item, id);
+      for (const item of value) visit(item, id, env);
       return;
     }
     if (value !== null && typeof value === 'object') {
       const obj = value as Record<string, unknown>;
       const id = nextId++;
+      const scopeEnv = isEnvObject(obj.env) ? obj.env : env;
       const command = obj.command;
       const args = obj.args;
       const argvMerge =
@@ -233,15 +274,24 @@ export function collectStructuredLeaves(root: unknown): StructuredLeaf[] {
         args.length > 0 &&
         args.every(isScalar);
       if (argvMerge) {
-        const segments = [command as string, ...scalarStrings(args as unknown[])];
+        const argv = [command as string, ...scalarStrings(args as unknown[])];
+        const segments = [...argv, ...referencedEnvValues(argv, scopeEnv)];
         leaves.push({ segments, text: segments.join(' '), parent: id });
         for (const [k, v] of Object.entries(obj)) {
           if (k === 'command' || k === 'args') continue;
-          visit(v, id);
+          visit(v, id, scopeEnv);
         }
         return;
       }
-      for (const item of Object.values(obj)) visit(item, id);
+      const expanded = typeof command === 'string' ? referencedEnvValues([command], scopeEnv) : [];
+      for (const [k, v] of Object.entries(obj)) {
+        if (k === 'command' && expanded.length > 0) {
+          const segments = [command as string, ...expanded];
+          leaves.push({ segments, text: segments.join(' '), parent: id });
+          continue;
+        }
+        visit(v, id, scopeEnv);
+      }
     }
   };
 
@@ -338,14 +388,16 @@ function urlInLeaf(content: string, leaf: StructuredLeaf): UrlSpan | undefined {
  *
  * All three tokens must share the leaf. Two accepted trades follow: a noun/verb/URL split across
  * sibling leaves does not pair (a benign A2A card's `description` and `url`, a
- * package record's `credential-protection` and `post-quantum` keywords — but
- * also a genuine exfil that splits the credential PATH into an `env` value and
- * the verb+URL into the `command`, tracked as a false negative in #571), and
+ * package record's `credential-protection` and `post-quantum` keywords), and
  * a forwarding instruction with no literal URL — an exfil command reading its
- * endpoint from `$EXFIL_URL` — is left to the defense-in-depth checks rather
- * than reported with an unknowable destination. The `command`/`args` shell
- * pair is already merged into one leaf by `collectStructuredLeaves`, so a URL
- * in `args` still counts as in-leaf; `env` is not merged (that is the #571 gap).
+ * endpoint from `$EXFIL_URL` that no in-file `env` defines — is left to the
+ * defense-in-depth checks rather than reported with an unknowable destination.
+ * The `command`/`args` shell pair is already merged into one leaf by
+ * `collectStructuredLeaves`, so a URL in `args` still counts as in-leaf, and so
+ * does the value of a `$NAME` the command references when the nearest `env`
+ * defines it: a credential PATH in `env` read by `--data-binary @$TOKEN_FILE`
+ * pairs with the command's verb and URL (#571). An `env` value the command does
+ * not reference is never read with it.
  */
 export function findStructuredCredentialTransmission(
   content: string,
