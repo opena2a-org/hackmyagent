@@ -6379,19 +6379,23 @@ export class HardeningScanner {
     // only names it does not already declare are appended.
     if (autoFix && envVarsToAdd.size > 0) {
       const envExamplePath = path.join(targetDir, '.env.example');
-      let existing: string | null = null;
+      // #864 — the bytes are kept as read and the decoded text is only used to
+      // find declared names. Writing the decoded text back turned every byte
+      // that is not valid UTF-8 (a Latin-1 `é` in a comment) into U+FFFD.
+      let existingBytes: Buffer | null = null;
       try {
-        existing = await fs.readFile(envExamplePath, 'utf-8');
+        existingBytes = await fs.readFile(envExamplePath);
       } catch {
         // Absent (or unreadable, which the write below then reports): create it.
       }
-      if (existing === null) {
+      if (existingBytes === null) {
         let envExampleContent = '# Environment variables\n\n';
         for (const envVar of envVarsToAdd) {
           envExampleContent += `${envVar}=\n`;
         }
         await this.applyFixWrite(envExamplePath, envExampleContent);
       } else {
+        const existing = existingBytes.toString('utf-8');
         const declared = new Set<string>();
         for (const line of existing.split(/\r?\n/)) {
           const name = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line);
@@ -6401,9 +6405,10 @@ export class HardeningScanner {
         if (missing.length > 0) {
           const eol = existing.includes('\r\n') ? '\r\n' : '\n';
           const separator = existing.length === 0 || existing.endsWith('\n') ? '' : eol;
+          const appended = separator + missing.map((envVar) => `${envVar}=${eol}`).join('');
           await this.applyFixWrite(
             envExamplePath,
-            existing + separator + missing.map((envVar) => `${envVar}=${eol}`).join(''),
+            Buffer.concat([existingBytes, Buffer.from(appended, 'utf-8')]),
           );
         }
       }
@@ -7177,7 +7182,7 @@ export class HardeningScanner {
    * fix and lets the check report what is actually true: the issue is still
    * there, and the fix did not land.
    */
-  private async applyFixWrite(requestedPath: string, content: string): Promise<boolean> {
+  private async applyFixWrite(requestedPath: string, content: string | Buffer): Promise<boolean> {
     // #270 — CONTAIN THE DESTINATION FIRST, and act on what comes back.
     //
     // Everything below this block — the archive identity probes, the backup
