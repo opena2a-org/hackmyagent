@@ -191,15 +191,15 @@ const TAXONOMY_MAP: Record<string, string> = {
   'WEBCRED-001': 'RETROACTIVE-PRIV',
 
   // Code injection, supply chain, operational security
-  // CODEINJ-001 removed — deduplicated with NEMO-005
+  // CODEINJ-001 removed — NEMO-005 overlaps it but does not match every form it did
   'INSTALL-001': 'SUPPLY-CHAIN-INSTALL',
   'SHELL-EXFIL-001': 'CRED-EXFIL',
   'CLIPASS-001': 'RETROACTIVE-PRIV',
   'INTEGRITY-001': 'INTEGRITY-BYPASS',
   'TOCTOU-001': 'TOCTOU-RACE',
-  // TMPPATH-001 removed — deduplicated with NEMO-006
+  // TMPPATH-001 removed — NEMO-006 overlaps it but does not match every form it did
   'DOCKERINJ-001': 'CODE-INJECTION',
-  // ENVLEAK-001 removed — deduplicated with NEMO-007
+  // ENVLEAK-001 removed — NEMO-007 overlaps it but does not match every form it did
   'SANDBOX-005': 'SANDBOX-ESCAPE',
   'WEBEXPOSE-001': 'RETROACTIVE-PRIV',
   'WEBEXPOSE-002': 'RETROACTIVE-PRIV',

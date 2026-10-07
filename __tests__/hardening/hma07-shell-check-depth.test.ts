@@ -8,7 +8,8 @@
  * likely place for a skill's installer to sit was never read.
  *
  * The hardcoded-/tmp case is asserted on NEMO-006 through `scan()`. TMPPATH-001
- * was a duplicate of it with no caller, and is deleted (#395).
+ * overlapped it without matching the same lines, had no caller, and is
+ * deleted (#395).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HardeningScanner } from '../../src/hardening/scanner';

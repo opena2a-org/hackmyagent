@@ -4737,7 +4737,7 @@ export class HardeningScanner {
     findings.push(...webCredFindings);
 
     // Code injection, supply chain, and operational security checks
-    // NOTE: CODEINJ-001 removed — deduplicated with NEMO-005 (same detection)
+    // NOTE: CODEINJ-001 removed — NEMO-005 overlaps it but does not match every form it did
 
     const installFindings = await this.coverage.run('checkInstallScripts', () => this.checkInstallScripts(targetDir, shouldFix));
     findings.push(...installFindings);
@@ -4754,12 +4754,12 @@ export class HardeningScanner {
     const toctouFindings = await this.coverage.run('checkTOCTOU', () => this.checkTOCTOU(targetDir, shouldFix));
     findings.push(...toctouFindings);
 
-    // NOTE: TMPPATH-001 removed — deduplicated with NEMO-006 (same detection)
+    // NOTE: TMPPATH-001 removed — NEMO-006 overlaps it but does not match every form it did
 
     const dockerInjFindings = await this.coverage.run('checkDockerInjection', () => this.checkDockerInjection(targetDir, shouldFix));
     findings.push(...dockerInjFindings);
 
-    // NOTE: ENVLEAK-001 removed — deduplicated with NEMO-007 (same detection)
+    // NOTE: ENVLEAK-001 removed — NEMO-007 overlaps it but does not match every form it did
 
     const sandboxMsgFindings = await this.coverage.run('checkSandboxMessaging', () => this.checkSandboxMessaging(targetDir, shouldFix));
     findings.push(...sandboxMsgFindings);

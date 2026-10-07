@@ -259,8 +259,8 @@ describe('secure coverage honesty', () => {
     /**
      * #395: `checkCodeInjection` (`CODEINJ-001`), `checkTmpPaths`
      * (`TMPPATH-001`) and `checkEnvLeak` (`ENVLEAK-001`) emitted findings and
-     * were called from nowhere — their detections had been folded into
-     * NEMO-005, -006 and -007 — while their IDs stayed in the advertised
+     * were called from nowhere — NEMO-005, -006 and -007 overlap them but do
+     * not match every form they did — while their IDs stayed in the advertised
      * static count. A check method with no call site is detection the report
      * can credit and the scan can never run.
      */
