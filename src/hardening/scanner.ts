@@ -42,6 +42,7 @@ import {
   readStaysInsideTree,
 } from './contain';
 import { withheldLinkRecords } from './withheld-links';
+import { privateKeyFieldsInJson } from './embedded-private-key';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One definition of which file each MCP client loads and which top-level key
 // it loads from, shared with the command that WRITES those files (#757,
@@ -8290,6 +8291,11 @@ dist/
    */
   private async collectSensitiveArtifacts(targetDir: string): Promise<{
     keyFiles: string[];
+    /**
+     * The `keyFiles` entries that are JSON documents holding a private key as
+     * a field value (#577), each mapped to the names of those fields.
+     */
+    embeddedKeyFields: Record<string, string[]>;
     namedSensitive: string[];
     configFiles: string[];
     /**
@@ -8302,6 +8308,7 @@ dist/
     bounded: boolean;
   }> {
     const keyFiles: string[] = [];
+    const embeddedKeyFields: Record<string, string[]> = {};
     const namedSensitive: string[] = [];
     const configFiles: string[] = [];
     const SENSITIVE_NAMES = new Set(['secrets.json', 'credentials.json']);
@@ -8315,9 +8322,9 @@ dist/
     // complete result, not an unverifiable one.
     try {
       const rootStat = await fs.stat(targetDir);
-      if (!rootStat.isDirectory()) return { keyFiles, namedSensitive, configFiles, bounded: false };
+      if (!rootStat.isDirectory()) return { keyFiles, embeddedKeyFields, namedSensitive, configFiles, bounded: false };
     } catch {
-      return { keyFiles, namedSensitive, configFiles, bounded: false };
+      return { keyFiles, embeddedKeyFields, namedSensitive, configFiles, bounded: false };
     }
 
     const targetRoot = path.resolve(targetDir);
@@ -8460,6 +8467,15 @@ dist/
           keyFiles.push(rel);
         } else if (dirent.name.endsWith('.pem')) {
           if (await this.pemLooksPrivate(abs, targetDir)) keyFiles.push(rel);
+        } else if (dirent.name.toLowerCase().endsWith('.json')) {
+          // #577 — the same key serialised as a JSON value (`"secretKey":
+          // "<base64>"`) is a key file too. Content-gated, see
+          // `embedded-private-key.ts`.
+          const fields = await this.jsonPrivateKeyFields(abs, targetDir);
+          if (fields.length > 0) {
+            keyFiles.push(rel);
+            embeddedKeyFields[rel] = fields;
+          }
         }
       }
     };
@@ -8485,7 +8501,7 @@ dist/
     // stability a property of the host filesystem.
     configFiles.sort();
 
-    return { keyFiles, namedSensitive, configFiles, bounded };
+    return { keyFiles, embeddedKeyFields, namedSensitive, configFiles, bounded };
   }
 
   /**
@@ -8586,6 +8602,37 @@ dist/
       return true;
     } catch {
       return true;
+    } finally {
+      try { await fh?.close(); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Content gate for `.json` files (#577): the names of the fields that hold
+   * a private key as a value, or none. Bounded like `pemLooksPrivate` — a
+   * read capped at `MAX_JSON_BYTES`, confined to `boundsRoot`, never following
+   * a link — but the error direction is the opposite one. Every JSON document
+   * is a candidate, so an unreadable, oversized or unparseable file is "no
+   * key" rather than "suspect"; failing safe here would call every lockfile a
+   * key.
+   */
+  private async jsonPrivateKeyFields(filePath: string, boundsRoot: string): Promise<string[]> {
+    const MAX_JSON_BYTES = 256 * 1024;
+    const rootResolved = path.resolve(boundsRoot);
+    const resolved = path.resolve(filePath);
+    if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) return [];
+    let fh;
+    try {
+      fh = await fs.open(resolved, fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW ?? 0));
+      const st = await fh.stat();
+      if (!st.isFile() || st.size > MAX_JSON_BYTES) return [];
+      // Sized from the stat, so a file that grows afterwards cannot push the
+      // read past the cap.
+      const buf = Buffer.alloc(st.size + 1);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      return privateKeyFieldsInJson(buf.subarray(0, bytesRead).toString('utf-8'));
+    } catch {
+      return [];
     } finally {
       try { await fh?.close(); } catch { /* ignore */ }
     }
@@ -8779,8 +8826,15 @@ dist/
     // #250 — a key at certs/server.pem is exactly as committable as one
     // at the root — and carries `file` so the finding survives the
     // user-facing concrete-findings filter.
-    const { keyFiles: foundKeys, bounded: keyScanBounded } =
+    const { keyFiles: foundKeys, embeddedKeyFields, bounded: keyScanBounded } =
       await this.collectSensitiveArtifacts(targetDir);
+    // #577 — a JSON file is named with the field that holds the key, so the
+    // finding says why a `.json` is a key file.
+    const keyListing = (f: string): string =>
+      Object.prototype.hasOwnProperty.call(embeddedKeyFields, f)
+        ? `${f} (${embeddedKeyFields[f].join(', ')} field)`
+        : f;
+    const hasEmbeddedKey = Object.keys(embeddedKeyFields).length > 0;
 
     if (foundKeys.length > 0) {
       findings.push({
@@ -8790,14 +8844,15 @@ dist/
         category: 'credentials',
         severity: 'critical',
         passed: false,
-        message: `Private key files found: ${foundKeys.slice(0, 5).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
+        message: `Private key files found: ${foundKeys.slice(0, 5).map(keyListing).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
         file: foundKeys[0],
         fixable: false,
         fix: 'Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: '
           + (commandNaming(foundKeys[0], (q) => `git rm --cached ${q}`)
             ?? 'git rm --cached on the file named above (its name cannot be shown truthfully in a command).'),
-        details: { files: foundKeys },
-        guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.',
+        details: hasEmbeddedKey ? { files: foundKeys, embeddedKeyFields } : { files: foundKeys },
+        guidance: 'Private key files (.pem, .key) in a project directory are easily committed to git. Once pushed, the keys are compromised and must be rotated.'
+          + (hasEmbeddedKey ? ' A private key stored as a JSON field value carries the same exposure as a key file.' : ''),
       });
     } else if (keyScanBounded) {
       // No key found, but a BOUND stopped the walk (tree too deep/large, or
