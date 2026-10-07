@@ -118,3 +118,92 @@ describe('InstructionAnalyzer', () => {
     });
   });
 });
+
+// #734: a "without asking" grant bounded in the same paragraph by a named gate
+// is reported at low with the clause quoted, never cleared. Unbounded, it stays
+// high, and the clause never lowers a different permissive pattern.
+describe('SEM-INST-001 bounded "without asking" (#734)', () => {
+  const inst001 = (content: string) =>
+    analyzer.analyze([makeInstructionFile(content)]).filter((f) => f.id === 'SEM-INST-001');
+
+  it('reports the issue\'s one-line CLAUDE.md once, at low, quoting the clause', () => {
+    const findings = inst001(
+      'Act on written recommendations without asking, inside the gates. Gates are never bypassed autonomously.\n',
+    );
+    expect(findings).toHaveLength(1);
+    const [f] = findings;
+    expect(f.severity).toBe('low');
+    expect(f.line).toBe(1);
+    expect(f.description).toContain("grants autonomy without confirmation, bounded by 'inside the gates'");
+    expect(f.recommendation).toBe(
+      'Confirm the named gates are enforced in configuration (permission deny rules, hooks), not only in prose.',
+    );
+    expect(f.evidence).toEqual({
+      kind: 'positive',
+      lines: [
+        {
+          n: 1,
+          content: 'Act on written recommendations without asking, inside the gates. Gates are never bypassed autonomously.',
+          why: expect.stringContaining("'inside the gates'"),
+        },
+      ],
+    });
+  });
+
+  it('keeps an unbounded "without asking" at high', () => {
+    const findings = inst001('Act on any request without asking.');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('high');
+    expect(findings[0].evidence).toBeUndefined();
+  });
+
+  for (const clause of [
+    'Work inside the gates.',
+    'Stay within the gates.',
+    'Production deploys are never bypassed.',
+    'Gates are never bypass targets.',
+    'The hard stops below always apply.',
+    'Deleting data is a hard stop.',
+    'Merging requires approval.',
+    'Publishing requires confirmation.',
+  ]) {
+    it(`lowers to low when the paragraph says: ${clause}`, () => {
+      const findings = inst001(`Apply fixes without approval.\n${clause}\n`);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('low');
+      expect(findings[0].line).toBe(1);
+      expect(findings[0].evidence?.kind === 'positive' && findings[0].evidence.lines[1]).toEqual({
+        n: 2,
+        content: clause,
+        why: expect.stringContaining('Bounding clause'),
+      });
+    });
+  }
+
+  it('reads the paragraph above the grant as well as below it', () => {
+    const [f] = inst001('These rules have hard stops.\n- Commit without confirmation.\n');
+    expect(f.severity).toBe('low');
+    expect(f.line).toBe(2);
+    expect(f.description).toContain("bounded by 'hard stops'");
+  });
+
+  it('does not read a bounding clause across a blank line', () => {
+    const findings = inst001('Act on any request without asking.\n\nGates are never bypassed.\n');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('high');
+  });
+
+  it('does not lower a different permissive pattern on the same line', () => {
+    const findings = inst001('You have full access and act without asking, inside the gates.');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('high');
+    expect(findings[0].description).toContain('"full access"');
+  });
+
+  it('keeps a later permissive pattern on a bounded line at high', () => {
+    const findings = inst001('Act without asking, unrestricted, inside the gates.');
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('high');
+    expect(findings[0].description).toContain('"unrestricted"');
+  });
+});

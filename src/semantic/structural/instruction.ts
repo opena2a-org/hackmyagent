@@ -26,6 +26,18 @@ const PERMISSIVE_PATTERNS = [
   { pattern: /override\s+(?:safety|security|policy)/i, label: '"override safety/policy"' },
 ];
 
+/** The one permissive pattern a bounding clause may lower (#734). */
+const WITHOUT_CONFIRMATION_LABEL = '"without asking"';
+
+/**
+ * Clauses that bound a "without asking" grant to named gates (#734). Found in
+ * the same paragraph, they lower SEM-INST-001 from high to low. They never
+ * clear it: an attacker can write the same words, so the finding stays and the
+ * clause is quoted as evidence.
+ */
+const BOUNDING_CLAUSE =
+  /\b(?:inside|within)\s+the\s+gates\b|\bnever\s+bypass(?:ed)?\b|\bhard\s+stops?\b|\brequires\s+(?:approval|confirmation)\b/i;
+
 /** Patterns that could enable data exfiltration */
 const EXFILTRATION_PATTERNS = [
   { pattern: /webhook\.site/i, label: 'webhook.site URL' },
@@ -82,30 +94,96 @@ export class InstructionAnalyzer {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      let bounded: SemanticFinding | undefined;
+      let reported = false;
 
       for (const { pattern, label } of PERMISSIVE_PATTERNS) {
-        if (pattern.test(line)) {
-          findings.push({
-            id: 'SEM-INST-001',
-            title: 'Overly permissive agent instruction',
-            description: `Found ${label} pattern in ${file.path}. This instructs the agent to bypass security controls.`,
-            rationale:
-              'Permissive instructions weaken agent security boundaries. If an attacker achieves prompt injection, these instructions make it easier to escalate — the agent is already told to bypass safety checks.',
-            category: 'instruction',
-            severity: 'high',
-            file: file.path,
-            line: i + 1,
-            recommendation:
-              'Replace permissive instructions with specific, scoped permissions. Instead of "always execute", specify which operations are allowed and under what conditions.',
-            layer: 2,
-            autoFixable: false,
-          });
-          break; // One finding per line
+        if (!pattern.test(line)) continue;
+        if (label === WITHOUT_CONFIRMATION_LABEL) {
+          const clause = this.findBoundingClause(lines, i);
+          if (clause) {
+            // Held back: another permissive pattern on this line still
+            // reports at high, and the bounding clause does not lower it.
+            bounded = this.boundedPermissiveFinding(file.path, lines, i, clause);
+            continue;
+          }
         }
+        findings.push({
+          id: 'SEM-INST-001',
+          title: 'Overly permissive agent instruction',
+          description: `Found ${label} pattern in ${file.path}. This instructs the agent to bypass security controls.`,
+          rationale:
+            'Permissive instructions weaken agent security boundaries. If an attacker achieves prompt injection, these instructions make it easier to escalate — the agent is already told to bypass safety checks.',
+          category: 'instruction',
+          severity: 'high',
+          file: file.path,
+          line: i + 1,
+          recommendation:
+            'Replace permissive instructions with specific, scoped permissions. Instead of "always execute", specify which operations are allowed and under what conditions.',
+          layer: 2,
+          autoFixable: false,
+        });
+        reported = true;
+        break; // One finding per line
       }
+
+      if (!reported && bounded) findings.push(bounded);
     }
 
     return findings;
+  }
+
+  /**
+   * The first bounding clause in the paragraph (consecutive non-blank lines)
+   * around line `index`, with the 0-based line it starts on.
+   */
+  private findBoundingClause(
+    lines: string[],
+    index: number,
+  ): { text: string; line: number } | undefined {
+    let start = index;
+    while (start > 0 && lines[start - 1].trim() !== '') start--;
+    let end = index;
+    while (end < lines.length - 1 && lines[end + 1].trim() !== '') end++;
+
+    const paragraph = lines.slice(start, end + 1).join('\n');
+    const match = BOUNDING_CLAUSE.exec(paragraph);
+    if (!match) return undefined;
+    const lineOffset = paragraph.slice(0, match.index).split('\n').length - 1;
+    return { text: match[0].replace(/\s+/g, ' '), line: start + lineOffset };
+  }
+
+  private boundedPermissiveFinding(
+    filePath: string,
+    lines: string[],
+    index: number,
+    clause: { text: string; line: number },
+  ): SemanticFinding {
+    const grant = 'Grants the agent autonomy to act without confirmation.';
+    const bound = `Bounding clause '${clause.text}' in the same paragraph.`;
+    const evidenceLines =
+      clause.line === index
+        ? [{ n: index + 1, content: lines[index], why: `${grant} ${bound}` }]
+        : [
+            { n: index + 1, content: lines[index], why: grant },
+            { n: clause.line + 1, content: lines[clause.line], why: bound },
+          ];
+    return {
+      id: 'SEM-INST-001',
+      title: 'Overly permissive agent instruction',
+      description: `Found ${WITHOUT_CONFIRMATION_LABEL} pattern in ${filePath}. It grants autonomy without confirmation, bounded by '${clause.text}'.`,
+      rationale:
+        'A bounding clause in prose lowers the risk of a "without asking" grant but does not enforce it: the agent reads the gates as text, and an injected instruction can be written the same way. The finding is therefore lowered, not cleared.',
+      category: 'instruction',
+      severity: 'low',
+      file: filePath,
+      line: index + 1,
+      recommendation:
+        'Confirm the named gates are enforced in configuration (permission deny rules, hooks), not only in prose.',
+      layer: 2,
+      autoFixable: false,
+      evidence: { kind: 'positive', lines: evidenceLines },
+    };
   }
 
   private checkExfiltrationEnablement(file: AnalysisFile): SemanticFinding[] {
