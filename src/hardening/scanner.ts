@@ -3337,9 +3337,9 @@ const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
 
 /**
  * Walk depth for the shell-script checks (INSTALL-001, SHELL-EXFIL-001,
- * TMPPATH-001, DOCKERINJ-001).
+ * DOCKERINJ-001).
  *
- * These four walked with `maxDepth 2`, which stops one directory short of where
+ * These walked with `maxDepth 2`, which stops one directory short of where
  * skill scripts live: `skills/foo/scripts/setup.sh` is depth 3 from the repo
  * root, so a credential upload sitting in a bundled installer was never read.
  * 5 matches the depth the same walker is already given for the shell/JS/Python/
@@ -18373,56 +18373,6 @@ dist/
   }
 
   /**
-   * CODEINJ-001: exec() with template literal interpolation
-   * Detects shell injection via exec/execSync called with template literals.
-   */
-  private async checkCodeInjection(
-    targetDir: string,
-    _autoFix: boolean
-  ): Promise<SecurityFindingDraft[]> {
-    const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
-
-    // Match exec( or execSync( followed by a backtick (template literal)
-    // Do NOT match execFile or execFileSync (those use array args, safe)
-    const pattern = /\b(?<!File)exec(?:Sync)?\s*\(\s*`/g;
-
-    for (const file of files.slice(0, 100)) {
-      try {
-        const stat = await fs.stat(file);
-        if (stat.size > MAX_FILE_SIZE) continue;
-        const content = await fs.readFile(file, 'utf-8');
-        const lines = content.split('\n');
-        const relativePath = path.relative(targetDir, file);
-
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].length > MAX_LINE_LENGTH) continue;
-          pattern.lastIndex = 0;
-          if (pattern.test(lines[i])) {
-            findings.push({
-              checkId: 'CODEINJ-001',
-              name: 'exec() with template literal interpolation',
-              description: 'exec() or execSync() called with a template literal allows shell injection. User-controlled values in the template can break out of the intended command.',
-              category: 'code-injection',
-              severity: 'critical',
-              passed: false,
-              message: `Shell injection risk: exec() with template literal in ${relativePath}`,
-              file: relativePath,
-              line: i + 1,
-              fixable: false,
-              fix: 'Use execFile() or execFileSync() with an array of arguments instead of exec() with string interpolation.',
-              guidance: 'Template literals in exec() are interpreted by /bin/sh, allowing shell metacharacters in interpolated values to execute arbitrary commands. Array-based APIs bypass the shell.',
-            });
-            break; // One finding per file
-          }
-        }
-      } catch { /* skip unreadable files */ }
-    }
-
-    return findings;
-  }
-
-  /**
    * INSTALL-001: curl|sh without checksum in shell scripts
    * Detects piped-to-shell install patterns in .sh files.
    */
@@ -18728,58 +18678,6 @@ dist/
   }
 
   /**
-   * TMPPATH-001: Hardcoded /tmp paths without mktemp
-   * Detects writes to /tmp/ with hardcoded paths in shell scripts.
-   */
-  private async checkTmpPaths(
-    targetDir: string,
-    _autoFix: boolean
-  ): Promise<SecurityFindingDraft[]> {
-    const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, ['.sh'], 0, SHELL_CHECK_MAX_DEPTH);
-
-    const pattern = /(>|>>)\s*\/tmp\/|(-o)\s+\/tmp\/|\s\/tmp\/\S+/g;
-
-    for (const file of files.slice(0, 100)) {
-      try {
-        const stat = await fs.stat(file);
-        if (stat.size > MAX_FILE_SIZE) continue;
-        const content = await fs.readFile(file, 'utf-8');
-        const lines = content.split('\n');
-        const relativePath = path.relative(targetDir, file);
-
-        // Only flag if the script does NOT actually use mktemp (ignore comments)
-        const nonCommentLines = lines.filter(l => !l.trimStart().startsWith('#'));
-        if (/\bmktemp\b/.test(nonCommentLines.join('\n'))) continue;
-
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].length > MAX_LINE_LENGTH) continue;
-          pattern.lastIndex = 0;
-          if (pattern.test(lines[i])) {
-            findings.push({
-              checkId: 'TMPPATH-001',
-              name: 'Hardcoded /tmp path without mktemp',
-              description: 'Shell script writes to a hardcoded /tmp/ path. Another user or process can create a symlink at that path to redirect writes (symlink attack).',
-              category: 'tmppath-attack',
-              severity: 'high',
-              passed: false,
-              message: `Hardcoded /tmp path in ${relativePath}`,
-              file: relativePath,
-              line: i + 1,
-              fixable: false,
-              fix: 'Use mktemp to create a unique temporary file/directory instead of hardcoded /tmp paths.',
-              guidance: 'Predictable /tmp paths enable symlink attacks (CWE-377). Another user can create a symlink at the expected path, redirecting writes to sensitive files like /etc/passwd.',
-            });
-            break;
-          }
-        }
-      } catch { /* skip unreadable files */ }
-    }
-
-    return findings;
-  }
-
-  /**
    * DOCKERINJ-001: Docker exec with variable interpolation
    * Detects docker exec commands with unquoted variable expansion.
    */
@@ -18820,61 +18718,6 @@ dist/
                 guidance: 'Variable interpolation in docker exec allows command injection. If the variable contains shell metacharacters, an attacker can execute arbitrary commands inside or escape the container.',
               });
               break;
-          }
-        }
-      } catch { /* skip unreadable files */ }
-    }
-
-    return findings;
-  }
-
-  /**
-   * ENVLEAK-001: process.env spread to child process
-   * Detects passing all environment variables (including secrets) to child processes.
-   */
-  private async checkEnvLeak(
-    targetDir: string,
-    _autoFix: boolean
-  ): Promise<SecurityFindingDraft[]> {
-    const findings: SecurityFindingDraft[] = [];
-    const files = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS], 0, 2);
-
-    const spreadPattern = /env:\s*\{\s*\.\.\.process\.env/g;
-    const directPattern = /\benv:\s*process\.env\b/g;
-
-    for (const file of files.slice(0, 100)) {
-      try {
-        const stat = await fs.stat(file);
-        if (stat.size > MAX_FILE_SIZE) continue;
-        const content = await fs.readFile(file, 'utf-8');
-        const lines = content.split('\n');
-        const relativePath = path.relative(targetDir, file);
-
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].length > MAX_LINE_LENGTH) continue;
-          spreadPattern.lastIndex = 0;
-          directPattern.lastIndex = 0;
-          if (spreadPattern.test(lines[i]) || directPattern.test(lines[i])) {
-            // Verify it's in a spawn/exec context
-            const contextStart = Math.max(0, i - 5);
-            const context = lines.slice(contextStart, i + 3).join('\n');
-            if (/\b(spawn|exec|fork|execFile|execSync|spawnSync)\b/.test(context)) {
-              findings.push({
-                checkId: 'ENVLEAK-001',
-                name: 'process.env spread to child process',
-                description: 'All environment variables (including secrets like API keys, database passwords) are passed to a child process via env: process.env or { ...process.env }.',
-                category: 'env-leak',
-                severity: 'high',
-                passed: false,
-                message: `Full environment leaked to child process in ${relativePath}`,
-                file: relativePath,
-                line: i + 1,
-                fixable: false,
-                fix: 'Pass only the specific environment variables the child process needs: env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }.',
-                guidance: 'Spreading process.env passes all secrets (API keys, DB passwords, tokens) to child processes. A compromised or malicious child can read and exfiltrate these credentials.',
-              });
-              break;
-            }
           }
         }
       } catch { /* skip unreadable files */ }

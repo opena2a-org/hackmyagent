@@ -248,20 +248,16 @@ export const CHECK_METHOD_PREFIXES: Readonly<Record<string, readonly string[]>> 
 /**
  * Check-ID prefixes whose implementation exists but has no caller.
  *
- * `checkCodeInjection` (`CODEINJ-001`), `checkTmpPaths` (`TMPPATH-001`) and
- * `checkEnvLeak` (`ENVLEAK-001`) are defined in `scanner.ts` and emit
- * findings, but `grep -n 'this.checkCodeInjection('` and its two siblings
- * return NOTHING — the scan orchestration never calls them. Their three IDs
- * are nonetheless counted in the `310 static` the Observations block
- * advertises, so the advertised suite is 3 checks larger than the suite that
- * can fire.
- *
- * They are listed here rather than silently omitted so the `--json` inventory
- * can name them as unreachable instead of leaving the reader to infer it from
- * an absence. Wiring them in is a DETECTION change with its own FP surface and
- * belongs to its own unit, not to this one.
+ * A family listed here is named in the `--json` inventory as unreachable
+ * instead of leaving the reader to infer it from an absence. The list is
+ * empty: `CODEINJ-001`, `TMPPATH-001` and `ENVLEAK-001` were its last
+ * members, duplicates of NEMO-005, -006 and -007 that the orchestration had
+ * stopped calling while `TAXONOMY_MAP` still counted them. Their methods and
+ * inventory entries are deleted, and `coverage-honesty.test.ts` fails if a
+ * `check*` method loses its caller or this list stops matching the methods
+ * that have none.
  */
-export const UNREACHABLE_PREFIXES: readonly string[] = ['CODEINJ', 'TMPPATH', 'ENVLEAK'];
+export const UNREACHABLE_PREFIXES: readonly string[] = [];
 
 /**
  * Check-ID prefixes the NanoMind semantic layer can emit.

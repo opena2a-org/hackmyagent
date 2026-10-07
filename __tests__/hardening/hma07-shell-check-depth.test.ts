@@ -7,10 +7,8 @@
  * depth 3 from a repo root — one directory past the bound — so the single most
  * likely place for a skill's installer to sit was never read.
  *
- * `checkTmpPaths` is exercised directly rather than through `scan()`. TMPPATH-001
- * is not orchestrated (`scanner.ts`: "TMPPATH-001 removed — deduplicated with
- * NEMO-006"), so the method is the only surface its depth bound is observable
- * on, and asserting through `scan()` would silently measure NEMO-006 instead.
+ * The hardcoded-/tmp case is asserted on NEMO-006 through `scan()`. TMPPATH-001
+ * was a duplicate of it with no caller, and is deleted (#395).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HardeningScanner } from '../../src/hardening/scanner';
@@ -73,16 +71,12 @@ describe('HMA-07.AC3 depth reach of the shell-script checks', () => {
     expect((await failing(root, 'DOCKERINJ-001')).map(f => f.file)).toEqual([rel]);
   });
 
-  it('HMA-07.AC3 TMPPATH-001 reports a depth-3 hardcoded /tmp path', async () => {
+  it('HMA-07.AC3 NEMO-006 reports a depth-3 hardcoded /tmp path', async () => {
     const root = path.join(tempDir, 'tmppath');
     const rel = await writeDepth3(root, 'cache.sh', '#!/bin/sh\necho hi > /tmp/hma-fixed-name.log\n');
 
-    // Direct call: TMPPATH-001 is deduplicated out of scan()'s orchestration.
-    const scanner = new HardeningScanner();
-    const findings = await (scanner as unknown as {
-      checkTmpPaths(dir: string, autoFix: boolean): Promise<Finding[]>;
-    }).checkTmpPaths(root, false);
-
+    const findings = await failing(root, 'NEMO-006');
     expect(findings.map(f => f.file)).toEqual([rel]);
+    expect(findings[0].line).toBe(2);
   });
 });

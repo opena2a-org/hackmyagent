@@ -11,16 +11,16 @@
  *
  * The refusals are what is under test here, because they are what makes the
  * resulting number mean anything. `UNREACHABLE_PREFIXES` is the precedent:
- * `CODEINJ`, `TMPPATH` and `ENVLEAK` are implemented, emit findings, are
- * counted in the advertised suite and have no caller in `scanInner`. A stub
- * mapped to one of them, marked integrated, would record a shipped check
- * whose detector can never fire — worse than having no check, because the
- * ledger now says it is covered.
+ * `CODEINJ`, `TMPPATH` and `ENVLEAK` were implemented, emitted findings, were
+ * counted in the advertised suite and had no caller in `scanInner`. A stub
+ * mapped to one of them, marked integrated, would have recorded a shipped
+ * check whose detector could never fire — worse than having no check,
+ * because the ledger would say it is covered.
  *
- * The fixture for that case is therefore DERIVED, by importing
- * `UNREACHABLE_PREFIXES` from `dist/` — the same built module the probe reads.
- * A hardcoded `'CODEINJ-001'` would keep passing on the day CODEINJ is wired
- * in, asserting a refusal the product should no longer make.
+ * Those three are deleted (#395) and the built list is empty, so the
+ * unreachable refusal is exercised through the built probe with a supplied
+ * list, and an ID from a deleted family is asserted to be refused as absent.
+ * Both read `dist/` — the same built module the probe reads.
  *
  * The registry leg ships separately as REG-10, so every request here goes to
  * the in-process mock and nothing needs a live registry.
@@ -86,6 +86,14 @@ function builtInventory(): {
 } {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   return require(path.join(REPO_ROOT, 'dist', 'hardening', 'coverage-ledger.js'));
+}
+
+/** The reachability probe of the RUNNING build, for refusals its own inventory cannot reach. */
+function builtStubWriteback(): {
+  probeReachability(checkId: string, unreachablePrefixes?: readonly string[]): { code: string; what: string } | null;
+} {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require(path.join(REPO_ROOT, 'dist', 'registry', 'stub-writeback.js'));
 }
 
 /** A registry that lists one stub and accepts the PATCH. */
@@ -222,25 +230,38 @@ describe('HMA-08.AC4 the evidence is honest by construction', () => {
     expect(patches(registry.requests)).toHaveLength(0);
   });
 
-  it('HMA-08.AC4 refuses an unreachable-class checkId, on a fixture derived from the built UNREACHABLE_PREFIXES', async () => {
+  it('HMA-08.AC4 refuses an unreachable-class checkId, through the built probe', () => {
     if (!canRun()) return;
-    const { UNREACHABLE_PREFIXES } = builtInventory();
-    // Non-vacuity: if the list is ever emptied — which is what wiring all
-    // three checks in would mean — this test has no subject and must say so
-    // rather than pass over an absence.
-    expect(UNREACHABLE_PREFIXES.length, 'the built module lists no unreachable prefixes').toBeGreaterThan(0);
-    const fixture = `${UNREACHABLE_PREFIXES[0]}-001`;
+    // The built list is empty since #395 deleted its last three families, so
+    // the CLI has no unreachable ID to be handed. The refusal is driven
+    // through the built probe with a supplied list instead of passing over
+    // that absence.
+    const { probeReachability } = builtStubWriteback();
+    const fixturePrefix = 'NOSUCHFAMILY';
+    expect(
+      Object.values(builtInventory().CHECK_METHOD_PREFIXES).flat(),
+      'the fixture prefix is registered after all',
+    ).not.toContain(fixturePrefix);
+
+    const refusal = probeReachability(`${fixturePrefix}-001`, [fixturePrefix]);
+
+    expect(refusal?.code).toBe('check-unreachable');
+    expect(refusal?.what).toContain(fixturePrefix);
+    expect(probeReachability(RECORDED_CHECK_ID, [fixturePrefix])).toBeNull();
+  });
+
+  it('HMA-08.AC4 refuses a checkId from a family deleted as an uncalled duplicate (#395)', async () => {
+    if (!canRun()) return;
+    expect(builtInventory().UNREACHABLE_PREFIXES).toEqual([]);
     registry = await happyRegistry();
 
     const res = await run([
       'mark-stub', STUB_ID, 'integrated', '--source-commit', COMMIT,
-      '--check-id', fixture, '--registry-url', registry.url, '--json',
+      '--check-id', 'TMPPATH-001', '--registry-url', registry.url, '--json',
     ]);
 
     expect(res.status).toBe(1);
-    const envelope = JSON.parse(res.stdout);
-    expect(envelope.refusal.code).toBe('check-unreachable');
-    expect(envelope.refusal.what).toContain(UNREACHABLE_PREFIXES[0]);
+    expect(JSON.parse(res.stdout).refusal.code).toBe('check-absent');
     expect(patches(registry.requests)).toHaveLength(0);
   });
 
@@ -459,13 +480,14 @@ describe('HMA-08.AC6 --dry-run runs every gate and sends nothing', () => {
 
   it('HMA-08.AC6 still runs the reachability probe, and its exit code reflects the local verdict', async () => {
     if (!canRun()) return;
-    const { UNREACHABLE_PREFIXES } = builtInventory();
-    expect(UNREACHABLE_PREFIXES.length).toBeGreaterThan(0);
+    const { CHECK_METHOD_PREFIXES, UNREACHABLE_PREFIXES } = builtInventory();
+    const absent = 'NOSUCHFAMILY';
+    expect([...Object.values(CHECK_METHOD_PREFIXES).flat(), ...UNREACHABLE_PREFIXES]).not.toContain(absent);
     registry = await happyRegistry();
 
     const refused = await run([
       'mark-stub', STUB_ID, 'integrated', '--source-commit', COMMIT,
-      '--check-id', `${UNREACHABLE_PREFIXES[0]}-001`, '--dry-run', '--registry-url', registry.url, '--json',
+      '--check-id', `${absent}-001`, '--dry-run', '--registry-url', registry.url, '--json',
     ]);
     const passes = await run([
       'mark-stub', STUB_ID, 'integrated', '--source-commit', COMMIT,
@@ -473,7 +495,7 @@ describe('HMA-08.AC6 --dry-run runs every gate and sends nothing', () => {
     ]);
 
     expect(refused.status).toBe(1);
-    expect(JSON.parse(refused.stdout).refusal.code).toBe('check-unreachable');
+    expect(JSON.parse(refused.stdout).refusal.code).toBe('check-absent');
     expect(passes.status, passes.stderr).toBe(0);
     expect(registry.requests).toHaveLength(0);
   });

@@ -27,7 +27,7 @@ npx hackmyagent secure
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 47 files
-  Checks      320 static · 12 semantic (NanoMind AST) · 0 skipped
+  Checks      317 static · 12 semantic (NanoMind AST) · 0 skipped
   Categories  credentials (3 critical) · MCP (2 high) · 18 others clear
   Verdict     Not safe to ship. Fix 3 critical issues before using this in production.
 
@@ -45,7 +45,7 @@ No config files. No flags required. Exit code 1 if any critical or high finding 
 
 ## What it finds
 
-- **320 static checks across 74 categories** (365 checks across 89 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
+- **317 static checks across 71 categories** (362 checks across 86 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
 - **29 NanoMind semantic checks.** Every artifact (skill, MCP config, SOUL.md, system prompt) compiles into an Abstract Security Tree. The seven AST analyzers run against the tree: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`. Pattern matching misses undeclared capabilities, constraint weakness, scope mismatches, and scanner-evasion attempts. AST queries catch them. (This 29 is the fixed catalog of check ids the seven analyzers emit. `hackmyagent check-metadata` reports `semanticChecks: 45`, a different count: every `AST-` and `SEM-` id in the check taxonomy, which adds the structural layer's 19 `SEM-` checks and leaves out the 3 `UNICODE-STEGO` ids the stego analyzer shares with the static catalog. The `Checks` line in scan output — e.g. `12 semantic (NanoMind AST)` above — reports the number of artifacts compiled in that particular run, not this catalog size.)
 - **164 adversarial payloads across 16 categories.** Prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP and A2A exploitation, memory weaponisation, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement integrity.
 - **20-probe behavioural simulation** under `--deep`, when a probe executor is present (NanoMind daemon, Ollama or `ANTHROPIC_API_KEY`). Observes what a skill actually does, not only what it declares; without an executor it prints `NOT MEASURED` instead of a verdict.
@@ -105,7 +105,7 @@ npm view hackmyagent dist.attestations --json
 
 | Surface | Command | What gets scanned |
 |---|---|---|
-| Your own project | `hackmyagent secure` | 320 static checks + NanoMind on current directory |
+| Your own project | `hackmyagent secure` | 317 static checks + NanoMind on current directory |
 | A local directory | `hackmyagent check ./my-agent/` | tree + auto-detected artifacts |
 | An npm package | `hackmyagent check express` | downloads tarball, scans before you install |
 | A PyPI package | `hackmyagent check pip:requests` | downloads sdist, scans before you install |

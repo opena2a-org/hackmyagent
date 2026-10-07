@@ -11,7 +11,7 @@
 npx hackmyagent secure
 ```
 
-This runs all 320 static checks against your current directory. No config files or setup needed.
+This runs all 317 static checks against your current directory. No config files or setup needed.
 
 **Output** from this repository's `test-fixtures/insecure-library` (trimmed where marked `...`; your findings depend on your project):
 
@@ -27,7 +27,7 @@ Discovering assembly components...
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 3 semantic artifacts · all 3 artifacts reached 0-2 of 7 analyzer families
-  Checks      320 static declared · 63 of 63 check groups ran · 3 unreachable · 3 semantic (NanoMind AST, 0-2 of 7 analyzer families) · 4 files read by static checks
+  Checks      317 static declared · 63 of 63 check groups ran · 3 semantic (NanoMind AST, 0-2 of 7 analyzer families) · 4 files read by static checks
   Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 36 checks reported an absent mitigation (not shown)
   Unexamined  A2A, capabilities, governance, heartbeat, lifecycle, MCP, prompt, skill
   Categories  credentials (2 high) · sandbox (1 high) · supply-chain (1 medium) · git hygiene (1 critical) · 13 others clear
@@ -167,7 +167,7 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 ## Tips
 
-- Use `--verbose` to see all 320 static checks, including ones that passed.
+- Use `--verbose` to see all 317 static checks, including ones that passed.
 - Use `--ignore CRED-001,LOG-001` to skip specific checks (e.g., known false positives).
 - Use `--json` to get machine-readable output for scripting.
 - Add `--ci` for non-interactive mode (no color, no prompts).
@@ -176,4 +176,4 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 - [Red-team your MCP servers](red-team-mcp.md) with adversarial payloads
 - [Add HMA to your CI/CD pipeline](ci-pipeline.md)
-- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for all 320 static checks
+- See the full [Security Checks Reference](../SECURITY_CHECKS.md) for all 317 static checks
