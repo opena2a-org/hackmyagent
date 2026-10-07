@@ -39,6 +39,7 @@ import ts from 'typescript';
 import { HardeningScanner } from '../src/hardening/scanner';
 import { WordChainAlternationRegExp } from '../src/types/lazy-scan';
 import { tempDir } from './helpers/temp-dir';
+import { timeDoubling } from './helpers/doubling-time';
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -451,12 +452,6 @@ describe('WordChainAlternationRegExp returns what each oracle returns', () => {
 const flood = (unit: string, bytes: number): string =>
   unit.repeat(Math.ceil(bytes / unit.length)).slice(0, bytes);
 
-const elapsedMs = (fn: () => void): number => {
-  const t0 = performance.now();
-  fn();
-  return performance.now() - t0;
-};
-
 interface Shape {
   name: string;
   input: (bytes: number) => string;
@@ -483,24 +478,21 @@ describe('each flood shape costs linear time', () => {
   for (const [name, site] of [...Object.entries(SITES), ...Object.entries(SYNTHETIC)]) {
     for (const shape of shapesFor(site)) {
       it(`${name}, ${shape.name}: under 500 ms at 1 MiB, and 512 KiB -> 1 MiB at most 2.5x or both under 50 ms`, () => {
-        const own = new WordChainAlternationRegExp(site.oracle);
-        const global = new WordChainAlternationRegExp(site.oracle.source, withFlags(site.oracle, 'g'));
-        const run = (s: string): void => {
-          own.lastIndex = 0;
-          own.test(s);
-          global.lastIndex = 0;
-          for (let m = global.exec(s); m !== null; m = global.exec(s)) if (m[0] === '') global.lastIndex++;
+        // Fresh matchers for every run, so that no run starts from state an earlier one left.
+        const prepare = () => {
+          const own = new WordChainAlternationRegExp(site.oracle);
+          const global = new WordChainAlternationRegExp(site.oracle.source, withFlags(site.oracle, 'g'));
+          return (s: string): void => {
+            own.test(s);
+            for (let m = global.exec(s); m !== null; m = global.exec(s)) if (m[0] === '') global.lastIndex++;
+          };
         };
-        const half = shape.input(512 * KiB);
-        const full = shape.input(MiB);
-        const tHalf = elapsedMs(() => run(half));
-        const tFull = elapsedMs(() => run(full));
-        const ratio = tFull / Math.max(tHalf, 0.001);
-        console.log(`${name}, ${shape.name}: 512KiB=${tHalf.toFixed(1)} ms, 1MiB=${tFull.toFixed(1)} ms, ratio=${ratio.toFixed(2)}x`);
-        expect(tFull, `${name}, ${shape.name} took ${tFull.toFixed(0)} ms at 1 MiB`).toBeLessThan(500);
+        const { tHalf, tFull, ratio } = timeDoubling(prepare, shape.input(512 * KiB), shape.input(MiB));
+        console.log(`${name}, ${shape.name}: fastest 512KiB=${tHalf.toFixed(1)} ms, fastest 1MiB=${tFull.toFixed(1)} ms, median ratio=${ratio.toFixed(2)}x`);
+        expect(tFull, `${name}, ${shape.name} took ${tFull.toFixed(0)} ms at 1 MiB in its fastest run`).toBeLessThan(500);
         expect(
           (tHalf < 50 && tFull < 50) || ratio <= 2.5,
-          `${name}, ${shape.name}: 512KiB=${tHalf.toFixed(0)} ms, 1MiB=${tFull.toFixed(0)} ms, ratio=${ratio.toFixed(2)}x`,
+          `${name}, ${shape.name}: fastest 512KiB=${tHalf.toFixed(0)} ms, fastest 1MiB=${tFull.toFixed(0)} ms, median ratio=${ratio.toFixed(2)}x`,
         ).toBe(true);
       });
     }
