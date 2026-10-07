@@ -27,7 +27,7 @@ npx hackmyagent secure
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 47 files
-  Checks      317 static · 12 semantic (NanoMind AST) · 0 skipped
+  Checks      317 static declared · 63 of 63 check groups ran · 12 semantic (NanoMind AST) · 47 files read by static checks
   Categories  credentials (3 critical) · MCP (2 high) · 18 others clear
   Verdict     Not safe to ship. Fix 3 critical issues before using this in production.
 

@@ -977,14 +977,11 @@ const CHECK_PROJECT_TYPES: Record<string, ProjectType[]> = {
   'WEBCRED-': ['all'], // Credentials in web-served files
 
   // Code injection and supply chain checks
-  'CODEINJ-': ['all'], // Code injection via exec with interpolation
   'INSTALL-': ['all'], // Unsafe install scripts (curl|sh)
   'CLIPASS-': ['all'], // Credentials passed as CLI arguments
   'INTEGRITY-': ['all'], // Integrity check bypass
   'TOCTOU-': ['all'], // Time-of-check-time-of-use race conditions
-  'TMPPATH-': ['all'], // Hardcoded /tmp path attacks
   'DOCKERINJ-': ['all'], // Docker exec with variable injection
-  'ENVLEAK-': ['all'], // Environment variable leakage to child processes
   'SANDBOX-005': ['openclaw', 'mcp'], // Messaging API pre-allowed in sandbox (dead entry: the SANDBOX- group is declared first and wins)
   'WEBEXPOSE-': ['all'], // Sensitive files in web-served directories
   'AGENT-CRED-': ['all'], // Missing credential protection in system prompts
@@ -1061,8 +1058,9 @@ export interface ScanOptions {
    * returns, and that placement is the whole fix. `scan()` installs the ambient
    * ledger around `scanInner` only, so a semantic pass invoked afterwards ran
    * with `activeLedger` null: its reads reported nothing, its read FAILURES
-   * reported nothing, and at `--scan-depth quick` — where 56 of the 62 static
-   * checks are skipped and the semantic layer is the only reader of the tree —
+   * reported nothing, and at `--scan-depth quick` — where all but six of the
+   * static check groups are skipped and the semantic layer is the only reader
+   * of the tree —
    * an unreadable credential file left the assessment entirely. `secure` scored
    * that tree 98/100 at exit 0 while the same tree readable scored 69/100 at
    * exit 1.
@@ -4795,10 +4793,11 @@ export class HardeningScanner {
     findings.push(...lifecycleFindings);
     } // end of standard/deep checks
 
-    // A quick scan runs 6 of the 62 orchestrated checks. Record the other 56
-    // as skipped so their categories report `not examined` with the depth as
-    // the reason, instead of inheriting the fail-closed default's vaguer
-    // "no check in this category ran".
+    // A quick scan runs only the six checks ahead of the standard/deep block.
+    // Record every other registered check (that block and the encoded-payload
+    // pass below) as skipped so their categories report `not examined` with
+    // the depth as the reason, instead of inheriting the fail-closed default's
+    // vaguer "no check in this category ran".
     if (isQuick) {
       this.coverage.skipUnrun('scan depth is `quick` — standard and deep checks did not run');
     }
