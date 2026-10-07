@@ -14,12 +14,9 @@ issue: 395
   `coverage.unreachableCheckPrefixes` as `[]`. Findings, severities and
   scores do not change.
 - NEMO-005, NEMO-006 and NEMO-007 do not report every form the removed
-  checks matched. They do not report an `exec()` template literal in which
-  no interpolated expression contains `name`, `id`, `input`, `arg`,
-  `param`, `flag` or `option`, such as ``exec(`ls -la ${dir}`)``; a `/tmp/`
-  path on a line of a `.sh` script that has no `>` and does not write the
-  path with `-o` or `install`, such as `cp build.tar /tmp/out.tar`; or
-  `env: process.env` passed to a child process without a spread. None of
-  these was reported before this change either.
+  checks matched. For example, none of them reports
+  ``exec(`ls -la ${dir}`)``, `cp build.tar /tmp/out.tar` in a `.sh`
+  script, or `spawn('node', ['worker.js'], { env: process.env })`, and
+  none of these was reported before this change either.
 - `mark-stub <id> integrated --check-id` with an ID from one of the removed
   families is now refused as `check-absent` instead of `check-unreachable`.
