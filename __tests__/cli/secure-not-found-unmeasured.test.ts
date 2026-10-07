@@ -62,8 +62,8 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
     expect(JSON.parse(r.stdout).coverage.reason).toBe('target-not-found');
   });
 
-  // #866 — RED-ON-BASE (f561c998): with `-o` the document still went to
-  // stdout and the report file was never created, while the measured arm
+  // #866 — RED-ON-BASE: before the fix, with `-o` the document still went
+  // to stdout and the report file was never created, while the measured arm
   // writes the file. A CI step that parses the report file found nothing.
   it('RED-ON-BASE: --json -o writes the document to the file and still exits 2', () => {
     const dir = tmp('hma-866-');
@@ -105,9 +105,9 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
     expect(r.stderr).not.toContain('Report written to');
   });
 
-  // #880 — RED-ON-BASE (e1fc64b0): the path was escaped, then the system
-  // error message repeated it raw, so an ESC in the `-o` path reached the
-  // terminal in the second copy.
+  // #880 — RED-ON-BASE: before the fix, the path was escaped, then the
+  // system error message repeated it raw, so an ESC in the `-o` path reached
+  // the terminal in the second copy.
   it('RED-ON-BASE: an unwritable -o path with a control character reaches stderr escaped in both copies', () => {
     const dir = tmp('hma-880-');
     const missing = path.join(dir, 'no-such-dir');
@@ -121,12 +121,13 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
     expect(JSON.parse(r.stdout).coverage.reason).toBe('target-not-found');
   });
 
-  // #882 — RED-ON-BASE (a67dce41): `--format sarif -o` and `--format html -o`
-  // exited 2 with no report file and nothing naming the file, while `--help`
-  // said `-o` writes those reports. No not-measured SARIF is written: an
-  // upload with no results closes the repository's open alerts, a clean
-  // reading from a run that scanned nothing. The file stays absent, stderr
-  // says so, and `--help` scopes `-o` to json for a missing target.
+  // #882 — RED-ON-BASE: before the fix, `--format sarif -o` and
+  // `--format html -o` exited 2 with no report file and nothing naming the
+  // file, while `--help` said `-o` writes those reports. No not-measured
+  // SARIF is written: an upload with no results closes the repository's open
+  // alerts, a clean reading from a run that scanned nothing. The file stays
+  // absent, stderr says so, and `--help` scopes `-o` to json for a missing
+  // target.
   for (const format of ['sarif', 'html']) {
     it(`RED-ON-BASE: --format ${format} -o names the report it did not write and exits 2`, () => {
       const dir = tmp(`hma-882-${format}-`);
