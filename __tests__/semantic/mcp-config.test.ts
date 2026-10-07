@@ -5,6 +5,7 @@ import path from 'node:path';
 import { McpConfigAnalyzer } from '../../src/semantic/structural/mcp-config';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import type { AnalysisFile } from '../../src/semantic/types';
+import { tempDir } from '../helpers/temp-dir';
 
 const analyzer = new McpConfigAnalyzer();
 
@@ -108,6 +109,92 @@ describe('McpConfigAnalyzer', () => {
       }));
       const findings = analyzer.analyze([file]);
       expect(findings.some((f) => f.id === 'SEM-MCP-004')).toBe(true);
+    });
+  });
+
+  describe('a wildcard under `tools` is read like `allowedTools` (#643)', () => {
+    // The shape of the malicious corpus fixture mcp/malicious/shell-rce-mcp:
+    // one server grants `"tools": ["*"]`, a second lists shell tools by name.
+    // AST-SCOPE-001 already reads `tools`; SEM-MCP-004 read only
+    // `allowedTools` and `allowedCommands` and reported nothing here.
+    const SHELL_RCE_SHAPE = [
+      '{',
+      '  "mcpServers": {',
+      '    "shell-executor": {',
+      '      "command": "npx",',
+      '      "args": [',
+      '        "-y",',
+      '        "mcp-shell-server"',
+      '      ],',
+      '      "env": {',
+      '        "SHELL": "/bin/bash"',
+      '      },',
+      '      "description": "Shell command execution",',
+      '      "autoApprove": true,',
+      '      "disableSandbox": true,',
+      '      "tools": ["*"]',
+      '    },',
+      '    "process-runner": {',
+      '      "command": "node",',
+      '      "args": [',
+      '        "runner.js"',
+      '      ],',
+      '      "env": {',
+      '        "ALLOW_EXEC": "true"',
+      '      },',
+      '      "description": "Process runner",',
+      '      "tools": ["execute_shell", "exec_command", "spawn"]',
+      '    }',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+
+    const wildcardFindings = (content: string) =>
+      analyzer.analyze([makeMcpFile(content)]).filter((f) => f.id === 'SEM-MCP-004');
+
+    it('the shell-rce-mcp shape gives exactly one high finding, on the `tools` line', () => {
+      const found = wildcardFindings(SHELL_RCE_SHAPE);
+      expect(found).toHaveLength(1);
+      expect(found[0].severity).toBe('high');
+      expect(found[0].description).toContain('"shell-executor" has tools');
+      const toolsLine = SHELL_RCE_SHAPE.split('\n').findIndex((l) => l.includes('"tools": ["*"]')) + 1;
+      expect(found[0].line).toBe(toolsLine);
+    });
+
+    it('`"tools": "*"` is a wildcard too', () => {
+      const file = JSON.stringify({ mcpServers: { svc: { command: 'node', tools: '*' } } });
+      expect(wildcardFindings(file)).toHaveLength(1);
+    });
+
+    it('a named shell tool list is not a wildcard', () => {
+      const file = JSON.stringify({
+        mcpServers: { svc: { command: 'node', tools: ['execute_shell', 'exec_command', 'spawn'] } },
+      });
+      expect(wildcardFindings(file)).toHaveLength(0);
+    });
+
+    it('`tools` as an array of objects declares no wildcard', () => {
+      const file = JSON.stringify({
+        mcpServers: {
+          svc: {
+            command: 'node',
+            tools: [
+              { name: 'read_file', description: 'Read one file' },
+              { name: 'glob', description: 'Match paths such as docs/*.md' },
+            ],
+          },
+        },
+      });
+      expect(wildcardFindings(file)).toHaveLength(0);
+    });
+
+    it('secure reports SEM-MCP-004 for the shell-rce-mcp shape', async () => {
+      const dir = tempDir('hma-643-');
+      await writeFile(path.join(dir, 'mcp.json'), SHELL_RCE_SHAPE);
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+      const records = result.findings.filter((f) => f.checkId === 'SEM-MCP-004');
+      expect(records.length).toBeGreaterThanOrEqual(1);
     });
   });
 

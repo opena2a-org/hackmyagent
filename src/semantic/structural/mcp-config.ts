@@ -82,8 +82,8 @@ function classifyServer(name: string, config: McpServerConfig): Capability[] {
 }
 
 /**
- * Read a list-valued server field (`args`, `allowedTools`, `allowedCommands`)
- * as the list of strings it declares.
+ * Read a list-valued server field (`args`, `allowedTools`, `allowedCommands`,
+ * `tools`) as the list of strings it declares.
  *
  * A server entry is parsed JSON, not a typed `McpServerConfig`, and every
  * check below iterates these fields and calls string methods on the elements.
@@ -148,6 +148,7 @@ export class McpConfigAnalyzer {
           args: stringList(raw.args),
           allowedTools: stringList(raw.allowedTools),
           allowedCommands: stringList(raw.allowedCommands),
+          tools: stringList(raw.tools),
         };
 
         // Track capabilities for attack chain detection
@@ -343,6 +344,12 @@ export class McpConfigAnalyzer {
     // before `stringList` turned it into a one-item list, and `"tools/*"` was
     // reported then; it still is, so reading the field as a list does not
     // retire a finding the string form used to produce (#869).
+    //
+    // `tools` is read beside `allowedTools` and `allowedCommands` because
+    // AST-SCOPE-001 reads it as an allow-list too, and the malicious corpus
+    // fixture mcp/malicious/shell-rce-mcp grants its wildcard there (#643).
+    // A `tools` list of tool-definition objects declares no names, so it
+    // grants no wildcard.
     const checkWildcard = (
       field: string[] | undefined,
       declared: unknown,
@@ -370,6 +377,7 @@ export class McpConfigAnalyzer {
 
     checkWildcard(config.allowedTools, raw.allowedTools, 'allowedTools');
     checkWildcard(config.allowedCommands, raw.allowedCommands, 'allowedCommands');
+    checkWildcard(config.tools, raw.tools, 'tools');
 
     return findings;
   }

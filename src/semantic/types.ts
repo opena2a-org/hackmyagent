@@ -142,6 +142,7 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   allowedTools?: string[];
   allowedCommands?: string[];
+  tools?: string[];
 }
 
 export interface McpConfigFile {
