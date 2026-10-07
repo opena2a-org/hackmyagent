@@ -34,8 +34,11 @@
  *   tests it gated both drive the skipped count to zero; only this case tells
  *   them apart. It is a floor, not an equality, because deletion is the
  *   property: a test added to one of these files is not a short-circuit. The
- *   same case refuses an unconditional skip in those files, so a count that
- *   rises or holds cannot hide a case that no longer runs.
+ *   same case refuses the shapes that stop a case without deleting it, so a
+ *   count that rises or holds cannot hide a case disabled by one of them:
+ *   `.skip`, `.todo`, `.skipIf` or `.runIf` with a literal argument, and
+ *   `.each` over an empty table. A condition computed at run time, such as
+ *   `runIf(canRunSpawn())`, is the file's precondition and stays allowed.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -139,17 +142,26 @@ const DECLARATION_SITES: ReadonlyArray<DeclarationRow> = [
 ];
 
 /**
- * An unconditional skip or todo. A floor alone reads a new skip wrapper as a
- * rise and an `it` turned into a skip as no change, and both disable a gated
+ * A case that is declared and never runs, whatever the machine: `.skip` or
+ * `.todo`; `.skipIf` or `.runIf` whose argument is a literal (a boolean,
+ * number, string, `null` or `undefined`, with or without `!`), which decides
+ * the same way on every run; and `.each` over an empty table, which declares
+ * no case at all. A floor alone reads a new wrapper of any of these shapes as
+ * a rise and an `it` turned into one as no change, and both disable a gated
  * case without deleting it, so these files carry none. A case that cannot run
  * on a machine is gated on the file's existing precondition instead.
  */
-const UNCONDITIONAL_SKIP = /(^|[^.\w])(it|test|describe)\.(skip|todo)\(/g;
+const LITERAL_ARGUMENT = String.raw`\(\s*(?:!\s*)*(?:true|false|null|undefined|\d[\d_.]*|'[^']*'|"[^"]*"|\x60[^\x60$]*\x60)\s*\)`;
+const UNCONDITIONAL_SKIP = new RegExp(
+  String.raw`(^|[^.\w])(it|test|describe)(\.\w+)*` +
+    String.raw`(\.(skip|todo)\(|\.(skipIf|runIf)${LITERAL_ARGUMENT}|\.each\(\s*(\[\s*\]|\x60\s*\x60)\s*\))`,
+  'g',
+);
 
 export interface DeclarationVerdict {
   /** Declaration sites, counted the way the floors were. */
   found: number;
-  /** Unconditional skip and todo sites. Any one fails the file. */
+  /** Sites of the shapes `UNCONDITIONAL_SKIP` matches. Any one fails the file. */
   skips: number;
   /** `line N: <text>` for each line carrying a skip site. */
   skipSites: string[];
@@ -157,9 +169,10 @@ export interface DeclarationVerdict {
 }
 
 /**
- * The AC4 verdict on one file's source: at least `floor` declaration sites and
- * no unconditional skip. The live check and the cells below share it, so a
- * cell that reads red reads red for the same reason a pinned file would.
+ * The verdict on one file's source that the third case gives: at least `floor`
+ * declaration sites and no site `UNCONDITIONAL_SKIP` matches. The live check
+ * and the cases below share it, so a source that fails here fails for the
+ * same reason a pinned file would.
  */
 export function declarationVerdict(source: string, floor: number): DeclarationVerdict {
   const found = (source.match(DECLARATION_SITE) ?? []).length;
@@ -260,44 +273,82 @@ describe('HMA-18 the CI short-circuit is gone from the test tree', () => {
     expect(failures, failures.join('\n\n')).toEqual([]);
   });
 
-  describe('the AC4 verdict, from a three-site base', () => {
+  describe('the declaration verdict on a three-site source with a floor of 3', () => {
     const FLOOR = 3;
     const BASE = ["describe('suite', () => {", "  it('a', () => {});", "  it('b', () => {});", '});'];
     // The skip shapes are assembled, for the reason the environment pattern
     // above is: a census of skip sites over `__tests__/` would count them.
-    const skipped = (fn: string, modifier: 'skip' | 'todo') => `${fn}.${modifier}(`;
+    const skipped = (fn: string, modifier: 'skip' | 'todo' | 'skipIf' | 'runIf' | 'each') => `${fn}.${modifier}(`;
     const verdictOf = (lines: string[]) => declarationVerdict(lines.join('\n'), FLOOR);
 
-    it('unchanged: green', () => {
+    it('passes the source unchanged', () => {
       expect(verdictOf(BASE)).toMatchObject({ found: 3, skips: 0, ok: true });
     });
 
-    it('one case deleted: red', () => {
+    it('fails when one case is deleted', () => {
       expect(verdictOf([BASE[0], BASE[1], BASE[3]])).toMatchObject({ found: 2, skips: 0, ok: false });
     });
 
-    it('a plain case added: green', () => {
+    it('passes when a plain case is added', () => {
       const added = [...BASE.slice(0, 3), "  it('c', () => {});", BASE[3]];
       expect(verdictOf(added)).toMatchObject({ found: 4, skips: 0, ok: true });
     });
 
-    it('a new skip wrapper around the suite: red', () => {
+    it('fails when a new skip wrapper encloses the suite', () => {
       const wrapped = [`${skipped('describe', 'skip')}'wrapper', () => {`, ...BASE, '});'];
       expect(verdictOf(wrapped)).toMatchObject({ found: 4, skips: 1, ok: false });
     });
 
-    it('a case turned into a skip: red', () => {
+    it('fails when a case is turned into a skip, and names its line', () => {
       const converted = [BASE[0], `  ${skipped('it', 'skip')}'a', () => {});`, BASE[2], BASE[3]];
       expect(verdictOf(converted)).toMatchObject({ found: 3, skips: 1, ok: false });
       expect(verdictOf(converted).skipSites).toEqual([`line 2: ${skipped('it', 'skip')}'a', () => {});`]);
     });
 
-    it('a todo added: red', () => {
+    it('fails when a todo is added', () => {
       const todo = [...BASE.slice(0, 3), `  ${skipped('it', 'todo')}'c');`, BASE[3]];
       expect(verdictOf(todo)).toMatchObject({ found: 4, skips: 1, ok: false });
     });
 
-    it('a pinned path that does not exist: error, not a pass', () => {
+    it.each([
+      ['skipIf', 'true'],
+      ['skipIf', '1'],
+      ['skipIf', "'yes'"],
+      ['skipIf', '!0'],
+      ['runIf', 'false'],
+      ['runIf', '0'],
+      ['runIf', 'null'],
+      ['runIf', '!true'],
+    ] as const)('fails when a new %s(%s) wrapper encloses the suite', (modifier, argument) => {
+      const wrapped = [`${skipped('describe', modifier)}${argument})('wrapper', () => {`, ...BASE, '});'];
+      expect(verdictOf(wrapped)).toMatchObject({ found: 4, skips: 1, ok: false });
+    });
+
+    it('fails when a case is turned into skipIf or runIf with a literal argument', () => {
+      const skipIf = [BASE[0], `  ${skipped('it', 'skipIf')}true)('a', () => {});`, BASE[2], BASE[3]];
+      expect(verdictOf(skipIf)).toMatchObject({ found: 3, skips: 1, ok: false });
+      const runIf = [BASE[0], `  ${skipped('it', 'runIf')}false)('a', () => {});`, BASE[2], BASE[3]];
+      expect(verdictOf(runIf)).toMatchObject({ found: 3, skips: 1, ok: false });
+    });
+
+    it('fails when a new wrapper runs over an empty each table', () => {
+      for (const table of ['[]', '[ ]', '``']) {
+        const wrapped = [`${skipped('describe', 'each')}${table})('wrapper %s', () => {`, ...BASE, '});'];
+        expect(verdictOf(wrapped), table).toMatchObject({ found: 4, skips: 1, ok: false });
+      }
+    });
+
+    it('passes skipIf and runIf on a condition computed at run time, and each over a table with rows', () => {
+      const gated = [
+        `${skipped('describe', 'skipIf')}!canRunSpawn())('gated', () => {`,
+        `  ${skipped('it', 'runIf')}canRun(FIXTURE))('a', () => {});`,
+        `  ${skipped('it', 'each')}[1, 2])('b %s', () => {});`,
+        '});',
+      ];
+      expect(verdictOf(gated)).toMatchObject({ found: 3, skips: 0, ok: true });
+    });
+
+    it('throws on a pinned path that does not exist, rather than passing', () => {
       expect(() => pinnedVerdict('__tests__/harness/no-such-pinned-file.test.ts', FLOOR)).toThrow(/ENOENT/);
     });
 

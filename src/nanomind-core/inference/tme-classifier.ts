@@ -79,8 +79,9 @@ export function isAllowedModelHost(url: string): boolean {
 
 /**
  * True when `path` is a file of exactly `bytes` bytes. A model file is
- * trusted as cached only at its pinned size: a write cut off part-way, for
- * example by a process killed mid-download, leaves a shorter file behind.
+ * trusted as cached only at its pinned size and then its pinned sha256 (see
+ * `isPinnedFile`): a write cut off part-way, for example by a process killed
+ * mid-download, leaves a shorter file behind.
  */
 function hasPinnedSize(path: string, bytes: number): boolean {
   try {
@@ -193,11 +194,12 @@ export class TMEClassifier {
   private downloadOptions: ModelDownloadOptions = {};
 
   constructor(modelDir?: string) {
-    // Look for model in standard locations (ordered by preference)
+    // Look for model in standard locations (ordered by preference). The
+    // working directory is not one of them: a scan is often run from the root
+    // of the tree it scans, and that tree must not supply the classifier.
     const home = homedir();
     const locations = [
       modelDir,
-      join(process.cwd(), 'models'),
       join(__dirname, '..', '..', '..', 'models'),
       join(home, '.nanomind', 'models'),
       join(home, '.opena2a', 'nanomind', 'models'),
@@ -236,22 +238,27 @@ export class TMEClassifier {
     } else if (!this.useOnnx) {
       this.needsDownload = true;
     } else {
-      // Verify cached model version matches expected SHA
-      try {
-        const cachedHash = TMEClassifier.hashFileSync(this.tokenizerPath);
-        const expectedHash = MODEL_FILES.find(f => f.name === 'tokenizer.json')?.sha256;
-        if (expectedHash && cachedHash !== expectedHash) {
-          this.needsDownload = true; // Stale model, trigger update
-        } else {
-          // The pinned tokenizer says this directory holds the pinned model,
-          // so every file in it must have its pinned size; a short one is
-          // fetched again instead of being loaded on every run.
-          const modelDir = dirname(this.tokenizerPath);
-          if (!MODEL_FILES.every(f => hasPinnedSize(join(modelDir, f.name), f.bytes))) {
-            this.needsDownload = true;
-          }
-        }
-      } catch { /* hash check failed, use cached model */ }
+      // Every file is loaded only at its pinned size and sha256. A pinned
+      // tokenizer used to vouch for the files beside it, so a directory that
+      // held it could supply any weights of the pinned sizes; a stale, short
+      // or altered file is fetched again instead.
+      const modelDir = dirname(this.tokenizerPath);
+      if (!MODEL_FILES.every(f => TMEClassifier.isPinnedFile(join(modelDir, f.name), f))) {
+        this.needsDownload = true;
+      }
+    }
+  }
+
+  /**
+   * True when `path` holds `file` as pinned: its size first, so a short file
+   * is never read, then its sha256. A file that cannot be read is not pinned.
+   */
+  private static isPinnedFile(path: string, file: { sha256: string; bytes: number }): boolean {
+    if (!hasPinnedSize(path, file.bytes)) return false;
+    try {
+      return TMEClassifier.hashFileSync(path) === file.sha256;
+    } catch {
+      return false;
     }
   }
 
@@ -331,7 +338,7 @@ export class TMEClassifier {
     });
   }
 
-  /** SHA-256 of a small file, read in one go. */
+  /** SHA-256 of a model file, read in one go. */
   private static hashFileSync(filePath: string): string {
     return createHash('sha256').update(readFileSync(filePath)).digest('hex');
   }
@@ -362,8 +369,9 @@ export class TMEClassifier {
    * variable it came from, and the NO_PROXY variable when that sends some of
    * the hosts direct), that it happens once per cache, and the flag that
    * skips it; then one line reports the outcome. Nothing is written when
-   * every file is already in the cache at its pinned size, because no
-   * request is made.
+   * every file is already in the cache at its pinned size and sha256, because
+   * no request is made. A cached file of the pinned size whose sha256 differs
+   * is fetched again, so the classifier never loads it.
    *
    * A connection that goes silent for `options.idleTimeoutMs` fails the
    * download, and the caller falls back to vocabulary scoring (see
@@ -372,7 +380,7 @@ export class TMEClassifier {
   static async downloadModel(targetDir?: string, options: ModelDownloadOptions = {}): Promise<boolean> {
     const dir = targetDir ?? DOWNLOAD_DIR;
     const idleTimeoutMs = options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
-    const toFetch = MODEL_FILES.filter(f => !hasPinnedSize(join(dir, f.name), f.bytes));
+    const toFetch = MODEL_FILES.filter(f => !TMEClassifier.isPinnedFile(join(dir, f.name), f));
     if (toFetch.length === 0) return true;
 
     const say = (line: string) => { process.stderr.write(`${line}\n`); };

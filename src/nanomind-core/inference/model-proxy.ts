@@ -77,6 +77,12 @@ function normalizeHost(host: string): string {
  * The NO_PROXY entries that apply on `port`, normalized: `*`, or a host name
  * or IP address with no port, no brackets and no leading `.` or `*.`. An IPv6
  * literal takes a port only in brackets, as in `[::1]:443`.
+ *
+ * Only an entry that is `*` as written is the wildcard, as in curl and Go.
+ * Stripping a leading `*` and dots turns `.*`, `*.*`, `**` and `..*` into `*`
+ * too, so an entry that still holds a `*` after that is dropped: no host name
+ * contains one. Brackets enclose an IPv6 literal only; `[example.com]` is
+ * dropped as well.
  */
 function noProxyEntries(noProxy: string, port: number): string[] {
   const entries: string[] = [];
@@ -90,6 +96,7 @@ function noProxyEntries(noProxy: string, port: number): string[] {
     const bracketed = /^\[([^\]]*)\](?::(\d+))?$/.exec(entry);
     const withPort = /^(.*[^:]):(\d+)$/.exec(entry);
     if (bracketed) {
+      if (!bracketed[1].includes(':')) continue;
       if (bracketed[2] !== undefined && Number(bracketed[2]) !== port) continue;
       entry = bracketed[1];
     } else if (withPort && !withPort[1].includes(':')) {
@@ -97,7 +104,7 @@ function noProxyEntries(noProxy: string, port: number): string[] {
       entry = withPort[1];
     }
     entry = entry.replace(/^\*/, '').replace(/^\.+/, '').replace(/\.$/, '');
-    if (entry) entries.push(entry);
+    if (entry && !entry.includes('*')) entries.push(entry);
   }
   return entries;
 }

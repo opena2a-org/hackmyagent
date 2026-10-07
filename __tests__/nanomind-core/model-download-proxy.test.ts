@@ -163,8 +163,25 @@ describe('noProxyCovers', () => {
     ['[::1]', 443, '[::1]:443', true],
     ['::1', 443, '[::2]:443', false],
     ['fe80::1', 443, '[::1]', false],
+    // Only `*` as written is the wildcard; entries that reduce to it are not.
+    ['huggingface.co', 443, '*', true],
+    ['huggingface.co', 443, '.*', false],
+    ['huggingface.co', 443, '*.*', false],
+    ['huggingface.co', 443, '**', false],
+    ['huggingface.co', 443, '..*', false],
+    ['huggingface.co', 443, '*.*, huggingface.co', true],
+    // Brackets enclose an IPv6 literal, never a host name.
+    ['huggingface.co', 443, '[huggingface.co]:443', false],
+    ['huggingface.co', 443, '[huggingface.co]', false],
   ])('%s:%d with NO_PROXY=%j -> %s', (host, port, noProxy, covered) => {
     expect(noProxyCovers(host, port, noProxy)).toBe(covered);
+  });
+
+  it('keeps the proxy route when NO_PROXY holds only an entry that reduces to `*`', () => {
+    for (const noProxy of ['.*', '*.*', '**', '..*', '[huggingface.co]:443']) {
+      expect(resolveModelProxy(MODEL_URL, { HTTPS_PROXY: 'http://127.0.0.1:3128', NO_PROXY: noProxy }).kind, noProxy)
+        .toBe('proxy');
+    }
   });
 });
 

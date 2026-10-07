@@ -681,6 +681,16 @@ function notApplicableRecord(
 }
 
 /**
+ * #623 — checks whose passed record is a claim about one file at the root of
+ * the tree, which a directory the scan could not list does not make partial,
+ * so the SCAN-UNREAD-001 caveat for tree-wide claims does not apply to them.
+ * Each reads `<target>/package.json` and nothing else. Their passed records
+ * carry no `file`: a `file` on a passed record would be a dedupe key for the
+ * decoded-artifact rescan, which keys on `file` and check id.
+ */
+const ONE_FILE_CHECKS: ReadonlySet<string> = new Set(['CRED-003', 'DEP-002', 'DEP-003', 'DEP-004']);
+
+/**
  * #458 — `readCheckSubject` for a check whose subject is a FAMILY of files in
  * a directory (the root `.ts`/`.js` sources, the root config files, …) rather
  * than one path.
@@ -5168,10 +5178,13 @@ export class HardeningScanner {
     // that reads the count when it runs cannot see a directory a later walker
     // records (the assembly scan lists `src/` after the static checks), so the
     // caveat is applied here, where the list `coverage.unreadableInputs` counts
-    // is final. Message only: no verdict, severity or score moves.
+    // is final. Message only: no verdict, severity or score moves. A record
+    // that names a file, or whose check reads one file (`ONE_FILE_CHECKS`), is
+    // not a claim over the tree and keeps its message.
     if (unreadable.some((u) => u.kind === 'directory')) {
       for (const f of findings) {
-        if (f.passed !== true || f.file || !f.message || f.message.includes('SCAN-UNREAD-001')) continue;
+        if (f.passed !== true || f.file || ONE_FILE_CHECKS.has(f.checkId)) continue;
+        if (!f.message || f.message.includes('SCAN-UNREAD-001')) continue;
         f.message = `${f.message} (a directory could not be listed — see SCAN-UNREAD-001)`;
       }
     }
@@ -5231,10 +5244,10 @@ export class HardeningScanner {
       //
       // #381 — this gate used to read `backupContext.covered.size`, which never
       // gates: `covered` is seeded from `existingFiles` PLUS `absentAtBackup`, the
-      // static candidates that do NOT exist, so it was 34 on an empty directory
-      // and every `--fix` ran a second full scan. An archive holding nothing but
-      // its own manifest cannot move the score, so the question is asked of the
-      // archive itself. See `ownArchiveHoldsCopies`.
+      // static candidates that do NOT exist, so it was above zero even on an
+      // empty directory and every `--fix` ran a second full scan. An archive
+      // holding nothing but its own manifest cannot move the score, so the
+      // question is asked of the archive itself. See `ownArchiveHoldsCopies`.
       const archiveHoldsCopies = await this.ownArchiveHoldsCopies();
       if (fixedFindings.length > 0 || archiveHoldsCopies) {
         // Re-run a targeted scan (no fix, just detect) to verify.
