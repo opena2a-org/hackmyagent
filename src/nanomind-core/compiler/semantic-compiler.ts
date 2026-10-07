@@ -28,6 +28,7 @@ import { redactSecretsForReportReporting } from '../security/defense-in-depth.js
 import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import { buildAnalysisView } from './source-code-preprocessor.js';
+import { skillPermissionCapabilities } from './skill-permissions.js';
 import {
   CREDENTIAL_NOUN,
   EXFIL_VERB,
@@ -757,32 +758,11 @@ function extractDeclaredCapabilities(
     }
   }
 
-  // A skill's `## Permissions` bullet list is NOT read here, and #471 tracks
-  // that gap rather than this branch closing it.
-  //
-  // The gap is real: the surface produces no capabilities, so `AST-SCOPE-001`
-  // cannot fire from a skill however broad its grants, and the
-  // `repo/malicious/kitchen-sink` expectation naming skills was being met
-  // accidentally by the MCP branch's synthesized `['*']` — a wildcard credited
-  // to a file that contained none. Removing the fabrication exposed it.
-  //
-  // An implementation was written here and removed after review measured what
-  // it did to real skills. Markdown permission lists are not a parseable
-  // grammar the way a JSON tool array is, and the attempt: raised a CRITICAL
-  // "equivalent of running as root" on `- logs: /var/log/*.*` in a benign
-  // log-rotation skill (63/100, "Not safe to ship"); missed most legitimate
-  // spellings, including `## Permissions Required`, numbered lists, and any
-  // trailing comment (`- shell: * # for build`), each a one-token bypass;
-  // captured non-permission bullets such as `- Contact: security@example.com`
-  // as declared capabilities; read fenced markdown EXAMPLES as real grants;
-  // resolved no line number at all for the spaced spelling `- shell: *`, so
-  // its findings carried no Verify command; and rebuilt the same
-  // attacker-controlled quadratic this branch fixed for MCP — 40k permission
-  // bullets in a downloaded SKILL.md took 27.5s.
-  //
-  // A check that fires hardest on the people writing ordinary skills is the
-  // defect #449 is about, pointed at a new surface. It needs a corpus and a
-  // grammar, not a regex pair bolted onto a false-positive fix.
+  // From a skill's `## Permissions` list (#471). The grammar, the bound on
+  // how many grants one file can declare, and the reasons a regex pair was
+  // not enough live in `skill-permissions.ts`; each grant carries its own
+  // source line and a `medium` risk level, and the scope analyzer grades it.
+  caps.push(...skillPermissionCapabilities(content, type));
 
   // From MCP config tool declarations
   if (type === 'mcp_config') {

@@ -201,8 +201,11 @@ function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST, projectConstr
     }
   } else if (finding.attackClass === 'CAPABILITY-CREEP') {
     // Capability creep: text grants more than manifest declares
-    const declaredCount = ast.declaredCapabilities.filter(c => c.scope === '' || c.scope === c.name).length;
-    const textCount = ast.declaredCapabilities.filter(c => c.scope !== '' && c.scope !== c.name).length;
+    // Same split as AST-PROMPT-002: Permissions-list grants are manifest (#471).
+    const isManifestCap = (c: Capability) =>
+      c.scope === '' || c.scope === c.name || c.source === 'skill-permissions';
+    const declaredCount = ast.declaredCapabilities.filter(isManifestCap).length;
+    const textCount = ast.declaredCapabilities.filter(c => !isManifestCap(c)).length;
     parts.push(`The ${ast.artifactType} manifest declares ${declaredCount} capabilities, but the text grants ${textCount} additional ones.`);
     parts.push('Either:');
     parts.push('1. Add the extra capabilities to the manifest frontmatter so users can see the full scope.');

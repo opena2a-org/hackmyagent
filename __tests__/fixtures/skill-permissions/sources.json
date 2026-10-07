@@ -1,0 +1,41 @@
+{
+  "description": "Published skills copied byte for byte at the commit named, as benign cases for the skill Permissions grammar (#471). Each file is under the license named; the test checks every sha256.",
+  "fixtures": [
+    {
+      "fixture": "clawforge-openclaw-skill/SKILL.md",
+      "repository": "https://github.com/leionion/ClawForge",
+      "path": "openclaw-skill/SKILL.md",
+      "commit": "7a9a1f51dae6cbcfb7f5c3d8b0004a416d8578be",
+      "url": "https://github.com/leionion/ClawForge/blob/7a9a1f51dae6cbcfb7f5c3d8b0004a416d8578be/openclaw-skill/SKILL.md",
+      "license": "Apache-2.0",
+      "sha256": "a543db88cfc5727cbf1eefb86697349a6a24731877a784d53591325eed8d530b"
+    },
+    {
+      "fixture": "letta-code-self-configuration/SKILL.md",
+      "repository": "https://github.com/letta-ai/letta-code",
+      "path": "src/skills/builtin/self-configuration/SKILL.md",
+      "commit": "4b028fab07c69edaac2ddb4f7b9a43573ff20d81",
+      "url": "https://github.com/letta-ai/letta-code/blob/4b028fab07c69edaac2ddb4f7b9a43573ff20d81/src/skills/builtin/self-configuration/SKILL.md",
+      "license": "Apache-2.0",
+      "sha256": "67ff3085b3d17feadb69dfdee1c1914d5cf1aa939f792bfbdbbaef3d5b2ae756"
+    },
+    {
+      "fixture": "claw-mentor-mentee/SKILL.md",
+      "repository": "https://github.com/johnalbertini14-glitch/openclaw-skills",
+      "path": "skills/clawmentorai/claw-mentor-mentee/SKILL.md",
+      "commit": "87ab194347104d065298db048ae431c5289976a6",
+      "url": "https://github.com/johnalbertini14-glitch/openclaw-skills/blob/87ab194347104d065298db048ae431c5289976a6/skills/clawmentorai/claw-mentor-mentee/SKILL.md",
+      "license": "MIT",
+      "sha256": "e01036878e014e1990b6230cefea5498453efaf78ba6bc380cd695af0fcdf9ca"
+    },
+    {
+      "fixture": "hyperstack/SKILL.md",
+      "repository": "https://github.com/modbender/skill-library-mcp",
+      "path": "data/hyperstack/SKILL.md",
+      "commit": "d9c8fe903b5b4e82237dbe8d0df8567783022e18",
+      "url": "https://github.com/modbender/skill-library-mcp/blob/d9c8fe903b5b4e82237dbe8d0df8567783022e18/data/hyperstack/SKILL.md",
+      "license": "MIT",
+      "sha256": "e2d87aebfc6db17c6577204e027c5e7cb69c359d7e224c95f2ab67f793f6d41e"
+    }
+  ]
+}
