@@ -10794,6 +10794,7 @@ Examples:
         const jsonHasHigh =
           (result.violations ?? []).length > 0 ||
           result.profileMismatch !== undefined ||
+          result.tierMismatch !== undefined ||
           result.markerInvalid !== undefined;
         const jsonBelowThreshold = options.failBelow
           ? (() => {
@@ -10821,9 +10822,13 @@ Examples:
       // (#162). The label "HARDENED" must not appear without scope context —
       // otherwise a malicious `<!-- soul:profile=conversational -->` marker
       // can produce 100/100 HARDENED while skipping 5 of 9 domains.
+      // #451: the count is the run's real one. Domains with no control at the
+      // tier are not evaluated either, and leaving them out of it let
+      // `HARDENED` print over 3 of 9 domains with nothing disclosing the gap.
       const totalDomains = 9;
-      const evaluatedDomains = totalDomains - result.skippedDomains.length;
-      const scopeDisclosure = result.skippedDomains.length > 0
+      const tierSkippedDomains = result.domains.filter((d) => d.skippedByTier).map((d) => d.domain);
+      const evaluatedDomains = totalDomains - result.skippedDomains.length - tierSkippedDomains.length;
+      const scopeDisclosure = evaluatedDomains < totalDomains
         ? ` · (${evaluatedDomains} of ${totalDomains} domains evaluated)`
         : '';
 
@@ -10846,6 +10851,10 @@ Examples:
         // renders below.
         soulVerdictColor = colors.brightRed;
         soulVerdictText = `Profile mismatch: declared=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} domains the body content suggests should be evaluated`;
+      } else if (result.tierMismatch) {
+        // #451: same eclipse as the profile mismatch above.
+        soulVerdictColor = colors.brightRed;
+        soulVerdictText = `Tier mismatch: declared tier=${result.tierMismatch.declaredTier} hides ${result.tierMismatch.hiddenControls} controls the body content suggests should be evaluated`;
       } else if (result.markerInvalid) {
         // #206 adversarial round 1: an invalid marker is HIGH-severity
         // too. Eclipse the "all controls covered" verdict so the user
@@ -10966,6 +10975,25 @@ Examples:
         }
       }
 
+      // Tier-mismatch finding block (#451), the tier twin of the block above.
+      if (result.tierMismatch) {
+        const tm = result.tierMismatch;
+        const sourceLabel = tm.source === 'flag' ? '--tier flag' : 'soul:tier marker';
+        console.log();
+        console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-TIER-MISMATCH${RESET()}  ${colors.dim}Tier narrows scope past body content${RESET()}`);
+        console.log(`  ${colors.dim}Declared tier=${RESET()}${colors.bold}${tm.declaredTier}${RESET()}${colors.dim} via ${sourceLabel}.${RESET()}`);
+        console.log(`  ${colors.dim}Body content suggests tier=${RESET()}${colors.bold}${tm.inferredTier}${RESET()}${colors.dim}.${RESET()}`);
+        console.log(
+          `  ${colors.dim}Not evaluated:${RESET()} ${tm.hiddenControls} control${tm.hiddenControls === 1 ? '' : 's'}`
+          + (tm.hiddenDomains.length > 0 ? `, including the ${tm.hiddenDomains.join(', ')} domain${tm.hiddenDomains.length === 1 ? '' : 's'}` : ''),
+        );
+        if (tm.source === 'flag') {
+          console.log(`  ${colors.cyan}Fix:${RESET()} re-run with ${colors.bold}--tier ${tm.inferredTier}${RESET()}, or without --tier.`);
+        } else {
+          console.log(`  ${colors.cyan}Fix:${RESET()} set the marker to ${colors.bold}<!-- soul:tier=${tm.inferredTier} -->${RESET()} or remove it.`);
+        }
+      }
+
       // Marker-invalid finding block (#206 adversarial rounds 1+2). An
       // invalid declaration -- a marker that names an unrecognized
       // profile, an empty marker, a leading-space marker, OR a
@@ -10991,7 +11019,7 @@ Examples:
       }
 
       console.log();
-      const scopeNote = result.skippedDomains.length > 0
+      const scopeNote = evaluatedDomains < totalDomains
         ? `  ${colors.dim}(scope: ${evaluatedDomains}/${totalDomains} domains)${RESET()}`
         : '';
       // #206: when the score was clamped because a HIGH finding is
@@ -11000,7 +11028,8 @@ Examples:
       // The HIGH count must match the number of HIGH blocks rendered
       // above (#206 R2.3): profileMismatch and markerInvalid can both
       // fire on the same scan; the note must not lie about how many.
-      const highCount = (result.profileMismatch ? 1 : 0) + (result.markerInvalid ? 1 : 0) + soulViolations.length;
+      const highCount = (result.profileMismatch ? 1 : 0) + (result.tierMismatch ? 1 : 0)
+        + (result.markerInvalid ? 1 : 0) + soulViolations.length;
       const highPlural = highCount === 1 ? 'HIGH unaddressed' : 'HIGHs unaddressed';
       const clampNote = result.scoreClamped
         ? `  ${colors.yellow}(score clamped from ${result.rawScore} to ${result.score} -- ${highCount} ${highPlural})${RESET()}`
@@ -11060,13 +11089,25 @@ Examples:
       // profile filter skipped any domains, prefix with "PARTIAL " so a
       // malicious `<!-- soul:profile=conversational -->` marker can't
       // claim a clean conformance verdict on partial scope.
+      // #451: the tier filter narrows scope the same way, and printed a bare
+      // `HARDENED` over 3 of 9 domains. When any domain has no control at the
+      // tier, the label carries the tier and the run's counts.
       const baseLabel = result.conformance === 'none' ? 'NONE' : result.conformance.toUpperCase();
-      const conformanceLabel = result.skippedDomains.length > 0 && result.conformance !== 'none'
+      const profileQualified = result.skippedDomains.length > 0 && result.conformance !== 'none'
         ? `PARTIAL ${baseLabel}`
         : baseLabel;
+      const conformanceLabel = tierSkippedDomains.length > 0
+        ? `${profileQualified} (${result.agentTier} tier — ${evaluatedDomains} of ${totalDomains} domains applicable)`
+        : profileQualified;
       console.log(`  Level     ${conformanceColor}${colors.bold}${conformanceLabel}${RESET()}`);
-      if (result.skippedDomains.length > 0) {
-        console.log(`  ${colors.dim}Scope     ${evaluatedDomains}/${totalDomains} domains evaluated (skipped: ${result.skippedDomains.join(', ')})${RESET()}`);
+      if (evaluatedDomains < totalDomains) {
+        const scopeParts = [
+          ...(result.skippedDomains.length > 0 ? [`skipped: ${result.skippedDomains.join(', ')}`] : []),
+          ...(tierSkippedDomains.length > 0
+            ? [`not applicable at ${result.agentTier} tier: ${tierSkippedDomains.join(', ')}`]
+            : []),
+        ];
+        console.log(`  ${colors.dim}Scope     ${evaluatedDomains}/${totalDomains} domains evaluated (${scopeParts.join('; ')})${RESET()}`);
       }
       if (result.criticalMissing.length > 0) {
         // #390 — a bare ID list is a dead end: it names the control without
@@ -11300,6 +11341,17 @@ Examples:
           : '';
         process.stderr.write(
           `SOUL-PROFILE-MISMATCH HIGH: declared profile=${pm.declaredProfile} skips ${pm.skippedDomains.length} of 9 domains; body suggests profile=${pm.inferredProfile}${forcedNote}.\n`,
+        );
+        await exitRecorded(1, 'findings');
+      }
+      if (ciMode && result.tierMismatch) {
+        const tm = result.tierMismatch;
+        const hiddenNote = tm.hiddenDomains.length > 0 ? ` (${tm.hiddenDomains.join(', ')})` : '';
+        const fix = tm.source === 'flag'
+          ? `re-run with --tier ${tm.inferredTier} or without --tier`
+          : `set the marker to <!-- soul:tier=${tm.inferredTier} --> or remove it`;
+        process.stderr.write(
+          `SOUL-TIER-MISMATCH HIGH: declared tier=${tm.declaredTier} hides ${tm.hiddenControls} controls and ${tm.hiddenDomains.length} of 9 domains${hiddenNote}; body suggests tier=${tm.inferredTier}. Fix: ${fix}.\n`,
         );
         await exitRecorded(1, 'findings');
       }
