@@ -1371,6 +1371,8 @@ interface UnifiedCheckDisplayOptions {
      * its check-group denominator; unset elsewhere, where it does not.
      */
     scanDepth?: 'quick' | 'standard' | 'deep';
+    /** `--static-only`: the semantic layer did not run, said beside that denominator. */
+    staticOnly?: boolean;
   };
   registry?: RegistryTrustData | null;
   verbose?: boolean;
@@ -2157,12 +2159,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       clamped: localScan ? localScan.scoreClamped : nanomindScoreClamped,
     });
     // #507 — a quick-depth score names what it is over. Same line as the
-    // meter, because the Checks line that already carried `6 of 63` sits a
-    // screen further down and the headline number was read without it.
+    // meter: the Checks line that already carried `6 of 63` prints five lines
+    // below it, under the Surfaces line, and the headline number was read
+    // without it.
     const depthDisclosure = scanDepthDisclosure({
       scanDepth: localScan?.scanDepth,
       executions: localScan?.coverage?.executions,
       target: opts.nextStepsTarget,
+      staticOnly: localScan?.staticOnly,
     });
     console.log(`  ${scoreLineLabel(quickScan)}  ${scoreMeter(score, maxScore)}${colors.dim}${bandDisclosure}${depthDisclosure?.scoreSuffix ?? ''}${RESET()}`);
     if (depthDisclosure?.followup) {
@@ -3461,12 +3465,18 @@ function printBenchmarkUnreadDisclosure(result: ScanResult): void {
  * under `.hackmyagent-backup/`. #862 — the `-b oasb-1` and `-b oasb-2` text
  * reports return before the ordinary report's tail, so each calls this too.
  */
-function printFixBackupDisclosure(result: { backupPath?: string }, directory: string): void {
+function printFixBackupDisclosure(
+  result: { backupPath?: string },
+  directory: string,
+  // stderr for a `-b` report whose format has no field to carry the path
+  // (`sarif`, `html`, `asp`): stdout is the document there.
+  write: (line: string) => void = console.log,
+): void {
   if (!result.backupPath) return;
   // #339 — the backup path is derived from the target, and the rollback
   // hint is a command the report tells the user to paste. Both were raw.
-  console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
-  console.log(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
+  write(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+  write(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
 }
 
 // SARIF 2.1.0 output for GitHub Security tab and IDE integration
@@ -6061,6 +6071,9 @@ Change scope (--range, --staged):
             ...(result.coverage?.unreadableInputs
               ? { unreadableInputs: result.coverage.unreadableInputs }
               : {}),
+            // The key `secure --fix --format json` carries; absent when
+            // `--fix` wrote no backup.
+            ...(result.backupPath ? { backupPath: result.backupPath } : {}),
           };
           // This arm bypasses writeJsonStdout (writeFileSync(1, ...) below),
           // so it carries its own boundary read.
@@ -6218,6 +6231,9 @@ Change scope (--range, --staged):
                 ...(result.suppressed?.length ? { suppressed: result.suppressed } : {}),
                 ...(result.outOfScope?.length ? { outOfScope: result.outOfScope } : {}),
                 ...(result.hmaignore ? { hmaignore: result.hmaignore } : {}),
+                // The backup `--fix` wrote, on the key `secure --format json`
+                // uses; absent when it wrote none.
+                ...(result.backupPath ? { backupPath: result.backupPath } : {}),
               },
               null,
               2,
@@ -6228,12 +6244,15 @@ Change scope (--range, --staged):
             // (#670): a failing record the plain scan does not list still
             // failed its control and gets its own SARIF result.
             output = generateSarifOutput(benchmarkResult, result.allFindings || result.findings, targetDir, result);
+            printFixBackupDisclosure(result, directory, console.error);
             break;
           case 'html':
             output = generateHtmlReport(benchmarkResult, targetDir, benchmarkRunFlags);
+            printFixBackupDisclosure(result, directory, console.error);
             break;
           case 'asp':
             output = generateAspOutput(benchmarkResult, result, targetDir);
+            printFixBackupDisclosure(result, directory, console.error);
             break;
           default: // text
             printBenchmarkReport(benchmarkResult, options.verbose ?? false, targetDir, benchmarkRunFlags);
@@ -6659,6 +6678,7 @@ Change scope (--range, --staged):
           coverage: result.coverage,
           // #507 — so a quick-depth score is printed with its denominator.
           scanDepth,
+          staticOnly: isStaticOnly,
         },
         // Without this, the Observations "Checks" line renders "0 semantic"
         // even though the pre-scan status reports N artifacts compiled.

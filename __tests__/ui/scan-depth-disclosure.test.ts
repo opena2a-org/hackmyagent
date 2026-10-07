@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { checkGroupTally, scanDepthDisclosure } from '../../src/ui/scan-depth-disclosure';
 import { CHECK_METHOD_PREFIXES } from '../../src/hardening/coverage-ledger';
 import { citationTarget } from '../../src/ui/shell-quote';
+import { CLI_PREFIX } from '../../src/cli-prefix';
 
 const REGISTERED = Object.keys(CHECK_METHOD_PREFIXES).length;
 
@@ -30,7 +31,19 @@ describe('scanDepthDisclosure (#507)', () => {
     const d = scanDepthDisclosure({ scanDepth: 'quick', executions: executions(6), target: '.' });
     expect(d).not.toBeNull();
     expect(d!.scoreSuffix).toBe(`  (over 6 of ${REGISTERED} check groups — scan depth quick)`);
-    expect(d!.followup).toBe(`Run \`secure ${citationTarget('.')}\` for the standard-depth score.`);
+    expect(d!.followup).toBe(`Run \`${CLI_PREFIX} secure ${citationTarget('.')}\` for the standard-depth score.`);
+  });
+
+  it('cites the follow-up command with the CLI prefix, so it runs when pasted (#885)', () => {
+    const d = scanDepthDisclosure({ scanDepth: 'quick', executions: executions(6), target: '.' });
+    expect(d!.followup).toMatch(new RegExp(`^Run \`${CLI_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} secure `));
+  });
+
+  it('says on the score line when the semantic layer is off (#885)', () => {
+    const off = scanDepthDisclosure({ scanDepth: 'quick', executions: executions(6), target: '.', staticOnly: true });
+    expect(off!.scoreSuffix).toBe(`  (over 6 of ${REGISTERED} check groups, semantic layer off — scan depth quick)`);
+    const on = scanDepthDisclosure({ scanDepth: 'quick', executions: executions(6), target: '.', staticOnly: false });
+    expect(on!.scoreSuffix).not.toContain('semantic');
   });
 
   it.each(['standard', 'deep', undefined])('%s depth prints no denominator', (depth) => {

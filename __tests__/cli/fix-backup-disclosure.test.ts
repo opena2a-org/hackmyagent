@@ -104,6 +104,40 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
     }
   });
 
+  // #885 — the machine-readable benchmark formats wrote the same backup and
+  // named it nowhere: no `backupPath` in the document, nothing on stderr.
+  it.each(['oasb-1', 'oasb-2'])('secure -b %s --fix --format json: carries backupPath', (benchmark) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hma-885-'));
+    try {
+      writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
+      const out = hma(['secure', dir, '-b', benchmark, '--fix', '--format', 'json']);
+      const doc = JSON.parse(out.stdout) as { backupPath?: string };
+      const written = runs(dir);
+      expect(written).toHaveLength(1);
+      expect(typeof doc.backupPath).toBe('string');
+      expect(doc.backupPath).toContain(written[0]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['sarif', 'html', 'asp'])('secure -b oasb-1 --fix --format %s: names the backup on stderr', (format) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hma-885-'));
+    try {
+      writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
+      const out = hma(['secure', dir, '-b', 'oasb-1', '--fix', '--format', format]);
+      const written = runs(dir);
+      expect(written).toHaveLength(1);
+      expect(out.stderr).toContain('Backup created:');
+      expect(out.stderr).toContain(written[0]);
+      expect(out.stderr).toMatch(/Something wrong\? Run `\S+ rollback /);
+      // stdout is the document; the disclosure does not go into it.
+      expect(out.stdout).not.toContain('Backup created:');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('secure --fix that attempted nothing: names the run directory it added', () => {
     const dir = skillTree();
     try {
