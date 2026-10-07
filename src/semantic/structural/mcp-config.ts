@@ -2,7 +2,7 @@
  * Deep MCP Configuration Analysis (Layer 2)
  *
  * Parses MCP configs structurally and detects:
- * - Overprivileged filesystem scope (/, /home, /Users)
+ * - Overprivileged filesystem scope (/, a Windows drive root, /home, /Users, /root)
  * - Sandbox bypass flags (--no-sandbox, --privileged)
  * - Secrets in args array (exposed to LLM)
  * - Wildcard permissions
@@ -13,14 +13,23 @@
 import type { SemanticFinding, AnalysisFile, McpServerConfig } from '../types';
 import { MCP_SERVER_MAP_KEYS } from '../../mcp-clients';
 
-/** Paths that indicate overprivileged filesystem scope */
+/**
+ * Paths that indicate overprivileged filesystem scope.
+ *
+ * An exact-match set of roots, never a path-depth test: a depth test grades
+ * `/opt` and `/srv` the same as `/`. `$HOME` is deliberately absent: an MCP
+ * client starts the server without a shell, so the argument is not expanded,
+ * and how each client treats it has not been verified.
+ */
 const OVERPRIVILEGED_PATHS = [
   { pattern: /^\/$/,                     label: 'root filesystem (/)', severity: 'critical' as const },
+  { pattern: /^[A-Za-z]:[\\/]?$/,        label: 'Windows drive root', severity: 'critical' as const },
   { pattern: /^\/home\/?$/,              label: '/home directory', severity: 'critical' as const },
   { pattern: /^\/Users\/?$/,             label: '/Users directory', severity: 'critical' as const },
   { pattern: /^\/etc\/?$/,               label: '/etc directory', severity: 'high' as const },
   { pattern: /^\/var\/?$/,               label: '/var directory', severity: 'high' as const },
   { pattern: /^~\/?$/,                   label: 'home directory (~)', severity: 'high' as const },
+  { pattern: /^\/root\/?$/,              label: 'root user home directory (/root)', severity: 'high' as const },
   { pattern: /^\/home\/[^/]+\/?$/,       label: 'user home directory', severity: 'high' as const },
   { pattern: /^\/Users\/[^/]+\/?$/,      label: 'user home directory', severity: 'high' as const },
 ];

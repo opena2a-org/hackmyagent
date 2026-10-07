@@ -56,6 +56,43 @@ describe('McpConfigAnalyzer', () => {
     });
   });
 
+  // #470 — the roots are an exact-match set, never a path-depth test: a depth
+  // test grades `/opt` like `/`. Each root added here has a negative beside it.
+  describe('overprivileged scope: Windows drive root and /root (#470)', () => {
+    function scopeFindings(root: string) {
+      const content = JSON.stringify({
+        mcpServers: {
+          fs: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', root] },
+        },
+      }, null, 2);
+      const rootLine = content.split('\n').findIndex((l) => l.includes(JSON.stringify(root))) + 1;
+      const findings = analyzer.analyze([makeMcpFile(content)]).filter((f) => f.id === 'SEM-MCP-001');
+      return Object.assign(findings, { rootLine });
+    }
+
+    it.each(['C:\\', 'C:/', 'C:', 'd:\\'])('a Windows drive root %j is critical', (root) => {
+      const findings = scopeFindings(root);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('critical');
+      expect(findings[0].line).toBe(findings.rootLine);
+    });
+
+    it.each(['C:\\projects\\app', 'C:/Users/me/app', 'C:foo'])('a path below a drive root %j is not flagged', (root) => {
+      expect(scopeFindings(root)).toHaveLength(0);
+    });
+
+    it.each(['/root', '/root/'])('the root user home %j is high', (root) => {
+      const findings = scopeFindings(root);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe('high');
+      expect(findings[0].line).toBe(findings.rootLine);
+    });
+
+    it.each(['/root/project', '/rootfs'])('%j is not the root user home', (root) => {
+      expect(scopeFindings(root)).toHaveLength(0);
+    });
+  });
+
   describe('sandbox bypass', () => {
     it('detects --no-sandbox flag', () => {
       const file = makeMcpFile(JSON.stringify({
