@@ -5162,6 +5162,19 @@ export class HardeningScanner {
       findings.push(buildUnreadInputFinding(u, { cliName: this.cliName, targetDir, command: this.unreadRemedyCommand }));
     }
 
+    // #623 — a passed record that names no file is a claim over the tree, and
+    // a directory the scan could not list makes that claim partial. A check
+    // that reads the count when it runs cannot see a directory a later walker
+    // records (the assembly scan lists `src/` after the static checks), so the
+    // caveat is applied here, where the list `coverage.unreadableInputs` counts
+    // is final. Message only: no verdict, severity or score moves.
+    if (unreadable.some((u) => u.kind === 'directory')) {
+      for (const f of findings) {
+        if (f.passed !== true || f.file || !f.message || f.message.includes('SCAN-UNREAD-001')) continue;
+        f.message = `${f.message} (a directory could not be listed — see SCAN-UNREAD-001)`;
+      }
+    }
+
     if (this.fixWritesIntoForeignArchive.length > 0) {
       const rels = [...new Set(this.fixWritesIntoForeignArchive.map(
         (f) => path.relative(targetDir, f) || path.basename(f),
