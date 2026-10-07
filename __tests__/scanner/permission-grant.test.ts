@@ -538,19 +538,42 @@ describe('the prose matcher stays linear on a hostile line', () => {
 
     // No piece can spell a key name or a vendor prefix, so the other two
     // redactions are the identity here and only the JWT pass is compared.
+    //
+    // Pieces alone almost never spell a JWT: 7 strings in 20,000 did, and the
+    // `\b` decided 1. So half the segments are a near-JWT whose three runs
+    // straddle the 8/8/4 minimums, and the segment in front of one puts a word
+    // or non-word character before its `eyJ`, which is what `\b` decides.
     const pieces = ['eyJ', 'eyJ', 'aaaaaaaa', '--------', 'a', 'Z9', '-', '_', '.', '.', ' ', ':', '"'];
+    const runChars = 'aZ9_-';
     let seed = 380;
     const next = (n: number): number => {
       seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
-      return seed % n;
+      // The high bits: bit k of this generator repeats every 2^(k+1) draws.
+      return (seed >>> 16) % n;
     };
+    const run = (n: number): string => {
+      let r = '';
+      for (; n > 0; n--) r += runChars[next(runChars.length)];
+      return r;
+    };
+    const nearJwt = (): string => `eyJ${run(7 + next(4))}.${run(7 + next(4))}.${run(3 + next(4))}`;
+    const withoutBoundary = new RegExp(singleMatch.source.replace(/^\\b/, ''), 'g');
     const differ: string[] = [];
+    let redacted = 0;
+    let boundaryDecides = 0;
     for (let k = 0; k < 20_000; k++) {
       let s = '';
-      for (let len = 1 + next(12); len > 0; len--) s += pieces[next(pieces.length)];
-      if (redactLikelySecrets(s) !== s.replace(singleMatch, '[redacted-jwt]')) differ.push(s);
+      for (let len = 1 + next(8); len > 0; len--) s += next(2) === 0 ? nearJwt() : pieces[next(pieces.length)];
+      const expected = s.replace(singleMatch, '[redacted-jwt]');
+      if (expected !== s) redacted++;
+      if (s.replace(withoutBoundary, '[redacted-jwt]') !== expected) boundaryDecides++;
+      if (redactLikelySecrets(s) !== expected) differ.push(s);
     }
     expect(differ).toEqual([]);
+    // Agreement proves nothing on a string neither pattern touches, so hold how
+    // many the reference redacts and on how many its `\b` decides the result.
+    expect(redacted).toBeGreaterThan(5_000);
+    expect(boundaryDecides).toBeGreaterThan(2_000);
   });
 
   it('still skips a line too long to be prose', () => {
