@@ -21,7 +21,7 @@ import { HardeningScanner } from '../../src/hardening/scanner';
 const FAKE_GH_TOKEN = `ghp_${'d'.repeat(36)}`;
 const PKG = '{"name":"env-example-fixture","version":"1.0.0"}\n';
 
-async function withTree(envExample: string | null, fn: (dir: string) => Promise<void>): Promise<void> {
+async function withTree(envExample: string | Buffer | null, fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), 'hma-env-example-'));
   try {
     await writeFile(path.join(dir, 'package.json'), PKG);
@@ -87,6 +87,19 @@ describe('#282 secure --fix keeps a hand-written .env.example', () => {
     await withTree(crlf, async (dir) => {
       await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
       expect(await readFile(path.join(dir, '.env.example'), 'utf-8')).toBe(crlf + names.map(n => `${n}=\r\n`).join(''));
+    });
+  });
+
+  // #864 — the file was decoded as UTF-8 and the decoded string written back,
+  // so a Latin-1 `é` (byte e9) in a comment came back as ef bf bd (U+FFFD).
+  it('keeps bytes that are not valid UTF-8', async () => {
+    const names = await generatedNames();
+    const latin1 = Buffer.from('# cl\xe9 priv\xe9e\nSTRIPE_SECRET_KEY=\n', 'latin1');
+    await withTree(latin1, async (dir) => {
+      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      const bytes = await readFile(path.join(dir, '.env.example'));
+      expect(bytes.subarray(0, latin1.length).equals(latin1)).toBe(true);
+      expect(bytes.subarray(latin1.length).toString('latin1')).toBe(names.map(n => `${n}=\n`).join(''));
     });
   });
 
