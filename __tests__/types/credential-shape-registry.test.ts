@@ -189,12 +189,13 @@ describe('credential shape registry — surfaces carry their reason', () => {
     expect(silent).toEqual([]);
   });
 
-  it('the ast-canonical surface carries exactly 12 shapes', () => {
+  it('the ast-canonical surface carries exactly 14 shapes', () => {
     // Pinned so the count cannot move — in either direction — without a
-    // recorded decision. 22 shapes are known to this tree and 12 of them can
-    // produce a finding; that ten-shape gap is the whole of the detection
+    // recorded decision. 22 shapes are known to this tree and 14 of them can
+    // produce a finding; that eight-shape gap is the whole of the detection
     // half of this unit, and it is the number a reader should be able to cite.
-    expect(shapesFor('ast-canonical').length).toBe(12);
+    // 12 -> 14 is #543: `hf_` and `glpat-` joined the canonical list.
+    expect(shapesFor('ast-canonical').length).toBe(14);
   });
 
   it('a rationale is a reason, not a restatement of the fact', () => {
@@ -223,10 +224,15 @@ describe('credential shape registry — surfaces carry their reason', () => {
   });
 
   it('the measured divergences are still the ones recorded', () => {
-    // These four are the deliberate, measured exclusions. If one of them
+    // These three are the deliberate, measured exclusions. If one of them
     // becomes total, the reason it was excluded has been resolved or lost —
     // either way this test is the place that says so.
-    expect(byId.get('gitlab-pat')!.surfaces.has('ast-canonical')).toBe(false);
+    //
+    // `gitlab-pat` was the fourth, held out of `ast-canonical` because the only
+    // discriminator tried was a quadratic lookahead. #543 resolved it: no
+    // lookahead, a case-mix check in code, and a 480 KB timing bound in
+    // `pinned-credential-shapes.test.ts`.
+    expect(byId.get('gitlab-pat')!.surfaces.has('ast-canonical')).toBe(true);
     expect(byId.get('jwt')!.surfaces.has('nanomind-redaction')).toBe(false);
     expect(byId.get('sendgrid-key')!.surfaces.has('ast-canonical')).toBe(false);
     expect(byId.get('entropy-blob')!.surfaces.has('nanomind-redaction')).toBe(false);

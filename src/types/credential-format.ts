@@ -187,8 +187,8 @@ const ALL_SURFACES: readonly Surface[] = [
 const EVERY_SURFACE: ReadonlySet<Surface> = new Set(ALL_SURFACES);
 
 /**
- * Why five shapes are missing from `ast-canonical`, in one place because it is
- * ONE reason and repeating it per shape would read as five findings.
+ * Why four shapes are missing from `ast-canonical`, in one place because it is
+ * ONE reason and repeating it per shape would read as four findings.
  *
  * It is NOT a measured exclusion, and saying so is the point. The canonical
  * list is short by process, not by judgement: a first draft added eight shapes
@@ -200,9 +200,9 @@ const EVERY_SURFACE: ReadonlySet<Surface> = new Set(ALL_SURFACES);
  *
  * So for each shape carrying this string: nobody has measured its false-
  * positive cost, and nobody has decided it should be absent. It is an
- * UNDECLARED GAP with a known cause, which is a different thing from a
- * deliberate exclusion like `gitlab-pat`'s, and a reader has to be able to tell
- * them apart. Closing them is the widening step, and it is separately gated.
+ * UNDECLARED GAP with a known cause, which is a different thing from an
+ * exclusion whose cost was measured, and a reader has to be able to tell them
+ * apart. Closing them is the widening step, and it is separately gated.
  *
  * Note what the gap actually costs, because it is not "the shape is unknown":
  * `credential-analyzer.ts:116-121` wires the shared matcher as a GATE
@@ -214,7 +214,7 @@ const NOT_YET_RE_ADDED_TO_CANONICAL =
   '(semantic-compiler.ts:1279-1330) only because that list is being re-populated one shape at a ' +
   'time on fix/credential-fp-siblings (#352/#353) after a first draft of eight measured an FP ' +
   'class and a quadratic scan — see __tests__/nanomind-core/pinned-credential-shapes.test.ts:9-14. ' +
-  'No FP measurement exists for this shape. Contrast gitlab-pat, whose absence IS measured.';
+  'No FP measurement exists for this shape.';
 
 /**
  * ONE floor per shape, and it is the DETECTOR's.
@@ -332,8 +332,8 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     head: 'hf_',
     body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
     guards: ['hf_'],
-    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
-    rationale: NOT_YET_RE_ADDED_TO_CANONICAL,
+    // In the canonical list since #543, at the redactor's `{34,}` floor.
+    surfaces: EVERY_SURFACE,
   },
   {
     kind: 'vendor',
@@ -342,14 +342,13 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     head: 'glpat-',
     body: { kind: 'run', class: '[a-zA-Z0-9_-]', min: 20 },
     guards: ['glpat-'],
-    surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
-    rationale:
-      'DELIBERATELY excluded from CANONICAL_CREDENTIAL_PATTERNS and the exclusion is measured ' +
-      '(semantic-compiler.ts:1310-1324): the body class admits `-` and `_`, so `glpat-` plus any ' +
-      'hyphenated identifier matches, and the entropy lookahead tried to separate them went ' +
-      'QUADRATIC on attacker-supplied content — 0ms -> 651ms at 60 KB, 1ms -> 40s at 480 KB — ' +
-      'while still passing `glpat-' + 'shared-linux-docker-runner-1`. Do not flatten this into the ' +
-      'canonical list without a bounded pattern AND a ReDoS measurement.',
+    // In the canonical list since #543. It was held out because its body class
+    // admits `-` and `_`, so any hyphenated identifier matched, and the entropy
+    // lookahead tried as a discriminator went quadratic (1ms -> 40s at 480 KB).
+    // It came back with no lookahead: the canonical entry requires an upper- and
+    // a lower-case letter in the body, checked in code after the match. Do not
+    // move that check back into the regex.
+    surfaces: EVERY_SURFACE,
   },
   {
     kind: 'vendor',

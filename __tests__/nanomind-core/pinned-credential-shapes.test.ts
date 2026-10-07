@@ -23,11 +23,16 @@
 // None is or ever was a live credential.
 
 import { describe, it, expect } from 'vitest';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { redactSecretsForNanoMind } from '../../src/nanomind-core/security/defense-in-depth';
 import {
   scanCanonicalCredentialFormatsForTest,
   canonicalCredentialLabelsForTest,
+  analyzeCredentialKeywordContext,
 } from '../../src/nanomind-core/compiler/semantic-compiler';
+import { runNanoMindScan } from '../../src/nanomind-core/scanner-bridge';
+import { tempDir } from '../helpers/temp-dir';
 
 /** Synthetic filler: alphanumeric, no placeholder markers the FP filters strip. */
 const fill = (n: number) => 'Ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx4Yz5Ab6Cd7Ef8Gh9Ij0Kl1Mn2Op3'.repeat(3).slice(0, n);
@@ -48,6 +53,10 @@ const SHAPES: Array<{ label: string; value: string }> = [
   { label: 'Stripe live key', value: `sk_live_${fill(24)}` },
   { label: 'Google API key', value: `AIza${fill(35)}` },
   { label: 'Slack bot token', value: `xoxb-${fill(12)}-${fill(12)}-${fill(24)}` },
+  // Both were redact-only until #543. Each was invisible to `secure` unless a
+  // credential noun sat within reach of the value; see the block at the end.
+  { label: 'Hugging Face token', value: `hf_${fill(34)}` },
+  { label: 'GitLab personal access token', value: `glpat-${fill(20)}` },
   // From NAME_GATED_CREDENTIAL_PATTERNS, the detector's SECOND list. It was
   // invisible to the coverage assertion below while that derived its expected
   // set from the canonical list alone — so this shape was detected, never
@@ -75,11 +84,9 @@ const SHAPES: Array<{ label: string; value: string }> = [
 const REDACT_ONLY: Array<{ label: string; value: string }> = [
   { label: 'GitHub user-to-server token', value: `ghu_${fill(36)}` },
   { label: 'GitHub fine-grained token', value: `github_pat_${fill(22)}_${fill(59)}` },
-  { label: 'HuggingFace token', value: `hf_${fill(34)}` },
   { label: 'npm access token', value: `npm_${fill(36)}` },
   { label: 'Stripe test key', value: `sk_test_${fill(24)}` },
   { label: 'SendGrid API key', value: `SG.${fill(22)}.${fill(43)}` },
-  { label: 'GitLab personal access token', value: `glpat-${fill(20)}` },
 ];
 
 /** Realistic carrier: a source line, which is the context `scan` reads. */
@@ -226,5 +233,94 @@ describe('credential shapes: detected and redacted, never one without the other'
     const known = new Set(canonicalCredentialLabelsForTest());
     const uncovered = [...known].filter(l => !covered.has(l) && l !== 'PEM private key');
     expect(uncovered).toEqual([]);
+  });
+});
+
+// #543. A bare `hf_` or `glpat-` value scored 98/100 exit 0 under `secure`
+// while a file of the same shape holding an AWS access key scored 69/100 exit 1.
+// The two shapes were in the shared vocabulary but not in the canonical list,
+// so they reached a finding only when a credential noun (`token`, `secret`, …)
+// sat within reach of the value. The carrier below names no credential at all,
+// which is the case that was silent.
+describe('#543: hf_ and glpat- fire like the AWS access key control, with no credential noun nearby', () => {
+  /** One assignment, no credential noun anywhere in the file. */
+  const alone = (value: string) => `VALUE_A = "${value}"\n`;
+
+  /** Failing finding IDs with severities from the real semantic pipeline. */
+  async function failingFindings(content: string): Promise<string[]> {
+    const dir = tempDir('hma-543-');
+    await writeFile(join(dir, 'app.py'), content, 'utf-8');
+    const result = await runNanoMindScan(dir, []);
+    return result.mergedFindings
+      .filter(f => !f.passed)
+      .map(f => `${f.checkId}:${f.severity}`)
+      .sort();
+  }
+
+  const AWS_CONTROL = 'AKIA' + 'ABCDEFGHIJKLMNOP';
+
+  for (const { label, value } of [
+    { label: 'Hugging Face token', value: `hf_${fill(34)}` },
+    { label: 'GitLab personal access token', value: `glpat-${fill(20)}` },
+  ]) {
+    it(`${label} alone gets the same check IDs and severities as the AWS access key`, async () => {
+      const control = await failingFindings(alone(AWS_CONTROL));
+      // Without this, two empty lists would compare equal and prove nothing.
+      expect(control, 'the AWS control produced no credential finding').toContain('AST-CRED-003:critical');
+
+      expect(scanCanonicalCredentialFormatsForTest(alone(value)).map(h => h.label)).toEqual([label]);
+      expect(await failingFindings(alone(value))).toEqual(control);
+    }, 120_000);
+  }
+
+  describe('identifiers that share the prefix are not credentials', () => {
+    const notCredentials: Array<[string, string]> = [
+      [
+        'the hf_hub_download helper',
+        'from huggingface_hub import hf_hub_download\n'
+          + 'path = hf_hub_download(repo_id="org/model", filename="config.json")\n',
+      ],
+      ['hf_ plus 33 alphanumerics', alone(`hf_${fill(33)}`)],
+      ['a hyphenated GitLab runner slug', alone('glpat-' + 'shared-linux-docker-runner-1')],
+      ['glpat- plus 20 lower-case x', alone('glpat-' + 'x'.repeat(20))],
+      ['glpat- plus 20 upper-case X', alone('glpat-' + 'X'.repeat(20))],
+    ];
+    for (const [name, content] of notCredentials) {
+      it(`${name} produces no finding`, async () => {
+        expect(scanCanonicalCredentialFormatsForTest(content)).toEqual([]);
+        expect(await failingFindings(content)).toEqual([]);
+      }, 120_000);
+    }
+  });
+
+  it('the case-mix check does not let a rejected match hide a real token after it', () => {
+    const content = alone('glpat-' + 'shared-linux-docker-runner-1') + alone(`glpat-${fill(20)}`);
+    expect(scanCanonicalCredentialFormatsForTest(content).map(h => h.label))
+      .toEqual(['GitLab personal access token']);
+    // The keyword-context path reads the same list through its own loop.
+    expect(analyzeCredentialKeywordContext(`{"token": null}\n${content}`)).toBe('value-present');
+    expect(analyzeCredentialKeywordContext(`{"token": null}\n${alone('glpat-' + 'x'.repeat(20))}`))
+      .toBe('schema-only');
+  });
+
+  it('480 KB of hostile glpat- and hyphen input scans in under one second', () => {
+    // The lookahead this shape was once held out with re-read the run from every
+    // start position: 1 ms -> 40 s at 480 KB. Each input below is a single run the
+    // body class admits, which is the input that made it quadratic.
+    const size = 480 * 1000;
+    const hostile = [
+      'glpat-'.repeat(size / 6),
+      'glpat-' + '-'.repeat(size - 6),
+      'glpat--'.repeat(Math.ceil(size / 7)).slice(0, size),
+    ];
+    for (const content of hostile) {
+      expect(content.length).toBe(size);
+      const started = performance.now();
+      const hits = scanCanonicalCredentialFormatsForTest(content);
+      analyzeCredentialKeywordContext(content);
+      const elapsed = performance.now() - started;
+      expect(hits).toEqual([]);
+      expect(elapsed, `scan took ${Math.round(elapsed)} ms`).toBeLessThan(1000);
+    }
   });
 });

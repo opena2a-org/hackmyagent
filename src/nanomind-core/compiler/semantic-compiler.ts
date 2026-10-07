@@ -1574,9 +1574,14 @@ function hasCanonicalCredentialFormat(content: string): boolean {
   if (exceedsCredentialScanBytes(content)) {
     return false;
   }
-  for (const { regex } of CANONICAL_CREDENTIAL_PATTERNS) {
+  for (const { regex, accept } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
-    const match = regex.exec(content);
+    let match = regex.exec(content);
+    // A match the shape's own predicate rejects is not a credential, so look
+    // past it rather than letting it decide for the whole pattern.
+    while (match && accept && !accept(match[0])) {
+      match = regex.exec(content);
+    }
     if (match) {
       // Skip obvious test fixtures (FAKE, EXAMPLE, PLACEHOLDER, YOUR_)
       const ctxStart = Math.max(0, match.index - 40);
@@ -1742,7 +1747,25 @@ function credentialScanRefusedSurface(size: number): RiskSurface {
   };
 }
 
-const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
+/**
+ * At least one `A-Z` and one `a-z` in a token body. Two single-character
+ * scans, so it is linear in the body however long the match is.
+ */
+function hasUpperAndLowerAscii(body: string): boolean {
+  return /[A-Z]/.test(body) && /[a-z]/.test(body);
+}
+
+const CANONICAL_CREDENTIAL_PATTERNS: Array<{
+  label: string;
+  regex: RegExp;
+  /**
+   * Optional check on the matched text, run in code BEFORE the placeholder
+   * filters. A shape whose regex alone admits ordinary identifiers carries its
+   * discriminator here instead of in a lookahead: a lookahead re-reads the run
+   * from every start position, and that is how a quadratic scan gets in.
+   */
+  accept?: (matched: string) => boolean;
+}> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
   { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
   // OpenAI's PRE-project key format, and the one still issued to older accounts.
@@ -1774,28 +1797,35 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{ label: string; regex: RegExp }> = [
   { label: 'Slack bot token', regex: vendor(String.raw`xox[baprs]-[a-zA-Z0-9-]{10,}`) },
   { label: 'Google API key', regex: vendor(String.raw`AIza[0-9A-Za-z_-]{35}`) },
   { label: 'Stripe live key', regex: vendor(String.raw`sk_live_[0-9a-zA-Z]{24,}`) },
-  // GitLab is DELIBERATELY ABSENT from the verdict path. Its token body class
-  // admits `-` and `_`, so `glpat-` plus any hyphenated identifier of 20+
-  // characters matches, and no cheap predicate separates the two: an entropy
-  // lookahead (`(?=[a-z_-]*[A-Z0-9])`) still passed
-  // a hyphenated GitLab runner slug and a drawn-blank GitLab token placeholder —
-  // GitLab's own docs placeholder — while introducing a QUADRATIC scan on
-  // attacker-supplied file content (measured 0ms -> 651ms at 60 KB,
-  // 1ms -> 40s at 480 KB, against the 1 MiB cap that actually governs this
-  // path: `MAX_CREDENTIAL_SCAN_BYTES` above, matching `MAX_FILE_SIZE =
-  // 1_048_576` in `src/nanomind-core/scanner-bridge.ts`). This note used to say
-  // "a 10 MB file cap", which is `MAX_FILE_SIZE` in `src/hardening/scanner.ts`
-  // — a different component that never feeds this scan. The margin it implied
-  // was 10x too generous, and anyone who had trusted it and raised the real cap
-  // toward 10 MB would have armed the `RangeError` on the CLI path too.
+  // The Hugging Face prefix plus 34 alphanumerics, the redactor's own floor
+  // (`security/defense-in-depth.ts`), so nothing this finds goes unredacted.
+  // The class has no `_`, which is what keeps the download helper and the other
+  // `huggingface_hub` helpers out: their body breaks at the next underscore.
+  { label: 'Hugging Face token', regex: vendor(String.raw`hf_[a-zA-Z0-9]{34,}`) },
+  // GitLab's body class admits `-` and `_`, so the regex alone matches the prefix
+  // plus any hyphenated identifier of 20+ characters — a GitLab runner slug such
+  // as `shared-linux-docker-runner-1` after it, or a drawn-blank placeholder of one
+  // repeated letter. The discriminator is `accept`: the body must hold at least
+  // one upper- and one lower-case ASCII letter, which a slug or a one-letter
+  // blank never does, and the placeholder filters run after it as for every
+  // other shape.
   //
-  // A denial of service in a security scanner is worse than the false negative
-  // it was closing, and GitLab detection was never part of the defect this
-  // release fixes.
-  //
-  // The static credential lists in `scanner.ts` still carry `glpat-`, so
-  // `protect` and `--fix` are unaffected. Re-adding it here needs a bounded
-  // pattern and a ReDoS measurement, not another lookahead.
+  // It is checked in code and NOT as a lookahead on purpose. An earlier attempt
+  // held this shape out with `(?=[a-z_-]*[A-Z0-9])`, which re-reads the run
+  // from every start position and went QUADRATIC on attacker-supplied file
+  // content (measured 0ms -> 651ms at 60 KB, 1ms -> 40s at 480 KB, against the
+  // 1 MiB cap that actually governs this path: `MAX_CREDENTIAL_SCAN_BYTES`
+  // above, matching `MAX_FILE_SIZE = 1_048_576` in
+  // `src/nanomind-core/scanner-bridge.ts`, not the 10 MB `MAX_FILE_SIZE` in
+  // `src/hardening/scanner.ts`, which never feeds this scan). With no lookahead
+  // the global regex consumes each run once and resumes after it, so the scan
+  // is linear; `pinned-credential-shapes.test.ts` holds 480 KB of hostile
+  // prefix-and-hyphen input under one second.
+  {
+    label: 'GitLab personal access token',
+    regex: vendor(String.raw`glpat-[A-Za-z0-9_-]{20,}`),
+    accept: matched => hasUpperAndLowerAscii(matched.slice('glpat-'.length)),
+  },
   // `SG.<22-char id>.<43-char secret>`, both segments at FIXED widths. The
   // widths are load-bearing: written loosely this matches any dotted identifier
   // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
@@ -1953,11 +1983,15 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
   // definition rather than a concrete key literal.
   const regexContextMarker = /\\d|\\w|\\s|\[a-z|\[A-Z|\[0-9|\{\d+,|\*\?|\+\?/;
 
-  for (const { label, regex } of CANONICAL_CREDENTIAL_PATTERNS) {
+  for (const { label, regex, accept } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(content)) !== null) {
       const matched = match[0];
+      // The shape's own discriminator first, then the shared filters below.
+      if (accept && !accept(matched)) {
+        continue;
+      }
       // Narrow preceding context: just the 40 chars before the match,
       // which covers the variable/label on the same line but not the
       // whole file. We explicitly do NOT check the full window, because

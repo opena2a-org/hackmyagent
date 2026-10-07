@@ -1047,16 +1047,22 @@ slackBot:
   // `matchVendorPrefix` helper. Mutation proved the helper-level test alone did
   // not gate this: reverting `maskCredentialValue` to the stale hand-written
   // list left it green, because the leak lives in the CONSUMER.
-  const maskedVendorTokens: Array<[string, string, string]> = [
-    // label, token, the ONLY text allowed to survive masking
-    ['Hugging Face', 'hf_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'hf_'],
-    ['GitLab PAT', 'glpat-' + 'QrStUvWxYzAbCdEfGhIjKlMnOp', 'glpat-'],
+  //
+  // `hf_` and `glpat-` joined the canonical detector list in #543, so their
+  // AST-CRED-003 now comes from the canonical scan, whose evidence is the
+  // detector label and `[REDACTED]` with no value bytes at all — the form an
+  // AWS access key has always had. The fourth column names that ONE further
+  // form each may take; the three shapes without it must still be masked.
+  const maskedVendorTokens: Array<[string, string, string, string?]> = [
+    // label, token, the ONLY text allowed to survive masking, canonical label
+    ['Hugging Face', 'hf_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'hf_', 'Hugging Face token'],
+    ['GitLab PAT', 'glpat-' + 'QrStUvWxYzAbCdEfGhIjKlMnOp', 'glpat-', 'GitLab personal access token'],
     ['npm token', 'npm_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'npm_'],
     ['GitHub user-to-server', 'ghu_' + 'QrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWx', 'ghu_'],
     ['SendGrid', 'SG.' + 'QrStUvWxYzAbCdEfGhIjKl' + '.' + 'MnOpQrStUvWxYzAbCdEfGhIjKlMnOpQrStUvWxYzAbC', 'SG.'],
   ];
 
-  for (const [label, token, allowedPrefix] of maskedVendorTokens) {
+  for (const [label, token, allowedPrefix, canonicalLabel] of maskedVendorTokens) {
     it(`b15-mask: a ${label} token is masked in evidence, never echoed back`, async () => {
       const yaml = `name: agent-config
 description: stores credentials for the bot
@@ -1077,6 +1083,9 @@ service:
       ).toBeGreaterThan(0);
 
       for (const f of withEvidence) {
+        if (canonicalLabel !== undefined && f.evidence === `${canonicalLabel}: [REDACTED]`) {
+          continue;
+        }
         expect(
           f.evidence,
           `${label}: ${f.checkId} evidence must end in the mask, not in secret bytes`,
