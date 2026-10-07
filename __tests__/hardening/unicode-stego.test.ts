@@ -1291,6 +1291,65 @@ describe('UNICODE-STEGO checks', () => {
     });
   });
 
+  describe('UNICODE-STEGO-005: a confusables table is not an attack', () => {
+    // Every fixture below is written with the raw letter: the `\u` escapes
+    // are this test file's spelling, the scanned file holds the codepoint.
+    async function stego005For(file: string, content: string): Promise<SecurityFinding[]> {
+      await fs.writeFile(path.join(tempDir, file), content);
+      const findings = await scanForUnicodeStego();
+      return findings.filter((f) => f.checkId === 'UNICODE-STEGO-005' && f.file === file);
+    }
+
+    it('does not report our own stego analyzer under its own name or another', async () => {
+      const analyzer = await fs.readFile(
+        path.resolve(__dirname, '..', '..', 'src', 'nanomind-core', 'analyzers', 'stego-analyzer.ts'),
+      );
+      await fs.writeFile(path.join(tempDir, 'stego-analyzer.ts'), analyzer);
+      await fs.writeFile(path.join(tempDir, 'util-helper.ts'), analyzer);
+
+      const findings = await scanForUnicodeStego();
+      const stego005 = findings.filter((f) => f.checkId === 'UNICODE-STEGO-005');
+
+      expect(stego005).toEqual([]);
+    });
+
+    it('does not report a confusable in a trailing line comment', async () => {
+      expect(await stego005For('trailing.ts', 'const CYRILLIC_A = 0x0430; // а (a)\n')).toEqual([]);
+    });
+
+    it('does not report a confusable on a block comment line without a * prefix', async () => {
+      expect(await stego005For('block.ts', '/*\n  а (a)\n */\nconst x = 1;\n')).toEqual([]);
+    });
+
+    it('reads code after a block comment whose closing line starts with *', async () => {
+      const stego005 = await stego005For('after-block.ts', '/*\n  а (a)\n */\nconst vаlue = 1;\n');
+      expect(stego005.length).toBe(1);
+      expect(stego005[0].line).toBe(4);
+    });
+
+    it('does not report a confusable standing alone in a string literal', async () => {
+      // One entry, so no Cyrillic neighbour lets the i18n reading skip it.
+      expect(await stego005For('table.ts', "const FOLD = { a: 'а' };\n")).toEqual([]);
+    });
+
+    it.each([
+      ['url-in-array.ts', '["pаypal.com"]\n'],
+      ['identifier-fn.ts', 'function vаlidate(){}\n'],
+      ['import-specifier.js', 'require("lоdash")\n'],
+      ['identifier-alone.ts', 'const а = 1\n'],
+    ])('still reports HIGH in %s', async (file, content) => {
+      const stego005 = await stego005For(file, content);
+      expect(stego005.length).toBe(1);
+      expect(stego005[0].severity).toBe('high');
+    });
+
+    it('still reports a mixed confusable in a prose URL, where // is not a comment', async () => {
+      const stego005 = await stego005For('README.md', 'Visit https://pаypal.com to pay.\n');
+      expect(stego005.length).toBe(1);
+      expect(stego005[0].severity).toBe('high');
+    });
+  });
+
   describe('finding properties', () => {
     it('all findings have required properties with correct values', async () => {
       // Create a file that triggers UNICODE-STEGO-001

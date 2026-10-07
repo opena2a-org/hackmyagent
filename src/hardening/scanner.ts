@@ -17206,9 +17206,31 @@ dist/
       const isMarkdown = relativePath.endsWith('.md') || relativePath.endsWith('.txt');
       let inCodeFence = false;
 
+      // #468: a homoglyph detector has to carry the codepoints it detects, so
+      // this check fired HIGH on our own stego analyzer and on any confusables
+      // table. Two readings narrow it to the attack:
+      //  1. COMMENTS ARE NOT CODE. The whole-line skip below missed a trailing
+      //     comment (`0x0430, // <letter> (a)`) and a block comment line with no
+      //     `*` prefix. Where `//` and `/* */` are comment syntax, each line is
+      //     blanked by `blankCommentRegions` (block state carried across lines),
+      //     the masker STEGO-002 uses. Elsewhere `//` is not a comment
+      //     (`https://` in prose or YAML), so the line is read as written.
+      //  2. A TABLE ENTRY IS NOT A USE. A confusable is reported when it is
+      //     mixed into a Latin word (a directly adjacent ASCII letter or digit,
+      //     inside a string or not) or forms an identifier outside string
+      //     literals. One standing alone inside a string is a declaration.
+      const blanksJsComments = /\.(?:ts|tsx|js|jsx|mjs|cjs)$/i.test(relativePath);
+      const homoglyphCommentState = { inBlockComment: false };
+      const ASCII_ALNUM = /[A-Za-z0-9]/;
+
       for (let lineIdx = 0; lineIdx < homoglyphLines.length; lineIdx++) {
         const line = homoglyphLines[lineIdx];
-        if (line.length > MAX_LINE_LENGTH) continue;
+        if (line.length > MAX_LINE_LENGTH) {
+          // The unread line may have closed a block comment. Reading what
+          // follows as code can only report more, never less.
+          homoglyphCommentState.inBlockComment = false;
+          continue;
+        }
 
         // Track code fence boundaries in markdown files
         if (isMarkdown && line.trimStart().startsWith('```')) {
@@ -17218,12 +17240,21 @@ dist/
         // Skip lines inside markdown code fences (documentation examples)
         if (isMarkdown && inCodeFence) continue;
 
+        // Blanked before the skip below, so a ` */` line the skip drops still
+        // closes its block. A line with no `/` outside a block has no comment.
+        const codeLine =
+          blanksJsComments && (homoglyphCommentState.inBlockComment || line.includes('/'))
+            ? blankCommentRegions(line, homoglyphCommentState)
+            : line;
+
         // Skip comment lines
         const trimmed = line.trimStart();
         if (trimmed.startsWith('//') || trimmed.startsWith('#') || trimmed.startsWith('*')) continue;
 
-        const chars = [...line];
-        for (let ci = 0; ci < chars.length; ci++) {
+        const chars = [...codeLine];
+        // `unitIndex` is the UTF-16 offset of `chars[ci]`, the index the
+        // string-literal predicate reads.
+        for (let ci = 0, unitIndex = 0; ci < chars.length; unitIndex += chars[ci].length, ci++) {
           const cp = chars[ci].codePointAt(0)!;
           if (homoglyphCodepoints.has(cp)) {
             // Check if this Cyrillic char is in a Cyrillic text block (i18n)
@@ -17232,6 +17263,12 @@ dist/
             // or non-Latin chars, it's legitimate i18n text.
             if (isCyrillicInCyrillicContext(chars, ci)) {
               continue; // Legitimate i18n — skip
+            }
+            const mixed =
+              (ci > 0 && ASCII_ALNUM.test(chars[ci - 1])) ||
+              (ci + 1 < chars.length && ASCII_ALNUM.test(chars[ci + 1]));
+            if (!mixed && isMatchInsideStringLiteral(codeLine, unitIndex)) {
+              continue; // A table entry, not a use
             }
             homoglyphFound = true;
             homoglyphLine = lineIdx + 1;
