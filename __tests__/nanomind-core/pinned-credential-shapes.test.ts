@@ -89,6 +89,20 @@ const REDACT_ONLY: Array<{ label: string; value: string }> = [
   { label: 'SendGrid API key', value: `SG.${fill(22)}.${fill(43)}` },
 ];
 
+/**
+ * Shapes the detector reports and the redactor does NOT yet strip: a KNOWN GAP,
+ * recorded here instead of hidden.
+ *
+ * #316 added the 32-47 character `sk-` band to the detector. The redactor's
+ * `openai-key` rule still floors at 48, so on the daemon path a key in this
+ * band is detected and forwarded verbatim. The finding itself never quotes the
+ * key (`OpenAI-style sk- key: [REDACTED]`). The last test in the block below
+ * pins the gap so that closing it goes red and moves this entry into `SHAPES`.
+ */
+const DETECTED_NOT_YET_REDACTED: Array<{ label: string; value: string }> = [
+  { label: 'OpenAI-style sk- key', value: `sk-${fill(32)}` },
+];
+
 /** Realistic carrier: a source line, which is the context `scan` reads. */
 const asSource = (value: string) => `const client = new Client({ apiKey: "${value}" });\n`;
 
@@ -105,7 +119,7 @@ const asProse = (value: string) => `Deployment note: pass ${value} to the upload
 
 describe('credential shapes: detected and redacted, never one without the other', () => {
   describe('detection', () => {
-    for (const { label, value } of SHAPES) {
+    for (const { label, value } of [...SHAPES, ...DETECTED_NOT_YET_REDACTED]) {
       it(`${label} produces a credential hit`, () => {
         const hits = scanCanonicalCredentialFormatsForTest(asSource(value));
         expect(hits.length).toBeGreaterThan(0);
@@ -229,10 +243,19 @@ describe('credential shapes: detected and redacted, never one without the other'
     // prose after the header, destroying the test/doc-context words the
     // credential analyzer reads and flipping a scan 98/exit-0 -> 69/exit-1.
     // A rule bounded to the key material would let this carve-out go.
-    const covered = new Set(SHAPES.map(s => s.label));
+    const covered = new Set([...SHAPES, ...DETECTED_NOT_YET_REDACTED].map(s => s.label));
     const known = new Set(canonicalCredentialLabelsForTest());
     const uncovered = [...known].filter(l => !covered.has(l) && l !== 'PEM private key');
     expect(uncovered).toEqual([]);
+  });
+
+  it('KNOWN GAP (#316): the detected-not-yet-redacted shapes are still exactly that', () => {
+    // When the redactor learns a shape listed here, this goes red. Move the
+    // entry into `SHAPES`, where the coverage invariant then holds it.
+    for (const { label, value } of DETECTED_NOT_YET_REDACTED) {
+      expect(scanCanonicalCredentialFormatsForTest(asSource(value)).map(h => h.label)).toContain(label);
+      expect(redactSecretsForNanoMind(asProse(value)), `${label} is now redacted`).toContain(value);
+    }
   });
 });
 

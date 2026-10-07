@@ -257,6 +257,18 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     // enumeration guard useless. The two spellings a copy actually takes are a
     // character class (`sk-[a-zA-Z0-9…`) and an alternation branch (`sk-|…`).
     guards: ['sk-[', 'sk-|'],
+    // `ast-canonical` reports this shape under TWO labels, split by body
+    // length (#316): 'OpenAI-style sk- key' for a 32-47 character
+    // alphanumeric body (`sk-[a-zA-Z0-9]{32,47}(?![a-zA-Z0-9])`) and
+    // 'OpenAI legacy key' for 48 or more (`sk-[a-zA-Z0-9]{48,}`). One shape,
+    // so one id and one marker; the split only keeps a body from being
+    // reported twice.
+    //
+    // KNOWN GAP on `nanomind-redaction`: the `openai-key` rule in
+    // `redactCredentialShapes` still floors at 48 (defense-in-depth.ts:182),
+    // so a 32-47 character body is detected and not yet redacted on the
+    // daemon path. `pinned-credential-shapes.test.ts` pins that gap
+    // so that closing it goes red there.
     surfaces: EVERY_SURFACE,
   },
   {

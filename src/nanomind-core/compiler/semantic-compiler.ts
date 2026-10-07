@@ -1790,6 +1790,29 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
   // both break the character class at their first hyphen (4 and 3 chars in),
   // so neither can be captured here and re-reported under the wrong label.
   { label: 'OpenAI legacy key', regex: vendor(String.raw`sk-[a-zA-Z0-9]{48,}`) },
+  // The same `sk-` prefix with a 32 to 47 character alphanumeric body (#316).
+  // The legacy floor of 48 left this band silent: `secure` reported no
+  // finding and exited 0 on a source file holding
+  // `const openai = "sk-<32 random alphanumerics>"`, while opena2a-cli's
+  // scanner flagged the same file critical.
+  //
+  // The upper bound is a hand-off, not a cap. At 48 characters the trailing
+  // lookahead fails at every width, so a 48+ body belongs to the legacy entry
+  // above alone and is never reported twice. Together the two entries cover
+  // every body from 32 characters up. The lookahead tests one character after
+  // a body of at most 47, so each start position costs a bounded amount of
+  // work and the scan stays linear (`openai-style-sk-key.test.ts` times 1 MB
+  // of this input).
+  //
+  // `accept` holds out a body of six or fewer distinct characters, the same
+  // low-entropy rule the name-gated arm applies below: 32 `x`s is a redaction
+  // mask or a template blank, not a key. The placeholder and regex-context
+  // filters run after it as for every other shape.
+  {
+    label: 'OpenAI-style sk- key',
+    regex: vendor(String.raw`sk-[a-zA-Z0-9]{32,47}(?![a-zA-Z0-9])`),
+    accept: matched => new Set(matched.slice('sk-'.length)).size > 6,
+  },
   { label: 'AWS access key', regex: vendor(String.raw`AKIA[0-9A-Z]{16}`) },
   { label: 'GitHub personal access token', regex: vendor(String.raw`ghp_[a-zA-Z0-9]{36}`) },
   { label: 'GitHub OAuth token', regex: vendor(String.raw`gho_[a-zA-Z0-9]{36}`) },
