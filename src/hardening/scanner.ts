@@ -5228,21 +5228,13 @@ export class HardeningScanner {
       // candidates up front, and its score still has to be the one that comes
       // back.
       //
-      // BE HONEST ABOUT THIS GATE: it does not gate. `covered` is seeded from
-      // `existingFiles` PLUS `absentAtBackup` (`:8244`), and `absentAtBackup` is
-      // the list of static candidates that do NOT exist, so `covered.size` is 34
-      // on an empty directory — the full `BACKUP_FILES.length` — and this is
-      // therefore effectively unconditional. (An earlier draft of this comment
-      // said "~22", read off a regex that split the list on commas inside its own
-      // comments. Measured: 34.) Every
-      // `secure --fix` now runs a second full scan, where before it ran one only
-      // when a fix had landed. That is a cost regression, not a wrong number, and
-      // the honest gate — "did the archive actually receive a copy" — needs
-      // `manifest.existingFiles` plumbed onto `backupContext`, which is backup
-      // bookkeeping this codebase has broken repeatedly (#300, #313, #327, #329).
-      // Not worth doing in a release whose point is that a number is trustworthy.
-      // Filed as #381.
-      const archiveHoldsCopies = (this.backupContext?.covered.size ?? 0) > 0;
+      // #381 — this gate used to read `backupContext.covered.size`, which never
+      // gates: `covered` is seeded from `existingFiles` PLUS `absentAtBackup`, the
+      // static candidates that do NOT exist, so it was 34 on an empty directory
+      // and every `--fix` ran a second full scan. An archive holding nothing but
+      // its own manifest cannot move the score, so the question is asked of the
+      // archive itself. See `ownArchiveHoldsCopies`.
+      const archiveHoldsCopies = await this.ownArchiveHoldsCopies();
       if (fixedFindings.length > 0 || archiveHoldsCopies) {
         // Re-run a targeted scan (no fix, just detect) to verify.
         //
@@ -6979,6 +6971,28 @@ export class HardeningScanner {
     // when the cheap compare says no.
     if (this.isPathWithinDirectory(dirPath, ctx.backupDir)) return true;
     return sameIdentity(identityOrUndefined(await identityOf(dirPath)), ctx.backupIdent);
+  }
+
+  /**
+   * True when this run's archive holds anything besides its own manifest —
+   * the only content there a later scan can report (#381).
+   *
+   * Read from the directory, not from the manifest's lists. `absentAtBackup`
+   * names candidates that were NOT copied, which is what made `covered.size`
+   * useless as this answer, and a copy whose manifest append failed is on disk
+   * in no list at all. The directory is what the next scan walks.
+   *
+   * Any doubt answers true: that costs one extra scan, never a wrong score.
+   */
+  private async ownArchiveHoldsCopies(): Promise<boolean> {
+    const ctx = this.backupContext;
+    if (!ctx) return false;
+    try {
+      const entries = await fs.readdir(ctx.backupDir);
+      return entries.some((name) => name !== '.manifest.json');
+    } catch {
+      return true;
+    }
   }
 
   /**
