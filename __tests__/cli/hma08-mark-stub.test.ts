@@ -250,7 +250,7 @@ describe('HMA-08.AC4 the evidence is honest by construction', () => {
     expect(probeReachability(RECORDED_CHECK_ID, [fixturePrefix])).toBeNull();
   });
 
-  it('HMA-08.AC4 refuses a checkId from a family deleted as an uncalled duplicate (#395)', async () => {
+  it('HMA-08.AC4 refuses a checkId from a family deleted because nothing called it (#395)', async () => {
     if (!canRun()) return;
     expect(builtInventory().UNREACHABLE_PREFIXES).toEqual([]);
     registry = await happyRegistry();

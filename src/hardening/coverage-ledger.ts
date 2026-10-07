@@ -251,11 +251,11 @@ export const CHECK_METHOD_PREFIXES: Readonly<Record<string, readonly string[]>> 
  * A family listed here is named in the `--json` inventory as unreachable
  * instead of leaving the reader to infer it from an absence. The list is
  * empty: `CODEINJ-001`, `TMPPATH-001` and `ENVLEAK-001` were its last
- * members, duplicates of NEMO-005, -006 and -007 that the orchestration had
- * stopped calling while `TAXONOMY_MAP` still counted them. Their methods and
- * inventory entries are deleted, and `coverage-honesty.test.ts` fails if a
- * `check*` method loses its caller or this list stops matching the methods
- * that have none.
+ * members. They overlap NEMO-005, -006 and -007, which do not match every
+ * form they did, and the orchestration had stopped calling them while
+ * `TAXONOMY_MAP` still counted them. Their methods and inventory entries are
+ * deleted, and `coverage-honesty.test.ts` fails if a `check*` method loses
+ * its caller or this list stops matching the methods that have none.
  */
 export const UNREACHABLE_PREFIXES: readonly string[] = [];
 
