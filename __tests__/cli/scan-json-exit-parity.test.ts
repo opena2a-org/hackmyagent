@@ -7,6 +7,11 @@
  * JSON never failed. Measured on `044301c5` against a local server answering
  * 200 with a JSON body on every path: `scan` exit 1, `scan --json` exit 0.
  *
+ * #448 — that catch-all server's findings were themselves false positives, and
+ * a 200 on every path now reports none. The server below serves one real
+ * exposure, a dotenv file at its path with 404 everywhere else, so the exit
+ * assertions still compare two channels reporting a critical.
+ *
  * The CLI is spawned asynchronously: the server lives in this process, and
  * `spawnSync` would block the event loop it needs to answer.
  */
@@ -25,9 +30,14 @@ let server: http.Server;
 let port: number;
 
 beforeAll(async () => {
-  server = http.createServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end('{"id":"x"}');
+  server = http.createServer((req, res) => {
+    if (req.url === '/.env') {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('APP_MODE=production\nLOG_LEVEL=debug\n');
+      return;
+    }
+    res.writeHead(404);
+    res.end('not found');
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   port = (server.address() as AddressInfo).port;

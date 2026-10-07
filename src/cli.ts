@@ -7922,6 +7922,9 @@ Examples:
                   console.log(`     ${part === '' ? '' : `     ${escapeForDisplay(rebrandCommandCitations(part))}`}`);
                 }
               }
+              if (finding.verify) {
+                console.log(`     Verify: ${escapeForDisplay(finding.verify)}`);
+              }
             }
           }
           console.log();

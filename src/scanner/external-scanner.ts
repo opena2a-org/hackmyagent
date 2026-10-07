@@ -6,7 +6,9 @@
 import * as net from 'net';
 import * as http from 'http';
 import * as https from 'https';
+import { randomBytes } from 'crypto';
 import type { ExternalScanResult, ExternalFinding, ScannerOptions, FindingSeverity, PortState } from './types';
+import { citationPath, shellQuote } from '../ui/shell-quote';
 
 // Default ports to scan
 export const DEFAULT_PORTS = [80, 443];
@@ -24,6 +26,12 @@ const CONFIG_PATHS = [
   '/config.json',
   '/.env',
 ];
+
+const DOTENV_PATH = '/.env';
+const MCP_CONFIG_PATHS = new Set(['/mcp.json', '/.cursor/mcp.json', '/.vscode/mcp.json']);
+
+// Probe bodies are capped at this many characters.
+const BODY_CAP = 10000;
 
 // MCP endpoint paths to check
 const MCP_SSE_PATHS = ['/sse', '/events', '/mcp/sse', '/mcp/events'];
@@ -165,6 +173,76 @@ function looksLikeToolsListing(result: { contentType?: string; body?: string }):
     // A truncated listing (the body is capped at 10 KB) still names the key.
     return /"tools"\s*:/.test(body);
   }
+}
+
+interface ProbeResult {
+  status: number;
+  contentType?: string;
+  body?: string;
+}
+
+/** What a port answers for a path that cannot exist, and the path it was asked. */
+interface Baseline {
+  path: string;
+  result: ProbeResult | null;
+}
+
+function baselinePath(): string {
+  return `/hma-baseline-${randomBytes(8).toString('hex')}`;
+}
+
+/** The top-level keys of a JSON object body, or null when the body is not one. */
+function jsonObjectKeys(body: string): Set<string> | null {
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? new Set(Object.keys(parsed)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isTruncatedObject(body: string): boolean {
+  return body.length >= BODY_CAP && body.trimStart().startsWith('{');
+}
+
+/**
+ * Whether a body is the answer the port gives for any path. A catch-all route
+ * (an SPA shell, a JSON fallback) answers 200 everywhere, so a 200 alone proves
+ * nothing: the body has to differ from what a path that cannot exist returned,
+ * as text once each request's own path is removed (a not-found page that echoes
+ * the path), and as a JSON object's top-level key set (a fallback whose values
+ * vary per request).
+ */
+function matchesBaseline(body: string, path: string, baseline: Baseline): boolean {
+  const base = baseline.result?.body;
+  if (base === undefined) return false;
+  if (body.split(path).join('') === base.split(baseline.path).join('')) return true;
+  const keys = jsonObjectKeys(body);
+  const baseKeys = jsonObjectKeys(base);
+  return !!keys && !!baseKeys && keys.size === baseKeys.size && [...keys].every((k) => baseKeys.has(k));
+}
+
+/** A dotenv file opens with a `KEY=value` line, whatever the content type. */
+function looksLikeDotenv(body: string): boolean {
+  const first = body.split(/\r?\n/).map((l) => l.trim()).find((l) => l !== '' && !l.startsWith('#'));
+  return !!first && /^[A-Za-z_][A-Za-z0-9_]*=/.test(first);
+}
+
+/** The shape the file at `path` has when it is really there. */
+function hasConfigShape(path: string, body: string): boolean {
+  if (path === DOTENV_PATH) return looksLikeDotenv(body);
+  const keys = jsonObjectKeys(body);
+  if (MCP_CONFIG_PATHS.has(path)) {
+    if (keys) return keys.has('mcpServers') || keys.has('servers');
+    // A body cut at the cap does not parse, but still names its keys.
+    return isTruncatedObject(body) && /"(?:mcpServers|servers)"\s*:/.test(body);
+  }
+  return !!keys || isTruncatedObject(body);
+}
+
+/** A command the user can run to see what the scan saw at this URL. */
+function curlVerify(url: string): string {
+  return `curl -si ${citationPath(url) ?? shellQuote(url)}`;
 }
 
 function describeStates(states: Record<number, PortState>): string {
@@ -394,11 +472,14 @@ export class ExternalScanner {
     // The five probe categories run side by side; each is a short sequential
     // chain (the longest is CONFIG_PATHS, MAX_PROBE_CHAIN). 0.33.0 ran all
     // seventeen requests one after another, which is what outran the budget.
+    // The baseline request starts with them, so waiting on it adds no step.
+    const missing = baselinePath();
+    const baseline: Promise<Baseline> = this.httpProbe(baseUrl + missing, timeout, insecure).then((result) => ({ path: missing, result }));
     const [sse, tools, configs, claudeMd, apiKeys] = await Promise.all([
       this.probeMcpSse(baseUrl, port, timeout, insecure),
       this.probeMcpTools(baseUrl, port, timeout, insecure),
-      this.probeConfigFiles(baseUrl, port, timeout, insecure),
-      this.probeClaudeMd(baseUrl, port, timeout, insecure),
+      this.probeConfigFiles(baseUrl, port, timeout, insecure, baseline),
+      this.probeClaudeMd(baseUrl, port, timeout, insecure, baseline),
       this.probeRootForApiKeys(baseUrl, port, timeout, insecure),
     ]);
     return [...sse, ...tools, ...configs, ...claudeMd, ...apiKeys];
@@ -446,38 +527,48 @@ export class ExternalScanner {
     return [];
   }
 
-  private async probeConfigFiles(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
+  /**
+   * #448 — a 200 used to be the whole test, so a host answering every path
+   * with the same JSON shell reported six CRITICAL config files it did not
+   * have. A config counts when its body differs from the baseline and has
+   * its file's shape.
+   */
+  private async probeConfigFiles(baseUrl: string, port: number, timeout: number, insecure: boolean, baseline: Promise<Baseline>): Promise<ExternalFinding[]> {
     const findings: ExternalFinding[] = [];
     for (const path of CONFIG_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
-      if (result && result.status === 200 && result.body) {
-        // Check if it looks like JSON config
-        if (
-          result.contentType?.includes('application/json') ||
-          result.body.trim().startsWith('{')
-        ) {
-          findings.push({
-            id: generateId(),
-            checkId: 'CONFIG-EXPOSED',
-            severity: 'critical',
-            title: 'Configuration File Exposed',
-            description: `Configuration file ${path} is publicly accessible`,
-            port,
-            path,
-            evidence: `HTTP 200 at ${path}`,
-            impact: 'Configuration files may contain sensitive settings, API keys, or server details',
-            fix: 'Remove file from public access or configure web server to deny access',
-          });
-        }
+      if (
+        result && result.status === 200 && result.body &&
+        hasConfigShape(path, result.body) &&
+        !matchesBaseline(result.body, path, await baseline)
+      ) {
+        findings.push({
+          id: generateId(),
+          checkId: 'CONFIG-EXPOSED',
+          severity: 'critical',
+          title: 'Configuration File Exposed',
+          description: `Configuration file ${path} is publicly accessible`,
+          port,
+          path,
+          evidence: path === DOTENV_PATH
+            ? `HTTP 200 at ${path} opening with a KEY=value line, unlike the answer for a path that does not exist`
+            : `HTTP 200 at ${path} with a JSON object, unlike the answer for a path that does not exist`,
+          impact: 'Configuration files may contain sensitive settings, API keys, or server details',
+          fix: 'Remove file from public access or configure web server to deny access',
+          verify: curlVerify(baseUrl + path),
+        });
       }
     }
     return findings;
   }
 
-  private async probeClaudeMd(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
+  private async probeClaudeMd(baseUrl: string, port: number, timeout: number, insecure: boolean, baseline: Promise<Baseline>): Promise<ExternalFinding[]> {
     for (const path of CLAUDE_MD_PATHS) {
       const result = await this.httpProbe(baseUrl + path, timeout, insecure);
-      if (result && result.status === 200 && result.body && !looksLikeHtml(result.body)) {
+      if (
+        result && result.status === 200 && result.body && !looksLikeHtml(result.body) &&
+        !matchesBaseline(result.body, path, await baseline)
+      ) {
         return [{
           id: generateId(),
           checkId: 'CLAUDE-MD-EXPOSED',
@@ -489,6 +580,7 @@ export class ExternalScanner {
           evidence: `Found CLAUDE.md at ${path}`,
           impact: 'System instructions reveal agent behavior, capabilities, and potential weaknesses',
           fix: 'Remove file from public access or configure web server to deny access',
+          verify: curlVerify(baseUrl + path),
         }];
       }
     }
@@ -522,13 +614,13 @@ export class ExternalScanner {
     url: string,
     timeout: number,
     insecure = false
-  ): Promise<{ status: number; contentType?: string; body?: string } | null> {
+  ): Promise<ProbeResult | null> {
     return new Promise((resolve) => {
       const isHttps = url.startsWith('https://');
       const client = isHttps ? https : http;
       let settled = false;
       let deadline: NodeJS.Timeout | undefined;
-      const finish = (value: { status: number; contentType?: string; body?: string } | null) => {
+      const finish = (value: ProbeResult | null) => {
         if (settled) return;
         settled = true;
         if (deadline) clearTimeout(deadline);

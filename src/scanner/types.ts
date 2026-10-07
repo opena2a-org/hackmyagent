@@ -15,6 +15,8 @@ export interface ExternalFinding {
   evidence: string;
   impact: string;
   fix: string;
+  /** A command that shows what the scan saw, e.g. `curl -si <url>`. */
+  verify?: string;
 }
 
 /**
