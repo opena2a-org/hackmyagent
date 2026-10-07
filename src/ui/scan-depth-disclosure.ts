@@ -19,6 +19,7 @@
 
 import { CHECK_METHOD_PREFIXES } from '../hardening/coverage-ledger';
 import { citationTarget } from './shell-quote';
+import { CLI_PREFIX } from '../cli-prefix';
 
 export interface CheckGroupTally {
   /** Check groups that returned without throwing. */
@@ -59,15 +60,24 @@ export function scanDepthDisclosure(opts: {
   executions?: readonly { completed: boolean }[];
   /** Directory as the user typed it, for the follow-up command. */
   target?: string;
+  /**
+   * `--static-only`: the semantic layer did not run. A quick run with it and
+   * one without it scored 98 and 50 on the same tree, and the two score lines
+   * carried the same suffix; only the Checks line (`0 semantic`) differed.
+   */
+  staticOnly?: boolean;
 }): ScanDepthDisclosure | null {
   if (opts.scanDepth !== 'quick' || !opts.executions) return null;
   const { ran, registered } = checkGroupTally(opts.executions);
   if (ran >= registered) return null;
+  const semantic = opts.staticOnly ? ', semantic layer off' : '';
   return {
-    scoreSuffix: `  (over ${ran} of ${registered} check groups — scan depth quick)`,
+    scoreSuffix: `  (over ${ran} of ${registered} check groups${semantic} — scan depth quick)`,
+    // With the CLI prefix, like every other command the report cites: a bare
+    // `secure <dir>` pasted into a shell is `command not found`.
     followup:
       opts.target !== undefined
-        ? `Run \`secure ${citationTarget(opts.target)}\` for the standard-depth score.`
+        ? `Run \`${CLI_PREFIX} secure ${citationTarget(opts.target)}\` for the standard-depth score.`
         : undefined,
   };
 }
