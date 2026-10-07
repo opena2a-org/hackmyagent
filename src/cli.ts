@@ -5296,7 +5296,9 @@ Change scope (--range, --staged):
               wroteReportFile = true;
               console.error(`Report written to ${options.output}`);
             } catch (err) {
-              const why = err instanceof Error ? err.message : String(err);
+              // #880 — the system message quotes the same path raw, so it is
+              // escaped as the top-level error handler escapes one.
+              const why = escapeForDisplay(err instanceof Error ? err.message : String(err));
               console.error(`Could not write the report to ${escapePathForDisplay(String(options.output))}: ${why}`);
               console.error('The report follows on stdout.');
             }

@@ -105,6 +105,22 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
     expect(r.stderr).not.toContain('Report written to');
   });
 
+  // #880 — RED-ON-BASE (e1fc64b0): the path was escaped, then the system
+  // error message repeated it raw, so an ESC in the `-o` path reached the
+  // terminal in the second copy.
+  it('RED-ON-BASE: an unwritable -o path with a control character reaches stderr escaped in both copies', () => {
+    const dir = tmp('hma-880-');
+    const missing = path.join(dir, 'no-such-dir');
+    const out = path.join(dir, 'no-such-output-dir', 'a\u001b[31mb.json');
+    const r = run(['secure', missing, '--json', '-o', out]);
+    expect(r.status, r.stderr).toBe(2);
+    const line = r.stderr.split('\n').find((l) => l.startsWith('Could not write the report'));
+    expect(line, r.stderr).toBeDefined();
+    expect(r.stderr).not.toContain('\u001b');
+    expect(line!.split('a\\e[31mb.json')).toHaveLength(3);
+    expect(JSON.parse(r.stdout).coverage.reason).toBe('target-not-found');
+  });
+
   // #882 — RED-ON-BASE (a67dce41): `--format sarif -o` and `--format html -o`
   // exited 2 with no report file and nothing naming the file, while `--help`
   // said `-o` writes those reports. No not-measured SARIF is written: an
