@@ -82,8 +82,9 @@ const CATEGORY_LABELS: Record<string, string> = {
  *
  * NO DETECTOR IN `src/semantic/` REACHES THAT RECOVERY TODAY, and an earlier
  * revision of this docblock claimed it did. Enumerated: `SEM-CRED-001`
- * (`structural/credential-context.ts`) is the only site that sets `evidence`
- * at all, and it always sets a valid `line` AND `evidence.lines[0].n`, so
+ * (`structural/credential-context.ts`) and the bounded `SEM-INST-001`
+ * (`structural/instruction.ts`, #734) are the only sites that set `evidence`
+ * at all, and both always set a valid `line` AND `evidence.lines[0].n`, so
  * `resolveFindingLine` returns at step 1 without consulting `rawContent`.
  * Every semantic finding that LACKS a line — `SEM-MCP-005/006` (cross-server
  * and whole-file), the other `SEM-MCP-*` checks when their search of the raw

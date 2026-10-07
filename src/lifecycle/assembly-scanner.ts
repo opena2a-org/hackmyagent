@@ -400,6 +400,24 @@ function scanAssembledPrompt(
     if (comp.role === 'soul' || comp.role === 'systemInstruction') continue;
     // Flag if a non-safety component is >60% of total assembled prompt
     if (comp.content.length > totalLength * DISPLACEMENT_SHARE && totalLength > DISPLACEMENT_MIN_TOTAL) {
+      // #734 — with no safety component in the assembly there is nothing to
+      // displace, so the share measures nothing. Recorded as not applicable
+      // (no severity, no score weight) rather than as a failing high.
+      if (safetyComponents.length === 0) {
+        findings.push({
+          checkId: 'LIFECYCLE-003',
+          name: 'Context window displacement',
+          description: 'Detects a non-safety component large enough to push safety instructions out of the effective attention window of the assembled prompt.',
+          category: 'context-lifecycle',
+          notApplicable: {
+            subject: 'safety component (SOUL.md or system prompt)',
+            reason: 'No safety component in the assembled prompt to displace.',
+          },
+          message: 'Not applicable: no safety component in the assembled prompt to displace',
+          fixable: false,
+        });
+        break;
+      }
       interactions.push({
         components: [comp.source, ...(safetyComponents.map(c => c.source))],
         attackType: 'displacementAttack',

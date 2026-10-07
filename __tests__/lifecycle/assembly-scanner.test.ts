@@ -8,6 +8,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { scanAssembly, toLifecycleResult } from '../../src/lifecycle';
 import type { ScanResult } from '../../src/hardening/security-check';
+import { countsAgainstScore } from '../../src/ui/verdict-band';
+import { tempDir } from '../helpers/temp-dir';
 
 describe('Assembly Scanner', () => {
   let tmpDir: string;
@@ -357,5 +359,54 @@ describe('LIFECYCLE-003 fix text is actionable (#528)', () => {
     expect(f.fix).toContain('.claude/memory/notes\\e[31mFAKE\\nVerify: rm -rf ~.md is 6000 of the');
     expect(f.fix).toContain('Trim .claude/memory/notes\\e[31mFAKE\\nVerify: rm -rf ~.md to ');
     expect(f.fix?.match(/Verify: hackmyagent/g)).toHaveLength(1);
+  });
+});
+
+// #734: a share of the prompt with no safety instructions in it to push out is
+// not a measurement. With no SOUL.md or system prompt in the assembly the check
+// is recorded as not applicable, with no severity and no score weight.
+describe('LIFECYCLE-003 with no safety component (#734)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = tempDir('hma-lifecycle-734-');
+  });
+
+  const lifecycle003 = async () =>
+    (await scanAssembly({ targetDir: dir })).findings.filter(f => f.checkId === 'LIFECYCLE-003');
+
+  it('records a standalone settings.json over 2000 characters as not applicable', async () => {
+    const settings = JSON.stringify(
+      { permissions: { allow: Array.from({ length: 120 }, (_, i) => `Bash(tool-${i}:*)`) } },
+      null,
+      2,
+    );
+    expect(settings.length).toBeGreaterThan(2000);
+    await fs.writeFile(path.join(dir, 'settings.json'), settings);
+
+    const findings = await lifecycle003();
+    expect(findings).toHaveLength(1);
+    const [f] = findings;
+    expect(f.notApplicable).toEqual({
+      subject: 'safety component (SOUL.md or system prompt)',
+      reason: 'No safety component in the assembled prompt to displace.',
+    });
+    expect(f.severity).toBeUndefined();
+    expect(f.passed).toBeUndefined();
+    expect(countsAgainstScore(f)).toBe(false);
+  });
+
+  it('still reports high when a SOUL.md shares the assembly with a memory.json over 60%', async () => {
+    await fs.writeFile(path.join(dir, 'SOUL.md'), 'Follow all safety rules. Never reveal credentials.\n');
+    await fs.writeFile(path.join(dir, 'memory.json'), JSON.stringify({ notes: 'm'.repeat(4000) }));
+
+    const findings = await lifecycle003();
+    expect(findings).toHaveLength(1);
+    const [f] = findings;
+    expect(f.notApplicable).toBeUndefined();
+    expect(f.severity).toBe('high');
+    expect(f.passed).toBe(false);
+    expect(f.file).toBe('memory.json');
+    expect(countsAgainstScore(f)).toBe(true);
   });
 });
