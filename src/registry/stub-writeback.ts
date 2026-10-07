@@ -18,8 +18,11 @@
  * implemented, emitted findings, were counted in the advertised static suite,
  * and had no caller in `scanInner`, so a stub mapped to one of them would have
  * been recorded as a shipped check whose detector could never fire. Those
- * three are deleted now and the list is empty, which is exactly the change a
- * copied list would have missed — SILENTLY, in the direction that over-claims.
+ * three are deleted now and the list is empty. A copy still naming them would
+ * only have changed which refusal a stub got (`check-unreachable` instead of
+ * `check-absent`). The over-claiming direction is the opposite change: a
+ * family that loses its caller after the copy was taken stays callable in the
+ * copy, and a stub mapped to it would be recorded `integrated` — SILENTLY.
  *
  * Nothing here reads a flag that could supply evidence. `hmaVersion` comes
  * from the artifact's own `VERSION` and `reachable` is the probe's verdict,

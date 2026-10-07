@@ -162,7 +162,7 @@ function scan(
 }
 
 // Frozen per-file counts of lines matching the first expression, measured on
-// the delivered tree: 47 files, 116 lines. Line numbers are deliberately not
+// the delivered tree: 46 files, 114 lines. Line numbers are deliberately not
 // pinned — unrelated edits would shift them.
 const PATTERN_BASELINE: Record<string, number> = {
   'CHANGELOG.md': 31,
@@ -171,7 +171,6 @@ const PATTERN_BASELINE: Record<string, number> = {
   '__tests__/cli/benchmark-empty-denominator.test.ts': 1,
   '__tests__/cli/deep-scan-incomplete-verdict.test.ts': 1,
   '__tests__/cli/fix-lines-render.test.ts': 1,
-  '__tests__/cli/hma08-mark-stub.test.ts': 2,
   '__tests__/cli/hma08-pull-stubs.test.ts': 2,
   '__tests__/cli/machine-posture-not-scored.test.ts': 1,
   '__tests__/cli/opena2a-citation-and-next-steps-target.test.ts': 1,
@@ -428,8 +427,8 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC3 every public-surface file carries exactly the frozen number of lines matching the first expression', () => {
-    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(47);
-    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(116);
+    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(46);
+    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(114);
     const { hits } = scan(REPO_ROOT, PATTERN);
     expect(compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE)).toEqual([]);
   });

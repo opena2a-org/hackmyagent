@@ -101,7 +101,7 @@ export type CoverageState = 'examined' | 'not-examined' | 'truncated';
 export interface CheckExecution {
   /** Scanner method name, e.g. `checkCredentialExposure`. */
   method: string;
-  /** Check-ID prefixes this method emits, e.g. `['CRED', 'ENVLEAK']`. */
+  /** Check-ID prefixes this method emits, e.g. `['HEARTBEAT', 'SCAN']`. */
   prefixes: string[];
   /** True once the method returned without throwing. */
   completed: boolean;
@@ -292,8 +292,7 @@ export const SEMANTIC_PREFIXES: readonly string[] = [
  */
 const PREFIX_TO_CATEGORY: Readonly<Record<string, string>> = {
   CRED: 'credentials', 'AST-CRED': 'credentials', WEBCRED: 'credentials',
-  'SEM-CRED': 'credentials', 'AGENT-CRED': 'credentials', ENVLEAK: 'credentials',
-  CLIPASS: 'credentials', 'SHELL-EXFIL': 'credentials',
+  'SEM-CRED': 'credentials', 'AGENT-CRED': 'credentials', CLIPASS: 'credentials', 'SHELL-EXFIL': 'credentials',
   MCP: 'MCP', 'AST-MCP': 'MCP', 'SEM-MCP': 'MCP',
   NET: 'network', GATEWAY: 'network', WEBEXPOSE: 'network',
   // `AST-EXFIL` is egress, so it is credited to network. It, `AST-INJECT`,
@@ -304,7 +303,7 @@ const PREFIX_TO_CATEGORY: Readonly<Record<string, string>> = {
   // leaving these unmapped would understate coverage the semantic layer
   // genuinely performed.
   'AST-EXFIL': 'network',
-  INJ: 'injection', IO: 'injection', CODEINJ: 'injection', DOCKERINJ: 'injection',
+  INJ: 'injection', IO: 'injection', DOCKERINJ: 'injection',
   'AST-INJECT': 'injection',
   PROMPT: 'prompt', 'AST-PROMPT': 'prompt', 'SEM-INST': 'prompt',
   'AST-MANIP': 'prompt',
@@ -312,7 +311,7 @@ const PREFIX_TO_CATEGORY: Readonly<Record<string, string>> = {
   ENCRYPT: 'encryption',
   SESSION: 'session',
   SANDBOX: 'sandbox', PROC: 'sandbox', PERM: 'sandbox', 'SEM-PERM': 'sandbox',
-  TMPPATH: 'sandbox', TOCTOU: 'sandbox', 'AST-CODE': 'sandbox',
+  TOCTOU: 'sandbox', 'AST-CODE': 'sandbox',
   'AST-CAP': 'capabilities', 'AST-SCOPE': 'capabilities',
   SUPPLY: 'supply-chain', DEP: 'supply-chain', INSTALL: 'supply-chain',
   INTEGRITY: 'supply-chain',
@@ -458,8 +457,8 @@ export class CoverageLedger {
   /**
    * Mark every registered method with no execution record as skipped.
    *
-   * Used by the quick-depth branch, where 56 of the 62 orchestrated checks
-   * sit inside one `if (!isQuick)` block. Deriving the set from "has no record
+   * Used by the quick-depth branch, where all but six of the orchestrated
+   * checks sit inside `if (!isQuick)` blocks. Deriving the set from "has no record
    * yet" rather than from a hand-written list is deliberate: a list would
    * drift the moment a check is added to or moved out of that block, and a
    * drifted list would report a check as run when it was not — the same class

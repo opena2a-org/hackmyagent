@@ -224,7 +224,6 @@ function extractHardcodedSecrets(findings: SecurityFinding[]): HardcodedSecret[]
     "WEBCRED-",
     "SEM-CRED-",
     "AGENT-CRED-",
-    "ENVLEAK",
     "CLIPASS",
   ];
   const out: HardcodedSecret[] = [];

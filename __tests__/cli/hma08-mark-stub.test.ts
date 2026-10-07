@@ -1,13 +1,10 @@
 /**
- * HMA-08.AC3 – HMA-08.AC6 — `mark-stub`, the write-back half of the
- * observation -> shipped-check loop.
+ * `mark-stub`, the write-back half of the observation -> shipped-check loop.
  *
- * DEFECT 2 of `todo/roadmap/hackmyagent-pull-stubs-status-vocabulary-mismatch.md`:
- * nothing in HMA marked a stub integrated, so the transition was manual and
- * unaudited and nobody could answer "how many confirmed observations became a
- * shipped check". [CHIEF-CPO] 2026-08-31 ruled the UX; [CHIEF-CA] 2026-08-31
- * ruled that `integrated` is REFUSED without evidence probed from the BUILT
- * artifact.
+ * Before it, nothing in HMA marked a stub integrated, so the transition was
+ * manual and unaudited and nobody could answer "how many confirmed
+ * observations became a shipped check". `integrated` is REFUSED without
+ * evidence probed from the BUILT artifact.
  *
  * The refusals are what is under test here, because they are what makes the
  * resulting number mean anything. `UNREACHABLE_PREFIXES` is the precedent:
@@ -22,8 +19,8 @@
  * list, and an ID from a deleted family is asserted to be refused as absent.
  * Both read `dist/` — the same built module the probe reads.
  *
- * The registry leg ships separately as REG-10, so every request here goes to
- * the in-process mock and nothing needs a live registry.
+ * The registry side ships separately, so every request here goes to the
+ * in-process mock and nothing needs a live registry.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
