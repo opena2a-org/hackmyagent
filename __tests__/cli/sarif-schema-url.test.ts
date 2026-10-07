@@ -4,9 +4,9 @@
  * The three SARIF writers each carried their own copy of
  * `https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json`,
  * which returns 404 since the upstream repository moved the file off `master`.
- * They now share `SARIF_SCHEMA_URL`, the schema's own `$id`. Resolving the URL
- * needs the network, so this suite pins the value and the sharing; the value
- * was checked by hand to return 200 with a body whose `$id` is itself.
+ * They now share `SARIF_SCHEMA_URL`, the schema's own `id` (draft-04). Resolving
+ * the URL needs the network, so this suite pins the value and the sharing; the
+ * value was checked by hand to return 200 with a body whose `id` is itself.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -84,5 +84,21 @@ describe('#394 SARIF $schema', () => {
     };
     walk(srcRoot);
     expect(offenders).toEqual([]);
+  });
+
+  it('notes call the URL the schema\'s `id`, the draft-04 keyword the schema uses (#876)', () => {
+    // The OASIS schema declares `"$schema": "http://json-schema.org/draft-04/schema#"`
+    // and names itself with `"id"`; it has no `$id` member. The constant's module
+    // and every changelog note that cites the URL must name the keyword that is there.
+    const repo = path.resolve(__dirname, '../..');
+    const notes = [path.join(repo, 'src', 'output', 'sarif-schema.ts')];
+    const changelogDir = path.join(repo, 'changelog.d');
+    for (const name of fs.readdirSync(changelogDir)) {
+      const abs = path.join(changelogDir, name);
+      if (name.endsWith('.md') && fs.readFileSync(abs, 'utf8').includes(SARIF_SCHEMA_URL)) notes.push(abs);
+    }
+    const wrong = notes.filter((abs) => fs.readFileSync(abs, 'utf8').includes('`$id`'));
+    expect(wrong.map((abs) => path.relative(repo, abs))).toEqual([]);
+    expect(fs.readFileSync(notes[0], 'utf8')).toContain('`id`');
   });
 });
