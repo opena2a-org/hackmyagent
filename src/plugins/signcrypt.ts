@@ -11,6 +11,12 @@ import type {
 } from './core';
 import type { AIMCore } from '@opena2a/aim-core';
 import { resolveProjectStore, type ProjectStore } from '../store/project-store';
+import {
+  buildSigncryptBlock,
+  sha256Hex,
+  stripSigncryptBlock,
+  verifySigncryptSignature,
+} from './signcrypt-block';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -61,12 +67,10 @@ function findFiles(dir: string, pattern: RegExp, depth: number = 0): string[] {
   return results;
 }
 
+// Signed only when a signcrypt block's signature verifies under its signer
+// key: the same verifier SKILL-001 and HEARTBEAT-003 use in `secure`.
 function checkForSignature(content: string): boolean {
-  return (
-    content.includes('opena2a_signature:') ||
-    content.includes('signature:') ||
-    content.includes('-----BEGIN SIGNATURE-----')
-  );
+  return verifySigncryptSignature(content).signed;
 }
 
 function checkForHashPin(content: string): boolean {
@@ -173,17 +177,30 @@ function computeFileHash(filePath: string): string | null {
   }
 }
 
-function appendSignatureBlock(filePath: string, hash: string, aimCore?: AIMCore): void {
-  let content = fs.readFileSync(filePath, 'utf-8');
+interface AppliedBlock {
+  hash: string;
+  /** Base64 signer key, or undefined when only the hash was pinned. */
+  signer?: string;
+}
 
-  // Don't add if already signed
-  if (checkForSignature(content)) return;
+/**
+ * Replace any trailing signcrypt block with a fresh one over the content.
+ * Returns undefined when nothing was written: the file already verifies, or it
+ * already carries a matching hash pin and there is no identity to sign with.
+ */
+function appendSignatureBlock(filePath: string, aimCore?: AIMCore): AppliedBlock | undefined {
+  const content = fs.readFileSync(filePath, 'utf-8');
 
+  const verdict = verifySigncryptSignature(content);
+  if (verdict.signed) return undefined;
+
+  const body = stripSigncryptBlock(content);
+  const hash = sha256Hex(body);
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + MAX_HEARTBEAT_AGE_SECONDS * 1000).toISOString();
 
   let signatureHex = 'unsigned';
-  let signerKey = 'none';
+  let signer: string | undefined;
 
   if (aimCore) {
     try {
@@ -191,26 +208,21 @@ function appendSignatureBlock(filePath: string, hash: string, aimCore?: AIMCore)
       const data = Buffer.from(hash, 'hex');
       const sig = aimCore.sign(data);
       signatureHex = Buffer.from(sig).toString('hex');
-      signerKey = identity.publicKey;
+      signer = identity.publicKey;
     } catch {
       // No identity available — still add hash pin
     }
   }
 
-  const block = [
-    '',
-    '---',
-    '<!-- opena2a:signcrypt -->',
-    `pinned_hash: sha256:${hash}`,
-    `opena2a_signature: ${signatureHex}`,
-    `signer: ${signerKey}`,
-    `signed_at: ${now}`,
-    `expires_at: ${expiresAt}`,
-    '<!-- /opena2a:signcrypt -->',
-  ].join('\n');
+  // A pin over the current content is all an unsigned run can write;
+  // rewriting it would only move its timestamp.
+  if (!signer && verdict.reason === 'unverified') return undefined;
 
-  content += block + '\n';
-  fs.writeFileSync(filePath, content, 'utf-8');
+  const block = buildSigncryptBlock({
+    hash, signatureHex, signerKey: signer ?? 'none', signedAt: now, expiresAt,
+  });
+  fs.writeFileSync(filePath, body + block, 'utf-8');
+  return { hash, signer };
 }
 
 function saveSignatureRecord(agentDir: string, record: SignatureRecord): void {
@@ -296,23 +308,25 @@ export class SignCryptPlugin implements OpenA2APlugin {
       if (!finding.filePath || !finding.autoFixable) continue;
 
       const fullPath = path.join(agentDir, finding.filePath);
-      const hash = computeFileHash(fullPath);
-      if (!hash) continue; // Skip missing, too-large, or non-regular files
-      appendSignatureBlock(fullPath, hash, this.aimCore);
+      if (!computeFileHash(fullPath)) continue; // Skip missing, too-large, or non-regular files
+      const applied = appendSignatureBlock(fullPath, this.aimCore);
+      if (!applied) continue;
 
       const now = new Date().toISOString();
       saveSignatureRecord(agentDir, {
         target: finding.filePath,
-        hash: `sha256:${hash}`,
-        signature: 'applied',
-        signerPublicKey: this.aimCore ? this.aimCore.getIdentity().publicKey : 'none',
+        hash: `sha256:${applied.hash}`,
+        signature: applied.signer ? 'applied' : 'unsigned',
+        signerPublicKey: applied.signer ?? 'none',
         signedAt: now,
         expiresAt: new Date(Date.now() + MAX_HEARTBEAT_AGE_SECONDS * 1000).toISOString(),
       });
 
       remediations.push({
         findingId: finding.id,
-        description: `Signed ${finding.filePath} with SHA-256 hash pin and Ed25519 signature`,
+        description: applied.signer
+          ? `Signed ${finding.filePath} with SHA-256 hash pin and Ed25519 signature`
+          : `Pinned the SHA-256 hash of ${finding.filePath}; not signed, no identity to sign with`,
         // Both files this iteration wrote: the signed file and the record of it.
         filesModified: [finding.filePath, path.join(SIGNATURE_DIR, SIGNATURES_FILE)],
         rollbackAvailable: false,

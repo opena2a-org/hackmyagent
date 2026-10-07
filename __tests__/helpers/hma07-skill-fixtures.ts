@@ -8,12 +8,12 @@
  * parity suite has to spawn against the same skill the in-process suite scans.
  *
  * `signedBenignSkill()` is computed, not pasted. A skill that satisfies every
- * hygiene check has to carry a signature whose hash matches its own body, so a
+ * hygiene check has to carry a signature that verifies over its own body, so a
  * literal would rot the moment a word of the body changed — and it would rot
  * SILENTLY, by turning the no-false-reach suite's "zero new findings" into a
- * SKILL-019 the suite then has to tolerate.
+ * SKILL-001 the suite then has to tolerate.
  */
-import * as crypto from 'node:crypto';
+import { signcryptSigned } from './signcrypt-signed';
 
 /**
  * A skill that trips the SKILL-* family hard: remote fetch, pipe-to-shell,
@@ -84,16 +84,12 @@ It reads the document it is given and writes the formatted result back.
 `;
 
 /**
- * The benign body plus an `opena2a-guard` block whose hash matches it, so
- * SKILL-001 (unsigned) passes and SKILL-019 (stale signature) does not fire.
- *
- * The hashed value mirrors SKILL-019's own computation exactly: the file with
- * the signature block removed and ONE trailing newline stripped.
+ * The benign body plus a signcrypt block whose Ed25519 signature verifies over
+ * it, so SKILL-001 (unsigned) passes. A digest the file carries of itself is
+ * not a signature (#269), so this has to be a real one.
  */
 export function signedBenignSkill(): string {
-  const withoutSignature = (BENIGN_SKILL_BODY + '\n').replace(/\n$/, '');
-  const hash = crypto.createHash('sha256').update(withoutSignature).digest('hex');
-  return `${BENIGN_SKILL_BODY}<!-- opena2a-guard hash="sha256:${hash}" signed="2026-08-30T00:00:00.000Z" -->\n`;
+  return signcryptSigned(BENIGN_SKILL_BODY);
 }
 
 /** SKILL.md of a skill whose Markdown is unremarkable — the payload is in the bundle. */

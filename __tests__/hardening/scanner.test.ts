@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
 import { initThrowawayRepo } from '../helpers/throwaway-repo';
+import { signcryptSigned } from '../helpers/signcrypt-signed';
 
 /**
  * Initialize a throwaway git repo so `git check-ignore` has real ground truth.
@@ -1933,10 +1934,11 @@ describe('OpenClaw skill checks', () => {
   });
 
   it('SKILL-001: passes for signed skills', async () => {
+    // A signature that verifies, not a field name (#269).
     await fs.mkdir(path.join(tempDir, 'skills', 'test-skill'), { recursive: true });
     await fs.writeFile(
       path.join(tempDir, 'skills', 'test-skill', 'SKILL.md'),
-      '---\nopena2a_signature:\n  version: 1\n  signature: abc123\n---\n# Signed Skill'
+      signcryptSigned('# Signed Skill\n')
     );
 
     const result = await scanner.scan({ targetDir: tempDir });
