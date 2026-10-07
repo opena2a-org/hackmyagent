@@ -19702,12 +19702,25 @@ dist/
 
     // Check for system-prompt source files
     const srcFiles = await this.walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS, '.md', '.txt'], 0, 2);
+    // #354 — the known names were probed at the root only, while this walk
+    // already reached two directories down, so `sub/CLAUDE.md` was silent on
+    // the same bytes `CLAUDE.md` is reported for. Nested hits from the same
+    // walk are appended AFTER everything above, sorted, so a root-only tree
+    // reads exactly the files it read before and none can be pushed past the
+    // cap below. Root-level hits are left to the probe, which stays the only
+    // reader of the scan root.
+    const nestedPromptFiles: Array<{ path: string; rel: string }> = [];
     for (const file of srcFiles) {
       const basename = path.basename(file).toLowerCase();
+      const rel = path.relative(targetDir, file);
       if (promptFilePatterns.some(p => basename === p.toLowerCase())) {
-        allFiles.push({ path: file, rel: path.relative(targetDir, file) });
+        allFiles.push({ path: file, rel });
+      } else if (rel.includes(path.sep) && promptFileNames.some(n => basename === n.toLowerCase())) {
+        nestedPromptFiles.push({ path: file, rel });
       }
     }
+    nestedPromptFiles.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    allFiles.push(...nestedPromptFiles);
 
     for (const { path: filePath, rel: relativePath } of allFiles.slice(0, 20)) {
       try {
