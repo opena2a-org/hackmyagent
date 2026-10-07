@@ -292,7 +292,6 @@ const TAXONOMY_MAP: Record<string, string> = {
   'ENV-002': 'RETROACTIVE-PRIV',
   'ENV-003': 'RETROACTIVE-PRIV',
   'ENV-004': 'RETROACTIVE-PRIV',
-  'ENVLEAK-001': 'RETROACTIVE-PRIV',
   'ENCRYPT-001': 'RETROACTIVE-PRIV',
   'ENCRYPT-002': 'RETROACTIVE-PRIV',
   'ENCRYPT-003': 'RETROACTIVE-PRIV',
@@ -340,7 +339,6 @@ const TAXONOMY_MAP: Record<string, string> = {
   'TOOL-004': 'SOUL-INJECT',
 
   // Code injection / input validation defense gaps
-  'CODEINJ-001': 'CODE-INJECTION',
   'INJ-001': 'CODE-INJECTION',
   'INJ-002': 'CODE-INJECTION',
   'INJ-003': 'CODE-INJECTION',
@@ -363,7 +361,6 @@ const TAXONOMY_MAP: Record<string, string> = {
   'SANDBOX-002': 'SANDBOX-ESCAPE',
   'SANDBOX-003': 'SANDBOX-ESCAPE',
   'SANDBOX-004': 'SANDBOX-ESCAPE',
-  'TMPPATH-001': 'SANDBOX-ESCAPE',
 
   // Network exposure / exfiltration channels
   'NET-004': 'SKILL-EXFIL',

@@ -14,12 +14,12 @@
  * `UNREACHABLE_PREFIXES` out of the RUNNING build's coverage inventory — the
  * same two tables `secure --json` reports from — rather than re-reading
  * `src/` or carrying a copy of either list. `UNREACHABLE_PREFIXES` is the
- * precedent the whole gate exists for: `CODEINJ`, `TMPPATH` and `ENVLEAK` are
- * implemented, emit findings, are counted in the advertised static suite, and
- * have no caller in `scanInner`, so a stub mapped to one of them would be
- * recorded as a shipped check whose detector can never fire. A copied list
- * would go stale the day one of them is wired in, and it would go stale
- * SILENTLY, in the direction that over-claims.
+ * precedent the whole gate exists for: `CODEINJ`, `TMPPATH` and `ENVLEAK` were
+ * implemented, emitted findings, were counted in the advertised static suite,
+ * and had no caller in `scanInner`, so a stub mapped to one of them would have
+ * been recorded as a shipped check whose detector could never fire. Those
+ * three are deleted now and the list is empty, which is exactly the change a
+ * copied list would have missed — SILENTLY, in the direction that over-claims.
  *
  * Nothing here reads a flag that could supply evidence. `hmaVersion` comes
  * from the artifact's own `VERSION` and `reachable` is the probe's verdict,
@@ -132,11 +132,16 @@ export function reachablePrefixes(): string[] {
  * In-process reachability probe against the running build's inventory.
  *
  * Returns the refusal, or null when the check ID names a family this build
- * both ships and calls.
+ * both ships and calls. `unreachablePrefixes` defaults to the build's own
+ * list; it is a parameter only so the refusal stays testable while that list
+ * is empty.
  */
-export function probeReachability(checkId: string): StubRefusal | null {
+export function probeReachability(
+  checkId: string,
+  unreachablePrefixes: readonly string[] = UNREACHABLE_PREFIXES,
+): StubRefusal | null {
   const shown = escapeForDisplay(checkId);
-  const unreachable = checkIdPrefix(checkId, UNREACHABLE_PREFIXES);
+  const unreachable = checkIdPrefix(checkId, unreachablePrefixes);
   if (unreachable) {
     return {
       code: 'check-unreachable',

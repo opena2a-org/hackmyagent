@@ -45,11 +45,16 @@ describe('check-count single source of truth', () => {
     // of the new `text` category, and they are inventory keys rather than
     // declared exclusions because they are stable rules — which is what makes
     // `check-metadata` list them and `explain <id>` answer for them.
-    expect(counts.total).toBe(365);
-    expect(counts.static).toBe(320);
+    //
+    // 365/320/89/74 → 362/317/86/71 (#395): CODEINJ-001, TMPPATH-001 and
+    // ENVLEAK-001 were counted with no caller, duplicates of NEMO-005, -006
+    // and -007, and are deleted. Each was the only id in its prefix, so the
+    // three `codeinj`, `tmppath` and `envleak` categories go with them.
+    expect(counts.total).toBe(362);
+    expect(counts.static).toBe(317);
     expect(counts.semantic).toBe(45);
-    expect(counts.totalCategories).toBe(89);
-    expect(counts.staticCategories).toBe(74);
+    expect(counts.totalCategories).toBe(86);
+    expect(counts.staticCategories).toBe(71);
   });
 
   // #482: the golden values above are pinned to the taxonomy, but the README

@@ -11,6 +11,7 @@ import {
   categoryForPrefix,
   categoryForCheckId,
 } from '../../src/hardening/coverage-ledger';
+import { getTaxonomyMap } from '../../src/hardening/taxonomy';
 import { runNanoMindScan } from '../../src/nanomind-core/scanner-bridge';
 
 /**
@@ -252,26 +253,51 @@ describe('secure coverage honesty', () => {
       }
     });
 
+    const definitions = [...scannerSrc.matchAll(/^ {2}private async (check\w+)\(/gm)];
+    const hasCaller = (method: string) => scannerSrc.includes(`this.${method}(`);
+
     /**
-     * `CODEINJ-001`, `TMPPATH-001` and `ENVLEAK-001` are implemented, counted
-     * in the advertised `310 static`, and called from nowhere. If someone
-     * wires one in, this fails so the constant — and the `--json` claim built
-     * from it — gets corrected rather than quietly becoming false.
+     * #395: `checkCodeInjection` (`CODEINJ-001`), `checkTmpPaths`
+     * (`TMPPATH-001`) and `checkEnvLeak` (`ENVLEAK-001`) emitted findings and
+     * were called from nowhere — their detections had been folded into
+     * NEMO-005, -006 and -007 — while their IDs stayed in the advertised
+     * static count. A check method with no call site is detection the report
+     * can credit and the scan can never run.
+     */
+    it('defines no check method the scan never calls', () => {
+      expect(definitions.length).toBeGreaterThan(50);
+      expect(definitions.map(d => d[1]).filter(m => !hasCaller(m))).toEqual([]);
+    });
+
+    it('advertises no check the code records as removed', () => {
+      const taxonomySrc = readFileSync(
+        join(__dirname, '../../src/hardening/taxonomy.ts'),
+        'utf-8',
+      );
+      const removed = [
+        ...`${scannerSrc}\n${taxonomySrc}`.matchAll(/\b([A-Z][A-Z0-9-]*-\d+) removed\b/g),
+      ].map(m => m[1]);
+      expect(removed.length).toBeGreaterThan(0);
+      const taxonomy = getTaxonomyMap();
+      expect(removed.filter(id => id in taxonomy)).toEqual([]);
+    });
+
+    /**
+     * A prefix belongs in `UNREACHABLE_PREFIXES` exactly when a `check*`
+     * method with no caller emits it. Checked in both directions, so the
+     * `--json` claim built from the constant can neither name a family the
+     * scan runs nor omit one it cannot.
      */
     it('keeps the unreachable-check list true', () => {
-      const methodFor: Record<string, string> = {
-        CODEINJ: 'checkCodeInjection',
-        TMPPATH: 'checkTmpPaths',
-        ENVLEAK: 'checkEnvLeak',
-      };
-      for (const prefix of UNREACHABLE_PREFIXES) {
-        const method = methodFor[prefix];
-        expect(method, `no method recorded for ${prefix}`).toBeTruthy();
-        expect(
-          scannerSrc.includes(`this.${method}(`),
-          `${method} now has a caller — remove ${prefix} from UNREACHABLE_PREFIXES`,
-        ).toBe(false);
-      }
+      const emittedByUncalled = new Set<string>();
+      definitions.forEach((d, i) => {
+        if (hasCaller(d[1])) return;
+        const body = scannerSrc.slice(d.index, definitions[i + 1]?.index);
+        for (const m of body.matchAll(/checkId: '([A-Z][A-Z0-9-]*)-\d+'/g)) {
+          emittedByUncalled.add(m[1]);
+        }
+      });
+      expect([...UNREACHABLE_PREFIXES].sort()).toEqual([...emittedByUncalled].sort());
     });
   });
 });
