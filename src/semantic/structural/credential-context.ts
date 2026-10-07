@@ -406,6 +406,10 @@ function isPlaceholderUrlPassword(password: string): boolean {
   const trimmed = password.trim();
   if (!trimmed || trimmed.length > MAX_PLACEHOLDER_CHARS) return false;
 
+  // Masks written over a value that was removed. Whole token only:
+  // `xREDACTEDx` is a password that happens to contain the word.
+  if (trimmed === 'REDACTED' || /^x{8,}$/i.test(trimmed)) return true;
+
   const angle = /^<([A-Za-z][A-Za-z0-9 _-]*)>$/.exec(trimmed);
   if (angle) {
     const body = angle[1];
@@ -442,6 +446,23 @@ function isPlaceholderUrlPassword(password: string): boolean {
       // secret. `password`, `credentials`, `here`, `token` are not hex.
       !/^[0-9a-f]{8,}$/.test(w),
   );
+}
+
+/**
+ * URL passwords that are the dictionary defaults themselves (#556). Matched as
+ * the whole token after trimming, case-insensitively — `password-8f3Kq` and
+ * `changeme-prod` are real passwords that contain the word.
+ *
+ * Reported, not suppressed: a service deployed with one of these accepts the
+ * first password anyone tries. But the value is documentation far more often
+ * than a leak, so it is reported at `low`, which neither caps the score nor
+ * fails the run. `default`, `none`, `null`, `true` and numeric passwords are
+ * deliberately not here and keep the file's severity.
+ */
+const DEFAULT_URL_PASSWORDS = new Set(['password', 'changeme']);
+
+function isDefaultUrlPassword(password: string): boolean {
+  return DEFAULT_URL_PASSWORDS.has(password.trim().toLowerCase());
 }
 
 /**
@@ -493,6 +514,34 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       // on the same line. split/join catches all occurrences without partial-leak
       // and stays ES2020-safe (replaceAll is ES2021).
       const safeContent = line.split(password).join('[REDACTED]');
+      if (isDefaultUrlPassword(password)) {
+        findings.push({
+          id: 'SEM-CRED-001',
+          title: 'Placeholder or default password in URL',
+          description: `Database or service URL in ${file.path} uses a placeholder or default password (${urlPwMasked}). A service deployed with it accepts the first password anyone tries.`,
+          rationale:
+            'A dictionary default in a connection string is usually documentation, not a leaked secret. It still must not reach a deployed service, where it is the first value an attacker guesses.',
+          category: 'credential',
+          severity: 'low',
+          file: file.path,
+          line: i + 1,
+          recommendation: 'Replace it with a reference such as ${DB_PASSWORD} before deploying.',
+          layer: 2,
+          autoFixable: false,
+          evidence: {
+            kind: 'positive',
+            lines: [
+              {
+                n: i + 1,
+                content: safeContent.trim(),
+                why: `URL uses a placeholder or default password (${urlPwMasked}). Replace it with a reference before deploying.`,
+              },
+            ],
+          },
+          concept: 'secretless-vault',
+        });
+        continue;
+      }
       findings.push({
         id: 'SEM-CRED-001',
         title: 'Password embedded in URL',
