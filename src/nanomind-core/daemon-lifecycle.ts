@@ -12,9 +12,9 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { homedir } from 'node:os';
 
 const DEFAULT_PORT = 47200;
@@ -100,15 +100,19 @@ export interface DaemonCommand {
  * CLI is installed where HMA can find it.
  *
  * The interpreter is the Node binary already running HMA and the daemon CLI
- * is an absolute path found relative to this package. No command name is
- * looked up on PATH, so a `node` or `nanomind-daemon` earlier on PATH is never
- * what runs. A daemon installed only globally is not started; start it with
- * `nanomind-daemon start` and HMA finds it through the health check.
+ * is an absolute path. No command name is looked up on PATH, so a `node` or
+ * `nanomind-daemon` earlier on PATH is never what runs.
  *
  * Search order:
  * 1. Monorepo sibling checkout (development)
  * 2. The @nanomind/daemon package, resolved the way Node resolves this
- *    package's own dependencies
+ *    package's own dependencies: a `node_modules` directory at or above this
+ *    package, then NODE_PATH and Node's global folders. When HMA itself is
+ *    installed globally, that includes a global @nanomind/daemon install. The
+ *    package's `bin` must name a file inside the package directory.
+ *
+ * A daemon this search does not find is not started; start it with
+ * `nanomind-daemon start` and HMA finds it through the health check.
  *
  * `baseDir` and `execPath` are parameters so tests can supply their own.
  */
@@ -139,12 +143,23 @@ function findDaemonCli(baseDir: string): string | null {
     if (typeof bin !== 'string') {
       return null;
     }
-    const cli = join(dirname(manifestPath), bin);
-    return existsSync(cli) ? cli : null;
+    const packageDir = dirname(manifestPath);
+    const cli = join(packageDir, bin);
+    if (!existsSync(cli)) {
+      return null;
+    }
+    // A `bin` of `../../x.js`, or a link that leads out of the package,
+    // would hand the Node binary a file the package does not contain.
+    return isInside(realpathSync(packageDir), realpathSync(cli)) ? cli : null;
   } catch {
     // Not installed, or a manifest that cannot be read
     return null;
   }
+}
+
+function isInside(dir: string, path: string): boolean {
+  const rel = relative(dir, path);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 /**

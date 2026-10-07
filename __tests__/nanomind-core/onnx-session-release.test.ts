@@ -55,13 +55,15 @@ beforeAll(() => {
   home = path.join(root, 'home');
   target = path.join(root, 'target');
   // The classifier finds a model under $HOME/.nanomind/models, and the
-  // download step skips any file that already exists there. The stand-in
-  // session never reads these bytes, so the run stays offline.
+  // download step skips any file that is there at its pinned size (the byte
+  // counts in tme-classifier.ts). The stand-in session never reads these
+  // bytes, so the run stays offline. The tokenizer is parsed as JSON, so it
+  // is padded to its size with trailing whitespace.
   const models = path.join(home, '.nanomind', 'models');
   mkdirSync(models, { recursive: true });
-  writeFileSync(path.join(models, 'tokenizer.json'), '{"the": 2}\n');
-  writeFileSync(path.join(models, 'nanomind-tme.onnx'), '');
-  writeFileSync(path.join(models, 'nanomind-tme.onnx.data'), '');
+  writeFileSync(path.join(models, 'tokenizer.json'), '{"the": 2}'.padEnd(168_639, '\n'));
+  writeFileSync(path.join(models, 'nanomind-tme.onnx'), Buffer.alloc(142_990));
+  writeFileSync(path.join(models, 'nanomind-tme.onnx.data'), Buffer.alloc(8_380_416));
   mkdirSync(target);
   writeFileSync(path.join(target, 'SOUL.md'), SOUL);
 });

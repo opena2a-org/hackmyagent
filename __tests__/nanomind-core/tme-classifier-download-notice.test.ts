@@ -26,6 +26,23 @@ import { orchestrateNanoMind } from '../../src/nanomind-core/orchestrate';
 const TOKENIZER_BYTES = 168_639;
 const ONNX_BYTES = 142_990;
 const ONNX_DATA_BYTES = 8_380_416;
+const TOKENIZER_SHA256 = '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce';
+
+/**
+ * A model cache in `dir` holding every file at its pinned size, or at the
+ * size `sizes` gives for it. The content is zeros: only the size is read
+ * before the cache is trusted.
+ */
+function writeCache(dir: string, sizes: Record<string, number> = {}): void {
+  const pinned: Record<string, number> = {
+    'tokenizer.json': TOKENIZER_BYTES,
+    'nanomind-tme.onnx': ONNX_BYTES,
+    'nanomind-tme.onnx.data': ONNX_DATA_BYTES,
+  };
+  for (const [name, bytes] of Object.entries(pinned)) {
+    writeFileSync(join(dir, name), Buffer.alloc(sizes[name] ?? bytes));
+  }
+}
 
 describe('NanoMind model download notice', () => {
   let dir: string;
@@ -107,7 +124,7 @@ describe('NanoMind model download notice', () => {
   });
 
   it('states the size of only the files it is about to fetch', async () => {
-    writeFileSync(join(dir, 'tokenizer.json'), '{}');
+    writeFileSync(join(dir, 'tokenizer.json'), Buffer.alloc(TOKENIZER_BYTES));
     failFetch();
 
     await TMEClassifier.downloadModel(dir);
@@ -117,9 +134,7 @@ describe('NanoMind model download notice', () => {
   });
 
   it('writes nothing and makes no request when every file is cached', async () => {
-    for (const name of ['tokenizer.json', 'nanomind-tme.onnx', 'nanomind-tme.onnx.data']) {
-      writeFileSync(join(dir, name), '');
-    }
+    writeCache(dir);
     const fetch = failFetch();
 
     expect(await TMEClassifier.downloadModel(dir)).toBe(true);
@@ -137,6 +152,58 @@ describe('NanoMind model download notice', () => {
     expect(hash).not.toHaveBeenCalled();
     expect(existsSync(join(dir, 'tokenizer.json'))).toBe(false);
     expect(stderr[2]).toContain(`tokenizer.json: received 10 bytes, expected ${TOKENIZER_BYTES}`);
+  });
+
+  it('rejects a file of the pinned size whose sha256 differs, and removes it', async () => {
+    vi.spyOn(TMEClassifier as any, 'downloadFile').mockImplementation(async (_url: unknown, dest: unknown) => {
+      writeFileSync(String(dest), Buffer.alloc(TOKENIZER_BYTES));
+    });
+    const hash = vi.spyOn(TMEClassifier as any, 'computeHash');
+
+    expect(await TMEClassifier.downloadModel(dir)).toBe(false);
+    expect(hash).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(dir, 'tokenizer.json'))).toBe(false);
+    expect(stderr).toHaveLength(3);
+    expect(stderr[2]).toContain('NanoMind: model download failed: tokenizer.json: sha256 does not match the pinned value.');
+    expect(stderr[2]).toContain('The classifier did not run');
+  });
+
+  it('downloads again a cached file whose size differs from its pinned byte count', async () => {
+    // A process killed part-way through a write leaves a short file behind.
+    writeCache(dir, { 'nanomind-tme.onnx.data': 4096 });
+    const urls: string[] = [];
+    vi.spyOn(TMEClassifier as any, 'downloadFile').mockImplementation(async (url: unknown) => {
+      urls.push(String(url));
+      throw new Error('getaddrinfo ENOTFOUND huggingface.co');
+    });
+
+    expect(await TMEClassifier.downloadModel(dir)).toBe(false);
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toMatch(/\/nanomind-tme\.onnx\.data$/);
+    expect(stderr[0]).toContain(`(1 file(s), ${(ONNX_DATA_BYTES / 1_000_000).toFixed(1)} MB)`);
+  });
+
+  // The cache check in the constructor: a tokenizer that matches its pin
+  // used to make every other cached file count as good, so a truncated
+  // weights file was loaded on every run, with no download and no notice.
+  it('a scan downloads again when a cached file is shorter than its pinned size', async () => {
+    writeCache(dir, { 'nanomind-tme.onnx.data': 4096 });
+    vi.spyOn(TMEClassifier as any, 'hashFileSync').mockReturnValue(TOKENIZER_SHA256);
+    const download = vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+
+    await new TMEClassifier(dir).ensureModel();
+
+    expect(download).toHaveBeenCalledTimes(1);
+  });
+
+  it('a scan uses the cache as is when every cached file has its pinned size', async () => {
+    writeCache(dir);
+    vi.spyOn(TMEClassifier as any, 'hashFileSync').mockReturnValue(TOKENIZER_SHA256);
+    const download = vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+
+    await new TMEClassifier(dir).ensureModel();
+
+    expect(download).not.toHaveBeenCalled();
   });
 
   it('refuses a redirect to a host outside huggingface.co and *.hf.co, without requesting it', async () => {
@@ -163,6 +230,10 @@ describe('model download host allowlist', () => {
     ['https://huggingface.co/opena2a/nanomind-security-classifier/resolve/x/tokenizer.json', true],
     ['https://us.aws.cdn.hf.co/xet-bridge/abc', true],
     ['https://cas-bridge.xethub.hf.co/abc', true],
+    ['https://cdn-lfs.huggingface.co/x', true],
+    ['https://cdn-lfs.us-1.huggingface.co/x', true],
+    ['https://evilhuggingface.co/x', false],
+    ['http://cdn-lfs.huggingface.co/x', false],
     ['http://huggingface.co/x', false],
     ['https://evilhf.co/x', false],
     ['https://huggingface.co.example.com/x', false],

@@ -156,6 +156,13 @@ describe('noProxyCovers', () => {
     ['us.aws.cdn.hf.co', 443, 'evil-hf.co', false],
     ['huggingface.co', 443, 'a.example b.example,huggingface.co', true],
     ['huggingface.co', 443, ' , ', false],
+    ['::1', 443, '[::1]:443', true],
+    ['::1', 443, '[::1]:8443', false],
+    ['::1', 443, '[::1]', true],
+    ['::1', 443, '::1', true],
+    ['[::1]', 443, '[::1]:443', true],
+    ['::1', 443, '[::2]:443', false],
+    ['fe80::1', 443, '[::1]', false],
   ])('%s:%d with NO_PROXY=%j -> %s', (host, port, noProxy, covered) => {
     expect(noProxyCovers(host, port, noProxy)).toBe(covered);
   });
@@ -328,6 +335,50 @@ describe('model download through a proxy', () => {
     expect(stderr[0]).not.toContain('through the proxy');
     expect(stderr[2]).toContain('HTTP 404 from huggingface.co');
     expectNoCredentials();
+  });
+
+  // The notice is printed before the first request, so it cannot name the CDN
+  // host a redirect will reach. It names the proxy for every request only
+  // when NO_PROXY covers none of the hosts a download can reach.
+  describe('the proxy the notice names, when NO_PROXY covers some of the hosts', () => {
+    const noticeFor = async (noProxyName: string, noProxy: string): Promise<string> => {
+      vi.stubEnv('HTTPS_PROXY', `http://${USER}:${ENCODED_PASSWORD}@127.0.0.1:3128`);
+      vi.stubEnv(noProxyName, noProxy);
+      const download = vi.spyOn(TMEClassifier as any, 'downloadFile').mockRejectedValue(new Error('stopped'));
+      expect(await TMEClassifier.downloadModel(dir)).toBe(false);
+      expect(download).toHaveBeenCalledTimes(1);
+      expectNoCredentials();
+      return stderr[0];
+    };
+
+    it.each([
+      // huggingface.co goes direct and the CDN under hf.co through the proxy.
+      ['NO_PROXY', 'huggingface.co'],
+      // huggingface.co goes through the proxy and the CDN direct.
+      ['NO_PROXY', '.hf.co'],
+      ['no_proxy', 'us.aws.cdn.hf.co'],
+    ])('%s=%s: names the proxy for the hosts NO_PROXY does not cover', async (name, value) => {
+      const notice = await noticeFor(name, value);
+      expect(notice).toContain(
+        `, through the proxy 127.0.0.1:3128 set in HTTPS_PROXY for the hosts ${name} does not cover.`,
+      );
+    });
+
+    it('names the proxy for every request when NO_PROXY covers none of the model hosts', async () => {
+      const notice = await noticeFor('NO_PROXY', 'localhost,.internal.example');
+      expect(notice).toContain(', through the proxy 127.0.0.1:3128 set in HTTPS_PROXY.');
+    });
+
+    it.each([
+      ['*'],
+      ['huggingface.co,hf.co'],
+      ['.huggingface.co,*.hf.co'],
+    ])('names no proxy when NO_PROXY=%s covers every model host', async (value) => {
+      const notice = await noticeFor('NO_PROXY', value);
+      expect(notice).toContain('NanoMind: downloading the classifier model');
+      expect(notice).not.toContain('through the proxy');
+      expect(notice).not.toContain('3128');
+    });
   });
 
   // The idle bound on a silent connection holds through a proxy as well: a

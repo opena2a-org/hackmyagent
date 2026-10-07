@@ -16,6 +16,13 @@ import { join, posix } from 'node:path';
 import { TMEClassifier } from '../../src/nanomind-core/inference/tme-classifier';
 
 const MODEL_REPO = 'https://huggingface.co/opena2a/nanomind-security-classifier';
+// A cached file counts only at its pinned size (the byte counts in
+// tme-classifier.ts).
+const PINNED_BYTES: Record<string, number> = {
+  'tokenizer.json': 168_639,
+  'nanomind-tme.onnx': 142_990,
+  'nanomind-tme.onnx.data': 8_380_416,
+};
 
 describe('NanoMind classifier download URL', () => {
   let dir: string;
@@ -39,7 +46,8 @@ describe('NanoMind classifier download URL', () => {
       const before = urls.length;
       await TMEClassifier.downloadModel(dir);
       if (urls.length === before) break;
-      writeFileSync(join(dir, posix.basename(new URL(urls[urls.length - 1]).pathname)), '');
+      const name = posix.basename(new URL(urls[urls.length - 1]).pathname);
+      writeFileSync(join(dir, name), Buffer.alloc(PINNED_BYTES[name] ?? 0));
     }
 
     expect(urls).toHaveLength(3);
