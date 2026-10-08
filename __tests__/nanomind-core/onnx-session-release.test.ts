@@ -24,6 +24,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { MODEL_FILES } from '../../src/nanomind-core/inference/tme-classifier';
 
 const CLI = path.join(__dirname, '..', '..', 'dist', 'cli.js');
 const PRELOAD = path.join(__dirname, '..', 'fixtures', 'stub-onnxruntime-preload.cjs');
@@ -58,16 +59,19 @@ beforeAll(() => {
   target = path.join(root, 'target');
   // The classifier finds a model under $HOME/.nanomind/models, and uses it
   // without a download only when every file has its pinned size and sha256
-  // (the values in tme-classifier.ts). These stand-in files have the pinned
+  // (MODEL_FILES in tme-classifier.ts). These stand-in files have the pinned
   // sizes; HASH_PRELOAD makes the spawned scan read their sha256 as pinned,
   // so it fetches nothing. The stand-in session never reads these bytes. The
   // tokenizer is parsed as JSON, so it is padded to its size with trailing
   // whitespace.
   models = path.join(home, '.nanomind', 'models');
   mkdirSync(models, { recursive: true });
-  writeFileSync(path.join(models, 'tokenizer.json'), '{"the": 2}'.padEnd(168_639, '\n'));
-  writeFileSync(path.join(models, 'nanomind-tme.onnx'), Buffer.alloc(142_990));
-  writeFileSync(path.join(models, 'nanomind-tme.onnx.data'), Buffer.alloc(8_380_416));
+  for (const { name, bytes } of MODEL_FILES) {
+    writeFileSync(
+      path.join(models, name),
+      name === 'tokenizer.json' ? '{"the": 2}'.padEnd(bytes, '\n') : Buffer.alloc(bytes),
+    );
+  }
   mkdirSync(target);
   writeFileSync(path.join(target, 'SOUL.md'), SOUL);
 });

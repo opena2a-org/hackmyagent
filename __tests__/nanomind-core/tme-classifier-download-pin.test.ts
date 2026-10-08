@@ -13,21 +13,13 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
-import { TMEClassifier } from '../../src/nanomind-core/inference/tme-classifier';
+import { TMEClassifier, MODEL_FILES } from '../../src/nanomind-core/inference/tme-classifier';
 
 const MODEL_REPO = 'https://huggingface.co/opena2a/nanomind-security-classifier';
-// A cached file counts only at its pinned size and sha256 (the values in
-// tme-classifier.ts).
-const PINNED_BYTES: Record<string, number> = {
-  'tokenizer.json': 168_639,
-  'nanomind-tme.onnx': 142_990,
-  'nanomind-tme.onnx.data': 8_380_416,
-};
-const PINNED_SHA256: Record<string, string> = {
-  'tokenizer.json': '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce',
-  'nanomind-tme.onnx': '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb',
-  'nanomind-tme.onnx.data': '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018',
-};
+// A cached file counts only at its pinned size and sha256, read from the
+// classifier.
+const PINNED_BYTES: Record<string, number> = Object.fromEntries(MODEL_FILES.map(f => [f.name, f.bytes]));
+const PINNED_SHA256: Record<string, string> = Object.fromEntries(MODEL_FILES.map(f => [f.name, f.sha256]));
 
 describe('NanoMind classifier download URL', () => {
   let dir: string;

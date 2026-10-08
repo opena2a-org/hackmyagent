@@ -8,24 +8,24 @@
  * directory; this preload answers the pinned sha256 for the model files in it
  * and leaves every other path to the real hash. The size check still runs.
  *
- * The values are the pins in src/nanomind-core/inference/tme-classifier.ts.
+ * The pins are read from MODEL_FILES in the built classifier module, the
+ * same module the spawned CLI checks its cache with, so a new model's pins
+ * reach this preload without an edit here.
  */
 const path = require('node:path');
-
-const PINNED_SHA256 = {
-  'tokenizer.json': '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce',
-  'nanomind-tme.onnx': '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb',
-  'nanomind-tme.onnx.data': '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018',
-};
 
 const standInDir = process.env.HMA_TEST_STAND_IN_MODEL_DIR;
 if (!standInDir) {
   throw new Error('stub-model-hash-preload: HMA_TEST_STAND_IN_MODEL_DIR is not set');
 }
 
-const { TMEClassifier } = require(
+const { TMEClassifier, MODEL_FILES } = require(
   path.join(__dirname, '..', '..', 'dist', 'nanomind-core', 'inference', 'tme-classifier.js'),
 );
+if (!Array.isArray(MODEL_FILES) || MODEL_FILES.length === 0) {
+  throw new Error('stub-model-hash-preload: dist has no MODEL_FILES export; run `npm run build`');
+}
+const PINNED_SHA256 = Object.fromEntries(MODEL_FILES.map(f => [f.name, f.sha256]));
 const realHash = TMEClassifier.hashFileSync;
 
 TMEClassifier.hashFileSync = function hashFileSync(filePath) {
