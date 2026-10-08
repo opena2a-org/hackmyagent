@@ -247,6 +247,21 @@ export class TMEClassifier {
         this.needsDownload = true;
       }
     }
+
+    // A directory that needs a download supplies nothing that is not pinned.
+    // The download can fail, and the synchronous `classify()` runs none, so
+    // this is not left to the download: the path to the weights is cleared
+    // here, and the path to the tokenizer is kept, for vocabulary scoring,
+    // only when that file is itself pinned. A verified download points both
+    // paths at `DOWNLOAD_DIR` (see `ensureModel`).
+    if (this.needsDownload && this.tokenizerPath) {
+      const tokenizerPinned = MODEL_FILES.some(
+        f => f.name === 'tokenizer.json' && TMEClassifier.isPinnedFile(this.tokenizerPath, f),
+      );
+      if (!tokenizerPinned) this.tokenizerPath = '';
+      this.modelPath = '';
+      this.useOnnx = false;
+    }
   }
 
   /**
@@ -371,7 +386,9 @@ export class TMEClassifier {
    * skips it; then one line reports the outcome. Nothing is written when
    * every file is already in the cache at its pinned size and sha256, because
    * no request is made. A cached file of the pinned size whose sha256 differs
-   * is fetched again, so the classifier never loads it.
+   * is fetched again. The classifier does not load it whether or not that
+   * fetch succeeds: the constructor keeps no path to a file that fails the
+   * check.
    *
    * A connection that goes silent for `options.idleTimeoutMs` fails the
    * download, and the caller falls back to vocabulary scoring (see
