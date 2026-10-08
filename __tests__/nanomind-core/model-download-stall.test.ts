@@ -15,7 +15,7 @@
 // These cases stall the download on demand instead of waiting for the network
 // to do it: real sockets that accept and then say nothing.
 
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { createServer as createNetServer, type Server as NetServer, type Socket } from 'node:net';
@@ -36,6 +36,12 @@ afterAll(() => {
     try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
   }
 });
+
+// A proxy variable in the caller's shell sends the download through a tunnel
+// to that proxy, around the stalled endpoints below, so these cases clear them
+// and route every request themselves. model-download-proxy.test.ts covers
+// proxies.
+const PROXY_VARIABLES = ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'no_proxy', 'NO_PROXY'];
 
 /** A server that accepts every connection and never writes a byte. */
 async function silentServer(): Promise<{ port: number; connections: () => number; close: () => Promise<void> }> {
@@ -62,8 +68,12 @@ function within<T>(p: Promise<T>, ms: number): Promise<T | 'pending'> {
 
 describe('a stalled model download fails instead of hanging', () => {
   const closers: Array<() => Promise<void>> = [];
+  beforeEach(() => {
+    for (const name of PROXY_VARIABLES) vi.stubEnv(name, '');
+  });
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     while (closers.length) await closers.pop()!();
   });
 
@@ -151,19 +161,22 @@ describe('secure finishes its report when the model download stalls', () => {
       const target = track(mkdtempSync(join(tmpdir(), 'hma-dl-target-')));
       writeFileSync(join(target, 'package.json'), JSON.stringify({ name: 't', version: '1.0.0' }));
 
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HOME: hostile,
+        // Must not be '1': that skips the machine-posture section this
+        // scan is checked against.
+        OPENA2A_CORPUS_DETERMINISTIC: '',
+        NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
+        HMA_TEST_STALL_PORT: String(server.port),
+      };
+      for (const name of PROXY_VARIABLES) delete env[name];
+
       const BUDGET_MS = 60_000;
       const started = Date.now();
       const r = await new Promise<{ status: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve) => {
         const child = spawn(process.execPath, [CLI, 'secure', target, '--ci', '--json'], {
-          env: {
-            ...process.env,
-            HOME: hostile,
-            // Must not be '1': that skips the machine-posture section this
-            // scan is checked against.
-            OPENA2A_CORPUS_DETERMINISTIC: '',
-            NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
-            HMA_TEST_STALL_PORT: String(server.port),
-          },
+          env,
           stdio: ['ignore', 'pipe', 'ignore'],
         });
         let stdout = '';

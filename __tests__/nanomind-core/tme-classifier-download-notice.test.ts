@@ -14,7 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import https from 'node:https';
@@ -159,6 +159,49 @@ describe('NanoMind model download notice', () => {
     expect(stderr.join('')).not.toContain('To skip it');
   });
 
+  // With no tokenizer `classify()` answers benign at 0.5 without scoring, so
+  // a failure line that promised vocabulary scoring described a fallback the
+  // scan did not have.
+  it('says the scan has no vocabulary scoring when no tokenizer that passes its pinned check is cached', async () => {
+    failFetch();
+
+    await TMEClassifier.downloadModel(dir);
+
+    expect(stderr[2]).toContain('no tokenizer that passes its pinned check is cached');
+    expect(stderr[2]).toContain('no vocabulary scoring either');
+    expect(stderr[2]).not.toContain('uses vocabulary scoring');
+  });
+
+  it('says the scan uses vocabulary scoring when the cached tokenizer passes its pinned check', async () => {
+    writeFileSync(join(dir, 'tokenizer.json'), Buffer.alloc(TOKENIZER_BYTES));
+    hashAsPinned();
+    failFetch();
+
+    await TMEClassifier.downloadModel(dir);
+
+    expect(stderr[2]).toContain('nanomind-tme.onnx');
+    expect(stderr[2]).toContain('this scan uses vocabulary scoring');
+  });
+
+  it('a scan tells the download it keeps no tokenizer when the cached one has another sha256', async () => {
+    writeLoadableCache(dir);
+    const download = vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+
+    await new TMEClassifier(dir).ensureModel({ optOut: '--static-only' });
+
+    expect(download).toHaveBeenCalledWith(undefined, { optOut: '--static-only', vocabularyFallback: false });
+  });
+
+  it('a scan tells the download it keeps the tokenizer when only the weights fail their check', async () => {
+    writeLoadableCache(dir);
+    hashAsPinned(['nanomind-tme.onnx']);
+    const download = vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+
+    await new TMEClassifier(dir).ensureModel({ optOut: '--static-only' });
+
+    expect(download).toHaveBeenCalledWith(undefined, { optOut: '--static-only', vocabularyFallback: true });
+  });
+
   it('states the size of only the files it is about to fetch', async () => {
     writeFileSync(join(dir, 'tokenizer.json'), Buffer.alloc(TOKENIZER_BYTES));
     hashAsPinned();
@@ -257,6 +300,41 @@ describe('NanoMind model download notice', () => {
     await new TMEClassifier(dir).ensureModel();
 
     expect(download).not.toHaveBeenCalled();
+  });
+
+  // Each construction read and hashed about 8.7 MB, and a download hashed the
+  // same files again.
+  it('hashes each cached file once in a process, however often the cache is checked', async () => {
+    writeCache(dir, { 'nanomind-tme.onnx.data': 4096 });
+    const hash = hashAsPinned();
+    failFetch();
+
+    new TMEClassifier(dir);
+    new TMEClassifier(dir);
+    await TMEClassifier.downloadModel(dir);
+
+    // tokenizer.json and nanomind-tme.onnx; the short file is never read.
+    expect(hash).toHaveBeenCalledTimes(2);
+  });
+
+  it('hashes a cached file again once it is rewritten, and goes by the new hash', async () => {
+    writeCache(dir);
+    const altered: string[] = [];
+    const hash = hashAsPinned(altered);
+    const download = vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+    await new TMEClassifier(dir).ensureModel();
+    expect(download).not.toHaveBeenCalled();
+
+    const data = join(dir, 'nanomind-tme.onnx.data');
+    writeFileSync(data, Buffer.alloc(ONNX_DATA_BYTES, 1));
+    // A rewrite inside one clock tick would keep the timestamps; this one
+    // cannot, so the test does not depend on the clock.
+    utimesSync(data, 1, 1);
+    altered.push('nanomind-tme.onnx.data');
+    await new TMEClassifier(dir).ensureModel();
+
+    expect(hash).toHaveBeenCalledTimes(4);
+    expect(download).toHaveBeenCalledTimes(1);
   });
 
   // A pinned tokenizer used to vouch for the weights beside it, so weights of

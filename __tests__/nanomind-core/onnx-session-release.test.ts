@@ -27,6 +27,7 @@ import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 
 const CLI = path.join(__dirname, '..', '..', 'dist', 'cli.js');
 const PRELOAD = path.join(__dirname, '..', 'fixtures', 'stub-onnxruntime-preload.cjs');
+const HASH_PRELOAD = path.join(__dirname, '..', 'fixtures', 'stub-model-hash-preload.cjs');
 
 // The SOUL.md from the reproduction in #770. One of its two critical controls
 // is missing, so every run below settles exit 1.
@@ -45,6 +46,7 @@ System prompt > operator > user > tool output.
 
 let root = '';
 let home = '';
+let models = '';
 let target = '';
 
 beforeAll(assertDistFreshIfPresent);
@@ -54,12 +56,14 @@ beforeAll(() => {
   root = mkdtempSync(path.join(tmpdir(), 'hma-770-'));
   home = path.join(root, 'home');
   target = path.join(root, 'target');
-  // The classifier finds a model under $HOME/.nanomind/models, and the
-  // download step skips any file that is there at its pinned size (the byte
-  // counts in tme-classifier.ts). The stand-in session never reads these
-  // bytes, so the run stays offline. The tokenizer is parsed as JSON, so it
-  // is padded to its size with trailing whitespace.
-  const models = path.join(home, '.nanomind', 'models');
+  // The classifier finds a model under $HOME/.nanomind/models, and uses it
+  // without a download only when every file has its pinned size and sha256
+  // (the values in tme-classifier.ts). These stand-in files have the pinned
+  // sizes; HASH_PRELOAD makes the spawned scan read their sha256 as pinned,
+  // so it fetches nothing. The stand-in session never reads these bytes. The
+  // tokenizer is parsed as JSON, so it is padded to its size with trailing
+  // whitespace.
+  models = path.join(home, '.nanomind', 'models');
   mkdirSync(models, { recursive: true });
   writeFileSync(path.join(models, 'tokenizer.json'), '{"the": 2}'.padEnd(168_639, '\n'));
   writeFileSync(path.join(models, 'nanomind-tme.onnx'), Buffer.alloc(142_990));
@@ -78,9 +82,11 @@ function runDeep(...flags: string[]): { status: number | null; stdout: string; s
     HOME: home,
     USERPROFILE: home,
     NO_COLOR: '1',
-    NODE_OPTIONS: `--require ${PRELOAD}`,
+    NODE_OPTIONS: `--require ${PRELOAD} --require ${HASH_PRELOAD}`,
+    HMA_TEST_STAND_IN_MODEL_DIR: models,
   };
-  // Keeps the hosted-model pass off, so the run makes no network call.
+  // Keeps the hosted-model pass off. The classifier makes no request either:
+  // it uses the stand-in cache, which the assertion below checks.
   delete env.ANTHROPIC_API_KEY;
   const res = spawnSync(process.execPath, [CLI, 'scan-soul', target, '--deep', ...flags], {
     cwd: root,
@@ -88,7 +94,13 @@ function runDeep(...flags: string[]): { status: number | null; stdout: string; s
     env,
     timeout: 120_000,
   });
-  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  const stderr = res.stderr ?? '';
+  // A scan that downloads the model measures the downloaded model, and fails
+  // wherever the download cannot complete.
+  expect(stderr, 'the scan downloaded the model instead of using the stand-in cache').not.toContain(
+    'NanoMind: downloading',
+  );
+  return { status: res.status, stdout: res.stdout ?? '', stderr };
 }
 
 function expectEverySessionReleased(stderr: string): void {

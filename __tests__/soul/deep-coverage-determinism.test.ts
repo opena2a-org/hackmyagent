@@ -10,14 +10,15 @@
  * score. The request now pins `temperature: 0`, the API's lowest-variance
  * setting for the answer.
  *
- * The network is stubbed and the key is a placeholder, so this runs offline and
- * sends nothing anywhere.
+ * The network is stubbed, the key is a placeholder and the NanoMind classifier
+ * is stubbed, so this runs offline and sends nothing anywhere.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SoulScanner } from '../../src/soul/scanner';
+import { TMEClassifier } from '../../src/nanomind-core/inference/tme-classifier';
 
 // The 225-byte SOUL.md from the #771 report: no keyword-tier upgrades, so
 // every applicable control that fails reaches the hosted tier.
@@ -51,6 +52,18 @@ afterEach(() => {
 describe('#771 the hosted deep coverage tier', () => {
   it('asks for the lowest-variance answer on every request', async () => {
     vi.stubEnv('ANTHROPIC_API_KEY', 'placeholder-not-a-key');
+    // The classifier downloads its model when none is cached, and when it has
+    // no model its answer is not confident, so the semantic pass asks the
+    // NanoMind daemon next, through the `fetch` stubbed below, and that
+    // request carries no temperature. A confident benign answer and no
+    // download keep every recorded request on the hosted tier under test.
+    vi.spyOn(TMEClassifier.prototype, 'ensureModel').mockResolvedValue();
+    vi.spyOn(TMEClassifier.prototype, 'classifyAsync').mockResolvedValue({
+      intentClass: 'benign',
+      attackClass: 'none',
+      confidence: 0.99,
+      topClasses: [{ class: 'benign', score: 0.99 }],
+    });
     const bodies: Array<Record<string, unknown>> = [];
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => {
       bodies.push(JSON.parse(init.body));
