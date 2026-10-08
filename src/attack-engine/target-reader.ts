@@ -15,8 +15,26 @@
  * malicious artifact are the ATTACKER's declarations. Surface, never evidence.
  */
 
+import { basename } from 'node:path';
 import type { SemanticTargetProfile, VulnerabilitySurfaceEntry, AttackCategory } from './types.js';
 import { redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth.js';
+
+/**
+ * The artifact type `red-team` reports for a target file, from its NAME.
+ *
+ * Only the file name is read. This matched `soul` / `mcp` anywhere in the
+ * path, so the directory a file sat in decided its type: `SKILL.md` inside
+ * `mcp-servers/` came back `mcp_tool`, and a `mkdtemp` directory whose random
+ * suffix happened to spell `mcp` (`hma-253-rt-ok-xMCpab`) did the same, which
+ * is why a test that writes only `SKILL.md` failed once in thousands of runs
+ * (#912).
+ */
+export function artifactTypeForTargetPath(filePath: string): 'soul' | 'mcp_tool' | 'skill' {
+  const file = basename(filePath).toLowerCase();
+  if (file.includes('soul')) return 'soul';
+  if (file.includes('mcp')) return 'mcp_tool';
+  return 'skill';
+}
 
 /**
  * Local rules on top of the shared report boundary, applied AFTER it.
