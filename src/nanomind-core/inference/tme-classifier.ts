@@ -39,7 +39,7 @@ const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
 /**
  * How long a model download may receive nothing, connecting included, before
- * it is abandoned and the scan continues on vocabulary scoring.
+ * it is abandoned and the scan continues without the classifier.
  *
  * There was no bound. A connection that was accepted and then went silent held
  * `secure` open indefinitely: the report was never written, and whatever was
@@ -78,19 +78,31 @@ export function isAllowedModelHost(url: string): boolean {
 }
 
 /**
- * True when `path` is a file of exactly `bytes` bytes. A model file is
+ * The identity of `path` (device, inode, size, modification and change
+ * times) when it is a file of exactly `bytes` bytes, or null. A model file is
  * trusted as cached only at its pinned size and then its pinned sha256 (see
  * `isPinnedFile`): a write cut off part-way, for example by a process killed
- * mid-download, leaves a shorter file behind.
+ * mid-download, leaves a shorter file behind. Rewriting or replacing the file
+ * changes its identity, so a hash recorded against it is not reused.
  */
-function hasPinnedSize(path: string, bytes: number): boolean {
+function pinnedSizeIdentity(path: string, bytes: number): string | null {
   try {
-    const stat = statSync(path);
-    return stat.isFile() && stat.size === bytes;
+    const stat = statSync(path, { bigint: true });
+    if (!stat.isFile() || stat.size !== BigInt(bytes)) return null;
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
   } catch {
-    return false;
+    return null;
   }
 }
+
+/**
+ * The sha256 `isPinnedFile` computed for each model file in this process, by
+ * path, with the identity the file had when it was read. Every
+ * `new TMEClassifier()` that finds a cache checks every file, and the
+ * download checks them again, so without this each construction read and
+ * hashed about 8.7 MB.
+ */
+const hashedModelFiles = new Map<string, { identity: string; sha256: string }>();
 
 /** Decimal units: 1 MB is 1,000,000 bytes. */
 function formatModelBytes(bytes: number): string {
@@ -112,6 +124,18 @@ export interface ModelDownloadOptions {
    * abandoned. Defaults to `DOWNLOAD_IDLE_TIMEOUT_MS`.
    */
   idleTimeoutMs?: number;
+}
+
+/** `downloadModel` options that only the classifier itself sets. */
+interface DownloadModelOptions extends ModelDownloadOptions {
+  /**
+   * Whether the classifier keeps a tokenizer that passed its pinned check,
+   * and so scores by vocabulary when the download fails. The failure line
+   * says which of the two the scan is left with. Omitted, the target
+   * directory decides: a pinned `tokenizer.json` there is what a classifier
+   * over that directory would keep.
+   */
+  vocabularyFallback?: boolean;
 }
 
 const CLASSES = [
@@ -267,11 +291,18 @@ export class TMEClassifier {
   /**
    * True when `path` holds `file` as pinned: its size first, so a short file
    * is never read, then its sha256. A file that cannot be read is not pinned.
+   * The file is hashed once per process for as long as its identity is
+   * unchanged (see `hashedModelFiles`).
    */
   private static isPinnedFile(path: string, file: { sha256: string; bytes: number }): boolean {
-    if (!hasPinnedSize(path, file.bytes)) return false;
+    const identity = pinnedSizeIdentity(path, file.bytes);
+    if (identity === null) return false;
+    const known = hashedModelFiles.get(path);
+    if (known?.identity === identity) return known.sha256 === file.sha256;
     try {
-      return TMEClassifier.hashFileSync(path) === file.sha256;
+      const sha256 = TMEClassifier.hashFileSync(path);
+      hashedModelFiles.set(path, { identity, sha256 });
+      return sha256 === file.sha256;
     } catch {
       return false;
     }
@@ -391,10 +422,12 @@ export class TMEClassifier {
    * check.
    *
    * A connection that goes silent for `options.idleTimeoutMs` fails the
-   * download, and the caller falls back to vocabulary scoring (see
-   * `DOWNLOAD_IDLE_TIMEOUT_MS`).
+   * download, and the caller continues without the classifier (see
+   * `DOWNLOAD_IDLE_TIMEOUT_MS`). The failure line says whether the scan has
+   * vocabulary scoring instead, which takes a tokenizer that passed its
+   * pinned check.
    */
-  static async downloadModel(targetDir?: string, options: ModelDownloadOptions = {}): Promise<boolean> {
+  static async downloadModel(targetDir?: string, options: DownloadModelOptions = {}): Promise<boolean> {
     const dir = targetDir ?? DOWNLOAD_DIR;
     const idleTimeoutMs = options.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
     const toFetch = MODEL_FILES.filter(f => !TMEClassifier.isPinnedFile(join(dir, f.name), f));
@@ -402,7 +435,13 @@ export class TMEClassifier {
 
     const say = (line: string) => { process.stderr.write(`${line}\n`); };
     const size = formatModelBytes(toFetch.reduce((sum, f) => sum + f.bytes, 0));
-    const fallback = 'The classifier did not run; this scan uses vocabulary scoring and its results can differ.';
+    // Without a tokenizer `classify()` scores nothing: it answers benign at
+    // 0.5 confidence, so the line does not promise vocabulary scoring then.
+    const vocabulary = options.vocabularyFallback ?? !toFetch.some(f => f.name === 'tokenizer.json');
+    const fallback = vocabulary
+      ? 'The classifier did not run; this scan uses vocabulary scoring and its results can differ.'
+      : 'The classifier did not run, and no tokenizer that passes its pinned check is cached, ' +
+        'so this scan has no vocabulary scoring either and its results can differ.';
     // host:port and the variable's name only: a proxy URL can carry a password.
     // The route is stated for every host a redirect can reach, not only for
     // huggingface.co, because NO_PROXY can send some of them direct.
@@ -465,7 +504,12 @@ export class TMEClassifier {
       return;
     }
 
-    this.downloadPromise = TMEClassifier.downloadModel(undefined, options);
+    // The constructor keeps a tokenizer path, when a download is needed, only
+    // for a tokenizer that passed its pinned check.
+    this.downloadPromise = TMEClassifier.downloadModel(undefined, {
+      ...options,
+      vocabularyFallback: this.tokenizerPath !== '',
+    });
     const ok = await this.downloadPromise;
     this.downloadPromise = null;
 
@@ -477,7 +521,8 @@ export class TMEClassifier {
       this.needsDownload = false;
       this.loaded = false; // Force re-load with new paths
     } else {
-      // Download failed; downloadModel has said so. Fall back to vocab scoring.
+      // Download failed; downloadModel has said so, and what the scan uses
+      // instead: vocabulary scoring over a pinned tokenizer, or nothing.
       this.needsDownload = false;
     }
   }
