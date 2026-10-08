@@ -660,7 +660,7 @@ const TIER_KEYWORDS = {
 const TIER_ORDER: readonly AgentTier[] = ALL_TIERS;
 
 /** Every `<!-- soul:tier=… -->` marker, in the shape `detectTier` honors. */
-const TIER_MARKER_ALL = /<!--\s*soul:tier=\S+\s*-->/gi;
+const TIER_MARKER_ALL = /<!--\s*soul:tier=[^\s<>]+\s*-->/gi;
 
 /**
  * Every line `harden-soul` can write, trimmed (#451).
@@ -1536,7 +1536,7 @@ export class SoulScanner {
    */
   detectTier(targetDir: string, governanceContent: string): AgentTier {
     // Check for explicit tier marker first (prevents drift after hardening)
-    const markerMatch = governanceContent.match(/<!--\s*soul:tier=(\S+)\s*-->/i);
+    const markerMatch = governanceContent.match(/<!--\s*soul:tier=([^\s<>]+)\s*-->/i);
     if (markerMatch) {
       const markerTier = markerMatch[1].toUpperCase();
       if (['BASIC', 'TOOL-USING', 'AGENTIC', 'MULTI-AGENT'].includes(markerTier)) {
@@ -2206,7 +2206,7 @@ export class SoulScanner {
     // least one control under this run's profile raises the finding.
     let tierMismatch: SoulTierMismatch | undefined;
     const tierFromMarker = !tierForced
-      && ALL_TIERS.includes(contentForTier.match(/<!--\s*soul:tier=(\S+)\s*-->/i)?.[1]?.toUpperCase() as AgentTier);
+      && ALL_TIERS.includes(contentForTier.match(/<!--\s*soul:tier=([^\s<>]+)\s*-->/i)?.[1]?.toUpperCase() as AgentTier);
     if ((tierForced || tierFromMarker) && TIER_ORDER.includes(tier) && contentForTier.length > 0) {
       const generated = getHardenGeneratedLines();
       const ownWords = contentForTier
