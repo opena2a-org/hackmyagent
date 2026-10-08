@@ -20,7 +20,10 @@
  *
  * The second cell collects a fixture that starts the CLI and makes a request
  * from its describe body, which shows the recorders reach a collecting
- * worker and the processes it starts.
+ * worker and the processes it starts. The third does the same with spawns
+ * whose `env` replaces process.env, which drops NODE_OPTIONS and the markers:
+ * several suites spawn the CLI that way, and the start recorder forwards both
+ * into such a spawn (#911).
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -132,9 +135,16 @@ describe('collecting the suite starts no scan', () => {
   });
 
   it('non-vacuity: a describe body that starts the CLI and makes a request is seen doing both', () => {
-    const run = collect(['--config', FIXTURE_CONFIG]);
+    const run = collect(['--config', FIXTURE_CONFIG, 'starts-cli']);
     expect(run.files, run.out).toEqual(new Set(['__tests__/helpers/collection-fixture/starts-cli.fixture.ts']));
     expect(run.cliStarts, run.out).toEqual([JSON.stringify(['--version'])]);
     expect(run.requests, run.out).toContain('127.0.0.1:9');
+  });
+
+  it('non-vacuity: a spawn whose env replaces process.env is seen starting the CLI and making a request', () => {
+    const run = collect(['--config', FIXTURE_CONFIG, 'replaced-env']);
+    expect(run.files, run.out).toEqual(new Set(['__tests__/helpers/collection-fixture/replaced-env.fixture.ts']));
+    expect(run.cliStarts, run.out).toEqual([JSON.stringify(['-V'])]);
+    expect(run.requests, run.out).toContain('localhost:9');
   });
 });
