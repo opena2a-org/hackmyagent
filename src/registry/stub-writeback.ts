@@ -2,13 +2,12 @@
  * `mark-stub`'s honesty half — every decision that can refuse a write-back,
  * and the evidence a recorded `integrated` carries.
  *
- * The CLI leg of DEFECT 2 in
- * the pull-stubs status-vocabulary mismatch unit: nothing
- * in HMA marked a stub integrated, so the observation -> shipped-check
- * transition was manual and unaudited. The value of a write-back is entirely
- * in whether the record it writes is TRUE, which is why the refusals live
- * here rather than inline in `src/cli.ts` — a predicate that can only be
- * exercised by spawning a binary is a predicate nobody adds a case to.
+ * Before `mark-stub`, nothing in HMA marked a stub integrated, so the
+ * observation -> shipped-check transition was manual and unaudited. The value
+ * of a write-back is entirely in whether the record it writes is TRUE, which
+ * is why the refusals live here rather than inline in `src/cli.ts` — a
+ * predicate that can only be exercised by spawning a binary is a predicate
+ * nobody adds a case to.
  *
  * The reachability probe reads `CHECK_METHOD_PREFIXES` and
  * `UNREACHABLE_PREFIXES` out of the RUNNING build's coverage inventory — the

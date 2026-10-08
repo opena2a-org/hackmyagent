@@ -20,13 +20,13 @@ npx hackmyagent secure
 ```
 
 ```
-  my-project  v1.0.0 · library · 47 files analyzed
+  my-project  v1.0.0 · library · 12 files analyzed
   3 critical issues found
 
   Security  ━━━━━━━━━━━━━━━━━━━━ 42/100
 
   ── Observations ────────────────────────────────────────────
-  Surfaces    library · 47 files
+  Surfaces    library · 12 semantic artifacts
   Checks      317 static declared · 63 of 63 check groups ran · 12 semantic (NanoMind AST) · 47 files read by static checks
   Categories  credentials (3 critical) · MCP (2 high) · 18 others clear
   Verdict     Not safe to ship. Fix 3 critical issues before using this in production.

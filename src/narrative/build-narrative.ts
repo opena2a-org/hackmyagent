@@ -211,6 +211,20 @@ export function synthesizeSummary(
 /** Credential attack classes that describe what code DOES with a credential. */
 const BEHAVIOUR_CRED_CLASSES = new Set(["CRED-EXFIL", "CRED-HARVEST"]);
 
+/**
+ * Attack-class prefixes `extractHardcodedSecrets` reads as credential
+ * findings. Exported so the removed-family test can hold it to the rule the
+ * other check tables follow: no entry for a family no check emits (#914).
+ */
+export const CREDENTIAL_ATTACK_PREFIXES: readonly string[] = Object.freeze([
+  "CRED-",
+  "AST-CRED-",
+  "WEBCRED-",
+  "SEM-CRED-",
+  "AGENT-CRED-",
+  "CLIPASS",
+]);
+
 function extractHardcodedSecrets(findings: SecurityFinding[]): HardcodedSecret[] {
   const credentialCategories = new Set([
     "credentials",
@@ -218,20 +232,12 @@ function extractHardcodedSecrets(findings: SecurityFinding[]): HardcodedSecret[]
     "credential-exposure",
     "agent-credential",
   ]);
-  const credentialAttackPrefixes = [
-    "CRED-",
-    "AST-CRED-",
-    "WEBCRED-",
-    "SEM-CRED-",
-    "AGENT-CRED-",
-    "CLIPASS",
-  ];
   const out: HardcodedSecret[] = [];
   for (const f of findings) {
     const isCredFinding =
       credentialCategories.has(f.category) ||
       (typeof f.attackClass === "string" &&
-        credentialAttackPrefixes.some((p) => f.attackClass!.startsWith(p)));
+        CREDENTIAL_ATTACK_PREFIXES.some((p) => f.attackClass!.startsWith(p)));
     if (!isCredFinding) continue;
     // #586 — forwarding and harvesting are behaviours, not secrets stored in
     // the artifact. `AST-CRED-002` and `SHELL-EXFIL-001` (`CRED-EXFIL`) carry

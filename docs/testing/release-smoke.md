@@ -28,6 +28,17 @@ npx vitest run __tests__/nanomind-core/benign-fp-regression.test.ts
 # Expected: 10 tests pass, FPR = 0/10 = 0%
 ```
 
+Then the classifier pin check, which needs the network. It downloads the three
+model files at the pinned model commit and compares each with the size and
+sha256 pinned in `src/nanomind-core/inference/tme-classifier.ts`. No other test
+reads the real files, so a mistyped pin passes the suite and fails only on a
+user's download:
+
+```bash
+HMA_VERIFY_MODEL_PINS=1 npx vitest run __tests__/nanomind-core/tme-classifier-pinned-revision.test.ts
+# Expected: 1 passed (skipped when HMA_VERIFY_MODEL_PINS is not set)
+```
+
 Then the corpus gate — BLOCKING. It runs the built CLI over every fixture in the
 opena2a-corpus checkout and compares scores against the manifest bands and the
 rendered output against `golden/hma/`. A red result here means either the scoring
@@ -62,6 +73,7 @@ moves only in the PR that moved the score, with the cause named in the commit.
 Fail the release if:
 - Any test is red
 - Any benign oracle fixture (b01–b10) triggers a HIGH or CRITICAL finding
+- The classifier pin check fails or is skipped
 - The build emits any TypeScript error or warning
 
 ---
