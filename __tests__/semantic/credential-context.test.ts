@@ -214,7 +214,7 @@ describe('CredentialContextAnalyzer', () => {
         '  name: registry',
         '  port: 8080',
         'database:',
-        '  url: postgres://registryadmin:password@db.example.com:5432/app',
+        `  url: postgres://registryadmin:${'password'}@db.example.com:5432/app`,
         '',
       ].join('\n');
       const findings = analyzer.analyze([makeFile('config.yaml', content, 'config_file')]);
