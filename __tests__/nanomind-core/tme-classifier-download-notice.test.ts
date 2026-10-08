@@ -18,19 +18,15 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, utimesSync }
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import https from 'node:https';
-import { TMEClassifier, isAllowedModelHost } from '../../src/nanomind-core/inference/tme-classifier';
+import { TMEClassifier, MODEL_FILES, isAllowedModelHost } from '../../src/nanomind-core/inference/tme-classifier';
 import { orchestrateNanoMind } from '../../src/nanomind-core/orchestrate';
 
-// The pinned sizes, from the files at the pinned commit (their sha256 values
-// match the pins in tme-classifier.ts).
-const TOKENIZER_BYTES = 168_639;
-const ONNX_BYTES = 142_990;
-const ONNX_DATA_BYTES = 8_380_416;
-const PINNED_SHA256: Record<string, string> = {
-  'tokenizer.json': '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce',
-  'nanomind-tme.onnx': '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb',
-  'nanomind-tme.onnx.data': '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018',
-};
+// The pinned sizes and sha256 values, read from the classifier.
+const pinnedBytes = (name: string): number => MODEL_FILES.find(f => f.name === name)!.bytes;
+const TOKENIZER_BYTES = pinnedBytes('tokenizer.json');
+const ONNX_BYTES = pinnedBytes('nanomind-tme.onnx');
+const ONNX_DATA_BYTES = pinnedBytes('nanomind-tme.onnx.data');
+const PINNED_SHA256: Record<string, string> = Object.fromEntries(MODEL_FILES.map(f => [f.name, f.sha256]));
 
 /**
  * A model cache in `dir` holding every file at its pinned size, or at the

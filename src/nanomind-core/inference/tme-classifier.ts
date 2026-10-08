@@ -30,11 +30,15 @@ const HF_BASE = `https://huggingface.co/opena2a/nanomind-security-classifier/res
 // `bytes` is each file's size at that commit. The notice printed before a
 // download states the sum of the files it is about to fetch, and a download
 // is checked against it the same way it is checked against the hash.
-const MODEL_FILES: Array<{ name: string; sha256: string; bytes: number }> = [
+//
+// Exported, and frozen, so the tests and test fixtures that stand in for a
+// cached model read these values instead of keeping copies that a new model
+// would leave behind.
+export const MODEL_FILES: ReadonlyArray<Readonly<{ name: string; sha256: string; bytes: number }>> = Object.freeze([
   { name: 'tokenizer.json', sha256: '5ace7e6441505cf24dfb84d10b237c66edccaece075b3c5b0736c007d65355ce', bytes: 168_639 },
   { name: 'nanomind-tme.onnx', sha256: '1c9c6db00385e0e871ee6d2508d90a3210eddd4abf45365151fb859d8abab9eb', bytes: 142_990 },
   { name: 'nanomind-tme.onnx.data', sha256: '1367c0d3086b8d5c698dc37ae309c3afdb41ffa4d35ecac9b8f1882ffeb1d018', bytes: 8_380_416 },
-];
+].map(f => Object.freeze(f)));
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
 /**
