@@ -258,6 +258,63 @@ describe('CredentialContextAnalyzer', () => {
       }
     });
 
+    it('gives the default password low only on a local or placeholder host (#556)', () => {
+      // A guessable password on a deployed host is credential exposure, so the
+      // low branch is for loopback, reserved documentation and local-only
+      // names, and single-label service names such as a compose alias.
+      for (const host of [
+        'localhost',
+        'localhost:5432',
+        '127.0.0.1:5432',
+        '127.10.20.30',
+        'db:5432',
+        'db',
+        'postgres',
+        'db.example.com',
+        'example.org',
+        'api.example.net:443',
+        'db.example',
+        'db.test',
+        'db.invalid',
+        'app.localhost',
+        'nas.local',
+      ]) {
+        for (const password of ['password', 'changeme']) {
+          const url = `postgres://admin:${password}@${host}/app`;
+          const urlFindings = analyzer
+            .analyze([makeFile('config.json', url, 'config_file')])
+            .filter((f) => f.id === 'SEM-CRED-001');
+          expect(urlFindings.map((f) => f.severity), `${host} is local or a placeholder: ${url}`).toEqual(['low']);
+        }
+      }
+      // Any other host keeps the file's severity: `high` for config.json,
+      // `critical` in an LLM context file.
+      for (const [path, expected] of [
+        ['config.json', 'high'],
+        ['CLAUDE.md', 'critical'],
+      ] as Array<[string, string]>) {
+        for (const host of [
+          'prod-db.acme.io',
+          'prod-db.acme.io:5432',
+          'cluster0.mongodb.net',
+          '10.0.0.5:5432',
+          '128.0.0.1',
+          'example.com.attacker.io',
+          'db.examples.com',
+          'db.local.acme.io',
+        ]) {
+          for (const password of ['password', 'changeme']) {
+            const url = `postgres://admin:${password}@${host}/app`;
+            const urlFindings = analyzer
+              .analyze([makeFile(path, url, 'config_file')])
+              .filter((f) => f.id === 'SEM-CRED-001');
+            expect(urlFindings.map((f) => f.severity), `${host} is a deployed host: ${url} in ${path}`).toEqual([expected]);
+            expect(urlFindings[0].title).toBe('Password embedded in URL');
+          }
+        }
+      }
+    });
+
     it('keeps keyword and numeric URL passwords at the file severity (#556)', () => {
       // The low branch is exactly `password` and `changeme`. These are the
       // default-credential findings the keyword test above pins as reported.

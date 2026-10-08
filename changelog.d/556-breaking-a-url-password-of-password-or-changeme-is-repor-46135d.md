@@ -8,10 +8,18 @@ breaking: true
 - `secure` reported `postgres://registryadmin:password@db.example.com:5432/app`
   in a `config.yaml` as a high "Password embedded in URL" (SEM-CRED-001). That
   finding capped the score and made the run exit 1. A URL password that is
-  exactly `password` or `changeme`, in any letter case, is now a low
-  "Placeholder or default password in URL", with the fix "Replace it with a
-  reference such as ${DB_PASSWORD} before deploying." It costs 3 points, does
-  not cap the score, and does not on its own make the run exit 1.
+  exactly `password` or `changeme`, in any letter case, on a local or
+  placeholder host is now a low "Placeholder or default password in URL", with
+  the fix "Replace it with a reference such as ${DB_PASSWORD} before
+  deploying." It costs 3 points, does not cap the score, and does not on its
+  own make the run exit 1.
+- A local or placeholder host is loopback (`localhost` or `127.0.0.0/8`), a
+  reserved name (`example.com`, `example.net`, `example.org` and their
+  subdomains, or a name under `.example`, `.test`, `.invalid`, `.localhost` or
+  `.local`), or a single-label service name such as `db`. On any other host,
+  such as `postgres://admin:password@prod-db.acme.io/app`, the password keeps
+  the file's severity, because a guessable password on a deployed host is
+  credential exposure.
 - A URL password of `REDACTED` is now treated as a mask, like a run of `x`
   characters, and is not reported.
 - Only the whole value matches. `password-8f3Kq`, `changeme-prod` and

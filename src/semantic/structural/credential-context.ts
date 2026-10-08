@@ -454,15 +454,47 @@ function isPlaceholderUrlPassword(password: string): boolean {
  * `changeme-prod` are real passwords that contain the word.
  *
  * Reported, not suppressed: a service deployed with one of these accepts the
- * first password anyone tries. But the value is documentation far more often
- * than a leak, so it is reported at `low`, which neither caps the score nor
- * fails the run. `default`, `none`, `null`, `true` and numeric passwords are
- * deliberately not here and keep the file's severity.
+ * first password anyone tries. On a local or placeholder host (see
+ * `isLocalOrPlaceholderHost`) the value is documentation, so it is reported at
+ * `low`, which neither caps the score nor fails the run. On any other host it
+ * keeps the file's severity: a guessable password on a deployed host is
+ * credential exposure. `default`, `none`, `null`, `true` and numeric passwords
+ * are deliberately not here and keep the file's severity.
  */
 const DEFAULT_URL_PASSWORDS = new Set(['password', 'changeme']);
 
 function isDefaultUrlPassword(password: string): boolean {
   return DEFAULT_URL_PASSWORDS.has(password.trim().toLowerCase());
+}
+
+/** Reserved second-level names (RFC 2606): the name and every subdomain. */
+const RESERVED_EXAMPLE_DOMAINS = ['example.com', 'example.net', 'example.org'];
+/** Reserved and local-only top-level names (RFC 2606, RFC 6761, RFC 6762). */
+const RESERVED_TLDS = ['example', 'test', 'invalid', 'localhost', 'local'];
+
+/**
+ * True when a URL's host is loopback, a reserved documentation or local-only
+ * name, or a single-label service name such as `db` (a compose or cluster
+ * alias that does not resolve on the internet). `hostPart` is the URL text
+ * after the `@`: host, optional port, optional path.
+ */
+function isLocalOrPlaceholderHost(hostPart: string): boolean {
+  let host = hostPart.split('/')[0].toLowerCase();
+  if (host === '::1' || host === '[::1]' || host.startsWith('[::1]:')) return true;
+  host = host.replace(/:\d+$/, '').replace(/\.$/, '');
+  if (!host) return false;
+
+  if (host === 'localhost') return true;
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    return ipv4[1] === '127' && ipv4.slice(2).every((octet) => Number(octet) <= 255);
+  }
+
+  if (RESERVED_EXAMPLE_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`))) return true;
+  const labels = host.split('.');
+  if (labels.length > 1 && RESERVED_TLDS.includes(labels[labels.length - 1])) return true;
+
+  return labels.length === 1 && /[a-z]/.test(host);
 }
 
 /**
@@ -514,7 +546,7 @@ function detectUrlPasswords(file: AnalysisFile): SemanticFinding[] {
       // on the same line. split/join catches all occurrences without partial-leak
       // and stays ES2020-safe (replaceAll is ES2021).
       const safeContent = line.split(password).join('[REDACTED]');
-      if (isDefaultUrlPassword(password)) {
+      if (isDefaultUrlPassword(password) && isLocalOrPlaceholderHost(match[3])) {
         findings.push({
           id: 'SEM-CRED-001',
           title: 'Placeholder or default password in URL',
