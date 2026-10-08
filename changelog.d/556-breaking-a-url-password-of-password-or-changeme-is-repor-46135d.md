@@ -11,8 +11,8 @@ breaking: true
   run exit 1. A URL password that is exactly `password` or `changeme`, in any
   letter case, on a local or placeholder host is now a low "Placeholder or
   default password in URL", with the fix "Replace it with a reference such as
-  ${DB_PASSWORD} before deploying." It costs 3 points, does not cap the score,
-  and does not on its own make the run exit 1.
+  ${DB_PASSWORD} before deploying." It costs at most 2 points, does not cap
+  the score, and does not on its own make the run exit 1.
 - A local or placeholder host is loopback (`localhost` or `127.0.0.0/8`), a
   reserved name (`example.com`, `example.net`, `example.org` and their
   subdomains, or a name under `.example`, `.test`, `.invalid`, `.localhost` or
