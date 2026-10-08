@@ -19,6 +19,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { assertDistFresh } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass. Every case spawns it,
@@ -120,6 +121,15 @@ describe('red-team accepts a directory (#253.3)', { timeout: 240_000 }, () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('types the resolved file by its name, not the directory name (#912)', () => {
+    // The case above failed once when mkdtemp's random suffix spelled `mcp`.
+    // Name the directory with both words so that path is taken every run.
+    const dir = tempDir('hma-912-mcp-soul-');
+    writeFileSync(join(dir, 'SKILL.md'), '---\nname: t\n---\n# t\n', 'utf8');
+    const res = run(['red-team', dir, '--json']);
+    expect(JSON.parse(res.stdout.trim()).target.artifactType).toBe('skill');
   });
 
   it('names what to point at when the directory holds no artifact', () => {

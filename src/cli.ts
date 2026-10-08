@@ -12335,6 +12335,7 @@ program
   .action(async (target: string, options: { iterations?: string; json?: boolean; exportTraining?: boolean }) => {
     const { readFileSync } = await import('node:fs');
     const { runAttackSession } = await import('./attack-engine/feedback-loop.js');
+    const { artifactTypeForTargetPath } = await import('./attack-engine/target-reader.js');
     const { exportAttackTraining } = await import('./attack-engine/training-pipeline.js');
 
     let content: string;
@@ -12370,9 +12371,7 @@ program
       return;
     }
 
-    const artifactType = target.toLowerCase().includes('soul') ? 'soul' as const
-      : target.toLowerCase().includes('mcp') ? 'mcp_tool' as const
-      : 'skill' as const;
+    const artifactType = artifactTypeForTargetPath(target);
     const name = target.split('/').pop() ?? 'unknown';
 
     if (!options.json) {
