@@ -64,7 +64,23 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
   'CODEINJ-001': `Removed check. CODEINJ-001 (exec() or execSync() called with a template literal) is no longer in the check suite and no finding carries it, so a .hmaignore entry for it matches nothing. NEMO-005 (exec() with user-controlled string interpolation) reports this risk at the standard and deep scan depths, but not every line CODEINJ-001 matched. Run: ${CLI_PREFIX} explain NEMO-005`,
   'TMPPATH-001': `Removed check. TMPPATH-001 (a shell script writing to a hardcoded /tmp/ path without mktemp) is no longer in the check suite and no finding carries it, so a .hmaignore entry for it matches nothing. NEMO-006 (predictable /tmp path without mktemp) reports this risk at the standard and deep scan depths, but not every line TMPPATH-001 matched. Run: ${CLI_PREFIX} explain NEMO-006`,
   'ENVLEAK-001': `Removed check. ENVLEAK-001 (the whole process.env passed to a child process) is no longer in the check suite and no finding carries it, so a .hmaignore entry for it matches nothing. NEMO-007 (full process.env passthrough to subprocess) reports this risk at the standard and deep scan depths, but not every line ENVLEAK-001 matched. Run: ${CLI_PREFIX} explain NEMO-007`,
+  // #914 — the three checks above point here with `Run: explain NEMO-00x`.
+  // Without an entry each answered only "Static analysis pattern finding."
+  'NEMO-005': `exec() with user-controlled string interpolation. A line in a JavaScript or TypeScript file calls exec() or execSync(), not execFile(), with a template literal whose interpolation names an input-like value (its text contains name, id, input, arg, param, flag or option, in any case). exec() hands the whole string to /bin/sh, which interprets shell metacharacters, so a value that reaches the interpolation can run commands. Fix: call execFile() or spawn() with an argument array, which does not start a shell. Run: ${CLI_PREFIX} secure --verbose to see each matching line.`,
+  'NEMO-006': `Predictable /tmp path without mktemp. A line in a shell script (.sh) names a hardcoded /tmp/ path and redirects output (>), passes -o /tmp/..., or runs install with a /tmp/ path; a line that calls mktemp is not reported. A predictable name lets another local user create a symlink at that path first, so the write lands on a file of their choosing (CWE-377). Fix: create a private directory with mktemp and write under it: TMPDIR=$(mktemp -d) && trap "rm -rf $TMPDIR" EXIT. Run: ${CLI_PREFIX} secure --verbose to see each matching line.`,
+  'NEMO-007': `Full process.env passthrough to subprocess. A line in a JavaScript or TypeScript file outside test paths spreads ...process.env into an env: { } object, the subprocess option that hands the child every variable in the parent's environment, API keys and tokens included. Fix: pass only the variables the child needs, for example env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }. Run: ${CLI_PREFIX} secure --verbose to see each matching line.`,
 };
+
+/**
+ * Check IDs removed from the suite, each with the check that remains for its
+ * risk. No finding carries a removed ID, so `explain` points its Next Steps at
+ * the remaining check rather than at a scan that cannot show it (#914).
+ */
+export const REMOVED_CHECKS: Readonly<Record<string, string>> = Object.freeze({
+  'CODEINJ-001': 'NEMO-005',
+  'TMPPATH-001': 'NEMO-006',
+  'ENVLEAK-001': 'NEMO-007',
+});
 
 /**
  * Ids scan-soul prints that are not governance controls: the two profile

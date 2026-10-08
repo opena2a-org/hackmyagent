@@ -551,7 +551,7 @@ import { CLI_PREFIX, RAW_CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, s
 // The explain command's knowledge lives in src/explain-registry.ts: the
 // static explanations and category labels moved there so the unknown-id
 // refusal predicate and the known-id sweep test share one inventory.
-import { STATIC_EXPLANATIONS, SOUL_SCAN_EXPLANATIONS, PREFIX_DESCRIPTIONS, isKnownExplainId, suggestExplainIds } from './explain-registry';
+import { STATIC_EXPLANATIONS, SOUL_SCAN_EXPLANATIONS, PREFIX_DESCRIPTIONS, REMOVED_CHECKS, isKnownExplainId, suggestExplainIds } from './explain-registry';
 
 let nanomindDeprecationWarned = false;
 /**
@@ -12448,7 +12448,18 @@ program
     if (!globalCiMode) {
       console.log();
       console.log(`  ${colors.dim}──${RESET()} ${colors.bold}Next Steps${RESET()} ${colors.dim}${'─'.repeat(49)}${RESET()}`);
-      console.log(`  ${colors.cyan}See in context:${RESET()}   ${CLI_PREFIX} secure --verbose`);
+      // A removed ID is on no finding, so a scan cannot show it in context;
+      // the step names the check that remains instead (#914). The ID goes
+      // through commandNaming like every other explain citation (#273).
+      const remainingCheck = REMOVED_CHECKS[checkId];
+      const remainingCmd = remainingCheck
+        ? commandNaming(remainingCheck, (cited) => `${CLI_PREFIX} explain ${cited}`)
+        : undefined;
+      if (remainingCmd) {
+        console.log(`  ${colors.cyan}Remaining check:${RESET()}  ${remainingCmd}`);
+      } else {
+        console.log(`  ${colors.cyan}See in context:${RESET()}   ${CLI_PREFIX} secure --verbose`);
+      }
       console.log(`  ${colors.cyan}All ${CHECK_COUNT} check IDs:${RESET()}  ${CLI_PREFIX} check-metadata --json`);
       console.log(`  ${colors.cyan}All commands:${RESET()}         ${CLI_PREFIX} --help`);
       console.log();
