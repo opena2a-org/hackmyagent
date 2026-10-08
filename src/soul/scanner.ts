@@ -47,7 +47,7 @@ import { GOVERNANCE_FILES } from './governance-files';
 import { resolveInsideTree, describeResolveRefusal, readStaysInsideTree } from '../hardening/contain';
 import type { WithheldLink } from '../hardening/coverage-ledger';
 import { usageError } from '../checker/errors';
-import { permissiveProfileMarker, strictProfileMarker } from '../types/lazy-scan';
+import { permissiveProfileMarker, strictProfileMarker, strictTierMarker, withoutTierMarkers } from '../types/lazy-scan';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -658,9 +658,6 @@ const TIER_KEYWORDS = {
 
 /** Least to most capable; a tier evaluates every control a lower one does. */
 const TIER_ORDER: readonly AgentTier[] = ALL_TIERS;
-
-/** Every `<!-- soul:tier=… -->` marker, in the shape `detectTier` honors. */
-const TIER_MARKER_ALL = /<!--\s*soul:tier=[^\s<>]+\s*-->/gi;
 
 /**
  * Every line `harden-soul` can write, trimmed (#451).
@@ -1535,8 +1532,10 @@ export class SoulScanner {
    * Respects a `<!-- soul:tier=TIER -->` marker if present (prevents tier drift).
    */
   detectTier(targetDir: string, governanceContent: string): AgentTier {
-    // Check for explicit tier marker first (prevents drift after hardening)
-    const markerMatch = governanceContent.match(/<!--\s*soul:tier=([^\s<>]+)\s*-->/i);
+    // Check for explicit tier marker first (prevents drift after hardening):
+    // the match of /<!--\s*soul:tier=(\S+)\s*-->/i, found without rescanning
+    // the value from every `<!--` inside it.
+    const markerMatch = strictTierMarker(governanceContent);
     if (markerMatch) {
       const markerTier = markerMatch[1].toUpperCase();
       if (['BASIC', 'TOOL-USING', 'AGENTIC', 'MULTI-AGENT'].includes(markerTier)) {
@@ -2206,11 +2205,10 @@ export class SoulScanner {
     // least one control under this run's profile raises the finding.
     let tierMismatch: SoulTierMismatch | undefined;
     const tierFromMarker = !tierForced
-      && ALL_TIERS.includes(contentForTier.match(/<!--\s*soul:tier=([^\s<>]+)\s*-->/i)?.[1]?.toUpperCase() as AgentTier);
+      && ALL_TIERS.includes(strictTierMarker(contentForTier)?.[1]?.toUpperCase() as AgentTier);
     if ((tierForced || tierFromMarker) && TIER_ORDER.includes(tier) && contentForTier.length > 0) {
       const generated = getHardenGeneratedLines();
-      const ownWords = contentForTier
-        .replace(TIER_MARKER_ALL, '')
+      const ownWords = withoutTierMarkers(contentForTier)
         .split(/\r?\n/)
         .filter((line) => !generated.has(line.trim()))
         .join('\n');
@@ -2641,7 +2639,7 @@ export class SoulScanner {
     // only appends. A `--tier` that disagrees with it could never take effect,
     // so the run is refused rather than reporting a tier the file does not pin.
     if (forcedTier !== undefined && /<!--\s*soul:tier=/i.test(existingContent)) {
-      const pinned = existingContent.match(/<!--\s*soul:tier=(\S+)\s*-->/i)?.[1];
+      const pinned = strictTierMarker(existingContent)?.[1];
       if (pinned?.toUpperCase() !== forcedTier) {
         const fileName = govFileCheck ? path.basename(govFileCheck) : 'SOUL.md';
         throw usageError`--tier ${forcedTier} conflicts with the tier marker already in ${fileName} (soul:tier=${pinned ?? 'unreadable'}).
