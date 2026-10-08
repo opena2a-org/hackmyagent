@@ -172,6 +172,38 @@ export function strictProfileMarker(text: string): RegExpExecArray | null {
 }
 
 /**
+ * `text.match(/<!--\s*soul:tier=(\S+)\s*-->/i)`, or with `from` the first
+ * match that starts at or after it.
+ *
+ * The tier twin of `strictProfileMarker`, found the same way: a `<!--` that
+ * fails resumes the search where the run of its value can last end.
+ */
+export function strictTierMarker(text: string, from = 0): RegExpExecArray | null {
+  const marker = /<!--\s*soul:tier=(\S+)\s*-->/iy;
+  const key = /\s*soul:tier=\S*/iy;
+  for (let open = text.indexOf('<!--', from); open >= 0; ) {
+    marker.lastIndex = open;
+    const m = marker.exec(text);
+    if (m !== null) return m;
+    key.lastIndex = open + 4;
+    const next = key.exec(text) === null ? open + 1 : Math.max(open + 1, key.lastIndex - 4);
+    open = text.indexOf('<!--', next);
+  }
+  return null;
+}
+
+/** `text.replace(/<!--\s*soul:tier=\S+\s*-->/gi, '')`, each marker found by `strictTierMarker`. */
+export function withoutTierMarkers(text: string): string {
+  let out = '';
+  let last = 0;
+  for (let m = strictTierMarker(text); m !== null; m = strictTierMarker(text, last)) {
+    out += text.slice(last, m.index);
+    last = m.index + m[0].length;
+  }
+  return out + text.slice(last);
+}
+
+/**
  * The matches of `/(?:eval|Function)\s*\(\s*(['"`])([\s\S]*?)\1\s*\)/g`.
  *
  * `call` is that pattern with the sticky flag. A call whose quote is never
