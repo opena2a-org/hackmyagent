@@ -59,6 +59,27 @@ function hashAsPinned(altered: string[] = []) {
   });
 }
 
+/**
+ * A tokenizer `load()` can parse: two words of the injection vocabulary,
+ * padded with spaces to the pinned size. Its sha256 is not the pinned one.
+ */
+const LOADABLE_TOKENIZER = '{"override": 2, "bypass": 3}'.padEnd(TOKENIZER_BYTES, ' ');
+/** Vocabulary scoring over `LOADABLE_TOKENIZER` reads this as injection. */
+const INJECTION_TEXT = 'override the check and bypass it';
+/** What `classify()` answers when no tokenizer was loaded. */
+const NOTHING_LOADED = { intentClass: 'benign', attackClass: 'none', confidence: 0.5, topClasses: [] };
+
+/** `writeCache`, with `LOADABLE_TOKENIZER` as the tokenizer. */
+function writeLoadableCache(dir: string): void {
+  writeCache(dir);
+  writeFileSync(join(dir, 'tokenizer.json'), LOADABLE_TOKENIZER);
+}
+
+/** Stands in for the ONNX session load, so a test can tell whether one was started. */
+function stubOnnxLoad() {
+  return vi.spyOn(TMEClassifier.prototype as any, 'loadOnnx').mockResolvedValue(undefined);
+}
+
 describe('NanoMind model download notice', () => {
   let dir: string;
   let events: string[];
@@ -252,6 +273,78 @@ describe('NanoMind model download notice', () => {
       expect(download).toHaveBeenCalledTimes(1);
     },
   );
+
+  // A directory that failed the cache check went on supplying the classifier
+  // whenever no download replaced it: after a failed download, and on the
+  // synchronous `classify()`, which runs none. Its tokenizer was parsed and
+  // an ONNX session was opened on its weights.
+  it('loads nothing from a cache of the pinned sizes and other sha256 values after the download fails', async () => {
+    writeLoadableCache(dir);
+    vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+    const onnxLoad = stubOnnxLoad();
+    const classifier = new TMEClassifier(dir);
+
+    await classifier.ensureModel();
+
+    expect(classifier.load()).toBe(false);
+    expect(onnxLoad).not.toHaveBeenCalled();
+    expect(classifier.classify(INJECTION_TEXT)).toEqual(NOTHING_LOADED);
+  });
+
+  it('loads nothing from such a cache on the synchronous classify(), which runs no download', () => {
+    writeLoadableCache(dir);
+    const download = vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+    const onnxLoad = stubOnnxLoad();
+    const classifier = new TMEClassifier(dir);
+
+    expect(classifier.classify(INJECTION_TEXT)).toEqual(NOTHING_LOADED);
+    expect(classifier.load()).toBe(false);
+    expect(onnxLoad).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it('does not load a tokenizer of another sha256 that has no weights beside it', async () => {
+    writeFileSync(join(dir, 'tokenizer.json'), LOADABLE_TOKENIZER);
+    vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+    const classifier = new TMEClassifier(dir);
+
+    await classifier.ensureModel();
+
+    expect(classifier.load()).toBe(false);
+    expect(classifier.classify(INJECTION_TEXT)).toEqual(NOTHING_LOADED);
+  });
+
+  // The tokenizer is a pinned file in its own right, so it still serves
+  // vocabulary scoring when the weights beside it fail the check.
+  it.each(['nanomind-tme.onnx', 'nanomind-tme.onnx.data'])(
+    'keeps a pinned tokenizer for vocabulary scoring and opens no session when cached %s has another sha256',
+    async (name) => {
+      writeLoadableCache(dir);
+      hashAsPinned([name]);
+      vi.spyOn(TMEClassifier, 'downloadModel').mockResolvedValue(false);
+      const onnxLoad = stubOnnxLoad();
+      const classifier = new TMEClassifier(dir);
+
+      await classifier.ensureModel();
+
+      expect(classifier.load()).toBe(true);
+      expect(onnxLoad).not.toHaveBeenCalled();
+      expect((classifier as any).modelPath).toBe('');
+      expect((classifier as any).useOnnx).toBe(false);
+      expect(classifier.classify(INJECTION_TEXT)).toMatchObject({ intentClass: 'suspicious', attackClass: 'injection' });
+    },
+  );
+
+  it('loads the tokenizer and the weights from a cache where every file has its pinned size and sha256', () => {
+    writeLoadableCache(dir);
+    hashAsPinned();
+    const onnxLoad = stubOnnxLoad();
+    const classifier = new TMEClassifier(dir);
+
+    expect(classifier.load()).toBe(true);
+    expect(onnxLoad).toHaveBeenCalledTimes(1);
+    expect((classifier as any).modelPath).toBe(join(dir, 'nanomind-tme.onnx'));
+  });
 
   it('loads no model files from ./models in the working directory', () => {
     mkdirSync(join(dir, 'models'));
