@@ -111,4 +111,31 @@ describe('SOUL-TIER-MISMATCH (#451)', () => {
     expect(result.tierMismatch?.hiddenDomains).toEqual([]);
     expect(result.tierMismatch?.hiddenControls).toBeGreaterThan(0);
   });
+
+  // The marker is read from attacker-controlled file content, so the marker
+  // pattern must not backtrack over the rest of the file for each `<!--`
+  // that opens no marker: 400 KB of unterminated marker openers scans in the
+  // time of a small file, with and without an honoured marker in front.
+  describe('an unterminated marker opener repeated through the file', () => {
+    const openers = '<!--soul:tier='.repeat(30_000);
+
+    it('after a valid marker, the mismatch check reads the file in linear time', async () => {
+      const content = '# Bot\n\n<!-- soul:tier=BASIC -->\n\nThe agent answers questions.\n' + openers + '\n';
+      expect(content.length).toBeGreaterThan(400_000);
+      const dir = tmpDirWithSoul(content);
+      const started = Date.now();
+      const result = await scanner.scanSoul(dir);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result.agentTier).toBe('BASIC');
+      expect(result.tierMismatch).toBeUndefined();
+    });
+
+    it('with no valid marker, the tier is still read from the file in linear time', async () => {
+      const dir = tmpDirWithSoul('# Bot\n\nThe agent answers questions.\n' + openers + '\n');
+      const started = Date.now();
+      const result = await scanner.scanSoul(dir);
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(result.tierMismatch).toBeUndefined();
+    });
+  });
 });
