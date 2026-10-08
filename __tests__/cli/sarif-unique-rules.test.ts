@@ -21,13 +21,11 @@ beforeAll(assertDistFreshIfPresent);
 
 const CLI = join(__dirname, '..', '..', 'dist', 'cli.js');
 const FAKE_GH_TOKEN = `ghp_${'d'.repeat(36)}`;
-const dir = mkdtempSync(join(tmpdir(), 'hma-sarif-rules-'));
-writeFileSync(join(dir, 'package.json'), '{"name":"sarif-fixture","version":"1.0.0"}\n');
-mkdirSync(join(dir, 'config'));
-writeFileSync(join(dir, 'config', 'production.json'), JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n');
-writeFileSync(join(dir, 'config', 'staging.json'), JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n');
+let dir: string | undefined;
 
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+});
 
 interface Sarif {
   runs: Array<{
@@ -37,12 +35,28 @@ interface Sarif {
 }
 
 describe('#452 SARIF rule table', () => {
-  const run = spawnSync('node', [CLI, 'secure', dir, '-f', 'sarif'], {
-    encoding: 'utf8', timeout: 180_000, env: { ...process.env, NO_COLOR: '1' },
-  });
-  const sarif = JSON.parse(run.stdout) as Sarif;
-  const { rules } = sarif.runs[0].tool.driver;
-  const { results } = sarif.runs[0];
+  let rules: Sarif['runs'][number]['tool']['driver']['rules'] = [];
+  let results: Sarif['runs'][number]['results'] = [];
+
+  // #909 — the fixture and the scan belong in a hook. vitest runs a describe
+  // body while it collects the file, so a scan written there ran under
+  // `vitest list`, which runs no test, and under an empty HOME downloaded the
+  // classifier model. It also ran before the freshness hook above.
+  // The hook's own limit sits above the spawn's (vitest.config.ts explains
+  // why a cap below the spawn budget only mislabels a slow scan).
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'hma-sarif-rules-'));
+    writeFileSync(join(dir, 'package.json'), '{"name":"sarif-fixture","version":"1.0.0"}\n');
+    mkdirSync(join(dir, 'config'));
+    writeFileSync(join(dir, 'config', 'production.json'), JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n');
+    writeFileSync(join(dir, 'config', 'staging.json'), JSON.stringify({ token: FAKE_GH_TOKEN }) + '\n');
+    const run = spawnSync('node', [CLI, 'secure', dir, '-f', 'sarif'], {
+      encoding: 'utf8', timeout: 180_000, env: { ...process.env, NO_COLOR: '1' },
+    });
+    const sarif = JSON.parse(run.stdout) as Sarif;
+    ({ rules } = sarif.runs[0].tool.driver);
+    ({ results } = sarif.runs[0]);
+  }, 200_000);
 
   it('has a check that fired more than once (non-vacuity)', () => {
     const counts = new Map<string, number>();
