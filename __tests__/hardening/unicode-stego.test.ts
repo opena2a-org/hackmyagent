@@ -281,6 +281,31 @@ describe('UNICODE-STEGO checks', () => {
         expect(hits[0].message, name).toContain('variation selectors');
       }
     });
+
+    it('still flags a text presentation selector (U+FE0E) after a digit, # or *', async () => {
+      // Only U+FE0F builds a keycap. U+FE0E after a digit has no emoji meaning,
+      // and a run of them after digits is the shape of a bit-per-digit payload.
+      const cases: Record<string, string> = {
+        'vs-text-after-digit.json': '{"d": "0\u{FE0E}"}\n',
+        'vs-text-after-hash.json': '{"d": "#\u{FE0E}"}\n',
+        'vs-text-after-star.json': '{"d": "*\u{FE0E}"}\n',
+        'vs-text-run-after-digits.js':
+          'const bits = "0\u{FE0F}0\u{FE0E}0\u{FE0F}0\u{FE0F}0\u{FE0E}0\u{FE0F}0\u{FE0E}0\u{FE0E}";\n',
+      };
+      for (const [name, body] of Object.entries(cases)) {
+        await fs.writeFile(path.join(tempDir, name), body);
+      }
+
+      const findings = await scanForUnicodeStego();
+      for (const name of Object.keys(cases)) {
+        const hits = findings.filter(
+          (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === name
+        );
+        expect(hits.length, name).toBe(1);
+        expect(hits[0].severity, name).toBe('critical');
+        expect(hits[0].message, name).toContain('variation selectors');
+      }
+    });
   });
 
   describe('Expanded file type scanning', () => {
@@ -759,6 +784,69 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego002[0].message).toContain('range literal at line 1');
       expect(stego002[0].message).toContain('.codePointAt at line 6');
     });
+
+    it('is still corroborated by a presentation selector after an emoji that 001 no longer reports', async () => {
+      // U+2B50 U+FE0F (star) is a legitimate emoji, so UNICODE-STEGO-001 says
+      // nothing about it. A decoder in the same file can still read the
+      // FE0E/FE0F choice after each emoji as a bit, so the selector remains the
+      // payload that lifts this finding to CRITICAL, as it did before emoji
+      // selectors were exempted from 001.
+      const content = [
+        'const s = "\u{2B50}\u{FE0F}";',
+        'function decode(input) {',
+        '  const result = [];',
+        '  for (let i = 0; i < input.length; i++) {',
+        '    const cp = input.codePointAt(i);',
+        '    if (cp >= 0xFE00 && cp <= 0xFE0F) { result.push(cp - 0xFE00); }',
+        '  }',
+        '  return String.fromCharCode(...result);',
+        '}',
+        'module.exports = decode(s);',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'decode.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'decode.js'
+      );
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'decode.js'
+      );
+
+      expect(stego001).toEqual([]);
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('critical');
+      expect(stego002[0].message).toContain('presentation selector after an emoji');
+    });
+
+    it('is still corroborated by, and 001 still reports, U+FE0E after digits in a bit-mapping loader', async () => {
+      const content = [
+        'const bits = "0\u{FE0F}0\u{FE0E}0\u{FE0F}0\u{FE0F}0\u{FE0E}0\u{FE0F}0\u{FE0E}0\u{FE0E}";',
+        'let out = "";',
+        'for (let i = 0; i < bits.length; i++) {',
+        '  const cp = bits.codePointAt(i);',
+        '  if (cp >= 0xFE00 && cp <= 0xFE0F) out += cp === 0xFE0E ? "1" : "0";',
+        '}',
+        'globalThis["ev" + "al"](out);',
+        '',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'loader.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'loader.js'
+      );
+      const stego002 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-002' && f.file === 'loader.js'
+      );
+
+      expect(stego001.length).toBe(1);
+      expect(stego001[0].severity).toBe('critical');
+      expect(stego001[0].message).toContain('variation selectors');
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].severity).toBe('critical');
+    });
   });
 
   /**
@@ -986,6 +1074,31 @@ describe('UNICODE-STEGO checks', () => {
 
       expect(stego001.length).toBe(1);
       expect(stego004.length).toBe(0);
+    });
+
+    it('reports a tag block in a file whose only 001 candidate is an emoji ZWJ sequence', async () => {
+      // Before emoji ZWJ sequences were exempted, UNICODE-STEGO-001 reported the
+      // joiner on line 1 and that finding suppressed this check. The tag
+      // characters on line 2 are now reported by the check that covers them.
+      const content = Buffer.concat([
+        Buffer.from('const astronaut = "\u{1F9D1}\u{200D}\u{1F680}";\nconst z = "test'),
+        Buffer.from([0xF3, 0xA0, 0x81, 0x81]), // U+E0041
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'tag-after-emoji.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego001 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === 'tag-after-emoji.js'
+      );
+      const stego004 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-004' && f.file === 'tag-after-emoji.js'
+      );
+
+      expect(stego001).toEqual([]);
+      expect(stego004.length).toBe(1);
+      expect(stego004[0].severity).toBe('high');
+      expect(stego004[0].line).toBe(2);
     });
 
     it('does not flag files without tag block characters', async () => {

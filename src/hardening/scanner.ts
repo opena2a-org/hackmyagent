@@ -3642,19 +3642,21 @@ function isEmojiZeroWidthJoiner(buf: Buffer, zwjStart: number): boolean {
 }
 
 /**
- * Check if a variation selector at position i in rawBuffer is a legitimate
- * emoji presentation selector (U+FE0F, or U+FE0E for text presentation)
- * following an emoji base character.
+ * Check if an emoji presentation selector (U+FE0F) at position vsStart in
+ * rawBuffer follows one of the emoji base shapes this check has always known.
+ * A selector after one of these is not reported by UNICODE-STEGO-001 and does
+ * not corroborate UNICODE-STEGO-002.
  *
  * Emoji base characters that commonly precede FE0F:
  * - Keycap digits/symbols: 0-9, #, * (encoded as single ASCII bytes)
  * - BMP symbols: U+2600-27BF range (encoded as 3-byte UTF-8: E2 XX XX or E2 XX XX)
  * - SMP emoji: U+1F300-1FAFF (encoded as 4-byte UTF-8: F0 9F XX XX)
- * - Any other Extended_Pictographic codepoint (U+00A9, U+25B6, U+2B50, U+3030, ...)
+ *
+ * Any other emoji base is recognised by `followsExtendedPictographic`.
  */
 function isEmojiVariationSelector(buf: Buffer, vsStart: number): boolean {
   // Walk backward to find the preceding character
-  // The variation selector is at vsStart (3 bytes: EF B8 8E or EF B8 8F)
+  // The variation selector is at vsStart (3 bytes: EF B8 8F)
   // We need to check what character precedes it
 
   if (vsStart === 0) return false;
@@ -3687,6 +3689,17 @@ function isEmojiVariationSelector(buf: Buffer, vsStart: number): boolean {
     if (prev >= 0x30 && prev <= 0x39) return true;   // 0-9
   }
 
+  return false;
+}
+
+/**
+ * True when the codepoint directly before the variation selector at vsStart is
+ * Extended_Pictographic (U+00A9, U+25B6, U+2B50, U+3030, ...). This is the
+ * base an emoji (U+FE0F) or text (U+FE0E) presentation selector attaches to.
+ * A digit, `#` or `*` is not Extended_Pictographic, so U+FE0E after one of
+ * them is not accepted here: only U+FE0F builds a keycap.
+ */
+function followsExtendedPictographic(buf: Buffer, vsStart: number): boolean {
   const base = utf8CodepointBefore(buf, vsStart);
   return base !== null && isExtendedPictographic(base.cp);
 }
@@ -16526,6 +16539,11 @@ dist/
 
       let hasVariationSelectors = false;
       let variationSelectorLine = 1;
+      // A presentation selector after an emoji that only the Extended_Pictographic
+      // test recognises. UNICODE-STEGO-001 does not report it, but a decoder in
+      // the same file can still read the FE0E/FE0F choice after each emoji as a
+      // bit, so it stays a payload for UNICODE-STEGO-002.
+      let hasEmojiPresentationSelectors = false;
       let hasTagCharsIn001 = false;
       let tagCharLine001 = 1;
       let hasZeroWidth = false;
@@ -16553,12 +16571,19 @@ dist/
           rawBuffer[i + 2] >= 0x80 &&
           rawBuffer[i + 2] <= 0x8F
         ) {
-          // Check if this is an emoji presentation selector (FE0E/FE0F after emoji base)
-          if (
-            (rawBuffer[i + 2] === 0x8E || rawBuffer[i + 2] === 0x8F) &&
-            isEmojiVariationSelector(rawBuffer, i)
-          ) {
+          const selector = rawBuffer[i + 2];
+          // FE0F after a keycap digit, a Misc Symbols/Dingbats/Misc Technical
+          // symbol or an SMP emoji: a legitimate emoji presentation selector.
+          if (selector === 0x8F && isEmojiVariationSelector(rawBuffer, i)) {
             // Legitimate emoji — skip
+          } else if (
+            // FE0E or FE0F after any other Extended_Pictographic codepoint
+            // (U+2B50 U+FE0F star, U+00A9 U+FE0E copyright): not an invisible
+            // codepoint for UNICODE-STEGO-001, still a payload for UNICODE-STEGO-002.
+            (selector === 0x8E || selector === 0x8F) &&
+            followsExtendedPictographic(rawBuffer, i)
+          ) {
+            hasEmojiPresentationSelectors = true;
           } else if (!hasVariationSelectors) {
             hasVariationSelectors = true;
             variationSelectorLine = currentLine;
@@ -16891,7 +16916,8 @@ dist/
       // `hasExecutionSink` is settled in the presence loop above, over the same
       // lines and with comments and string literals excluded — see the block
       // there for what did and did not change about it.
-      const hasDecodablePayload = hasVariationSelectors || hasTagCharsIn001;
+      const hasDecodablePayload =
+        hasVariationSelectors || hasTagCharsIn001 || hasEmojiPresentationSelectors;
       const corroborated = hasExecutionSink || hasDecodablePayload;
 
       if (hasCodePointAt && hasHexLiteral) {
@@ -16901,9 +16927,11 @@ dist/
         const reportedLine = Math.min(codePointAtLine, hexLiteralLine);
         const corroboration = hasExecutionSink
           ? 'an execution sink (eval/Function) in the same file'
-          : hasDecodablePayload
+          : hasVariationSelectors || hasTagCharsIn001
             ? 'a variation-selector or tag-character payload in the same file (UNICODE-STEGO-001)'
-            : null;
+            : hasDecodablePayload
+              ? 'a presentation selector after an emoji in the same file, which this decoder shape reads as a bit'
+              : null;
         // Say what was actually observed. A file that only READS codepoints must not
         // be described as reconstituting them; that sentence would be false about the
         // file, and a reader who checks it would find the check lying about evidence.
