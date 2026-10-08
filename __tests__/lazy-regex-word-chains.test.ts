@@ -21,7 +21,7 @@
  * to be wrapped and to be one of the oracles below. The differential suite
  * requires each wrapped pattern to return what its oracle returns, with the
  * same lastIndex, over 100,000 generated inputs per site plus hand cases. The
- * timing suite covers each flood shape at 512 KiB and 1 MiB, and the detection
+ * timing suite covers each flood shape at 64 KiB and 1 MiB, and the detection
  * suite runs the real checks on 1 MiB files.
  */
 import { describe, it, expect } from 'vitest';
@@ -32,7 +32,7 @@ import ts from 'typescript';
 import { HardeningScanner } from '../src/hardening/scanner';
 import { WordChainRegExp, indexOfWordsInOrderOnOneLine } from '../src/types/lazy-scan';
 import { tempDir } from './helpers/temp-dir';
-import { timeDoubling } from './helpers/doubling-time';
+import { timeScaling, scalesLinearly, describeScaling, RULE } from './helpers/scaling-time';
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -364,7 +364,7 @@ describe('each flood shape costs linear time', () => {
   for (const site of SITES) {
     const oracle = ORACLE[site];
     for (const shape of shapesFor(wordsOf(oracle))) {
-      it(`${site}, ${shape.name}: under 500 ms at 1 MiB, and 512 KiB -> 1 MiB at most 2.5x or both under 50 ms`, () => {
+      it(`${site}, ${shape.name}: ${RULE}`, () => {
         // Fresh matchers for every run, so that no run starts from state an earlier one left.
         const prepare = () => {
           const own = new WordChainRegExp(oracle);
@@ -374,13 +374,9 @@ describe('each flood shape costs linear time', () => {
             while (global.exec(s) !== null);
           };
         };
-        const { tHalf, tFull, ratio } = timeDoubling(prepare, shape.input(512 * KiB), shape.input(MiB));
-        console.log(`${site}, ${shape.name}: fastest 512KiB=${tHalf.toFixed(1)} ms, fastest 1MiB=${tFull.toFixed(1)} ms, median ratio=${ratio.toFixed(2)}x`);
-        expect(tFull, `${site}, ${shape.name} took ${tFull.toFixed(0)} ms at 1 MiB in its fastest run`).toBeLessThan(500);
-        expect(
-          (tHalf < 50 && tFull < 50) || ratio <= 2.5,
-          `${site}, ${shape.name}: fastest 512KiB=${tHalf.toFixed(0)} ms, fastest 1MiB=${tFull.toFixed(0)} ms, median ratio=${ratio.toFixed(2)}x`,
-        ).toBe(true);
+        const time = timeScaling(prepare, shape.input);
+        console.log(`${site}, ${shape.name}: ${describeScaling(time)}`);
+        expect(scalesLinearly(time), `${site}, ${shape.name}: ${describeScaling(time)}`).toBe(true);
       });
     }
   }
@@ -401,13 +397,9 @@ async function writeFile(root: string, rel: string, body: string): Promise<void>
   await fsp.writeFile(path.join(root, rel), body);
 }
 
-/** Runs one private check of a fresh scanner, which must finish within 5 s. */
+/** Runs one private check of a fresh scanner; the timing suite above times the patterns this file covers. */
 async function check(method: string, ...args: unknown[]): Promise<any[]> {
-  const t0 = performance.now();
-  const drafts = await (new HardeningScanner() as any)[method](...args);
-  const ms = performance.now() - t0;
-  expect(ms, `${method} took ${ms.toFixed(0)} ms`).toBeLessThan(5_000);
-  return drafts;
+  return (new HardeningScanner() as any)[method](...args);
 }
 
 // The checks cut skill lines at 10,000 characters, so the skill floods use

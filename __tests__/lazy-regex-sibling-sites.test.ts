@@ -24,7 +24,7 @@
  * The proof of that is the differential suite: each pattern as it stood before
  * the change is kept below as an oracle, and each site's driver must return the
  * same matches, offsets and captures over 100,000 generated inputs plus the
- * hand cases. The timing suite covers each flood shape at 512 KiB and 1 MiB;
+ * hand cases. The timing suite covers each flood shape at 64 KiB and 1 MiB;
  * the detection suite runs the real call paths on 1 MiB bodies.
  */
 import { describe, it, expect, vi } from 'vitest';
@@ -44,7 +44,7 @@ import { SoulScanner } from '../src/soul/scanner';
 import { HardeningScanner } from '../src/hardening/scanner';
 import { scanAssembly } from '../src/lifecycle';
 import { tempDir } from './helpers/temp-dir';
-import { timeDoubling } from './helpers/doubling-time';
+import { timeScaling, scalesLinearly, describeScaling, RULE } from './helpers/scaling-time';
 import {
   elementMatches,
   htmlComments,
@@ -903,14 +903,10 @@ const SHAPES: Shape[] = [
 
 describe('each flood shape costs linear time', () => {
   for (const shape of SHAPES) {
-    it(`${shape.name}: under 500 ms at 1 MiB, and 512 KiB -> 1 MiB at most 2.5x or both under 50 ms`, () => {
-      const { tHalf, tFull, ratio } = timeDoubling(() => shape.run, shape.input(512 * KiB), shape.input(MiB));
-      console.log(`${shape.name}: fastest 512KiB=${tHalf.toFixed(1)} ms, fastest 1MiB=${tFull.toFixed(1)} ms, median ratio=${ratio.toFixed(2)}x`);
-      expect(tFull, `${shape.name} took ${tFull.toFixed(0)} ms at 1 MiB in its fastest run`).toBeLessThan(500);
-      expect(
-        (tHalf < 50 && tFull < 50) || ratio <= 2.5,
-        `${shape.name}: fastest 512KiB=${tHalf.toFixed(0)} ms, fastest 1MiB=${tFull.toFixed(0)} ms, median ratio=${ratio.toFixed(2)}x`,
-      ).toBe(true);
+    it(`${shape.name}: ${RULE}`, () => {
+      const time = timeScaling(() => shape.run, shape.input);
+      console.log(`${shape.name}: ${describeScaling(time)}`);
+      expect(scalesLinearly(time), `${shape.name}: ${describeScaling(time)}`).toBe(true);
     });
   }
 });

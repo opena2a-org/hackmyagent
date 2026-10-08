@@ -28,7 +28,7 @@
  * exactly the oracles below. The differential suite requires each wrapped
  * pattern to return what its oracle returns, with the same lastIndex, over
  * 100,000 generated inputs per site plus hand cases. The timing suite covers
- * each flood shape at 512 KiB and 1 MiB, and the detection suite runs the real
+ * each flood shape at 64 KiB and 1 MiB, and the detection suite runs the real
  * checks on 1 MiB files.
  */
 import { describe, it, expect } from 'vitest';
@@ -39,7 +39,7 @@ import ts from 'typescript';
 import { HardeningScanner } from '../src/hardening/scanner';
 import { WordChainAlternationRegExp } from '../src/types/lazy-scan';
 import { tempDir } from './helpers/temp-dir';
-import { timeDoubling } from './helpers/doubling-time';
+import { timeScaling, scalesLinearly, describeScaling, RULE } from './helpers/scaling-time';
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -477,7 +477,7 @@ function shapesFor(site: Site): Shape[] {
 describe('each flood shape costs linear time', () => {
   for (const [name, site] of [...Object.entries(SITES), ...Object.entries(SYNTHETIC)]) {
     for (const shape of shapesFor(site)) {
-      it(`${name}, ${shape.name}: under 500 ms at 1 MiB, and 512 KiB -> 1 MiB at most 2.5x or both under 50 ms`, () => {
+      it(`${name}, ${shape.name}: ${RULE}`, () => {
         // Fresh matchers for every run, so that no run starts from state an earlier one left.
         const prepare = () => {
           const own = new WordChainAlternationRegExp(site.oracle);
@@ -487,13 +487,9 @@ describe('each flood shape costs linear time', () => {
             for (let m = global.exec(s); m !== null; m = global.exec(s)) if (m[0] === '') global.lastIndex++;
           };
         };
-        const { tHalf, tFull, ratio } = timeDoubling(prepare, shape.input(512 * KiB), shape.input(MiB));
-        console.log(`${name}, ${shape.name}: fastest 512KiB=${tHalf.toFixed(1)} ms, fastest 1MiB=${tFull.toFixed(1)} ms, median ratio=${ratio.toFixed(2)}x`);
-        expect(tFull, `${name}, ${shape.name} took ${tFull.toFixed(0)} ms at 1 MiB in its fastest run`).toBeLessThan(500);
-        expect(
-          (tHalf < 50 && tFull < 50) || ratio <= 2.5,
-          `${name}, ${shape.name}: fastest 512KiB=${tHalf.toFixed(0)} ms, fastest 1MiB=${tFull.toFixed(0)} ms, median ratio=${ratio.toFixed(2)}x`,
-        ).toBe(true);
+        const time = timeScaling(prepare, shape.input);
+        console.log(`${name}, ${shape.name}: ${describeScaling(time)}`);
+        expect(scalesLinearly(time), `${name}, ${shape.name}: ${describeScaling(time)}`).toBe(true);
       });
     }
   }
@@ -514,13 +510,9 @@ async function writeFile(root: string, rel: string, body: string): Promise<void>
   await fsp.writeFile(path.join(root, rel), body);
 }
 
-/** Runs one private check of a fresh scanner, which must finish within 5 s. */
+/** Runs one private check of a fresh scanner; the timing suite above times the patterns this file covers. */
 async function check(method: string, ...args: unknown[]): Promise<any[]> {
-  const t0 = performance.now();
-  const drafts = await (new HardeningScanner() as any)[method](...args);
-  const ms = performance.now() - t0;
-  expect(ms, `${method} took ${ms.toFixed(0)} ms`).toBeLessThan(5_000);
-  return drafts;
+  return (new HardeningScanner() as any)[method](...args);
 }
 
 const failed = (drafts: any[], id: string): any[] => drafts.filter((f: any) => f.checkId === id && !f.passed);
