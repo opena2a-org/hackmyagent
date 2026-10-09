@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, Server, Socket } from 'node:net';
-import { mkdtempSync, rmSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { tempDir } from '../helpers/temp-dir';
 import {
   sendClassify,
   sendHealthz,
@@ -42,8 +43,11 @@ function tempSocketPath(prefix: string, name: string): string {
   return join(dir, name);
 }
 
+const MOCK_SOCKET_PREFIX = 'nanomind-guard-test-';
+const MOCK_SOCKET_NAME = 'daemon.sock';
+
 async function startMockDaemon(handler: MockHandler): Promise<MockDaemon> {
-  const socketPath = tempSocketPath('nanomind-guard-test-', 'daemon.sock');
+  const socketPath = tempSocketPath(MOCK_SOCKET_PREFIX, MOCK_SOCKET_NAME);
   const receivedLines: string[] = [];
   const openConnections = new Set<Socket>();
 
@@ -513,6 +517,43 @@ describe('nanomind-guard-client', () => {
       else process.env.TMPDIR = savedTmpdir;
     }
   });
+
+  // A TMPDIR whose mock daemon socket path would be exactly socketPathBytes long.
+  function tmpdirForSocketPathOf(socketPathBytes: number): string {
+    const suffixBytes = Buffer.byteLength(join('/', `${MOCK_SOCKET_PREFIX}XXXXXX`, MOCK_SOCKET_NAME));
+    // Rooted under /tmp, not TMPDIR, so the padding below stays short enough to exist.
+    const root = tempDir('nanomind-guard-', '/tmp');
+    const dir = join(root, 'x'.repeat(socketPathBytes - suffixBytes - Buffer.byteLength(root) - 1));
+    mkdirSync(dir);
+    expect(Buffer.byteLength(dir) + suffixBytes).toBe(socketPathBytes);
+    return dir;
+  }
+
+  async function socketDirUnderTmpdir(dir: string): Promise<string> {
+    const savedTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = dir;
+    try {
+      expect(tmpdir()).toBe(dir);
+      const daemon = await startMockDaemon((_line, conn) => conn.end());
+      return dirname(dirname(daemon.socketPath));
+    } finally {
+      if (savedTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmpdir;
+    }
+  }
+
+  it('keeps the socket under TMPDIR when its path is exactly SOCKET_PATH_MAX_BYTES', async () => {
+    const dir = tmpdirForSocketPathOf(SOCKET_PATH_MAX_BYTES);
+    expect(await socketDirUnderTmpdir(dir)).toBe(dir);
+  });
+
+  it.each([1, 2, 3, 4])(
+    'moves the socket to /tmp when its path under TMPDIR would be SOCKET_PATH_MAX_BYTES + %i',
+    async (overBy) => {
+      const dir = tmpdirForSocketPathOf(SOCKET_PATH_MAX_BYTES + overBy);
+      expect(await socketDirUnderTmpdir(dir)).toBe('/tmp');
+    },
+  );
 
   it('does not leak the temp socket file after the test', async () => {
     const daemon = await startMockDaemon((_line, conn) => {
