@@ -28,7 +28,7 @@ let home: string;
 
 beforeAll(() => {
   fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'hma21-disc-'));
-  fs.writeFileSync(path.join(fixture, 'danger.py'), 'eval(user_input)\n');
+  fs.writeFileSync(path.join(fixture, 'danger.py'), 'exec(base64.b64decode(user_input))\n');
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma21-disc-home-'));
 });
 

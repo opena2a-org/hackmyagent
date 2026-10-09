@@ -25,7 +25,7 @@ beforeAll(assertDistFreshIfPresent);
 
 const ROOT = path.resolve(__dirname, '..', '..');
 let home: string;
-/** `danger.py` = eval(user_input): NEMO-009 critical under `secure`. */
+/** `danger.py` runs base64-decoded data: NEMO-009 critical under `secure`. */
 let pyFixture: string;
 /** A SKILL.md carrying a `curl | sh`: AST findings under `check`. */
 let skillFixture: string;
@@ -35,7 +35,7 @@ let cleanFixture: string;
 beforeAll(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma21-ac5-home-'));
   pyFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'hma21-ac5-py-'));
-  fs.writeFileSync(path.join(pyFixture, 'danger.py'), 'eval(user_input)\n');
+  fs.writeFileSync(path.join(pyFixture, 'danger.py'), 'exec(base64.b64decode(user_input))\n');
   skillFixture = fs.mkdtempSync(path.join(os.tmpdir(), 'hma21-ac5-skill-'));
   fs.writeFileSync(
     path.join(skillFixture, 'SKILL.md'),
