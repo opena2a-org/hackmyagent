@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { summarizeCoverage } from '../../src/hardening/coverage-ledger';
 import type { SecurityFinding } from '../../src/hardening/security-check';
 import { tempDir } from '../helpers/temp-dir';
 
@@ -106,5 +107,89 @@ describe('#354 AGENT-CRED-001 reaches below the scan root', () => {
     );
 
     expect(await agentCredFiles()).toEqual([]);
+  });
+});
+
+/**
+ * #920 — AGENT-CRED-001 reads at most 20 prompt files. Nested prompt names
+ * share that cap with the root probe and the system-prompt source files, so
+ * the order they are queued in decides which files are read, and the files
+ * left past the cap have to be disclosed rather than dropped in silence.
+ */
+describe('#920 AGENT-CRED-001 under its 20-file cap', () => {
+  const SOURCE_COUNT = 22;
+  const sourceFiles = Array.from({ length: SOURCE_COUNT }, (_, i) =>
+    path.join(`s${String(i + 1).padStart(2, '0')}`, 'system-prompt.ts'),
+  );
+
+  async function writeCappedTree(): Promise<void> {
+    await write('SOUL.md', PROMPT);
+    for (const rel of sourceFiles) await write(rel, PROMPT_TS);
+    await write(path.join('aa', 'SOUL.md'), PROMPT);
+  }
+
+  type ScanResult = Awaited<ReturnType<HardeningScanner['scan']>>;
+
+  function agentCredTruncations(result: ScanResult) {
+    return (result.coverage?.truncations ?? []).filter((t) => t.prefixes.includes('AGENT-CRED'));
+  }
+
+  function credentialsCategoryState(result: ScanResult): string | undefined {
+    const failed = (result.allFindings || result.findings || []).filter((f) => !f.passed);
+    const categories = summarizeCoverage(
+      (result.coverage?.executions ?? []) as never,
+      (result.coverage?.truncations ?? []) as never,
+      {
+        observedCheckIds: failed.map((f) => f.checkId),
+        filesReadByCategory: result.coverage?.filesReadByCategory,
+      },
+    );
+    return categories.find((c) => c.category === 'credentials')?.state;
+  }
+
+  it('reads the root probe and the source files before nested prompt names', async () => {
+    await writeCappedTree();
+
+    const files = await agentCredFiles();
+
+    expect(files).toHaveLength(20);
+    expect(files).toContain('SOUL.md');
+    // A nested prompt name sorts ahead of every `sNN` directory, so only its
+    // queue position keeps it behind them. Moved to the front, it would be
+    // read and push a source file past the cap.
+    expect(files).not.toContain(path.join('aa', 'SOUL.md'));
+    // Which 19 of the 22 source files are read follows the directory listing
+    // order, which the file system decides.
+    expect(files.filter((f) => sourceFiles.includes(f))).toHaveLength(19);
+  });
+
+  it('discloses the prompt files the cap left unread as a coverage truncation', async () => {
+    await writeCappedTree();
+
+    const result = await new HardeningScanner().scan({ targetDir: dir });
+
+    // 1 root + 22 source files + 1 nested = 24 queued, 20 read, 4 not read.
+    expect(agentCredTruncations(result)).toEqual([
+      {
+        layer: 'agent-cred-prompts',
+        cap: 20,
+        prefixes: ['AGENT-CRED'],
+        reason: 'read at most 20 system-prompt files — 4 prompt files not read',
+      },
+    ]);
+    // The renderer prints a truncated category as partial, not clear.
+    expect(credentialsCategoryState(result)).toBe('truncated');
+  });
+
+  it('records no truncation when every prompt file fits under the cap', async () => {
+    await write('SOUL.md', PROMPT);
+    for (const rel of sourceFiles.slice(0, 18)) await write(rel, PROMPT_TS);
+    await write(path.join('aa', 'SOUL.md'), PROMPT);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir });
+
+    expect(agentCredTruncations(result)).toEqual([]);
+    expect(credentialsCategoryState(result)).toBe('examined');
+    expect(await agentCredFiles()).toHaveLength(20);
   });
 });
