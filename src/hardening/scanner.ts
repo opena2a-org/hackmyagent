@@ -3212,16 +3212,36 @@ export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean
  * `check` gains parity; the narrower trailing-`*`-only, case-sensitive
  * matcher that used to live beside it is deleted, because a grammar stricter
  * than its matcher would silently reopen the class this unit closes.
+ *
+ * A scan in order, not a regular expression: one `.*` per star backtracks
+ * exponentially in the number of stars, the grammar accepts any number of
+ * them, and so one `.hmaignore` line stalled `secure` and `check` for minutes
+ * (#926). The text between stars is literal; the first piece is a prefix, the
+ * last a suffix, and each piece between them is taken at its leftmost place
+ * after the one before. A run of stars leaves empty pieces, which match
+ * anywhere and are skipped.
  */
 export function matchesCheckPattern(checkId: string, pattern: string): boolean {
   if (!checkId || !pattern) return false;
   const upper = checkId.toUpperCase();
   const p = pattern.toUpperCase();
-  if (p.includes('*')) {
-    const regexStr = '^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
-    return new RegExp(regexStr).test(upper);
+  if (!p.includes('*')) return upper === p;
+
+  const pieces = p.split('*');
+  const first = pieces[0];
+  const last = pieces[pieces.length - 1];
+  if (upper.length < first.length + last.length) return false;
+  if (!upper.startsWith(first) || !upper.endsWith(last)) return false;
+  const end = upper.length - last.length;
+  let pos = first.length;
+  for (let i = 1; i < pieces.length - 1; i++) {
+    const piece = pieces[i];
+    if (piece.length === 0) continue;
+    const at = upper.indexOf(piece, pos);
+    if (at < 0 || at + piece.length > end) return false;
+    pos = at + piece.length;
   }
-  return upper === p;
+  return true;
 }
 
 /**

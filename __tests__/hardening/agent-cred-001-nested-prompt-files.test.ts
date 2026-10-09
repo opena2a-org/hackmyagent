@@ -181,6 +181,22 @@ describe('#920 AGENT-CRED-001 under its 20-file cap', () => {
     expect(credentialsCategoryState(result)).toBe('truncated');
   });
 
+  it('names one unread prompt file in the singular', async () => {
+    // #926 — 21 source files and nothing else: 21 queued, 20 read, 1 not read.
+    for (const rel of sourceFiles.slice(0, 21)) await write(rel, PROMPT_TS);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir });
+
+    expect(agentCredTruncations(result)).toEqual([
+      {
+        layer: 'agent-cred-prompts',
+        cap: 20,
+        prefixes: ['AGENT-CRED'],
+        reason: 'read at most 20 system-prompt files — 1 prompt file not read',
+      },
+    ]);
+  });
+
   it('records no truncation when every prompt file fits under the cap', async () => {
     await write('SOUL.md', PROMPT);
     for (const rel of sourceFiles.slice(0, 18)) await write(rel, PROMPT_TS);
