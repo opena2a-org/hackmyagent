@@ -3770,6 +3770,156 @@ function followsExtendedPictographic(buf: Buffer, vsStart: number): boolean {
 }
 
 /**
+ * NEMO-009 (Python): the calls whose output, run by eval()/exec(), is the shape
+ * of a loader running a hidden or downloaded payload. Decoders: base64 (b64,
+ * b32, a85), hex, zlib/bz2/lzma decompression, marshal, codecs. Network reads:
+ * urlopen, requests.get/post, httpx, a socket recv.
+ */
+const PY_PAYLOAD_SOURCE =
+  String.raw`(?:b64decode|b32decode|a85decode|unhexlify)\b|\burlopen\b|\bhttpx\b` +
+  String.raw`|\b(?:zlib|bz2|lzma)\s*\.\s*decompress\b|\bmarshal\s*\.\s*loads\b|\bcodecs\s*\.\s*decode\b` +
+  String.raw`|\brequests\s*\.\s*(?:get|post)\b|\.\s*recv(?:from)?(?:_into)?\s*\(`;
+
+/** Members of each module that are a payload source, for the alias spellings. */
+const PY_PAYLOAD_SOURCE_MEMBERS: Record<string, string[]> = {
+  base64: ['b64decode', 'b32decode', 'a85decode', 'urlsafe_b64decode', 'standard_b64decode'],
+  binascii: ['unhexlify'],
+  zlib: ['decompress'],
+  bz2: ['decompress'],
+  lzma: ['decompress'],
+  marshal: ['loads'],
+  codecs: ['decode'],
+  'urllib.request': ['urlopen'],
+  urllib2: ['urlopen'],
+  requests: ['get', 'post'],
+  httpx: ['get', 'post'],
+};
+
+/**
+ * The payload-source pattern for one Python file: the qualified spellings
+ * above, plus the names this file binds with `import zlib as z` (`z.decompress`)
+ * and `from zlib import decompress [as d]` (`decompress(` / `d(`).
+ */
+function pythonPayloadSourcePattern(content: string): RegExp {
+  const alternatives = [PY_PAYLOAD_SOURCE];
+  const moduleNames = Object.keys(PY_PAYLOAD_SOURCE_MEMBERS).map((m) => m.replace('.', '\\.')).join('|');
+  const importAs = new RegExp(String.raw`^\s*(${moduleNames})\s+as\s+([A-Za-z_]\w*)\s*$`);
+  for (const m of content.matchAll(/^[ \t]*import[ \t]+([^\n#;]+)/gm)) {
+    for (const part of m[1].split(',')) {
+      const am = importAs.exec(part);
+      if (am) alternatives.push(String.raw`\b${am[2]}\s*\.\s*(?:${PY_PAYLOAD_SOURCE_MEMBERS[am[1]].join('|')})\b`);
+    }
+  }
+  const fromImport = new RegExp(String.raw`^[ \t]*from[ \t]+(${moduleNames})[ \t]+import[ \t]+\(?([^)\n#;]+)`, 'gm');
+  for (const m of content.matchAll(fromImport)) {
+    for (const part of m[2].split(',')) {
+      const nm = /^\s*([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(part);
+      if (nm && PY_PAYLOAD_SOURCE_MEMBERS[m[1]].includes(nm[1])) {
+        alternatives.push(String.raw`(?<![\w.])${nm[2] ?? nm[1]}\s*\(`);
+      }
+    }
+  }
+  return new RegExp(alternatives.join('|'));
+}
+
+/** How a payload source reads in a finding message: `zlib.decompress`, `recv`. */
+function payloadSourceLabel(match: string): string {
+  return match.replace(/\s+/g, '').replace(/\($/, '').replace(/^\./, '');
+}
+
+/**
+ * The first payload-named value in `text`: a dotted name (or a prefix of one)
+ * this file assigned from a payload source earlier. `r.text` matches `r`.
+ */
+function mentionedPayloadName(text: string, names: Map<string, string>): string | null {
+  if (names.size === 0) return null;
+  for (const m of text.matchAll(/(?<![\w.])[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*/g)) {
+    const parts = m[0].replace(/\s+/g, '').split('.');
+    for (let k = parts.length; k > 0; k--) {
+      const name = parts.slice(0, k).join('.');
+      if (names.has(name)) return name;
+    }
+  }
+  return null;
+}
+
+/** The text inside the parentheses that open at `open`, else up to a comment or the end of the line. */
+function pythonCallArgument(line: string, open: number): string {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let j = open; j < line.length; j++) {
+    const c = line[j];
+    if (quote) {
+      if (c === '\\') j++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === '#') return line.slice(open + 1, j);
+    else if (c === '(') depth++;
+    else if (c === ')' && --depth === 0) return line.slice(open + 1, j);
+  }
+  return line.slice(open + 1);
+}
+
+/**
+ * NEMO-009 (Python): what an eval()/exec() on this line runs, when it is a
+ * payload — the argument calls a payload source, or names a value assigned
+ * from one earlier in the file. Null when it is neither.
+ */
+function pythonExecPayloadSource(line: string, sourcePattern: RegExp, names: Map<string, string>): string | null {
+  for (const call of line.matchAll(/(?<!\.)\b(?:eval|exec)\s*\(/g)) {
+    const argument = pythonCallArgument(line, call.index! + call[0].length - 1);
+    const direct = sourcePattern.exec(argument);
+    if (direct) return payloadSourceLabel(direct[0]);
+    const name = mentionedPayloadName(argument, names);
+    if (name) return `\`${name}\`, assigned from ${names.get(name)}`;
+  }
+  return null;
+}
+
+/**
+ * Record the names this line assigns from a payload source, or from a name
+ * already recorded: `x = b64decode(s)`, `x: bytes = ...`, `a, b = ...`,
+ * `x += ...`, `(x := ...)`, `with urlopen(u) as resp:`. A name once recorded
+ * stays recorded: "assigned earlier in the file" is any earlier assignment,
+ * and a later reassignment on another branch does not undo it.
+ */
+function recordPythonPayloadNames(
+  line: string,
+  lineNumber: number,
+  sourcePattern: RegExp,
+  names: Map<string, string>,
+): void {
+  if (/^\s*#/.test(line)) return;
+  const bindings: Array<{ targets: string[]; rhs: string }> = [];
+  if (/^\s*(?:async\s+)?with\b/.test(line)) {
+    const targets = [...line.matchAll(/\bas\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)/g)].map((m) => m[1]);
+    if (targets.length > 0) bindings.push({ targets, rhs: line });
+  } else {
+    const assign =
+      /^\s*([A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*)\s*(?::[^=]*)?(?:\*\*|\/\/|>>|<<|[-+*/%@&|^])?=(?!=)(.*)$/.exec(line);
+    if (assign) bindings.push({ targets: assign[1].split(',').map((t) => t.trim()), rhs: assign[2] });
+  }
+  if (line.includes(':=')) {
+    for (const m of line.matchAll(/([A-Za-z_]\w*)\s*:=(.*)/g)) bindings.push({ targets: [m[1]], rhs: m[2] });
+  }
+  for (const { targets, rhs } of bindings) {
+    const direct = sourcePattern.exec(rhs);
+    const via = direct ? null : mentionedPayloadName(rhs, names);
+    const origin = direct
+      ? `${payloadSourceLabel(direct[0])} at line ${lineNumber}`
+      : via
+        ? names.get(via)!
+        : null;
+    if (!origin) continue;
+    for (const target of targets) {
+      if (!names.has(target)) names.set(target, origin);
+    }
+  }
+}
+
+/**
  * Check if a Cyrillic character at position ci in chars[] is in a Cyrillic
  * text context (legitimate i18n) rather than mixed into a Latin word (attack).
  *
@@ -17828,6 +17978,8 @@ dist/
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
+        const payloadSourcePattern = pythonPayloadSourcePattern(content);
+        const payloadNames = new Map<string, string>();
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           if (/pickle\.load/i.test(line)) {
@@ -17866,21 +18018,47 @@ dist/
           }
           if (/(?<!\.)\beval\s*\(/.test(line) || /(?<!\.)\bexec\s*\(/.test(line)) {
             nemo009Found = true;
-            findings.push({
-              checkId: 'NEMO-009',
-              name: 'Unsafe deserialization: eval/exec in Python',
-              description: 'eval() or exec() executes arbitrary code. If the input originates from untrusted sources, this enables code injection.',
-              category: 'nemo-deserialization',
-              severity: 'critical',
-              passed: false,
-              message: `eval()/exec() at line ${i + 1}`,
-              fixable: false,
-              file: path.relative(targetDir, file),
-              line: i + 1,
-              fix: 'Replace eval/exec with ast.literal_eval() for data parsing, or use a safe DSL.',
-              guidance: 'eval() and exec() execute arbitrary code. If input originates from untrusted sources (user input, network, files), this is a direct code injection vector.',
-            });
+            // eval/exec is code execution, which is a capability, not
+            // deserialization and not by itself malice: `flask shell` evals the
+            // file PYTHONSTARTUP names, exactly as the stock REPL does. CRITICAL
+            // is the loader shape: the argument is decoded or fetched data on
+            // this line, or a name assigned from such data earlier in the file.
+            const payloadSource = pythonExecPayloadSource(line, payloadSourcePattern, payloadNames);
+            if (payloadSource) {
+              findings.push({
+                checkId: 'NEMO-009',
+                name: 'eval/exec executes code',
+                description: 'eval() or exec() runs decoded or fetched data as Python code. This is the shape of a loader that unpacks or downloads a payload and runs it.',
+                category: 'nemo-deserialization',
+                severity: 'critical',
+                passed: false,
+                message: `eval()/exec() at line ${i + 1} runs data from ${payloadSource}`,
+                fixable: false,
+                file: path.relative(targetDir, file),
+                line: i + 1,
+                fix: 'Decode or download the value to a file and read it instead of running it. If this code does not need to run a payload it unpacks or fetches, remove the eval/exec call.',
+                guidance: `The string passed to eval()/exec() comes from ${payloadSource}, so what runs is not visible in this source file. Trace the value back to where it is decoded or fetched and read what it contains before depending on this code.`,
+              });
+            } else {
+              findings.push({
+                checkId: 'NEMO-009',
+                name: 'eval/exec executes code',
+                description: 'eval() or exec() runs a string as Python code. Its argument is not decoded or fetched data on this line or in a name assigned from such data earlier in the file, so this is a capability to review rather than a hidden payload.',
+                category: 'nemo-deserialization',
+                severity: 'medium',
+                passed: false,
+                message: `eval()/exec() at line ${i + 1}; the argument is not decoded or fetched data`,
+                fixable: false,
+                file: path.relative(targetDir, file),
+                line: i + 1,
+                fix: 'If the string is data, parse it with ast.literal_eval() or json.loads(). If it is code a user supplies on purpose (a REPL startup file, a config file), keep it and document which file is trusted.',
+                guidance: 'eval() and exec() run whatever string they receive. Check where this argument comes from: a file or setting the user controls (PYTHONSTARTUP, a config file) is an intended hook; a request body or other remote input is code injection.',
+              });
+            }
           }
+          // Names assigned from a decoder or a network read, recorded after the
+          // line's own call is graded so that only EARLIER assignments count.
+          recordPythonPayloadNames(line, i + 1, payloadSourcePattern, payloadNames);
         }
       } catch { /* skip */ }
     }

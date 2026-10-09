@@ -1,7 +1,8 @@
 /**
  * HMA-21.AC2 — scope semantics reach the exit code.
  *
- * Fixture: `danger.py` = `eval(user_input)`, neutral HOME,
+ * Fixture: `danger.py` = `exec(base64.b64decode(user_input))` (NEMO-009 is
+ * CRITICAL only when eval/exec runs decoded or fetched data), neutral HOME,
  * `node dist/cli.js secure --ci --json .`. Measured at base a598f616:
  *
  *   no file                 -> exit 1 / score 69 / NEMO-009 reported
@@ -33,7 +34,7 @@ let home: string;
 
 beforeAll(() => {
   fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'hma21-scope-'));
-  fs.writeFileSync(path.join(fixture, 'danger.py'), 'eval(user_input)\n');
+  fs.writeFileSync(path.join(fixture, 'danger.py'), 'exec(base64.b64decode(user_input))\n');
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'hma21-home-'));
 });
 
