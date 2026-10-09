@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { writeFile, mkdir, rm } from 'node:fs/promises';
 import * as yaml from 'js-yaml';
 
@@ -201,6 +202,35 @@ describe('#423 a YAML tag in frontmatter cannot construct code', () => {
     const tags = [...schema.explicit, ...schema.implicit].map((type) => type.tag);
     expect(tags.length).toBeGreaterThan(0);
     expect(tags.filter((tag) => tag.includes(':js/'))).toEqual([]);
+  });
+
+  it("the loader's docblock names every type on the default schema", () => {
+    // The docblock enumerates the schema's types and says "nothing else", so it has to name each
+    // one. A type js-yaml adds lands here unmapped and fails until the docblock is revisited.
+    const NAMED_AS: Record<string, string> = {
+      'tag:yaml.org,2002:str': 'strings',
+      'tag:yaml.org,2002:int': 'numbers',
+      'tag:yaml.org,2002:float': 'numbers',
+      'tag:yaml.org,2002:bool': 'booleans',
+      'tag:yaml.org,2002:null': 'null',
+      'tag:yaml.org,2002:timestamp': 'timestamps',
+      'tag:yaml.org,2002:binary': 'binary buffers',
+      'tag:yaml.org,2002:seq': 'sequences',
+      'tag:yaml.org,2002:map': 'mappings',
+      'tag:yaml.org,2002:omap': 'omap/pairs/set',
+      'tag:yaml.org,2002:pairs': 'omap/pairs/set',
+      'tag:yaml.org,2002:set': 'omap/pairs/set',
+      'tag:yaml.org,2002:merge': '`<<` merge key',
+    };
+    const schema = yaml.DEFAULT_SCHEMA as unknown as { explicit: Array<{ tag: string }>; implicit: Array<{ tag: string }> };
+    const tags = [...schema.explicit, ...schema.implicit].map((type) => type.tag);
+    expect(tags.filter((tag) => !(tag in NAMED_AS))).toEqual([]);
+
+    const source = readFileSync(join(__dirname, '..', '..', 'src/nanomind-core/ingestion/artifact-parser.ts'), 'utf-8');
+    const docblock = /\/\*\*((?:(?!\*\/)[\s\S])*)\*\/\s*function loadLeadingFrontmatter\(/.exec(source)?.[1];
+    expect(docblock).toBeDefined();
+    const prose = docblock!.replace(/\n\s*\*\s?/g, ' ');
+    expect(tags.filter((tag) => !prose.includes(NAMED_AS[tag]))).toEqual([]);
   });
 });
 
