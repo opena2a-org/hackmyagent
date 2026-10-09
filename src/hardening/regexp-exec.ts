@@ -28,10 +28,12 @@ const REGEX_LITERAL_TAIL =
   /(?:^|[=(,:;!&|?{}[]|\breturn|\btypeof)\s*\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\\[])+\/[dgimsuyv]*$/;
 const TRAILING_IDENT = new RegExp(`(?<![\\w$.])(${IDENT})$`);
 const IMPORT_OR_REQUIRE = /\b(?:import|require)\b/;
-
-function escapeIdent(name: string): string {
-  return name.replace(/\$/g, '\\$');
-}
+// Every assignment in a file, with the assigned identifier captured; `\s*`
+// leaves the match at the value, where REGEXP_VALUE_AT is tested.
+const ASSIGNMENT_SOURCE = String.raw`(?<![\w$.])(${IDENT})[ \t]*(?::[^=;\n]{0,200})?=(?![=>])\s*`;
+const REGEXP_VALUE_AT = new RegExp(REGEXP_VALUE, 'y');
+const REGEXP_ANNOTATION = /:[ \t]*RegExp[ \t]*=/;
+const IDENT_MENTION = new RegExp(`(?<![\\w$.])(${IDENT})(?![\\w$])`, 'g');
 
 /** Index of the string or template literal end that matches the quote at `start`; -1 if the line ends first. */
 function stringEnd(line: string, start: number): number {
@@ -71,28 +73,29 @@ function matchingClose(line: string, open: number): number {
  * import or require binding the same name.
  */
 export function regExpIdentifiers(content: string): Set<string> {
-  const candidates = new Set<string>();
-  for (const m of content.matchAll(REGEXP_DECLARATION)) candidates.add(m[1]);
-
   const result = new Set<string>();
-  const lines = content.split('\n');
-  for (const name of candidates) {
-    const id = escapeIdent(name);
-    const assignment = new RegExp(String.raw`(?<![\w$.])${id}[ \t]*(?::[^=;\n]{0,200})?=(?![=>])\s*`, 'g');
-    const regExpValue = new RegExp(REGEXP_VALUE, 'y');
-    let onlyRegExp = true;
-    for (const m of content.matchAll(assignment)) {
-      regExpValue.lastIndex = m.index! + m[0].length;
-      // A `: RegExp` annotation vouches for the value it initialises.
-      if (!regExpValue.test(content) && !/:[ \t]*RegExp[ \t]*=/.test(m[0])) {
-        onlyRegExp = false;
-        break;
-      }
-    }
-    if (!onlyRegExp) continue;
-    const mention = new RegExp(String.raw`(?<![\w$.])${id}(?![\w$])`);
-    if (lines.some((line) => IMPORT_OR_REQUIRE.test(line) && mention.test(line))) continue;
-    result.add(name);
+  for (const m of content.matchAll(REGEXP_DECLARATION)) result.add(m[1]);
+  if (result.size === 0) return result;
+
+  // One pass over every assignment in the file, whatever the identifier: a
+  // candidate assigned anything but a regular expression drops out. A
+  // `: RegExp` annotation vouches for the value it initialises.
+  const assignment = new RegExp(ASSIGNMENT_SOURCE, 'g');
+  for (let m = assignment.exec(content); m !== null; m = assignment.exec(content)) {
+    const name = m[1];
+    // Resume right after the identifier, so an assignment that starts inside
+    // this one's type annotation (`x: typeof re = ...`) is seen as well.
+    assignment.lastIndex = m.index + name.length;
+    if (!result.has(name)) continue;
+    REGEXP_VALUE_AT.lastIndex = m.index + m[0].length;
+    if (!REGEXP_VALUE_AT.test(content) && !REGEXP_ANNOTATION.test(m[0])) result.delete(name);
+  }
+
+  // One pass over the import and require lines: a name mentioned there is
+  // bound to something other than a regular expression.
+  for (const line of content.split('\n')) {
+    if (!IMPORT_OR_REQUIRE.test(line)) continue;
+    for (const m of line.matchAll(IDENT_MENTION)) result.delete(m[1]);
   }
   return result;
 }

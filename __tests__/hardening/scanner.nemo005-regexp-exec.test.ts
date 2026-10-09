@@ -120,6 +120,45 @@ describe('NEMO-005 RegExp.exec false positive', () => {
     });
   });
 
+  describe('regExpIdentifiers', () => {
+    it('40,000 regex declarations resolve in linear time', () => {
+      const file = (n: number) =>
+        Array.from({ length: n }, (_, i) => `let a${i} = /x/;`).join('\n') +
+        '\nconst m = a0.exec(`${name}`);\n';
+      const small = file(10_000);
+      const large = file(40_000);
+      const time = (src: string) => {
+        let best = Infinity;
+        for (let r = 0; r < 3; r++) {
+          const t0 = performance.now();
+          regExpIdentifiers(src);
+          best = Math.min(best, performance.now() - t0);
+        }
+        return best;
+      };
+      time(small); // warm-up
+      const tSmall = time(small);
+      const tLarge = time(large);
+      console.log(
+        `#878 regExpIdentifiers: 10,000 declarations (${small.length} bytes) ${tSmall.toFixed(1)}ms; ` +
+          `40,000 declarations (${large.length} bytes) ${tLarge.toFixed(1)}ms`,
+      );
+      expect(regExpIdentifiers(large).size).toBe(40_000);
+      // 4x the input: a linear pass is ~4x; a rescan of the file per identifier was ~16x.
+      // The floor keeps sub-millisecond noise from failing the ratio.
+      expect(tLarge).toBeLessThan(Math.max(tSmall * 8, 50));
+      expect(tLarge).toBeLessThan(2_000);
+    });
+
+    it('sees an assignment that starts inside another assignment\'s type annotation', () => {
+      const content = [
+        'let re = /x/;',
+        'const x: typeof re = build();',
+      ].join('\n');
+      expect(regExpIdentifiers(content).has('re')).toBe(false);
+    });
+  });
+
   describe('onlyRegExpExecCalls', () => {
     it('rejects a RegExp call that is not the receiver', () => {
       expect(onlyRegExpExecCalls('foo(new RegExp(`${name}`)).exec(`${x}`)', new Set())).toBe(false);
