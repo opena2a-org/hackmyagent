@@ -16,11 +16,14 @@
 import { CLI_PREFIX } from './cli-prefix';
 import { CONTROL_DEFS, PROFILE_DOMAINS, VIOLATION_CATALOG } from './soul/scanner';
 import { getTaxonomyMap } from './hardening/taxonomy';
+import { DEEP_SCAN_NOT_RUN_FIX, DEEP_SCAN_NOT_RUN_NAME } from './hardening/settled-outcome';
 
 /** Hand-written explanations for the checks users ask about most. */
 export const STATIC_EXPLANATIONS: Record<string, string> = {
   'CRED-001': 'Hardcoded credential detected. API keys, tokens, or passwords are embedded directly in source code. Run: opena2a protect . — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only. Rotate any already-exposed credentials.',
-  'CRED-002': 'OpenAI API key detected (sk-proj-... or sk-...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
+  // #918 — secure files CRED-002 as a private key file; this line described
+  // an OpenAI API key, so explain and the finding named different things.
+  'CRED-002': 'Private key file in the project directory. A .key file, a .pem file holding a private key, or a JSON file whose field value holds a private key (the finding names the field) sits where it is easily committed to git; once pushed, the key is compromised. Fix: move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: git rm --cached <file>',
   'CRED-003': 'Anthropic API key detected (sk-ant-...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
   'CRED-004': 'AWS credential pattern detected (AKIA...). Run: opena2a protect . — removes the key from source and stores it in your secure vault.',
   // #477 — fix-all reads source files now, and a finding it can report has
@@ -69,6 +72,9 @@ export const STATIC_EXPLANATIONS: Record<string, string> = {
   'NEMO-005': `exec() with user-controlled string interpolation. A line in a JavaScript or TypeScript file calls exec() or execSync(), not execFile(), with a template literal whose interpolation names an input-like value (its text contains name, id, input, arg, param, flag or option, in any case). exec() hands the whole string to /bin/sh, which interprets shell metacharacters, so a value that reaches the interpolation can run commands. Fix: call execFile() or spawn() with an argument array, which does not start a shell. Run: ${CLI_PREFIX} secure --verbose to see each matching line.`,
   'NEMO-006': `Predictable /tmp path without mktemp. A line in a shell script (.sh) names a hardcoded /tmp/ path and redirects output (>), passes -o /tmp/..., or runs install with a /tmp/ path; a line that calls mktemp is not reported. A predictable name lets another local user create a symlink at that path first, so the write lands on a file of their choosing (CWE-377). Fix: create a private directory with mktemp and write under it: TMPDIR=$(mktemp -d) && trap "rm -rf $TMPDIR" EXIT. Run: ${CLI_PREFIX} secure --verbose to see each matching line.`,
   'NEMO-007': `Full process.env passthrough to subprocess. A line in a JavaScript or TypeScript file outside test paths spreads ...process.env into an env: { } object, the subprocess option that hands the child every variable in the parent's environment, API keys and tokens included. Fix: pass only the variables the child needs, for example env: { PATH: process.env.PATH, NODE_ENV: process.env.NODE_ENV }. Run: ${CLI_PREFIX} secure --verbose to see each matching line.`,
+  // #918 — secure --deep reports this id and exits 2 on it; explain answered
+  // "Unknown check ID". Both records it files under the id are described.
+  'SEM-LLM-NOT-ANALYZED': `Deep analysis coverage gap. A --deep scan asked the deep analysis tier (Layer 3) to analyze files and got no result it could read, so those files have not been checked for the credential shapes only that tier detects. This is a gap in coverage, not a clean result: the checks that did run are unaffected. The finding is "${DEEP_SCAN_NOT_RUN_NAME}" once for the run when the tier could not run at all (ANTHROPIC_API_KEY is not set, or the call failed; the message names the cause and how many files it would have analyzed), or "Deep analysis did not complete for this file" for each file whose answer could not be read. It is medium, and secure exits 2 on it unless a critical or high finding exits 1 first; --ignore does not lower that exit code. Fix: ${DEEP_SCAN_NOT_RUN_FIX}. If one file repeats, its own content may be interfering with the analysis. Run: ${CLI_PREFIX} secure <dir> --deep`,
 };
 
 /**
