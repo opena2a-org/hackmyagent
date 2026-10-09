@@ -94,12 +94,24 @@ describe('NEMO-005 RegExp.exec false positive', () => {
     });
 
     it('an identifier that is also assigned from child_process', async () => {
+      // The reassignment line names no import or require, so only the
+      // assignment rule can drop `runner` from the regular expressions.
+      const js = [
+        "const cp = require('child_process');",
+        'let runner = /x/;',
+        'runner = cp;',
+        'runner.exec(`ls ${name}`);',
+      ].join('\n');
+      expect(await nemo005('reassigned.js', js)).toHaveLength(1);
+    });
+
+    it('an identifier reassigned on a require line', async () => {
       const js = [
         'let runner = /x/;',
         "runner = require('child_process');",
         'runner.exec(`ls ${name}`);',
       ].join('\n');
-      expect(await nemo005('reassigned.js', js)).toHaveLength(1);
+      expect(await nemo005('required.js', js)).toHaveLength(1);
     });
 
     it('an identifier bound by an import, even when a local shadows it with a regex', async () => {
@@ -157,11 +169,22 @@ describe('NEMO-005 RegExp.exec false positive', () => {
       ].join('\n');
       expect(regExpIdentifiers(content).has('re')).toBe(false);
     });
+
+    it('drops an identifier later assigned something other than a regular expression', () => {
+      const content = ['let runner = /x/;', 'runner = cp;'].join('\n');
+      expect(regExpIdentifiers(content).has('runner')).toBe(false);
+    });
   });
 
   describe('onlyRegExpExecCalls', () => {
     it('rejects a RegExp call that is not the receiver', () => {
       expect(onlyRegExpExecCalls('foo(new RegExp(`${name}`)).exec(`${x}`)', new Set())).toBe(false);
+    });
+
+    it('rejects execSync even on a regular-expression receiver', () => {
+      expect(onlyRegExpExecCalls('re.execSync(`${name}`);', new Set(['re']))).toBe(false);
+      expect(onlyRegExpExecCalls('/x/.execSync(`${name}`);', new Set())).toBe(false);
+      expect(onlyRegExpExecCalls('new RegExp(`${name}`).execSync(s);', new Set())).toBe(false);
     });
 
     it('accepts a const annotated RegExp', () => {
