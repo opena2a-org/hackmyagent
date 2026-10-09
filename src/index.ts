@@ -43,6 +43,19 @@ export type {
 export { HardeningScanner, calculateSecurityScore } from './hardening';
 export type { ScanOptions, SecurityFinding, Severity, MachinePostureSummary } from './hardening';
 
+// `.hmaignore` grammar, for a dependent tool that reads the same file
+export { parseHmaIgnore, matchHmaIgnore, isScopeChannel } from './hardening';
+export type {
+  HmaIgnoreRule,
+  HmaIgnoreParseError,
+  ParsedHmaIgnore,
+  HmaIgnoreMatch,
+  HmaIgnoreFinding,
+  ScopeChannel,
+  PresentationalChannel,
+  SuppressionChannel,
+} from './hardening';
+
 // Context Lifecycle Scanner (Stage 0-1)
 export { scanAssembly, toLifecycleResult } from './lifecycle';
 export type {
