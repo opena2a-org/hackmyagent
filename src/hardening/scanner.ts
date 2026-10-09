@@ -15872,7 +15872,8 @@ dist/
   ): Promise<string[]> {
     if (depth > 10) return [];
 
-    const sourceExtensions = new Set(['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx']);
+    // #548 — the JS family from its one definition, not a hand-written copy.
+    const sourceExtensions = new Set<string>(JS_FAMILY_EXTENSIONS);
     const skipDirs = new Set(['node_modules', 'dist', '.git']);
     const files: string[] = [];
 
@@ -16612,7 +16613,7 @@ dist/
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
     // Scan expanded file types beyond JS/TS (configs, docs, and Python are attack surfaces too)
-    const stegoExtensions = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.py', '.md', '.txt', '.yaml', '.yml', '.json', '.toml'];
+    const stegoExtensions = [...JS_FAMILY_EXTENSIONS, '.py', '.md', '.txt', '.yaml', '.yml', '.json', '.toml'];
     const sourceFiles = await this.walkDirectory(targetDir, stegoExtensions);
 
     for (const filePath of sourceFiles) {

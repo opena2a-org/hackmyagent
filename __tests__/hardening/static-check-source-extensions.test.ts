@@ -87,23 +87,89 @@ describe('#414 static-check source extensions: contract', () => {
     expect([...JS_FAMILY_EXTENSIONS].sort()).toEqual([...MUST_BE_SCANNED].sort());
   });
 
-  it('leaves no hand-written JS-family array behind in the scanner', async () => {
+  it('leaves no hand-written JS-family list behind in the scanner', async () => {
     // The defect was not one bad list, it was twelve independent ones. A new
-    // call site written the old way reintroduces it, and only a source-level
-    // check catches that before it ships.
+    // list written the old way reintroduces it, and only a source-level check
+    // catches that before it ships.
     const { readFile } = await import('node:fs/promises');
     const source = await readFile(join(__dirname, '../../src/hardening/scanner.ts'), 'utf8');
-    const handWritten = source
-      .split('\n')
-      .map((line, i) => [i + 1, line] as const)
-      .filter(([, line]) => /walkDirectory\([^)]*\['\.ts'/.test(line))
-      .filter(([, line]) => !line.trim().startsWith('*') && !line.trim().startsWith('//'));
     expect(
-      handWritten.map(([n, l]) => `${n}: ${l.trim()}`),
-      'a walkDirectory call is enumerating the JS family by hand again; use JS_FAMILY_EXTENSIONS',
+      handWrittenJsFamilyLists(source),
+      'a list is enumerating the JS family by hand again; use JS_FAMILY_EXTENSIONS',
     ).toEqual([]);
   });
+
+  // #548 — the first cut of the guard matched one line at a time, and only an
+  // array whose FIRST element was '.ts'. Reordering the array or wrapping the
+  // call evaded it, and it never looked outside `walkDirectory(` calls, so two
+  // copies in a Set and a local array went unseen. These cases pin the
+  // detector itself, so a narrowed detector fails here rather than passing
+  // green over the source.
+  describe('the guard catches the shapes that evaded it (#548)', () => {
+    const caught = (src: string) => handWrittenJsFamilyLists(src).length > 0;
+
+    it('any element order', () => {
+      expect(caught("walkDirectory(targetDir, ['.js', '.ts'], 0, 2);")).toBe(true);
+      expect(caught("walkDirectory(targetDir, ['.ts', '.js'], 0, 2);")).toBe(true);
+    });
+
+    it('a call wrapped across lines', () => {
+      expect(caught("walkDirectory(\n  targetDir,\n  ['.ts',\n   '.js'],\n  0,\n  2,\n);")).toBe(true);
+    });
+
+    it('a list outside a walkDirectory call (a Set, a local array)', () => {
+      expect(caught("const sourceExtensions = new Set(['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx']);")).toBe(true);
+      expect(caught("const stegoExtensions = ['.mjs', '.cjs', '.py', '.md'];")).toBe(true);
+    });
+
+    it('does not flag the constant, a spread of it, or other languages', () => {
+      expect(caught("export const JS_FAMILY_EXTENSIONS = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;")).toBe(false);
+      expect(caught("walkDirectory(targetDir, [...JS_FAMILY_EXTENSIONS, '.py'], 0, 5);")).toBe(false);
+      expect(caught("walkDirectory(targetDir, ['.sh', '.bash', '.zsh'], 0, 5);")).toBe(false);
+      expect(caught("walkDirectory(targetDir, ['.yaml', '.yml'], 0, 5);")).toBe(false);
+    });
+
+    it('does not flag a list quoted in a comment', () => {
+      expect(caught(" *   const tsJsFiles = walkDirectory(targetDir, ['.ts', '.js'], 0, 5);")).toBe(false);
+      expect(caught("  // was walkDirectory(targetDir, ['.ts', '.js'])")).toBe(false);
+    });
+  });
 });
+
+/**
+ * Every bracketed list in `source` that names two or more JS-family
+ * extensions by hand, as `line: text`. Order-independent and multi-line: a
+ * list is matched from its `[` to its `]` wherever it sits, not only inside a
+ * `walkDirectory(` call on one line.
+ *
+ * Lists that are a different set on purpose are exempt by name, and changing
+ * any of their members would change what a scan reads:
+ * - `JS_FAMILY_EXTENSIONS`, the definition itself;
+ * - `SKILL_BUNDLE_EXTENSIONS`, the files bundled beside a skill (adds
+ *   `.mts`/`.cts`, leaves out `.tsx`/`.jsx`);
+ * - `webExts` in `createBackup` and `webFileExts` in
+ *   `checkWebServedCredentials`, the file types served from web directories
+ *   (HTML, CSS and browser JS, not the Node module family).
+ */
+function handWrittenJsFamilyLists(source: string): string[] {
+  const family = new Set<string>(JS_FAMILY_EXTENSIONS);
+  const exempt = /\b(?:JS_FAMILY_EXTENSIONS|SKILL_BUNDLE_EXTENSIONS|webExts|webFileExts)\b[^=\n]*=\s*(?:new Set\(\s*)?$/;
+  const hits: string[] = [];
+  const list = /\[([^[\]]*)\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = list.exec(source)) !== null) {
+    const members = [...m[1].matchAll(/['"`](\.[a-z]+)['"`]/g)].map((x) => x[1]);
+    if (members.filter((e) => family.has(e)).length < 2) continue;
+    const lineStart = source.lastIndexOf('\n', m.index) + 1;
+    const before = source.slice(lineStart, m.index);
+    const trimmed = before.trimStart();
+    if (trimmed.startsWith('*') || trimmed.startsWith('/*') || before.includes('//')) continue;
+    if (exempt.test(before)) continue;
+    const line = source.slice(0, m.index).split('\n').length;
+    hits.push(`${line}: ${source.slice(lineStart, source.indexOf('\n', m.index)).trim()}`);
+  }
+  return hits;
+}
 
 describe('#414 static-check source extensions: end to end', () => {
   const cli = join(__dirname, '../../dist/cli.js');
