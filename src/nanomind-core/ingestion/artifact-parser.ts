@@ -272,7 +272,8 @@ function truncateUtf8(text: string, maxBytes: number): string {
  * Steps 1-5: find the leading block, truncate it to 64 KiB and load it on js-yaml's default schema.
  *
  * That schema (js-yaml 4) builds strings, numbers, booleans, null, timestamps, binary buffers,
- * sequences, mappings and the omap/pairs/set collections, and nothing else: it carries no
+ * sequences, mappings and the omap/pairs/set collections, and reads the `<<` merge key, which
+ * copies another mapping's keys into the one that holds it. It has nothing else: it carries no
  * `!!js/function`, `!!js/regexp` or `!!js/undefined` type, and a tag it does not know is a
  * YAMLException rather than a constructed value. Frontmatter is therefore read as data and never
  * evaluated; a block the loader refuses reaches `declaresCapabilities` with `value` undefined.
