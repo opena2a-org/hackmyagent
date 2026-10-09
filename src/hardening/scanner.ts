@@ -19990,8 +19990,9 @@ dist/
     // the same bytes `CLAUDE.md` is reported for. Nested hits from the same
     // walk are appended AFTER everything above, sorted, so a root-only tree
     // reads exactly the files it read before and none can be pushed past the
-    // cap below. Root-level hits are left to the probe, which stays the only
-    // reader of the scan root.
+    // cap below. Root-level hits on the four probed names are left to the
+    // probe, which stays their only reader at the scan root; a root-level
+    // `system-prompt.ts` or `.js` is still added by this walk, as before.
     const nestedPromptFiles: Array<{ path: string; rel: string }> = [];
     for (const file of srcFiles) {
       const basename = path.basename(file).toLowerCase();
@@ -20005,7 +20006,21 @@ dist/
     nestedPromptFiles.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
     allFiles.push(...nestedPromptFiles);
 
-    for (const { path: filePath, rel: relativePath } of allFiles.slice(0, 20)) {
+    // A cap that fires is disclosed, never silent: the prompt files past it
+    // are never opened, and a clean result over the ones that were read is
+    // not a clean result over the tree.
+    const maxPromptFiles = 20;
+    const promptFilesDropped = allFiles.length - maxPromptFiles;
+    if (promptFilesDropped > 0) {
+      this.coverage.truncate({
+        layer: 'agent-cred-prompts',
+        cap: maxPromptFiles,
+        prefixes: ['AGENT-CRED'],
+        reason: `read at most ${maxPromptFiles} system-prompt files — ${promptFilesDropped} prompt file${promptFilesDropped === 1 ? '' : 's'} not read`,
+      });
+    }
+
+    for (const { path: filePath, rel: relativePath } of allFiles.slice(0, maxPromptFiles)) {
       try {
         const stat = await fs.stat(filePath);
         if (stat.size > MAX_FILE_SIZE) continue;

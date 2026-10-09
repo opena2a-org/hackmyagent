@@ -466,8 +466,9 @@ describe('HMA-32 static shape of the fix', () => {
     expect(source).toContain('const SKILL_BUNDLE_MAX_DIRS = 40;');
     expect(source).toContain('const MAX_FILE_SIZE = 10 * 1024 * 1024;');
     // Base's two call sites (nemo-source, decode) plus the two AC3 ruled in
-    // (the skill probe cap and the 60-file admission slice).
-    expect((source.match(/this\.coverage\.truncate\(/g) ?? []).length).toBe(4);
+    // (the skill probe cap and the 60-file admission slice), plus the
+    // AGENT-CRED-001 20-prompt-file cap disclosed under #920.
+    expect((source.match(/this\.coverage\.truncate\(/g) ?? []).length).toBe(5);
   });
 });
 
