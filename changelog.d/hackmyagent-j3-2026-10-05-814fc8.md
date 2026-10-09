@@ -6,10 +6,11 @@ issue: 460
 
 - A `!CHECK-ID` rule in `.hmaignore` removed the matching findings from the
   report and from the verdict, so suppressing the critical and high checks on
-  `test-fixtures/insecure-openclaw` moved `secure-openclaw` from
-  `Risk Level: Critical`, exit 1 to `Risk Level: Moderate`, exit 0, and neither
-  command mentioned the suppression. `secure` on the same tree reported
-  exit 1.
+  `test-fixtures/insecure-openclaw` removed them from the risk level and the
+  exit code of `secure-openclaw` (with the semantic twin AST-HEARTBEAT-001
+  suppressed as well, `Risk Level: Critical`, exit 1 read `Risk Level: Moderate`,
+  exit 0), and neither command mentioned the suppression. `secure` on the same
+  tree reported exit 1.
 - Both commands now handle suppressions the way `secure` and `check` do. A
   suppressed finding leaves the list but still counts toward the risk level
   and the exit code. A `Suppressed:` line names every suppressed check and
