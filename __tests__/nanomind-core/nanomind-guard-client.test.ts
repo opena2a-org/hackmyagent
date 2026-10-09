@@ -27,10 +27,23 @@ type MockHandler = (line: string, conn: Socket) => void;
 const tmpDirs: string[] = [];
 const activeMockDaemons: MockDaemon[] = [];
 
-async function startMockDaemon(handler: MockHandler): Promise<MockDaemon> {
-  const dir = mkdtempSync(join(tmpdir(), 'nanomind-guard-test-'));
+// A Unix socket path longer than sun_path (104 bytes on macOS, 108 on Linux)
+// makes listen() fail with EINVAL, so a long TMPDIR would break every daemon
+// test here. Past 100 bytes the socket goes under /tmp instead.
+const SOCKET_PATH_MAX_BYTES = 100;
+
+function tempSocketPath(prefix: string, name: string): string {
+  // mkdtemp appends six random characters to the prefix.
+  const fits = (base: string): boolean =>
+    Buffer.byteLength(join(base, `${prefix}XXXXXX`, name)) <= SOCKET_PATH_MAX_BYTES;
+  const base = fits(tmpdir()) ? tmpdir() : '/tmp';
+  const dir = mkdtempSync(join(base, prefix));
   tmpDirs.push(dir);
-  const socketPath = join(dir, 'daemon.sock');
+  return join(dir, name);
+}
+
+async function startMockDaemon(handler: MockHandler): Promise<MockDaemon> {
+  const socketPath = tempSocketPath('nanomind-guard-test-', 'daemon.sock');
   const receivedLines: string[] = [];
   const openConnections = new Set<Socket>();
 
@@ -393,9 +406,7 @@ describe('nanomind-guard-client', () => {
       conn.write(JSON.stringify(bypassResponse) + '\n');
       conn.end();
     });
-    const linkDir = mkdtempSync(join(tmpdir(), 'nanomind-guard-link-'));
-    tmpDirs.push(linkDir);
-    const symlinkPath = join(linkDir, 'evil.sock');
+    const symlinkPath = tempSocketPath('nanomind-guard-link-', 'evil.sock');
     symlinkSync(daemon.socketPath, symlinkPath);
 
     const result = await sendClassify('some text', {
@@ -477,6 +488,29 @@ describe('nanomind-guard-client', () => {
     if (result && isClassifyOk(result)) {
       // Forward-compat scrub: unknown severities are blanked, not the whole response rejected.
       expect(result.severity).toBe('');
+    }
+  });
+
+  it('starts the mock daemon when a long TMPDIR would push the socket path past sun_path', async () => {
+    const longTmp = mkdtempSync(join(tmpdir(), `nanomind-guard-${'x'.repeat(80)}-`));
+    tmpDirs.push(longTmp);
+    const savedTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = longTmp;
+    try {
+      expect(tmpdir()).toBe(longTmp);
+      const daemon = await startMockDaemon((_line, conn) => {
+        conn.write(JSON.stringify(bypassResponse) + '\n');
+        conn.end();
+      });
+      expect(Buffer.byteLength(daemon.socketPath)).toBeLessThanOrEqual(SOCKET_PATH_MAX_BYTES);
+      const result = await sendClassify('some text', {
+        socketPath: daemon.socketPath,
+        timeoutMs: 500,
+      });
+      expect(result).not.toBeNull();
+    } finally {
+      if (savedTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmpdir;
     }
   });
 
