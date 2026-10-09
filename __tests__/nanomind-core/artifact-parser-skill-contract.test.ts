@@ -168,6 +168,42 @@ describe('#423 skill classification contract: the acceptance table', () => {
   });
 });
 
+describe('#423 a YAML tag in frontmatter cannot construct code', () => {
+  // The loader runs on js-yaml's default schema, which (js-yaml 4) has no `!!js/function`,
+  // `!!js/regexp` or `!!js/undefined` type. A tag the schema does not know is a YAMLException,
+  // not a constructed value, so a scanned file's frontmatter is read as data and never evaluated.
+  // The failed load then behaves like any other: no frontmatter, and over-detection only.
+  const TAGGED = [
+    { name: 'short function tag', value: '!!js/function "function () { return 1 }"' },
+    { name: 'long function tag', value: '!<tag:yaml.org,2002:js/function> "function () { return 1 }"' },
+    { name: 'regexp tag', value: '!!js/regexp /x/' },
+    { name: 'undefined tag', value: "!!js/undefined ''" },
+  ];
+
+  it.each(TAGGED)('$name: the loader refuses the tag and the parser reports no frontmatter', ({ value }) => {
+    const block = `name: deploy\nhook: ${value}\ncapabilities: [run_shell]\n`;
+    expect(() => yaml.load(block)).toThrow(/unknown tag/);
+
+    const parsed = parseArtifact(`---\n${block}---\n${BODY}`, DOC);
+    expect(parsed.frontmatter).toBeUndefined();
+    // The column-0 capabilities line still counts, as for any block that fails to load.
+    expect(parsed.type).toBe('skill');
+  });
+
+  it('a tagged block with no column-0 capabilities line stays unknown', () => {
+    const content = `---\nname: deploy\nhook: !!js/function "function () { return 1 }"\n---\n${BODY}`;
+    expect(classifyArtifactType(content, DOC)).toBe('unknown');
+    expect(parseArtifact(content, DOC).frontmatter).toBeUndefined();
+  });
+
+  it('no type on the default schema is a JavaScript type', () => {
+    const schema = yaml.DEFAULT_SCHEMA as unknown as { explicit: Array<{ tag: string }>; implicit: Array<{ tag: string }> };
+    const tags = [...schema.explicit, ...schema.implicit].map((type) => type.tag);
+    expect(tags.length).toBeGreaterThan(0);
+    expect(tags.filter((tag) => tag.includes(':js/'))).toEqual([]);
+  });
+});
+
 describe('#423 parseArtifact().frontmatter is the loaded YAML', () => {
   it('reads an inline flow list as a list', () => {
     const parsed = parseArtifact(`---\nname: deploy\ncapabilities: [run_shell, read_files]\n---\n${BODY}`, DOC);
