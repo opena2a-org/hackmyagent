@@ -17,5 +17,7 @@ type: security
 - The user name and password now go to `git clone` only. The published and
   queued name is `<host>/<org>/<repo>`, the output and `--json` show the URL
   without them, and a scan an earlier version queued under such a name is
-  sent and kept under the name without them. A URL with no user name or
-  password is shown and published as before.
+  sent and kept under the name without them. A URL with no `@` before its
+  path, query or fragment is shown and published as before. An empty user
+  name, the `@` of `https://@<host>/<org>/<repo>.git`, is dropped as well:
+  such a URL is shown without the `@` and published as `<host>/<org>/<repo>`.
