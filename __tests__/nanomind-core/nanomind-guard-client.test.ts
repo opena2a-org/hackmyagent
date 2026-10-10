@@ -574,13 +574,13 @@ describe('nanomind-guard-client', () => {
 // `nanomind-analyst start` only when starting is what the daemon needs.
 describe('nanomind-guard-client — isDaemonStopped', () => {
   it('is true when the socket file is absent', async () => {
-    const socketPath = join(tempDir('nanomind-guard-absent-'), 'daemon.sock');
+    const socketPath = tempSocketPath('nanomind-guard-absent-', 'daemon.sock');
     expect(await isDaemonStopped({ socketPath, timeoutMs: 500 })).toBe(true);
   });
 
   it('is true when the socket file is there and nothing listens on it', async () => {
     // A daemon killed without a chance to clean up leaves its socket file.
-    const socketPath = join(tempDir('nanomind-guard-stale-'), 'daemon.sock');
+    const socketPath = tempSocketPath('nanomind-guard-stale-', 'daemon.sock');
     spawnSync(process.execPath, [
       '-e',
       "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",

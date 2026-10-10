@@ -85,7 +85,9 @@ function run(
     HOME: home(installed),
     NO_COLOR: '1',
     NODE_OPTIONS: `--require ${JSON.stringify(PRELOAD)}`,
-    NANOMIND_GUARD_SOCK: path.join(tempDir('hma-analyst-sock-'), 'daemon.sock'),
+    // Under /tmp, not TMPDIR: past sun_path (104 bytes on macOS) connect()
+    // fails with EINVAL rather than ENOENT, and a long TMPDIR gets there.
+    NANOMIND_GUARD_SOCK: path.join(tempDir('hma-analyst-sock-', '/tmp'), 'daemon.sock'),
   };
   delete env.HMA_CLI_PREFIX;
   delete env.OPENA2A_HOME;

@@ -200,7 +200,9 @@ describe('security-analyst — installed, stopped', () => {
 
   /** A socket path nothing listens on, set as the one both HMA and the agent use. */
   function stoppedSocket(): string {
-    const socketPath = join(tempDir('analyst-stopped-sock-'), 'daemon.sock');
+    // Under /tmp, not TMPDIR: past sun_path (104 bytes on macOS) connect()
+    // fails with EINVAL rather than ENOENT, and a long TMPDIR gets there.
+    const socketPath = join(tempDir('analyst-stopped-sock-', '/tmp'), 'daemon.sock');
     process.env.NANOMIND_GUARD_SOCK = socketPath;
     return socketPath;
   }
