@@ -202,9 +202,11 @@ function tsFiles(dir: string): string[] {
 /**
  * Subtrees that are not this CLI's printed output.
  *
- * `src/arp/` is a SEPARATE program (`arp-guard`) with its own flag set and its
+ * `src/arp/` is a SEPARATE program (the ARP CLI) with its own flag set and its
  * own help; asserting its flags against hackmyagent's Commander registry would
- * be checking the wrong registry, not covering more ground.
+ * be checking the wrong registry, not covering more ground. Its command lines
+ * are checked against its own dispatch by `arpCliRegistry` and
+ * `arpCliCitations` below.
  */
 export const NOT_THIS_CLI = [path.join('src', 'arp')];
 
@@ -459,6 +461,106 @@ export function collectMarkdownFlags(opts: {
       file: path.relative(repoRoot, file),
       verbs,
     }));
+  }
+  return found;
+}
+
+/**
+ * The ARP CLI (`src/arp/cli/index.ts`) dispatches on argv with `switch`
+ * statements, not Commander, so its registry is read from those statements:
+ * the `case` labels of `main()` and of `telemetryCommand()`, and the flags each
+ * handler reads from `args`.
+ */
+export interface ArpCliRegistry {
+  /** Top-level commands: `case '<verb>':` in `main()`. */
+  verbs: Set<string>;
+  /** `telemetry` subcommands: `case '<sub>':` in `telemetryCommand()`. */
+  telemetrySubs: Set<string>;
+  /** Flags each top-level command's handler reads, by command. */
+  flags: Map<string, Set<string>>;
+}
+
+/** Source of `function <name>(` up to the next top-level function. */
+function functionBody(src: string, name: string): string {
+  const start = src.search(new RegExp(`\\bfunction ${name}\\(`));
+  if (start < 0) return '';
+  const rest = src.slice(start);
+  const end = rest.slice(1).search(/\n(?:async\s+)?function\s/);
+  return end < 0 ? rest : rest.slice(0, end + 1);
+}
+
+function flagsRead(body: string): string[] {
+  return [
+    ...[...body.matchAll(/(?:args\.(?:includes|indexOf)|\.startsWith)\('(--[a-z][a-z0-9-]*)=?'\)/g)].map((m) => m[1]),
+    ...[...body.matchAll(/case '(--[a-z][a-z0-9-]*)':/g)].map((m) => m[1]),
+  ];
+}
+
+export function arpCliRegistry(src: string): ArpCliRegistry {
+  const main = functionBody(src, 'main');
+  const labels = (body: string) => [...body.matchAll(/case '([a-z][a-z0-9-]*)':/g)].map((m) => m[1]);
+  const verbs = new Set(labels(main));
+  const telemetrySubs = new Set(labels(functionBody(src, 'telemetryCommand')));
+  const flags = new Map<string, Set<string>>();
+  for (const verb of verbs) {
+    // `case 'start':\n      await startGuard();` names the handler. A case
+    // with an inline body (`stop`) has no handler and reads no flags.
+    const handler = new RegExp(`case '${verb}':\\s*\\n\\s*await\\s+(\\w+)\\(`).exec(main)?.[1];
+    flags.set(verb, new Set(handler ? flagsRead(functionBody(src, handler)) : []));
+  }
+  return { verbs, telemetrySubs, flags };
+}
+
+export interface ArpCitation {
+  /** 1-indexed source line. */
+  line: number;
+  /** The program as written: `${PROG}`, or a literal name such as `arp-guard`. */
+  program: string;
+  verb: string;
+  /** The word after the verb, e.g. the telemetry subcommand. */
+  sub: string | null;
+  /** Flags printed with the command, before its description column. */
+  flags: string[];
+  text: string;
+}
+
+/**
+ * Every command line the ARP CLI prints, from its string literals.
+ *
+ * The literal names are matched as well as `${PROG}` because they are the
+ * defect: the help printed `arp-guard <command>` and the hints
+ * `arp telemetry ...`, and neither is a binary on anyone's PATH. A literal
+ * name followed by a word that is not one of the program's commands
+ * (`arp-guard v${VERSION}`, the version label) is returned too; the caller
+ * decides, against the registry, which of these are invocations.
+ */
+export function arpCliCitations(src: string): ArpCitation[] {
+  const lineStarts: number[] = [0];
+  for (let k = 0; k < src.length; k++) if (src[k] === '\n') lineStarts.push(k + 1);
+  const lineOf = (off: number) => {
+    let lo = 0; let hi = lineStarts.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= off) lo = mid; else hi = mid - 1; }
+    return lo;
+  };
+
+  const found: ArpCitation[] = [];
+  for (const lit of stringLiterals(src)) {
+    for (const m of lit.body.matchAll(
+      /(\$\{PROG\}|(?<![\w./-])arp-guard|(?<![\w./-])arp)[ \t]+([a-z][a-z0-9-]*)(?:[ \t]+([a-z][a-z0-9-]*))?/g,
+    )) {
+      // The rest of the printed line, up to the description column (two or
+      // more spaces) or the end of the line.
+      const rest = lit.body.slice(m.index! + m[0].length).split('\n')[0].split(/ {2,}/)[0];
+      const lineIdx = lineOf(lit.start + m.index!);
+      found.push({
+        line: lineIdx + 1,
+        program: m[1],
+        verb: m[2],
+        sub: m[3] ?? null,
+        flags: [...rest.matchAll(/(?:^|\s)(--[a-z][a-z0-9-]*)/g)].map((f) => f[1]),
+        text: src.slice(lineStarts[lineIdx], lineStarts[lineIdx + 1] ?? src.length).trim().slice(0, 160),
+      });
+    }
   }
   return found;
 }
