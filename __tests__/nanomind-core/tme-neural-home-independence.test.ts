@@ -97,10 +97,17 @@ function writeSyntheticTier0Model(dir: string): void {
   writeFileSync(join(dir, 'tokenizer.json'), '{}');
 }
 
-const emptyHome = tempDir('hma-home-empty-');
-const populatedHome = tempDir('hma-home-populated-');
-const populatedModelDir = join(populatedHome, '.opena2a', 'nanomind', 'models');
-writeSyntheticTier0Model(populatedModelDir);
+// Made in a hook, not at module scope, which also runs under `vitest list`,
+// where nothing would remove them.
+let emptyHome = '';
+let populatedHome = '';
+let populatedModelDir = '';
+beforeAll(() => {
+  emptyHome = tempDir('hma-home-empty-');
+  populatedHome = tempDir('hma-home-populated-');
+  populatedModelDir = join(populatedHome, '.opena2a', 'nanomind', 'models');
+  writeSyntheticTier0Model(populatedModelDir);
+});
 
 async function withHome<T>(home: string, fn: () => T | Promise<T>): Promise<T> {
   const saved = process.env.HOME;

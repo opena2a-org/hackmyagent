@@ -11,10 +11,10 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -29,8 +29,12 @@ const STRIP_ANSI = /\x1b\[[0-9;]*m/g;
 // whatever machine it runs on: a developer who has ever run
 // `hackmyagent telemetry off` gets a false red here while CI's clean
 // environment stays green. A fresh XDG_CONFIG_HOME per spawn removes the
-// dependency on ambient machine state.
-const XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'hma-version-test-'));
+// dependency on ambient machine state. Made in a hook, not at module scope,
+// which also runs under `vitest list`, where nothing would remove it.
+let XDG_CONFIG_HOME = '';
+beforeAll(() => {
+  XDG_CONFIG_HOME = tempDir('hma-version-test-');
+});
 
 function runVersion(flag: string): { stdout: string; stderr: string; status: number } {
   const res = spawnSync(process.execPath, [CLI_PATH, flag], {

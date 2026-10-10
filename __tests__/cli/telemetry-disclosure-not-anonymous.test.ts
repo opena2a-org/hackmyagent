@@ -12,10 +12,10 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // This suite spawns the built CLI; a binary older than `src/` would be
 // measuring code that is no longer under test.
@@ -23,7 +23,12 @@ beforeAll(assertDistFreshIfPresent);
 
 const CLI_PATH = resolve(__dirname, '../../dist/cli.js');
 const STRIP_ANSI = /\x1b\[[0-9;]*m/g;
-const XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'hma-telemetry-wording-'));
+// Made in a hook, not at module scope, which also runs under `vitest list`,
+// where nothing would remove it.
+let XDG_CONFIG_HOME = '';
+beforeAll(() => {
+  XDG_CONFIG_HOME = tempDir('hma-telemetry-wording-');
+});
 
 function run(args: string[]): { stdout: string; stderr: string; status: number } {
   const res = spawnSync(process.execPath, [CLI_PATH, ...args], {

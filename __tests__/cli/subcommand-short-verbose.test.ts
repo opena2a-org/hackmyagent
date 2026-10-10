@@ -16,10 +16,10 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -29,15 +29,22 @@ const CLI_PATH = resolve(__dirname, '../../dist/cli.js');
 const STRIP_ANSI = /\x1b\[[0-9;]*m/g;
 const VERSION_LINE = /^hackmyagent \d+\.\d+\.\d+/m;
 
-const ROOT = mkdtempSync(join(tmpdir(), 'hma-short-verbose-'));
-const EMPTY_DIR = join(ROOT, 'empty');
-const SOUL_FILE = join(ROOT, 'SOUL.md');
+// Made in a hook, not at module scope, which also runs under `vitest list`,
+// where nothing would remove it.
+let EMPTY_DIR = '';
+let SOUL_FILE = '';
 // Isolated config dir so an ambient `telemetry off` on the developer's
 // machine cannot change what the spawn prints (see version-stream-split).
-const XDG_CONFIG_HOME = join(ROOT, 'xdg');
-mkdirSync(EMPTY_DIR);
-mkdirSync(XDG_CONFIG_HOME);
-writeFileSync(SOUL_FILE, '# Soul\nYou are a helper.\n');
+let XDG_CONFIG_HOME = '';
+beforeAll(() => {
+  const root = tempDir('hma-short-verbose-');
+  EMPTY_DIR = join(root, 'empty');
+  SOUL_FILE = join(root, 'SOUL.md');
+  XDG_CONFIG_HOME = join(root, 'xdg');
+  mkdirSync(EMPTY_DIR);
+  mkdirSync(XDG_CONFIG_HOME);
+  writeFileSync(SOUL_FILE, '# Soul\nYou are a helper.\n');
+});
 
 interface Run { stdout: string; stderr: string; status: number }
 

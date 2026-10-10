@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdtempSync } from 'fs';
-import { tmpdir } from 'os';
 import { join } from 'path';
+import { tempDir } from '../helpers/temp-dir';
 
 /**
  * `hackmyagent/arp` is a thin re-export of `@opena2a/aim-sdk/arp` (src/arp/index.ts,
@@ -27,7 +26,7 @@ import { join } from 'path';
 const repoRoot = join(__dirname, '..', '..');
 
 function probePosture(extraEnv: Record<string, string> = {}): string {
-  const cleanHome = mkdtempSync(join(tmpdir(), 'arp-posture-'));
+  const cleanHome = tempDir('arp-posture-');
   return execFileSync(
     process.execPath,
     ['-e', "process.stdout.write(String(require('@opena2a/aim-sdk/arp').signatureTelemetryEnabled()))"],

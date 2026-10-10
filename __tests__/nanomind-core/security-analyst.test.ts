@@ -32,7 +32,9 @@ const tmpDirs: string[] = [];
 const activeMockDaemons: MockDaemon[] = [];
 
 async function startMockDaemon(handler: MockHandler): Promise<MockDaemon> {
-  const dir = mkdtempSync(join(tmpdir(), 'analyst-test-'));
+  // Under /tmp, not TMPDIR: past sun_path (104 bytes on macOS) listen()
+  // fails with EINVAL, and a long TMPDIR gets there.
+  const dir = mkdtempSync(join('/tmp', 'analyst-test-'));
   tmpDirs.push(dir);
   const socketPath = join(dir, 'daemon.sock');
   const receivedLines: string[] = [];

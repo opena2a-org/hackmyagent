@@ -29,11 +29,11 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 import { CredVaultPlugin } from '../../src/plugins/credvault';
 
 beforeAll(assertDistFreshIfPresent);
@@ -55,7 +55,7 @@ function anthropicKey(): string {
 
 /** A tree whose only credential sits in an ordinary source file. */
 function treeWithSourceSecret(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'hma-01-ac4-'));
+  const dir = tempDir('hma-01-ac4-');
   mkdirSync(join(dir, 'app'), { recursive: true });
   writeFileSync(
     join(dir, ARTIFACT),
@@ -120,7 +120,7 @@ describe('HMA-01.AC4: the Credential Protection plugin reads source files', () =
   it('HMA-01.AC4 credvault still reports nothing on a source tree with no credential', async () => {
     // The cheapest way to pass the assertion above is to report every source
     // file, so the negative half is pinned beside it.
-    const dir = mkdtempSync(join(tmpdir(), 'hma-01-ac4-clean-'));
+    const dir = tempDir('hma-01-ac4-clean-');
     mkdirSync(join(dir, 'app'), { recursive: true });
     writeFileSync(
       join(dir, ARTIFACT),
