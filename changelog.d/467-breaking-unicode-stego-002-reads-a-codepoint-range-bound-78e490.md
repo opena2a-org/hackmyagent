@@ -13,7 +13,7 @@ breaking: true
   anywhere, as before. Any other spelling counts only as an operand of a
   comparison (`<`, `<=`, `>`, `>=`, `==`, `===`, `!=`, `!==`), so a decimal
   range table such as `[65024, 65039, 0]` is still not reported.
-- The `.codePointAt(` requirement, the two corroborators and both severities
+- The `codePointAt()` requirement, the two corroborators and both severities
   are unchanged, so a decimal decoder gets the severity its hex twin gets:
   CRITICAL with an `eval(` or `Function(` call or a variation-selector or
   tag-character payload in the same file, MEDIUM without. A decimal decoder
