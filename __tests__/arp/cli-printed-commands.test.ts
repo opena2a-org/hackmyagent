@@ -15,11 +15,12 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { invocation } from '../../src/arp/cli/invocation';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { arpCliCitations, arpCliRegistry } from '../helpers/printed-flag-citations';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -32,33 +33,70 @@ describe('invocation(): the command line that reaches the ARP CLI', () => {
   const cwd = '/home/u/project';
   const env = { PATH: '/usr/local/bin:/usr/bin' };
 
-  it('names the node script, relative to the working directory, when run as a script', () => {
-    expect(invocation(['/usr/bin/node', `${cwd}/node_modules/hackmyagent/dist/arp/cli/index.js`], env, cwd))
+  it('names the node script, relative to the working directory, when run as a script', async () => {
+    expect(await invocation(['/usr/bin/node', `${cwd}/node_modules/hackmyagent/dist/arp/cli/index.js`], env, cwd))
       .toBe('node node_modules/hackmyagent/dist/arp/cli/index.js');
   });
 
-  it('keeps the absolute path when the script is outside the working directory', () => {
-    expect(invocation(['/usr/bin/node', '/opt/lib/hackmyagent/dist/arp/cli/index.js'], env, cwd))
+  it('keeps the absolute path when the script is outside the working directory', async () => {
+    expect(await invocation(['/usr/bin/node', '/opt/lib/hackmyagent/dist/arp/cli/index.js'], env, cwd))
       .toBe('node /opt/lib/hackmyagent/dist/arp/cli/index.js');
   });
 
-  it('names a bin shim by its name when its directory is on PATH', () => {
-    expect(invocation(['/usr/bin/node', '/usr/local/bin/some-arp-bin'], env, cwd)).toBe('some-arp-bin');
+  it('names a bin shim by its name when its directory is on PATH', async () => {
+    expect(await invocation(['/usr/bin/node', '/usr/local/bin/some-arp-bin'], env, cwd)).toBe('some-arp-bin');
   });
 
-  it('names a bin shim by its full path when its directory is not on PATH', () => {
-    expect(invocation(['/usr/bin/node', `${cwd}/node_modules/.bin/some-arp-bin`], env, cwd))
+  it('names a bin shim by its full path when its directory is not on PATH', async () => {
+    expect(await invocation(['/usr/bin/node', `${cwd}/node_modules/.bin/some-arp-bin`], env, cwd))
       .toBe(`${cwd}/node_modules/.bin/some-arp-bin`);
   });
 
-  it('runs TypeScript source through tsx', () => {
-    expect(invocation(['/usr/bin/node', `${cwd}/src/arp/cli/index.ts`], env, cwd))
+  it('runs TypeScript source through tsx', async () => {
+    expect(await invocation(['/usr/bin/node', `${cwd}/src/arp/cli/index.ts`], env, cwd))
       .toBe('npx tsx src/arp/cli/index.ts');
   });
 
-  it('quotes a path the shell would split', () => {
-    expect(invocation(['/usr/bin/node', '/Users/a b/dist/arp/cli/index.js'], env, cwd))
+  it('quotes a path the shell would split', async () => {
+    expect(await invocation(['/usr/bin/node', '/Users/a b/dist/arp/cli/index.js'], env, cwd))
       .toBe("node '/Users/a b/dist/arp/cli/index.js'");
+  });
+
+  /** A scratch tree with the given empty files, removed when the test finishes. */
+  async function withTree(files: string[], fn: (root: string) => Promise<void>): Promise<void> {
+    const root = tempDir('arp-inv-');
+    for (const f of files) {
+      mkdirSync(path.dirname(path.join(root, f)), { recursive: true });
+      writeFileSync(path.join(root, f), '');
+    }
+    await fn(root);
+  }
+
+  it('names node and the path when Node completed it: the directory, or the script without its extension', async () => {
+    // `node dist/arp/cli` leaves argv[1] as typed; the help printed that bare
+    // directory, which a shell refuses to run.
+    await withTree(['dist/arp/cli/index.js', 'src/arp/cli/index.ts'], async (root) => {
+      expect(await invocation(['/usr/bin/node', path.join(root, 'dist/arp/cli')], env, root)).toBe('node dist/arp/cli');
+      expect(await invocation(['/usr/bin/node', path.join(root, 'dist/arp/cli/index')], env, root))
+        .toBe('node dist/arp/cli/index');
+      expect(await invocation(['/usr/bin/node', path.join(root, 'src/arp/cli')], env, root)).toBe('npx tsx src/arp/cli');
+    });
+  });
+
+  it('still names an extensionless file that exists as a bin shim', async () => {
+    await withTree(['bin/some-arp-bin'], async (root) => {
+      expect(await invocation(['/usr/bin/node', path.join(root, 'bin/some-arp-bin')], { PATH: path.join(root, 'bin') }, root))
+        .toBe('some-arp-bin');
+    });
+  });
+
+  it('on Windows, leaves a path without spaces bare and double-quotes one with spaces', async () => {
+    const winEnv = { PATH: 'C:\\Windows\\system32' };
+    const node = 'C:\\Program Files\\nodejs\\node.exe';
+    expect(await invocation([node, 'C:\\proj\\node_modules\\hackmyagent\\dist\\arp\\cli\\index.js'], winEnv, 'C:\\proj', 'win32'))
+      .toBe('node node_modules\\hackmyagent\\dist\\arp\\cli\\index.js');
+    expect(await invocation([node, 'C:\\Users\\a b\\dist\\arp\\cli\\index.js'], winEnv, 'C:\\proj', 'win32'))
+      .toBe('node "C:\\Users\\a b\\dist\\arp\\cli\\index.js"');
   });
 });
 
@@ -84,7 +122,8 @@ describe('ARP CLI printed command lines name registered commands', () => {
       .filter((c) => c.program !== '${PROG}' && registry.verbs.has(c.verb))
       .map((c) => `src/arp/cli/index.ts:${c.line} ${c.text}`);
     expect(literal, `printed with a program name that is not a binary:\n${literal.join('\n')}`).toEqual([]);
-    expect(src).toMatch(/^const PROG = invocation\(\);$/m);
+    // Assigned once, from the invocation, and never from a literal.
+    expect(src.match(/^.*\bPROG = .*$/gm)).toEqual(['  PROG = await invocation();']);
   });
 
   it('names only commands, subcommands and flags the program handles', () => {
@@ -146,18 +185,67 @@ describe('ARP CLI help, rendered and run as printed', () => {
    * skipped when neither exists: a skip would report a pass over a surface
    * nobody rendered.
    */
-  function run(args: string[]): string {
+  function run(args: string[], script?: string): string {
     const useDist = existsSync(ARP_CLI_DIST);
     if (!useDist && !existsSync(TSX)) {
       throw new Error('Neither dist/arp/cli/index.js nor node_modules/.bin/tsx is present; run `npm ci` first.');
     }
-    return execFileSync(useDist ? process.execPath : TSX, [useDist ? ARP_CLI_DIST : ARP_CLI_SRC, ...args], {
+    return execFileSync(useDist ? process.execPath : TSX, [script ?? (useDist ? ARP_CLI_DIST : ARP_CLI_SRC), ...args], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 60_000,
     });
   }
+
+  function sh(command: string): string {
+    return execFileSync('/bin/sh', ['-c', command], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 60_000,
+    });
+  }
+
+  it('prints a line that runs when started by its directory or without the extension', () => {
+    const entry = existsSync(ARP_CLI_DIST) ? ARP_CLI_DIST : ARP_CLI_SRC;
+    const runner = existsSync(ARP_CLI_DIST) ? 'node' : 'npx tsx';
+    for (const script of [path.dirname(entry), entry.replace(/\.[jt]s$/, '')]) {
+      const help = run(['--help'], script);
+      const prog = /USAGE\n\s+(.+) <command> \[options\]/.exec(help)?.[1];
+      expect(prog, help).toBe(`${runner} ${path.relative(REPO_ROOT, script)}`);
+      expect(sh(`${prog} status`)).toContain('ARP Guard Status');
+    }
+  });
+
+  it('prints the same label for --version as the help header', () => {
+    const header = /^\s*(ARP Guard v\S+)/m.exec(run(['--help']))?.[1];
+    expect(header).toBeDefined();
+    expect(run(['--version']).trim()).toBe(header);
+  });
+
+  it('offers the aim-arp form of the telemetry commands, pinned to the installed SDK, for the subcommands aim-arp has', () => {
+    const sdkDir = path.join(REPO_ROOT, 'node_modules', '@opena2a', 'aim-sdk');
+    const sdk = JSON.parse(readFileSync(path.join(sdkDir, 'package.json'), 'utf8')) as {
+      version: string;
+      bin: Record<string, string>;
+    };
+    const telemetry = run(['telemetry', '--help']);
+    expect(telemetry).toContain(`npx --package @opena2a/aim-sdk@${sdk.version} aim-arp telemetry <subcommand>`);
+    expect(telemetry).toContain('Every subcommand except register');
+
+    const aimArp = execFileSync(process.execPath, [path.join(sdkDir, sdk.bin['aim-arp']), 'telemetry', '--help'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 60_000,
+    });
+    // The subcommand column: a word, an optional argument, then the description.
+    const subs = (help: string) => [...help.matchAll(/^ {4}([a-z][a-z-]*)(?: \S+)? {2,}\S/gm)].map((m) => m[1]);
+    const theirs = new Set(subs(aimArp));
+    expect(theirs.size).toBeGreaterThanOrEqual(6);
+    expect(subs(telemetry).filter((s) => !theirs.has(s))).toEqual(['register']);
+  });
 
   it('prints the invocation that was run, and the printed status line runs', () => {
     const help = run(['--help']);
@@ -174,13 +262,7 @@ describe('ARP CLI help, rendered and run as printed', () => {
     // The reader's next step: copy the printed status line into a shell.
     const statusLine = examples.map((l) => l.trim()).find((l) => l.startsWith(`${prog} status`))!;
     const command = statusLine.split(/ {2,}/)[0];
-    const out = execFileSync('/bin/sh', ['-c', command], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 60_000,
-    });
-    expect(out).toContain('ARP Guard Status');
+    expect(sh(command)).toContain('ARP Guard Status');
   });
 
   it('prints the same invocation in the telemetry help', () => {

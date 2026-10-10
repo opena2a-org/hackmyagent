@@ -529,9 +529,9 @@ export interface ArpCitation {
  *
  * The literal names are matched as well as `${PROG}` because they are the
  * defect: the help printed `arp-guard <command>` and the hints
- * `arp telemetry ...`, and neither is a binary on anyone's PATH. A literal
+ * `arp telemetry ...`, and neither name runs this program. A literal
  * name followed by a word that is not one of the program's commands
- * (`arp-guard v${VERSION}`, the version label) is returned too; the caller
+ * (`arp-guard v${VERSION}`, as the version label once read) is returned too; the caller
  * decides, against the registry, which of these are invocations.
  */
 export function arpCliCitations(src: string): ArpCitation[] {

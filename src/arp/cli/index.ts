@@ -35,10 +35,12 @@ import { invocation } from './invocation';
 const args = process.argv.slice(2);
 const command = args[0];
 // What every printed command line starts with. Not a literal program name:
-// none is on PATH (see ./invocation).
-const PROG = invocation();
+// no literal name runs this program (see ./invocation). Assigned once, at the
+// top of main() and so before anything is printed: finding it is asynchronous.
+let PROG: string;
 
 async function main(): Promise<void> {
+  PROG = await invocation();
   switch (command) {
     case 'start':
       await startGuard();
@@ -63,7 +65,8 @@ async function main(): Promise<void> {
       break;
     case '--version':
     case '-v':
-      console.log(`arp-guard v${VERSION}`);
+      // The same label as the help header.
+      console.log(`ARP Guard v${VERSION}`);
       break;
     case '--help':
     case '-h':
@@ -339,6 +342,10 @@ async function telemetryCommand(): Promise<void> {
                   signatures from the registry; use --no-purge to skip that)
     opt-in        Remove the local opt-out marker
     purge         Ask the registry to delete already-sent signatures (right-to-delete)
+
+  Every subcommand except register also runs from any directory, through the
+  aim-arp program of the @opena2a/aim-sdk package this program is built on:
+    npx --package @opena2a/aim-sdk@${VERSION} aim-arp telemetry <subcommand>
 
   Structural signatures are DEFAULT-ON. Only the SHAPE of an anomalous
   behavior is shared, never payloads. Every byte sent is recorded locally
