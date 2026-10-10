@@ -1,7 +1,8 @@
 /**
  * #316. `secure` scored a two-file project, `package.json` plus
  * `index.js` holding `const openai = "sk-<32 random alphanumerics>"`, 96/100
- * with exit 0. The canonical list knew `sk-` only with a 48+ character body,
+ * on 0.25.1 (93/100 on the commit before this fix), with exit 0 on both. The
+ * canonical list knew `sk-` only with a 48+ character body,
  * so a 32-47 character body reached no finding, while opena2a-cli's own
  * scanner flagged the same file critical.
  *

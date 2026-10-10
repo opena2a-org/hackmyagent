@@ -211,7 +211,7 @@ const EVERY_SURFACE: ReadonlySet<Surface> = new Set(ALL_SURFACES);
  */
 const NOT_YET_RE_ADDED_TO_CANONICAL =
   'UNDECLARED GAP, not a measured exclusion: absent from CANONICAL_CREDENTIAL_PATTERNS ' +
-  '(semantic-compiler.ts:1279-1330) only because that list is being re-populated one shape at a ' +
+  '(semantic-compiler.ts:1758-1858) only because that list is being re-populated one shape at a ' +
   'time on fix/credential-fp-siblings (#352/#353) after a first draft of eight measured an FP ' +
   'class and a quadratic scan — see __tests__/nanomind-core/pinned-credential-shapes.test.ts:9-14. ' +
   'No FP measurement exists for this shape.';
@@ -227,6 +227,16 @@ const NOT_YET_RE_ADDED_TO_CANONICAL =
  * from `body.min` closes that band mechanically. Nothing derives from it yet —
  * this registry is data first — but the floor lives in exactly one place now,
  * so the adoption cannot re-create the drift it removes.
+ *
+ * The canonical list does not derive from it either, so until it does the
+ * detection side has two floors per shape, not one. `CANONICAL_CREDENTIAL_PATTERNS`
+ * in `semantic-compiler.ts` hand-writes its own widths, and for most shapes they
+ * differ from `body.min`: `hf_` is canonical at `{34,}`, `ghp_` at exactly
+ * `{36}` and `sk_live_` at `{24,}`, each against a `body.min` of 20. The shared
+ * matcher, which the credential analyzer uses as a gate, applies `body.min`; the
+ * canonical scan applies its own width. A body between the two passes the gate
+ * and is not reported by the canonical scan. Raising a `body.min` to the
+ * canonical width changes that gate, so it is a measured change of its own.
  */
 export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
   {
@@ -344,7 +354,10 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     head: 'hf_',
     body: { kind: 'run', class: '[a-zA-Z0-9]', min: 20 },
     guards: ['hf_'],
-    // In the canonical list since #543, at the redactor's `{34,}` floor.
+    // In the canonical list since #543 at `{34,}`, the redactor's width, while
+    // `body.min` stays 20: the shared matcher admits a 20 to 33 character body
+    // that the canonical scan does not report. See the note on the two floors
+    // above `CREDENTIAL_SHAPES`.
     surfaces: EVERY_SURFACE,
   },
   {
@@ -426,7 +439,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     guards: ['SG.', 'SG\\.'],
     surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
     rationale:
-      'Absent from CANONICAL_CREDENTIAL_PATTERNS: semantic-compiler.ts:1325-1329 carries the ' +
+      'Absent from CANONICAL_CREDENTIAL_PATTERNS: semantic-compiler.ts:1852-1856 carries the ' +
       'explanatory comment for this shape but no entry beneath it, so the comment reads as ' +
       'coverage that is not there.',
   },
@@ -443,7 +456,8 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     rationale:
       'Detected only by this module (findJwtMatch, and the JWT_PREFIX entry in ' +
       'VENDOR_PREFIX_MATCHERS). It is NOT in CANONICAL_CREDENTIAL_PATTERNS and it is NOT in ' +
-      'redactCredentialShapes — defense-in-depth.ts:181-231 has no eyJ rule at all. ' +
+      'redactCredentialShapes — its rule table, CREDENTIAL_REDACTION_RULES ' +
+      '(defense-in-depth.ts:174-222), has no eyJ rule at all. ' +
       'A JWT reaching redactCredentialShapes today is passed through verbatim.',
   },
   {
@@ -454,10 +468,10 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     guards: ['[A-Za-z0-9+=_]{40,}'],
     surfaces: new Set<Surface>(['format-scan']),
     rationale:
-      'The anonymous fallback (credential-format.ts:873 ENTROPY_BLOB_ALTERNATIVE), gated by ' +
-      'isCredibleEntropyBlob at credential-format.ts:995. Deliberately confined to this module: ' +
+      'The anonymous fallback (credential-format.ts:957 ENTROPY_BLOB_ALTERNATIVE), gated by ' +
+      'isCredibleEntropyBlob at credential-format.ts:1079. Deliberately confined to this module: ' +
       'it has no vendor name to report, so promoting it to the redactor or to ' +
-      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1279-1330) is an FP question nobody ' +
+      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1758-1858) is an FP question nobody ' +
       'has measured.',
   },
   {
@@ -469,8 +483,8 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     surfaces: new Set<Surface>(['ast-canonical', 'nanomind-redaction']),
     rationale:
       'Not a vendor prefix and not part of this module: detected by ' +
-      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1330) and redacted by ' +
-      'defense-in-depth.ts:227. Listed here because a shape absent from the registry cannot be ' +
+      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1857) and redacted by ' +
+      'defense-in-depth.ts:220. Listed here because a shape absent from the registry cannot be ' +
       'guarded against being copied a fourth time.',
   },
   {
@@ -484,7 +498,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     rationale:
       'Name-gated: a bare 40-character blob is a git SHA as often as a secret, so it fires only ' +
       'when the assignment target names it. Lives in NAME_GATED_CREDENTIAL_PATTERNS ' +
-      '(semantic-compiler.ts:1350-1364), not the canonical list, and has no vendor prefix, so it ' +
+      '(semantic-compiler.ts:1877-1904), not the canonical list, and has no vendor prefix, so it ' +
       'is on neither of this module`s surfaces.',
   },
   {
@@ -497,7 +511,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     rationale:
       'Redacted by defense-in-depth but detected by neither this module nor the canonical list. ' +
       'Note the scheme sets already disagree: the redactor covers 4 schemes while ' +
-      'credential-context.ts:35 URL_CREDENTIAL_PATTERN covers 10 (adding postgresql, amqp, ' +
+      'credential-context.ts:58 URL_CREDENTIAL_PATTERN covers 10 (adding postgresql, amqp, ' +
       'rabbitmq, ftp, sftp, http, https), so six schemes are located and never redacted here.',
   },
 ];
