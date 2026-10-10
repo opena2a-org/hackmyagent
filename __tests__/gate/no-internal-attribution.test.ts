@@ -162,64 +162,44 @@ function scan(
 }
 
 // Frozen per-file counts of lines matching the first expression, measured on
-// the delivered tree: 46 files, 114 lines. Line numbers are deliberately not
+// the delivered tree: 30 files, 73 lines. Line numbers are deliberately not
 // pinned — unrelated edits would shift them.
 const PATTERN_BASELINE: Record<string, number> = {
-  'CHANGELOG.md': 31,
-  '__tests__/checker/check-not-found-json.test.ts': 1,
+  'CHANGELOG.md': 18,
   '__tests__/checker/check-secure-cross-analyzer-parity.test.ts': 2,
   '__tests__/cli/benchmark-empty-denominator.test.ts': 1,
   '__tests__/cli/deep-scan-incomplete-verdict.test.ts': 1,
   '__tests__/cli/fix-lines-render.test.ts': 1,
-  '__tests__/cli/hma08-pull-stubs.test.ts': 2,
-  '__tests__/cli/machine-posture-not-scored.test.ts': 1,
+  '__tests__/cli/hma08-pull-stubs.test.ts': 1,
   '__tests__/cli/opena2a-citation-and-next-steps-target.test.ts': 1,
-  '__tests__/cli/scan-soul-conformance-gate.test.ts': 2,
   '__tests__/cli/secure-help-check-count-derived.test.ts': 1,
   '__tests__/cli/secure-unread-input-gate.test.ts': 2,
-  '__tests__/cli/verdict-requires-measurement.test.ts': 2,
-  '__tests__/gate/pr-review-partition.test.ts': 1,
   '__tests__/hardening/absent-subject-not-applicable.test.ts': 1,
-  '__tests__/hardening/analyst-findings-redaction.test.ts': 1,
   '__tests__/hardening/config-credential-depth.test.ts': 1,
   '__tests__/hardening/credential-preview-truncation.test.ts': 1,
   '__tests__/hardening/credential-store-basenames.test.ts': 1,
-  '__tests__/hardening/finding-cast-launder-guard.test.ts': 1,
   '__tests__/hardening/finding-emit-fix-lines.test.ts': 1,
   '__tests__/hardening/fix-verification-attribution.test.ts': 1,
   '__tests__/hardening/ignore-suppression-scope.test.ts': 1,
-  '__tests__/hardening/redaction-provenance-boundaries.test.ts': 2,
-  '__tests__/hardening/redaction-provenance-reader.test.ts': 2,
   '__tests__/hardening/scanner.path-context.test.ts': 1,
-  '__tests__/hardening/scanner.rag-mem-context.test.ts': 1,
   '__tests__/hardening/shell-credential-exfil.test.ts': 2,
-  '__tests__/harness/hermetic-home.test.ts': 1,
   '__tests__/helpers/exit-surface-baseline.ts': 3,
   '__tests__/mcp/mcp-root-confinement.test.ts': 1,
-  '__tests__/nanomind-core/analyst-coverage.test.ts': 1,
-  '__tests__/nanomind-core/analyst-escalation-wiring.test.ts': 3,
   '__tests__/nanomind-core/fix-generator-scope-dispatch.test.ts': 1,
-  '__tests__/nanomind-core/scanner-fp-regression.test.ts': 2,
   '__tests__/scanner/governance-cross-surface.test.ts': 1,
   '__tests__/semantic/credential-context-git-state.test.ts': 1,
   '__tests__/skills/create-skill-output-clean.test.ts': 2,
   '__tests__/soul/scanner-profile-mismatch.test.ts': 1,
-  '__tests__/soul/soul-corpus-direction.test.ts': 2,
+  '__tests__/soul/soul-corpus-direction.test.ts': 1,
   '__tests__/telemetry/exit-surface.test.ts': 1,
-  '__tests__/ui/analyst-dissent.test.ts': 1,
-  'docs/design/redteam-nanomind-judge.md': 4,
   'docs/release-playbook.md': 11,
   'docs/testing/release-smoke.md': 2,
   'src/attack/payloads/capability-abuse.ts': 10,
 };
 
 // Frozen per-file counts of non-exempted lines matching the second expression,
-// measured on the delivered tree: 3 files, 8 lines.
-const VENDOR_BASELINE: Record<string, number> = {
-  'src/nanomind-core/security/defense-in-depth.ts': 3,
-  '__tests__/nanomind-core/defense-in-depth.test.ts': 3,
-  'CHANGELOG.md': 2,
-};
+// measured on the delivered tree: no file carries one.
+const VENDOR_BASELINE: Record<string, number> = {};
 
 const PATTERN_GUIDANCE =
   "name the control, not the role; for the reader persona write 'security manager'; for TLS write 'certificate signing request' in full";
@@ -427,8 +407,8 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC3 every public-surface file carries exactly the frozen number of lines matching the first expression', () => {
-    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(46);
-    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(114);
+    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(30);
+    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(73);
     const { hits } = scan(REPO_ROOT, PATTERN);
     expect(compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE)).toEqual([]);
   });
@@ -467,7 +447,7 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC4 every public-surface file carries exactly the frozen number of non-exempted lines matching the second expression', () => {
-    expect(Object.values(VENDOR_BASELINE).reduce((a, b) => a + b, 0)).toBe(8);
+    expect(Object.values(VENDOR_BASELINE).reduce((a, b) => a + b, 0)).toBe(0);
     const { hits } = scan(REPO_ROOT, VENDOR);
     expect(compareToBaseline(hits, VENDOR_BASELINE, VENDOR_GUIDANCE)).toEqual([]);
   });

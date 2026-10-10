@@ -1,5 +1,5 @@
 // Regression: AI runtimes installed OUTSIDE the scan target are reported, never
-// scored. [CHIEF-CA 2026-08-03]
+// scored. (2026-08-03)
 //
 // Before this, `secure` scanned every `~/.openclaw` / `~/.nemoclaw` it found,
 // name-prefixed those findings `[<Vendor>]`, pushed them into `result.findings`,

@@ -109,7 +109,7 @@ describe('combineVerdict', () => {
     });
   });
 
-  describe('abstention-gated (CDS-024 safe — analyst never raises the auto-verdict)', () => {
+  describe('abstention-gated (advisory-only — analyst never raises the auto-verdict)', () => {
     it('an analyst attack on a structural miss does NOT auto-flip; it escalates', () => {
       expect(combineVerdict(false, 'attack', 'abstention-gated')).toEqual({ attack: false, escalate: true });
     });

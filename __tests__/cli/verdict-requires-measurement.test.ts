@@ -518,7 +518,7 @@ describe('#390 scan-soul exits on what it reports', () => {
   );
 
   it('reports NOT MEASURED and exits 2 over a directory with no governance file', () => {
-    // REVERSED 2026-08-10 by `[CHIEF-CPO]` ruling 2 of #390. This test used to
+    // REVERSED 2026-08-10 by rule 2 of #390. This test used to
     // assert exit 0 here, and the reasoning it carried was half right: "there
     // is nothing here to grade" is indeed not "this governance is broken", so
     // exit 1 would be wrong. But exit 0 asserted the opposite falsehood — it
@@ -571,7 +571,7 @@ describe('#390 scan-soul exits on what it reports', () => {
   }, 600_000);
 
   it('a low-scoring file whose critical controls are all present still exits 0 — the gate is conformance, not a threshold', () => {
-    // REVISED 2026-08-10 by `[CHIEF-CPO]` ruling 1 of #390. The property this
+    // REVISED 2026-08-10 by rule 1 of #390. The property this
     // test protects is unchanged and still the right one: a partial score is a
     // score, not a failure, and `scan-soul` must not fail most SOUL.md files
     // in the wild. What changed is the axis. It used to gate on

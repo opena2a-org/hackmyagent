@@ -9,7 +9,7 @@
  * against the same list, while the DB CHECK constraint held a different set.
  * Every value except the default was unusable in one direction or the other,
  * so the pipeline's only working query was the default — the loop's terminus,
- * untraversable. [CHIEF-CA] 2026-08-31 ruled ONE vocabulary owned by the DB
+ * untraversable. The fix (2026-08-31) is ONE vocabulary owned by the DB
  * and the Go domain constants, with the CLI array and the client filter
  * DELETED.
  *

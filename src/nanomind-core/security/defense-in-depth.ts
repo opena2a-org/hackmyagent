@@ -11,7 +11,7 @@
  * 4. NanoMind has zero access to credentials, secrets, or sensitive data
  * 5. NanoMind daemon is sandboxed: localhost only, no filesystem beyond model
  * 6. AST signatures verified at every consumer
- * 7. Training data provenance tracked and Claude-reviewed
+ * 7. Training data provenance tracked; external samples require a model-assisted review
  * 8. A finding from static analysis can never be removed by NanoMind
  */
 
@@ -423,7 +423,7 @@ export interface TrainingDataProvenance {
   confidence: number;
   /** When it was created */
   createdAt: string;
-  /** Has this been reviewed by Claude? */
+  /** Has this sample passed the model-assisted review? */
   claudeReviewed: boolean;
   /** Signature of the provenance record */
   signature: string;
@@ -439,7 +439,7 @@ export function verifyTrainingProvenance(provenance: TrainingDataProvenance): bo
   if (!provenance.labeledBy) return false;
   if (provenance.confidence < 0 || provenance.confidence > 1) return false;
 
-  // High-risk: samples from external sources must be Claude-reviewed
+  // High-risk: samples from external sources must pass the model-assisted review
   if (provenance.source === 'registry_scan' && !provenance.claudeReviewed) {
     return false; // External data must be validated before training
   }

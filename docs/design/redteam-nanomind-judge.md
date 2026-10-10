@@ -1,7 +1,7 @@
 # Design: NanoMind as the judge for `red-team` adaptive attacks
 
 Status: proposed (2026-06-01)
-Owners: CSR (threat research) + CDS (model / training)
+Areas: threat research + model / training
 Origin: new-user audit 2026-06-01
 
 ## Problem
@@ -149,15 +149,15 @@ Only after phase 1 may export be considered for default-on, and only with:
 
 Until then, export stays behind `--export-training` and is marked UNSANITIZED.
 
-## CHIEF decisions
+## Decisions
 
-- **[CHIEF-CSR] DECISION:** `red-team` must not present heuristic output as an
+- **Decision:** `red-team` must not present heuristic output as an
   observed attack result. Phase 1 (NanoMind-as-judge) is the path to an honest
   adaptive engine; the heuristic is a labeled fallback, not the headline.
   RATIONALE: a security tool that fabricates "the agent complied" erodes the
   trust the tool exists to build. ALTERNATIVE REJECTED: keep the heuristic and
   only soften the wording — leaves a dead, mislabeled feature.
-- **[CHIEF-CDS] DECISION:** No `red-team` output reaches the training corpus
+- **Decision:** No `red-team` output reaches the training corpus
   without the sanitizer and real-artifact input. The default path writes
   nothing. RATIONALE: the audit found 1,001 synthetic self-labeled rows already
   accumulated; one pipeline that trusts the docstring would have ingested them.

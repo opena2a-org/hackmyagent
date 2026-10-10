@@ -1,5 +1,5 @@
 /**
- * Per-boundary injection proofs — [CHIEF-CISO] 2026-08-21 condition (ii):
+ * Per-boundary injection proofs — 2026-08-21 condition (ii):
  * every publish boundary's provenance read is proven by runtime injection
  * through the REAL channel builder, never by grep. A grep guard is satisfied
  * by dead code; an injection is not.
@@ -102,7 +102,7 @@ describe('per-boundary injection: each real builder throws on a laundered findin
 });
 
 describe('cli.ts JSON-serialization tripwire', () => {
-  // [CHIEF-CA] D2: a new `JSON.stringify` site in cli.ts is a potential new
+  // A new `JSON.stringify` site in cli.ts is a potential new
   // publish channel that silently misses the boundary read. This pin is
   // BLUNT on purpose — it forces the author of a new site to classify it
   // (route through writeJsonStdout, add an assert, or record why neither),

@@ -9,7 +9,7 @@
  *  - MEM-006 fired on a DVAA adversarial test harness whose job is to remain
  *    unsanitized — sanitizing it would defeat the purpose.
  *
- * [CSR-011] classified both fixes as (a) preserved-detection FP-suppress.
+ * Both fixes are class (a): preserved-detection FP-suppress.
  * Each test pair is a positive (malicious shape still fires at HIGH) and a
  * negative (benign shape produces no HIGH/CRITICAL). Do not loosen the
  * positives — they are the detection lock.

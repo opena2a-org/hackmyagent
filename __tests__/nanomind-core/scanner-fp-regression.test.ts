@@ -13,7 +13,7 @@
  *
  *  (2) AST-CRED-002 "Credential Forwarding Detected" on
  *      training/corpus/claude-review-batch.json — adversarial training
- *      corpus data ([CSR-003] + [CDS-023] carve-out), not executable
+ *      corpus data (deliberate corpus carve-out), not executable
  *      code.
  *
  *  (3) AST-CRED-001 / AST-CRED-003 on nanomind-models.json — SHA-256
@@ -679,7 +679,7 @@ describe('AST-CRED-001/003 FP regression (nanomind#26 finding 3)', () => {
   // `checkCredentialsInNonEnvContext` and `checkHardcodedSecrets`,
   // not inside `analyzeCredentials` itself. AST-CRED-002 has its
   // OWN corpus-only carve-out at the top of `checkCredentialForwarding`
-  // (intentional per [CSR-003] + [CDS-023]). The tests below pin that
+  // (intentional). The tests below pin that
   // behavior so a future refactor can't accidentally regress it.
   it('AST-CRED-002 suppressed by corpus carve-out on adversarial training data with transmit pattern (intended)', () => {
     // Corpus path + transmit + NO vendor-prefix credential =

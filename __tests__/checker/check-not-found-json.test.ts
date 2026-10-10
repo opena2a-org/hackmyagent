@@ -1,4 +1,4 @@
-// Regression tests for HMA --json not-found path canonical shape (CA-034 round 2).
+// Regression tests for HMA --json not-found path canonical shape.
 //
 // Two layers:
 // 1. Deterministic unit test — calls `buildNotFoundOutput` with the exact

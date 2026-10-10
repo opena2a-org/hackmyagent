@@ -18,7 +18,7 @@
 //
 // The OBSERVABLE changed in 0.25.2 and this file changed with it. $HOME findings
 // used to be merged into `findings` and scored; they are now summarized on
-// `machinePosture` and never scored ([CHIEF-CA 2026-08-03]). The hermeticity
+// `machinePosture` and never scored (2026-08-03). The hermeticity
 // contract is unchanged — what the flag suppresses is the same $HOME read — so
 // the non-vacuity probe now watches `machinePosture` instead of tagged findings.
 // Watching only the old signal would have left this gate permanently green and

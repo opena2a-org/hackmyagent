@@ -158,7 +158,7 @@ describe('Defense-in-Depth: NanoMind Security', () => {
       })).toBe(false);
     });
 
-    it('rejects external samples not reviewed by Claude', () => {
+    it('rejects external samples without the model-assisted review', () => {
       expect(verifyTrainingProvenance({
         contentHash: 'abc123',
         source: 'registry_scan',
@@ -170,7 +170,7 @@ describe('Defense-in-Depth: NanoMind Security', () => {
       })).toBe(false);
     });
 
-    it('accepts Claude-reviewed external samples', () => {
+    it('accepts external samples that passed the model-assisted review', () => {
       expect(verifyTrainingProvenance({
         contentHash: 'abc123',
         source: 'registry_scan',
@@ -182,7 +182,7 @@ describe('Defense-in-Depth: NanoMind Security', () => {
       })).toBe(true);
     });
 
-    it('accepts internal samples without Claude review', () => {
+    it('accepts internal samples without the model-assisted review', () => {
       expect(verifyTrainingProvenance({
         contentHash: 'abc123',
         source: 'hma_payload',

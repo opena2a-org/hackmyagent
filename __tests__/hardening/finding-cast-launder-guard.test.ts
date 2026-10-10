@@ -1,5 +1,5 @@
 /**
- * CI guard for defect (9)'s laundering casts, extended per [CHIEF-CA]
+ * CI guard for defect (9)'s laundering casts, extended on
  * 2026-08-21 (unit 2): no production file may cast a value INTO
  * `SecurityFinding` or `RedactedFinding` — the brand's one sanctioned cast
  * lives in `finding-emit.ts`, and every other spelling is a boundary bypass

@@ -1,9 +1,8 @@
 /**
  * #390 — `scan-soul`'s exit contract.
  *
- * Two rulings, both recorded in `todo/COUNCIL_LEDGER.md`
- * (`[CHIEF-CPO] 2026-08-09 — scan-soul gates on conformance, and reports NOT
- * MEASURED over nothing`):
+ * Two rules, both adopted 2026-08-09 (scan-soul gates on conformance, and
+ * reports NOT MEASURED over nothing):
  *
  *   1. exit 1 whenever `conformance === 'none'`, on BOTH channels.
  *   2. over a tree with no governance file at all: NOT MEASURED, exit 2, and

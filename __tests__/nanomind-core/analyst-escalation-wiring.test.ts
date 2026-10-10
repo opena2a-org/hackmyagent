@@ -14,7 +14,7 @@ import type { ArtifactCoverageVerdict } from '../../src/nanomind-core/inference/
 import type { SecurityFinding } from '../../src/hardening/security-check';
 
 // ============================================================================
-// runCoverageSweep — abstention-gated escalation wiring (Phase A P1, CDS-023/024)
+// runCoverageSweep — abstention-gated escalation wiring (Phase A P1)
 //
 // The sweep sends compiled artifacts WITHOUT a high/critical structural attack
 // finding to the analyst, routes the verdict, and may only ESCALATE. These
@@ -205,7 +205,7 @@ describe('runCoverageSweep — escalation emission', () => {
   });
 });
 
-describe('runCoverageSweep — advisory invariant (CDS-024)', () => {
+describe('runCoverageSweep — advisory invariant', () => {
   it('never mutates the findings array or its entries', async () => {
     const findings = [finding({ file: 'util.ts', severity: 'low' })];
     const snapshot = JSON.stringify(findings);
@@ -271,8 +271,9 @@ describe('POSTURE_HARDENING_CHECKS — contract lock', () => {
   it('matches the published benchmark verdict mapping exactly', () => {
     // Canonical source: oasb/scripts/run-dvaa-benchmark.ts HARDENING set ==
     // the corpus full-pipeline adapter's HARDENING_CHECK_IDS (29.1% baseline,
-    // CDS-026). If the canonical set changes, change BOTH and re-measure —
-    // silent drift would mis-select sweep candidates.
+    // measured after the corpus loader fix). If the canonical set changes,
+    // change BOTH and re-measure — silent drift would mis-select sweep
+    // candidates.
     expect([...POSTURE_HARDENING_CHECKS].sort()).toEqual([
       'AST-GOV-001', 'AST-GOV-002', 'AST-GOV-003', 'AST-GOV-004', 'AST-GOV-005',
       'AST-PROMPT-001', 'AST-PROMPT-003', 'AST-PROMPT-004',

@@ -175,7 +175,7 @@ describe('assertRedactionProvenance — the publish-boundary read', () => {
   });
 
   // RED-PROOF: allow 'unverified' through the status check — goes red.
-  // [CHIEF-CISO] 2026-08-21: 'unverified' may exist in process, it may never
+  // Rule (2026-08-21): 'unverified' may exist in process, it may never
   // cross a publish boundary.
   it("throws on redactionStatus 'unverified' at a publish boundary", () => {
     const f = { ...appliedFinding(), redactionStatus: 'unverified' };
@@ -231,8 +231,8 @@ describe('assertRedactionProvenance — the publish-boundary read', () => {
     expect(() => assertRedactionProvenance(payload, 'test-channel')).not.toThrow();
   });
 
-  // The exemption mechanism is the SHAPE predicate, never a site allowlist
-  // ([CHIEF-CISO] condition). The pair below are complementary on purpose: the
+  // The exemption mechanism is the SHAPE predicate, never a site allowlist.
+  // The pair below are complementary on purpose: the
   // same row, with and without the fields that make it finding-shaped. If the
   // predicate drifts, one of the two goes red — the filters must negate.
   it('exempts an identity-only projection row (no passed, no body text) by shape', () => {

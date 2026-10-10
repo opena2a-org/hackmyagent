@@ -965,7 +965,7 @@ describe('PR review gate: full source is budgeted across the request, and cut un
     // THE PROPERTY. Single mode serves files whole until a running total
     // overflows and then breaks, so file order decides who gets source and who
     // gets none — and order comes from the author's own diff. Restoring that
-    // shape was refused (`[CHIEF-CISO]`, 2026-08-20 and 2026-08-23). This row is
+    // shape was refused (2026-08-20 and 2026-08-23). This row is
     // what stops it coming back: same files, reversed, byte-identical result.
     //
     // On `mixedSourceFixture`, not `bigSourceFixture` — see that fixture's note.

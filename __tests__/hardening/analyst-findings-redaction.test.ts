@@ -1,5 +1,5 @@
 /**
- * The analyst advisory channel's open-bag redaction — [CHIEF-CISO] 2026-08-21.
+ * The analyst advisory channel's open-bag redaction (2026-08-21).
  *
  * `analystFindings` rides the secure/check JSON channels raw and is not
  * finding-shaped, so the publish-boundary reader does not see it. Its safety

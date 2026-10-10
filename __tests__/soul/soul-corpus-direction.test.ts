@@ -30,7 +30,7 @@
  * is `['SOUL-IH-003']` alone here, both on the malicious fixture. Editing the
  * fixture to add a role-play clause would be authoring an artifact so a string
  * match succeeds; whether the corpus fixture's coverage claim is itself too
- * narrow went to `[CHIEF-CSR]` instead.
+ * narrow is tracked separately instead.
  *
  * These assertions are on the EXIT CODE deliberately. Before #390 this file
  * checked only `violations` and `scoreClamped`, both of which are unmoved by
