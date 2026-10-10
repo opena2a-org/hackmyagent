@@ -67,6 +67,12 @@ export function isScopeChannel(ch: string): ch is ScopeChannel {
 export interface HmaIgnoreDisclosure {
   /** '.hmaignore', relative to the target. */
   file: string;
+  /**
+   * `rule`, `path`, `checkId`, `reason` and `errors[].rule` are the text as
+   * written up to 1024 characters (`HMAIGNORE_ECHO_MAX`). Longer text is cut
+   * there and ends `… (<full length> characters)`; the rule itself is applied
+   * in full.
+   */
   rules: Array<{
     /** 1-based line in the file. */
     line: number;
