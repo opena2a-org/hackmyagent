@@ -45,11 +45,12 @@ function writeCache(dir: string, sizes: Record<string, number> = {}): void {
 }
 
 /**
- * Make the cache check read each model file's sha256 as its pinned value,
- * except for the files named in `altered`, which read as some other value.
+ * Make the cache check, and the check on the bytes each file is parsed from,
+ * read each model file's sha256 as its pinned value, except for the files
+ * named in `altered`, which read as some other value.
  */
 function hashAsPinned(altered: string[] = []) {
-  return vi.spyOn(TMEClassifier as any, 'hashFileSync').mockImplementation((path: unknown) => {
+  return vi.spyOn(TMEClassifier as any, 'hashFileBytes').mockImplementation((path: unknown) => {
     const name = basename(String(path));
     return altered.includes(name) ? '0'.repeat(64) : PINNED_SHA256[name];
   });

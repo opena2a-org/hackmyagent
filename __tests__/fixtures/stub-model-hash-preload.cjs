@@ -26,11 +26,13 @@ if (!Array.isArray(MODEL_FILES) || MODEL_FILES.length === 0) {
   throw new Error('stub-model-hash-preload: dist has no MODEL_FILES export; run `npm run build`');
 }
 const PINNED_SHA256 = Object.fromEntries(MODEL_FILES.map(f => [f.name, f.sha256]));
-const realHash = TMEClassifier.hashFileSync;
+// Every pin check on model bytes goes through `hashFileBytes`: the check
+// that finds a cache, and the check on the bytes each file is parsed from.
+const realHash = TMEClassifier.hashFileBytes;
 
-TMEClassifier.hashFileSync = function hashFileSync(filePath) {
+TMEClassifier.hashFileBytes = function hashFileBytes(filePath, bytes) {
   const resolved = path.resolve(String(filePath));
   const pinned = PINNED_SHA256[path.basename(resolved)];
   if (pinned && path.dirname(resolved) === path.resolve(standInDir)) return pinned;
-  return realHash.call(this, filePath);
+  return realHash.call(this, filePath, bytes);
 };
