@@ -65,7 +65,7 @@ function treeRoots(root: string): string[] {
 const PATTERN = new RegExp(String.raw`\[CHIEF-|\bCHIEF\b|\b(CPO|CCO|CISO|CSR|CDS|CDE|DPO)\b|\bCA \(\d\)|\b(CPO|CCO|CISO|CSR|CDS|CDE|DPO|CA)-\d{3}\b|COUNCIL_LEDGER|\bbriefs/|hackmyagent/CLAUDE\.md|\btodo/|\bqgf/|\.claude-sessions|(?i:chief (data scientist|security researcher|architect|product officer|information security officer|communications officer)|chief council)`);
 const VENDOR = new RegExp(String.raw`(claude|anthropic)[-\s](review|generat|label|train|curat|assist|audit)\w*|(review|generat|label|train|curat|built|powered|assisted)\w*\s+by\s+(claude|anthropic)|Claude Code Review`, 'i');
 
-// Lines exempted from the second expression. An entry exempts a line only when
+// Lines exempted from either expression. An entry exempts a line only when
 // the file path and the exact line content after trimming are both equal —
 // never by pattern or substring. Every entry must still match a line on disk;
 // a stale entry fails the suite instead of silently widening the exemption.
@@ -112,6 +112,18 @@ const ALLOWLIST: ReadonlyArray<{ file: string; line: string }> = [
     // statement false.
     file: '__tests__/nanomind-core/scanner-fp-regression.test.ts',
     line: "artifactPath: 'training/corpus/claude-review-batch.json',",
+  },
+  {
+    // The identifier is one of this tool's own check ids, printed in a
+    // recorded attack report — and the line stays because the recording must
+    // match the tool's output; renaming it makes the statement false.
+    file: 'docs/vhs/attack-dvaa-capture.txt',
+    line: '[INFO] ATK-CA-001: Tool Discovery',
+  },
+  {
+    // The next check id of the same recorded report, for the same reason.
+    file: 'docs/vhs/attack-dvaa-capture.txt',
+    line: '[MEDIUM] ATK-CA-002: Permission Probe',
   },
 ];
 
@@ -288,10 +300,10 @@ const OTHER_PIN_WORKFLOW_LINE =
 
 // The number of lines of this very file on which either expression matches,
 // measured on the file as delivered: the two expression sources (2), the ten
-// planted shapes above (10), the six exempted line contents (6) and the two
+// planted shapes above (10), the eight exempted line contents (8) and the two
 // different-pin lines (2). Any new matching line here — in a comment, a leaf
 // name or a message — moves this number and fails the suite.
-const SELF_HITS = 20;
+const SELF_HITS = 22;
 
 const plantedRoots: string[] = [];
 afterAll(() => {
