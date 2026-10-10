@@ -28,14 +28,19 @@ import * as os from 'os';
  *
  * `vi.hoisted` runs ahead of the imports below, so the package's module-load
  * `homedir()` resolves here. `USERPROFILE` is what `homedir()` reads on Windows.
+ *
+ * Only the path is chosen here. This runs while vitest collects the file,
+ * under `vitest list` too, where no hook would remove a directory, so the
+ * `beforeAll` below creates it. The name is random and that `mkdirSync` is
+ * exclusive, so the directory cannot be one another process made first.
  */
 const scratch = await vi.hoisted(async () => {
-  const { mkdtempSync } = await import('node:fs');
+  const { randomBytes } = await import('node:crypto');
   const { join } = await import('node:path');
   const { homedir, tmpdir } = await import('node:os');
   const realHome = homedir();
   const original = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
-  const home = mkdtempSync(join(tmpdir(), 'contribute-home-'));
+  const home = join(tmpdir(), `contribute-home-${randomBytes(8).toString('hex')}`);
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   return { home, realHome, original };
@@ -124,6 +129,7 @@ let suiteHome: string;
 let suiteHomeOriginalEnv: string | undefined;
 
 beforeAll(() => {
+  fs.mkdirSync(scratch.home, { mode: 0o700 });
   suiteHome = createTempDir();
   suiteHomeOriginalEnv = process.env.OPENA2A_HOME;
   process.env.OPENA2A_HOME = suiteHome;

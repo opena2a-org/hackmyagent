@@ -22,7 +22,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findingAppliesTo } from '../../src/hardening/scanner';
@@ -30,6 +30,7 @@ import type { SecurityFinding, ProjectType } from '../../src/hardening/security-
 import { OBSERVATION_LABEL_WIDTH, OBSERVATION_LABELS } from '../../src/ui/quick-scan-labels';
 import { classifyCategory } from '@opena2a/cli-ui';
 import { assertDistFresh } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 function failing(checkId: string): SecurityFinding {
   return {
@@ -178,14 +179,15 @@ describe('#421 layer 2 — the finding reaches the output and the score', () => 
   beforeAll(assertDistFresh);
 
   // One HOME for the whole suite so the classifier model is fetched at most
-  // once rather than per scan.
-  const HOME_DIR = mkdtempSync(join(tmpdir(), 'hma-421-home-'));
-  mkdirSync(HOME_DIR, { recursive: true });
+  // once rather than per scan. Made in the hook, not the describe body, which
+  // also runs under `vitest list`, where nothing would remove it.
+  let HOME_DIR = '';
 
   let asLibrary: ScanJson | null;
   let asServer: ScanJson | null;
 
   beforeAll(() => {
+    HOME_DIR = tempDir('hma-421-home-');
     asLibrary = scanFixture(HOME_DIR, undefined);
     asServer = scanFixture(HOME_DIR, { express: '^4.18.0' });
   });
@@ -327,7 +329,11 @@ describe('#421 layer 2 — the finding reaches the output and the score', () => 
 
 describe('#421 layer 2 — the run discloses what it silenced', () => {
   beforeAll(assertDistFresh);
-  const HOME_DIR = mkdtempSync(join(tmpdir(), 'hma-421-home2-'));
+  // Made in a hook: the describe body also runs under `vitest list`.
+  let HOME_DIR = '';
+  beforeAll(() => {
+    HOME_DIR = tempDir('hma-421-home2-');
+  });
 
   /**
    * A plain library that happens to carry an `mcp.json`. `detectProjectType`

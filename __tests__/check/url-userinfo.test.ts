@@ -114,6 +114,29 @@ describe('withoutUrlUserinfo', () => {
       .toBe('https://gitlab.com/org/repo.git');
   });
 
+  it('masks a password that holds a raw `?` or `#`, or for fetch a `\\`, which the reader takes for a host and port', () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      expect(withoutUrlUserinfo(withUserinfo('https', `alice:pa?${SECRET}`, 'gitlab.com/org/repo.git'), reader))
+        .toBe('https://***@gitlab.com/org/repo.git');
+      expect(withoutUrlUserinfo(withUserinfo('https', `alice:pa#${SECRET}`, 'gitlab.com/org/repo.git'), reader))
+        .toBe('https://***@gitlab.com/org/repo.git');
+      expect(withoutUrlUserinfo(withUserinfo('https', `alice:pa?${SECRET}`, 'gitlab.com'), reader))
+        .toBe('https://***@gitlab.com');
+    }
+    expect(withoutUrlUserinfo(withUserinfo('http', `alice:pa\\${SECRET}`, 'localhost:8080/pkg.tgz'), 'fetch'))
+      .toBe('http://***@localhost:8080/pkg.tgz');
+    // The URL parser behind fetch rejects it, so fetch never contacts a host.
+    expect(() => new URL(withUserinfo('http', `alice:pa\\${SECRET}`, 'localhost:8080/pkg.tgz'))).toThrow();
+  });
+
+  it('does not mask an `@` after an authority the reader accepts', () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      for (const url of AT_AFTER_THE_AUTHORITY) expect(withoutUrlUserinfo(url, reader)).not.toContain('***');
+    }
+    expect(withoutUrlUserinfo('http://localhost:8080\\@evil.example/pkg.tgz', 'fetch'))
+      .toBe('http://localhost:8080\\@evil.example/pkg.tgz');
+  });
+
   it('for fetch, keeps the host, path, query and fragment the URL parser behind fetch reads, without credentials', () => {
     for (const url of [
       ...AT_AFTER_THE_AUTHORITY,
@@ -161,5 +184,38 @@ describe('scanNameWithoutUserinfo', () => {
     }
     expect(scanNameWithoutUserinfo(`alice:${SECRET}@gitlab.com?ref=@evil.example/org/repo`))
       .toBe('gitlab.com?ref=@evil.example/org/repo');
+  });
+
+  it('names a scan queued for a URL with an empty userinfo as a new scan of that URL is named', () => {
+    expect(scanNameWithoutUserinfo('@gitlab.com/org/repo')).toBe('gitlab.com/org/repo');
+    expect(scanNameWithoutUserinfo('@git.example.com:8080/repo')).toBe('git.example.com:8080/repo');
+    expect(scanNameWithoutUserinfo('@@gitlab.com/org/repo')).toBe('gitlab.com/org/repo');
+    // The name a new scan of `https://@gitlab.com/org/repo.git` is shared under.
+    const newName = withoutUrlUserinfo('https://@gitlab.com/org/repo.git').replace(/^https?:\/\//, '').replace(/\.git$/, '');
+    expect(scanNameWithoutUserinfo('@gitlab.com/org/repo')).toBe(newName);
+  });
+
+  it('keeps a name with the shape of a scoped package', () => {
+    for (const name of ['@scope/pkg', '@scope/pkg@1.0.0', '@my.scope/pkg']) {
+      expect(scanNameWithoutUserinfo(name)).toBe(name);
+    }
+  });
+
+  it('takes time linear in the length of the name', () => {
+    const name = 'a' + '@'.repeat(200_000);
+    const started = performance.now();
+    expect(scanNameWithoutUserinfo(name)).toBe(name);
+    expect(scanNameWithoutUserinfo(name + '/x')).toBe('/x');
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe('withoutUrlUserinfo time', () => {
+  it('takes time linear in the length of the URL', () => {
+    const url = 'https://a' + '@'.repeat(200_000);
+    const started = performance.now();
+    withoutUrlUserinfo(url, 'git');
+    withoutUrlUserinfo(url + '?/', 'fetch');
+    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });

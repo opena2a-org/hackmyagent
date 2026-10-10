@@ -165,12 +165,13 @@ describe('nanomind setup', () => {
 
 describe('secure --nanomind', () => {
   // One target for both runs: the comparison below is of everything the scan
-  // prints about it.
-  const target = fixture();
+  // prints about it. Made in the hook: the describe body also runs under
+  // `vitest list`, where nothing would remove it.
   let stopped: Run;
   let absent: Run;
 
   beforeAll(() => {
+    const target = fixture();
     stopped = run(true, ['secure', '.', '--nanomind'], target);
     absent = run(false, ['secure', '.', '--nanomind'], target);
   });

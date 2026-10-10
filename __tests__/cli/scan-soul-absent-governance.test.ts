@@ -25,11 +25,11 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 import { EXIT_UNMEASURED } from '../../src/check/verdict';
 
 beforeAll(assertDistFreshIfPresent);
@@ -56,7 +56,7 @@ function runScanSoul(target: string, ...flags: string[]): { out: string; status:
 
 /** A directory with no SOUL.md, no CLAUDE.md, no governance file of any spelling. */
 function emptyTree(): string {
-  return mkdtempSync(join(tmpdir(), 'hma-01-ac2-'));
+  return tempDir('hma-01-ac2-');
 }
 
 describe('HMA-01.AC2: scan-soul --ci over a tree with no governance file', () => {

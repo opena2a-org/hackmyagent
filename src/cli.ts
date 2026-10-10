@@ -8656,10 +8656,14 @@ Examples:
       if (!report.verdict.measured && (options.versionId || options.registryReport) && format === 'text') {
         console.log('\nRegistry: not reported — this run measured nothing about the target.');
       }
+      // The registry gets the target URL without its userinfo, the same name
+      // on every path, in the report's `target` too.
+      const registryTargetName = withoutUrlUserinfo(target.url || targetUrl || 'unknown', 'fetch');
       if (shouldReport) {
         try {
           const core = await import('./index');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
+          const registryReport = { ...report, target: withoutUrlUserinfo(report.target, 'fetch') };
 
           if (options.versionId) {
             // Authenticated path: existing behavior (version-id + API key)
@@ -8670,17 +8674,17 @@ Examples:
             }
             const atcToken = process.env.ATC_TOKEN;
             const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
-            const payload = core.buildAttackReport(options.versionId, report);
+            const payload = core.buildAttackReport(options.versionId, registryReport);
             await client.reportScanResult(payload);
             console.log(`Registry: attack results reported for version ${options.versionId}`);
           } else if (typeof core.buildCommunityAttackReport === 'function') {
             // Community path: request scan token, then submit results
             const client = new core.RegistryClient({ registryUrl, apiKey: '' });
-            const packageName = target.url || targetUrl || 'unknown';
+            const packageName = registryTargetName;
             const tokenResp = typeof client.requestScanToken === 'function'
               ? await client.requestScanToken(packageName)
               : null;
-            const payload = core.buildCommunityAttackReport(packageName, report);
+            const payload = core.buildCommunityAttackReport(packageName, registryReport);
             const resp = typeof client.reportCommunityResult === 'function'
               ? await client.reportCommunityResult(payload, tokenResp?.scanToken)
               : { status: 'skipped' };
@@ -8712,7 +8716,7 @@ Examples:
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const regUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = withoutUrlUserinfo(target.url || targetUrl || 'unknown', 'fetch');
+          const packageName = registryTargetName;
 
           if (format === 'text') {
             console.log('\nPublishing results to registry...\n');
@@ -15158,9 +15162,11 @@ async function checkRawUrl(
 
   const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-url-'));
   let scanDir = tempDir;
-  // Git clone for known forge URLs and .git suffix
+  // Git clone for known forge URLs and .git suffix. The forge is the host
+  // git contacts, so it is read from the URL without its userinfo:
+  // `https://<user>:<token>@gitlab.com/org/repo` is cloned too.
   const isGitUrl = url.endsWith('.git')
-    || /^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(url);
+    || /^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(withoutUrlUserinfo(url, 'git'));
   // A user name and password (or token) in the URL reach `git clone` and
   // `fetch` and nothing else: every line printed, the `--json` document and
   // the name published to the registry are built from `shownUrl`. The two

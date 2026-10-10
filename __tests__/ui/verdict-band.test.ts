@@ -19,15 +19,15 @@
 // semantic gate keys on the artifact kind (#740), that fixture's root SOUL.md
 // reaches the governance analyzer under its `library` root, and its raw
 // composite lands at 69, below the good band, so it no longer exercises the
-// clamp. The cells now build their own fail-direction tree whose raw
-// composite is in the good band: a package.json beside a SOUL.md with no
+// clamp. The cells now scan their own fail-direction tree whose raw
+// composite is in the good band, __tests__/fixtures/verdict-band-259: a
+// package.json beside a SOUL.md with no
 // controls (measured raw 79, clamped to 69, four HIGH governance and prompt
 // findings). The non-vacuity guards still prove both halves on every run.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   GOOD_BAND_FLOOR,
@@ -37,6 +37,7 @@ import {
   isFailDirection,
 } from '../../src/ui/verdict-band';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -44,16 +45,17 @@ beforeAll(assertDistFreshIfPresent);
 
 const REPO_ROOT = join(__dirname, '..', '..');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
-/** A fail-direction tree whose raw composite sits in the good band. */
-const FIXTURE = mkdtempSync(join(tmpdir(), 'hma-259-'));
-writeFileSync(join(FIXTURE, 'package.json'), '{"name":"fx259","version":"1.0.0","private":true}\n');
-writeFileSync(join(FIXTURE, 'SOUL.md'), '# Soul\n\nA document with no controls.\n');
-afterAll(() => {
-  try { rmSync(FIXTURE, { recursive: true, force: true }); } catch { /* best effort */ }
-});
+/**
+ * A fail-direction tree whose raw composite sits in the good band. Checked in
+ * rather than made at module scope, which also runs under `vitest list`, where
+ * nothing would remove a temporary directory. The spawn cells scan a copy made
+ * in a hook, outside this repository, as they scanned the tree when it was
+ * made here.
+ */
+const FIXTURE = join(REPO_ROOT, '__tests__', 'fixtures', 'verdict-band-259');
 
 function canRunSpawn(): boolean {
-  // The fixture is built above, so the second clause is the same guard it was
+  // The fixture is checked in, so the second clause is the same guard it was
   // for the corpus tree: a missing fixture skips the spawn cells rather than
   // failing them for an absent input.
   return existsSync(CLI) && existsSync(FIXTURE);
@@ -112,8 +114,14 @@ describe('verdict-band clamp (deterministic — #259 contract gate)', () => {
 });
 
 describe('secure on the reported fixture (spawn, local-only)', { timeout: 240_000 }, () => {
+  let target = '';
+  beforeAll(() => {
+    target = tempDir('hma-259-');
+    cpSync(FIXTURE, target, { recursive: true });
+  });
+
   function scanJson(): any {
-    const res = spawnSync('node', [CLI, 'secure', FIXTURE, '--ci', '--json'], {
+    const res = spawnSync('node', [CLI, 'secure', target, '--ci', '--json'], {
       encoding: 'utf8',
       timeout: 180_000,
       env: { ...process.env, OPENA2A_CORPUS_DETERMINISTIC: '1' },
@@ -151,7 +159,7 @@ describe('secure on the reported fixture (spawn, local-only)', { timeout: 240_00
   });
 
   it.runIf(canRunSpawn())('says why the number was capped', () => {
-    const res = spawnSync('node', [CLI, 'secure', FIXTURE, '--ci'], {
+    const res = spawnSync('node', [CLI, 'secure', target, '--ci'], {
       encoding: 'utf8',
       timeout: 180_000,
       env: { ...process.env, OPENA2A_CORPUS_DETERMINISTIC: '1' },

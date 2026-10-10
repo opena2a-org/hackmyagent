@@ -24,6 +24,12 @@
  * whose `env` replaces process.env, which drops NODE_OPTIONS and the markers:
  * several suites spawn the CLI that way, and the start recorder forwards both
  * into such a spawn (#911).
+ *
+ * The nested run also gets its own empty TMPDIR, which the first cell asserts
+ * is still empty afterwards. `vitest list` runs no hook, so a temporary
+ * directory a file creates while it is collected is never removed: before,
+ * one collection of the selection left twelve. The fourth cell collects a
+ * fixture that creates one, which shows the check sees it.
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -78,6 +84,9 @@ function collect(args: string[]) {
   // before the proxy refuses it. NO_PROXY could send the download direct.
   for (const k of ['https_proxy', 'HTTPS_PROXY', 'http_proxy', 'HTTP_PROXY', 'no_proxy', 'NO_PROXY']) delete env[k];
   const preload = [CLI_START_RECORDER, NET_RECORDER].map((f) => `--require ${JSON.stringify(f)}`).join(' ');
+  // The nested run's own temporary directory: `vitest list` runs no hook, so
+  // a directory a file creates while it is collected is never removed.
+  const tmp = tempDir('hma-collect-tmp-');
   const res = spawnSync(process.execPath, [VITEST, 'list', '--json', '--maxWorkers=2', ...args], {
     cwd: REPO_ROOT,
     encoding: 'utf-8',
@@ -85,6 +94,7 @@ function collect(args: string[]) {
     maxBuffer: 64 * 1024 * 1024,
     env: {
       ...env,
+      TMPDIR: tmp,
       HOME: tempDir('hma-collect-home-'),
       HTTPS_PROXY: 'http://127.0.0.1:9',
       NODE_OPTIONS: [env.NODE_OPTIONS, preload].filter(Boolean).join(' '),
@@ -109,6 +119,7 @@ function collect(args: string[]) {
     files,
     cliStarts: lines(cliStarts),
     requests: lines(requests),
+    leftInTmp: readdirSync(tmp).sort(),
   };
 }
 
@@ -126,6 +137,12 @@ describe('collecting the suite starts no scan', () => {
         + 'while it collects, under `vitest list` too; move the work into beforeAll or a test.\n'
         + run.out,
     ).toEqual({ cliStarts: [], requests: [] });
+    expect(
+      run.leftInTmp,
+      'Collecting a file left a directory in TMPDIR. `vitest list` runs no hook, so `tempDir` cannot\n'
+        + 'remove what a describe body or module scope creates; create it in beforeAll or a test.\n'
+        + run.out,
+    ).toEqual([]);
     // A file that throws while it is collected fails the run, and an error
     // can stop a describe body before the work this cell watches for.
     expect(run.status, run.out).toBe(0);
@@ -146,5 +163,12 @@ describe('collecting the suite starts no scan', () => {
     expect(run.files, run.out).toEqual(new Set(['__tests__/helpers/collection-fixture/replaced-env.fixture.ts']));
     expect(run.cliStarts, run.out).toEqual([JSON.stringify(['-V'])]);
     expect(run.requests, run.out).toContain('localhost:9');
+  });
+
+  it('non-vacuity: a describe body that creates a temporary directory is seen leaving it', () => {
+    const run = collect(['--config', FIXTURE_CONFIG, 'makes-temp-dir']);
+    expect(run.files, run.out).toEqual(new Set(['__tests__/helpers/collection-fixture/makes-temp-dir.fixture.ts']));
+    expect(run.leftInTmp, run.out).toHaveLength(1);
+    expect(run.leftInTmp[0]).toMatch(/^hma-collect-fixture-/);
   });
 });

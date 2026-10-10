@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 /**
  * #504, the dry-run half.
@@ -55,8 +56,12 @@ function makeFixture(): string {
 
 // #534 — `fix-all --with-aim` writes a real identity into the user store.
 // Isolated here so a test run never writes into the developer's own ~/.opena2a.
-const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'hma-isolated-home-'));
-afterAll(() => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
+// Made in a hook, not at module scope, which also runs under `vitest list`,
+// where nothing would remove it.
+let ISOLATED_HOME = '';
+beforeAll(() => {
+  ISOLATED_HOME = tempDir('hma-isolated-home-');
+});
 
 function run(dir: string, ...args: string[]) {
   const res = spawnSync(process.execPath, [CLI, 'fix-all', dir, ...args], {

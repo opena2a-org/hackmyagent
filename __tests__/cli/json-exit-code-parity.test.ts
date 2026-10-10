@@ -22,12 +22,13 @@
  * 0 under `--json` on a fixture that exits 1 without it. Three commands, one
  * defect, and only one of them had been reported.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -140,8 +141,12 @@ function jsonCommands(): string[] {
 
 // #534 — `fix-all --with-aim` writes a real identity into the user store.
 // Isolated here so a test run never writes into the developer's own ~/.opena2a.
-const ISOLATED_HOME = mkdtempSync(path.join(tmpdir(), 'hma-isolated-home-'));
-afterAll(() => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
+// Made in a hook, not at module scope, which also runs under `vitest list`,
+// where nothing would remove it.
+let ISOLATED_HOME = '';
+beforeAll(() => {
+  ISOLATED_HOME = tempDir('hma-isolated-home-');
+});
 
 function run(args: string[]): { status: number | null; stdout: string } {
   const r = spawnSync(process.execPath, [CLI, ...args], {

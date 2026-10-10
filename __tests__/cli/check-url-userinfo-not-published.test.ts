@@ -12,7 +12,8 @@
  *
  * The userinfo ends where the program that reads the URL, git or `fetch`,
  * ends the authority. So a URL with none is reported as typed, also when its
- * query or a `\` puts an `@` after the host.
+ * query or a `\` puts an `@` after the host. A password that holds a raw `?`,
+ * which ends the authority inside the userinfo, is masked instead.
  *
  * Hermetic: `git` is a shim on PATH that records its arguments and copies a
  * local fixture tree; the registry is a capture server on localhost that
@@ -45,20 +46,27 @@ const USER = 'fakeuser';
 const SECRET = ['FAKE', 'secret', '123'].join('');
 const REPO = 'gitlab.com/example-org/example-repo';
 const LEGACY_REPO = 'gitlab.com/example-org/legacy-repo';
+const EMPTY_USERINFO_REPO = 'gitlab.com/example-org/empty-userinfo-repo';
 const TYPED_URL = `https://${USER}:${SECRET}@${REPO}.git`;
 const SHOWN_URL = `https://${REPO}.git`;
 
 const GIT_SHIM = `#!/bin/sh
 # Stands in for git: \`git clone ... <url> <dest>\` records its arguments and
-# copies the fixture tree to <dest>, or fails when HMA_TEST_GIT_FAIL is set.
-# Any other git command fails.
+# copies the fixture tree to <dest>, or fails when HMA_TEST_GIT_FAIL is set,
+# or answers as a missing repository, quoting <url>, when
+# HMA_TEST_GIT_NOT_FOUND is set. Any other git command fails.
 if [ "$1" = "clone" ]; then
   printf '%s\\n' "$@" > "$HMA_TEST_GIT_ARGS"
+  for dest in "$@"; do url="$last"; last="$dest"; done
   if [ -n "$HMA_TEST_GIT_FAIL" ]; then
     echo "fatal: unable to access the repository" >&2
     exit 1
   fi
-  for dest in "$@"; do :; done
+  if [ -n "$HMA_TEST_GIT_NOT_FOUND" ]; then
+    echo "remote: Repository not found." >&2
+    echo "fatal: repository '$url' not found" >&2
+    exit 128
+  fi
   mkdir -p "$dest" && cp -R "$HMA_TEST_CLONE_SOURCE/." "$dest/"
   exit $?
 fi
@@ -111,6 +119,10 @@ let failedCloneRun: Run;
 let legacyQueueRun: Run;
 const fetchPathRuns: Array<{ typed: string; requestPath: string; run: Run }> = [];
 let backslashPasswordRun: Run;
+let notFoundRun: Run;
+let fetchUserinfoRun: Run;
+let forgeUserinfoRun: Run;
+let questionPasswordRun: Run;
 
 function captured(): { raw: string; requests: CapturedRequest[] } {
   const raw = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, 'utf8') : '';
@@ -209,15 +221,16 @@ beforeAll(async () => {
   textRun = run('text', []);
   jsonRun = run('json', ['--json']);
   failedCloneRun = run('failed-clone', ['--json'], { HMA_TEST_GIT_FAIL: '1' });
-  // The queue as an earlier version left it after a failed share.
-  legacyQueueRun = run('legacy-queue', [], {}, [{
-    name: `${USER}:${SECRET}@${LEGACY_REPO}`,
+  // The queue as an earlier version left it after failed shares, one of a
+  // URL with userinfo and one of a URL with an empty userinfo.
+  legacyQueueRun = run('legacy-queue', [], {}, [`${USER}:${SECRET}@${LEGACY_REPO}`, `@${EMPTY_USERINFO_REPO}`].map((name) => ({
+    name,
     score: 90,
     maxScore: 100,
     projectType: 'library',
     findingCount: 1,
     timestamp: '2026-10-01T00:00:00.000Z',
-  }]);
+  })));
   // URLs with no userinfo, where a query or a `\` puts an `@` after the host.
   // With no `.git`, `check` fetches them: its HEAD goes to the capture server,
   // which answers 503, and the run ends unmeasured.
@@ -232,7 +245,25 @@ beforeAll(async () => {
   // A password that holds a `\`, which git, unlike `fetch`, reads as part of
   // the userinfo.
   backslashPasswordRun = run('backslash-password', ['--json'], {}, undefined, `https://${USER}:${SECRET}\\x@${REPO}.git`);
-}, 300_000);
+  // git answers that the repository does not exist.
+  notFoundRun = run('not-found', [], { HMA_TEST_GIT_NOT_FOUND: '1' });
+  // Userinfo and no `.git` on a host that is not a forge: `check` fetches it.
+  fetchUserinfoRun = run('fetch-userinfo', [], {}, undefined, `http://${USER}:${SECRET}@${new URL(base).host}/pkg.tgz`);
+  // Userinfo and no `.git` on a forge: `check` clones it.
+  forgeUserinfoRun = run('forge-userinfo', ['--json'], {}, undefined, `https://${USER}:${SECRET}@${REPO}`);
+  // A password that holds a raw `?`, where git ends the authority, so git
+  // reads the user name and the start of the password as a host and port.
+  questionPasswordRun = run('question-password', ['--json'], { HMA_TEST_GIT_FAIL: '1' }, undefined, `https://${USER}:pa?${SECRET}@${REPO}.git`);
+}, 400_000);
+
+/** Every run in this file. */
+function allRuns(): Run[] {
+  return [
+    textRun, jsonRun, failedCloneRun, legacyQueueRun,
+    ...fetchPathRuns.map((f) => f.run),
+    backslashPasswordRun, notFoundRun, fetchUserinfoRun, forgeUserinfoRun, questionPasswordRun,
+  ];
+}
 
 afterAll(() => {
   serverProc?.kill();
@@ -250,7 +281,8 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     // The share reached the capture server through the preload, so the
     // preload is loaded and on the path the CLI's requests take.
     expect(textRun.connections).toContain(`allowed ${new URL(base).host}`);
-    const allowed = [textRun, jsonRun, failedCloneRun, legacyQueueRun]
+    expect(allRuns()).toHaveLength(12);
+    const allowed = allRuns()
       .flatMap((r) => r.connections)
       .filter((c) => c.startsWith('allowed '));
     for (const c of allowed) expect(c).toMatch(/^allowed (localhost|127(\.\d{1,3}){3}|::1|\[::1\]):\d+$/);
@@ -311,17 +343,20 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
 
   it('a scan an earlier version queued under the userinfo name is sent and kept under the name without it', () => {
     const names = publishPosts(legacyQueueRun).map((p) => JSON.parse(p.body).name as string);
-    expect(names.sort()).toEqual([REPO, LEGACY_REPO].sort());
+    // The scan queued for `https://@<repo>.git` under `@<repo>` is sent under
+    // the name a new scan of that URL gets.
+    expect(names.sort()).toEqual([REPO, LEGACY_REPO, EMPTY_USERINFO_REPO].sort());
     for (const post of publishPosts(legacyQueueRun)) {
       expect(post.body).not.toContain(SECRET);
       expect(post.body).not.toContain(USER);
     }
-    // Both shares failed (503). The queue keeps the earlier scan under the
-    // name without the userinfo. Whether it also holds the new scan depends
-    // on which of the two shares is answered first, so both are accepted.
+    // Every share failed (503). The queue keeps the earlier scans under the
+    // names without the userinfo. Whether it also holds the new scan depends
+    // on which of the shares is answered first, so both are accepted.
     const queued = JSON.parse(legacyQueueRun.pendingText!) as Array<{ name: string }>;
     expect(queued.map((q) => q.name)).toContain(LEGACY_REPO);
-    for (const q of queued) expect([REPO, LEGACY_REPO]).toContain(q.name);
+    expect(queued.map((q) => q.name)).toContain(EMPTY_USERINFO_REPO);
+    for (const q of queued) expect([REPO, LEGACY_REPO, EMPTY_USERINFO_REPO]).toContain(q.name);
     expect(legacyQueueRun.pendingText).not.toContain(SECRET);
     expect(legacyQueueRun.pendingText).not.toContain(USER);
   });
@@ -345,5 +380,45 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     expect(doc.name).toBe(REPO);
     expect(backslashPasswordRun.stdout + backslashPasswordRun.stderr).not.toContain(SECRET);
     expect(backslashPasswordRun.stdout + backslashPasswordRun.stderr).not.toContain(USER);
+  });
+
+  it('a repository git does not find is reported without the userinfo', () => {
+    expect(notFoundRun.status, notFoundRun.stderr).toBe(2);
+    expect(notFoundRun.gitArgs).toContain(TYPED_URL);
+    expect(notFoundRun.stderr).toContain(`Could not clone repository from "${SHOWN_URL}".`);
+    expect(notFoundRun.stdout + notFoundRun.stderr).not.toContain(SECRET);
+    expect(notFoundRun.stdout + notFoundRun.stderr).not.toContain(USER);
+    expect(publishPosts(notFoundRun)).toHaveLength(0);
+  });
+
+  it('a URL with userinfo that is fetched is named without it in the Fetching line', () => {
+    expect(fetchUserinfoRun.status, fetchUserinfoRun.stderr).toBe(2);
+    expect(fetchUserinfoRun.gitArgs).toEqual([]);
+    expect(fetchUserinfoRun.stderr).toContain(`Fetching ${base}/pkg.tgz...`);
+    expect(fetchUserinfoRun.stdout + fetchUserinfoRun.stderr).not.toContain(SECRET);
+    expect(fetchUserinfoRun.stdout + fetchUserinfoRun.stderr).not.toContain(USER);
+    expect(publishPosts(fetchUserinfoRun)).toHaveLength(0);
+  });
+
+  it('a forge URL with userinfo and no `.git` is cloned, and reported without the userinfo', () => {
+    const typed = `https://${USER}:${SECRET}@${REPO}`;
+    expect(forgeUserinfoRun.status, forgeUserinfoRun.stderr).toBe(0);
+    expect(forgeUserinfoRun.gitArgs[0]).toBe('clone');
+    expect(forgeUserinfoRun.gitArgs).toContain(typed);
+    const doc = jsonDocument(forgeUserinfoRun.stdout);
+    expect(doc.url).toBe(`https://${REPO}`);
+    expect(doc.name).toBe(REPO);
+    expect(forgeUserinfoRun.stdout + forgeUserinfoRun.stderr).not.toContain(SECRET);
+    expect(forgeUserinfoRun.stdout + forgeUserinfoRun.stderr).not.toContain(USER);
+  });
+
+  it('a password with a raw `?` is masked in the error line and the --json target', () => {
+    const shown = `https://***@${REPO}.git`;
+    expect(questionPasswordRun.status, questionPasswordRun.stderr).toBe(2);
+    expect(questionPasswordRun.gitArgs).toContain(`https://${USER}:pa?${SECRET}@${REPO}.git`);
+    expect(questionPasswordRun.stderr).toContain(`--single-branch ${shown} `);
+    expect(jsonDocument(questionPasswordRun.stdout).target).toBe(shown);
+    expect(questionPasswordRun.stdout + questionPasswordRun.stderr).not.toContain(SECRET);
+    expect(questionPasswordRun.stdout + questionPasswordRun.stderr).not.toContain(USER);
   });
 });

@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { VERSION } from '../index.js';
 import { isContributeEnabled } from './opt-in.js';
 
-const REGISTRY_URL = 'https://api.oa2a.org';
+const DEFAULT_REGISTRY_URL = 'https://api.oa2a.org';
 const TELEMETRY_ENDPOINT = '/api/v1/nanomind/telemetry';
 const SUBMIT_TIMEOUT_MS = 5000;
 const MAX_BATCH_SIZE = 100;
@@ -77,7 +77,8 @@ export function queueClassificationStat(
 }
 
 /**
- * Submit queued telemetry to the Registry.
+ * Submit queued telemetry to the Registry: `registryUrl`, else the one
+ * `REGISTRY_URL` names, as for the scan a command shares, else the default.
  * Call after scan completes. Non-blocking, best-effort.
  */
 export async function flushNanoMindTelemetry(
@@ -91,7 +92,7 @@ export async function flushNanoMindTelemetry(
   }
 
   const batch = queue.splice(0, MAX_BATCH_SIZE);
-  const url = (registryUrl || REGISTRY_URL) + TELEMETRY_ENDPOINT;
+  const url = (registryUrl || process.env.REGISTRY_URL || DEFAULT_REGISTRY_URL) + TELEMETRY_ENDPOINT;
 
   try {
     const resp = await fetch(url, {

@@ -127,6 +127,38 @@ describe('#655 the flush at the settlement point follows the outbound decision',
   });
 });
 
+describe('a flush given no registry URL posts to the one REGISTRY_URL names', () => {
+  const saved = process.env.REGISTRY_URL;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.REGISTRY_URL;
+    else process.env.REGISTRY_URL = saved;
+  });
+
+  it('the flush after the scan check runs goes to REGISTRY_URL', async () => {
+    process.env.REGISTRY_URL = 'http://localhost:4010';
+    await orchestrateNanoMind('/nonexistent-946', [], { silent: true });
+    await vi.waitFor(() => expect(telemetryPosts()).toHaveLength(1));
+    expect(String(telemetryPosts()[0][0])).toBe(`http://localhost:4010${ENDPOINT}`);
+  });
+
+  it('a settled flush with no URL goes to REGISTRY_URL; a URL given still wins', async () => {
+    process.env.REGISTRY_URL = 'http://localhost:4010';
+    queueClassificationStat('skill', 'artifact body', 'benign', 0.9, 'test-model');
+    await settleNanoMindTelemetry(true);
+    queueClassificationStat('skill', 'artifact body', 'benign', 0.9, 'test-model');
+    await settleNanoMindTelemetry(true, 'http://127.0.0.1:4011');
+    expect(telemetryPosts().map(([url]) => String(url)))
+      .toEqual([`http://localhost:4010${ENDPOINT}`, `http://127.0.0.1:4011${ENDPOINT}`]);
+  });
+
+  it('PIN: with REGISTRY_URL unset, the flush goes to the default registry', async () => {
+    delete process.env.REGISTRY_URL;
+    queueClassificationStat('skill', 'artifact body', 'benign', 0.9, 'test-model');
+    await settleNanoMindTelemetry(true);
+    expect(telemetryPosts().map(([url]) => String(url))).toEqual([`https://api.oa2a.org${ENDPOINT}`]);
+  });
+});
+
 describe('#655 secure wires the deferred flush to its settled outbound decision', () => {
   const cli = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
   const decision = cli.indexOf('const sendOutbound = outboundAllowed(settled);');
