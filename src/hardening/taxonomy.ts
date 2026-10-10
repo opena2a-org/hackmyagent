@@ -823,6 +823,10 @@ export type CanonicalClass = typeof CANONICAL_CLASSES[number];
  * payload's objective, `injection`. `steganography` is reserved for hidden
  * data as the objective and no family detects that today; a finding family
  * is never `benign`. Both lists stay empty.
+ *
+ * docs/attack-family-census.md lists every family with the registers that
+ * hold it (this file, the threat matrix, the OpenA2A Registry). A family
+ * added, moved or folded here needs its census row changed to match.
  */
 const FAMILIES_BY_CLASS: Readonly<Record<CanonicalClass, readonly string[]>> = {
   injection: [
