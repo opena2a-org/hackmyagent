@@ -959,8 +959,9 @@ function hasOwn(obj: object, key: string): boolean {
 /**
  * The canonical class of an attack family, or of a fold alias through the
  * family it folds into. Throws on anything else, including a class name and
- * the empty string, so a caller that stores or displays a class can never
- * put a family code, or nothing, in its place.
+ * the empty string, so it never returns a family code or an empty string.
+ * A check id the taxonomy does not hold has no family to pass here:
+ * check-metadata gives such an entry an empty canonicalClass itself.
  */
 export function getCanonicalClass(family: string): CanonicalClass {
   const resolved = hasOwn(FAMILY_FOLDS, family) ? FAMILY_FOLDS[family] : family;
