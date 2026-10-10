@@ -14,8 +14,14 @@
  * local fixture tree; the registry is a capture server on localhost that
  * records every request and answers 503, so the scan is also queued; and
  * contribution is switched on in a scratch OPENA2A_HOME. The server runs in a
- * child process because `spawnSync` blocks this worker's event loop. Nothing
- * reaches the network. Every credential-bearing URL is assembled at runtime.
+ * child process because `spawnSync` blocks this worker's event loop. The CLI
+ * runs with no proxy variables and with __tests__/helpers/loopback-only.cjs
+ * preloaded through NODE_OPTIONS, so a Node process it starts has it too: a
+ * connection to any host but loopback is refused before it is made. That
+ * includes what a scan with contribution on sends beyond the registry it is
+ * given, the classification telemetry and, under a fresh HOME, the classifier
+ * download. Nothing reaches the network. Every credential-bearing URL is
+ * assembled at runtime.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -29,6 +35,7 @@ import { tempDir } from '../helpers/temp-dir';
 beforeAll(assertDistFresh);
 
 const TTY_PRELOAD = path.join(__dirname, '..', 'fixtures', 'stdin-tty-preload.cjs');
+const LOOPBACK_ONLY = path.join(__dirname, '..', 'helpers', 'loopback-only.cjs');
 
 const USER = 'fakeuser';
 const SECRET = ['FAKE', 'secret', '123'].join('');
@@ -84,6 +91,8 @@ interface Run {
   pendingText: string | null;
   /** The requests the registry received during this run, in order. */
   requests: CapturedRequest[];
+  /** The connections the CLI opened, `allowed <host>:<port>` or `refused <host>:<port>`. */
+  connections: string[];
 }
 
 let scratch = '';
@@ -111,6 +120,7 @@ function run(label: string, extraArgs: string[], extraEnv: NodeJS.ProcessEnv = {
   const home = path.join(dir, 'home');
   const opena2aHome = path.join(dir, 'opena2a');
   const gitArgsPath = path.join(dir, 'git-args.txt');
+  const connectLogPath = path.join(dir, 'connections.txt');
   const pendingPath = path.join(opena2aHome, 'hma-pending-scans.json');
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(opena2aHome, { recursive: true });
@@ -122,6 +132,10 @@ function run(label: string, extraArgs: string[], extraEnv: NodeJS.ProcessEnv = {
   const before = captured().requests.length;
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.ANTHROPIC_API_KEY; // no hosted analysis: the run stays local
+  // A proxy on loopback would carry a request on to the network.
+  for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NODE_USE_ENV_PROXY']) {
+    delete env[name];
+  }
   const r = spawnSync(process.execPath, ['--require', TTY_PRELOAD, CLI, 'check', TYPED_URL, ...extraArgs], {
     encoding: 'utf8',
     timeout: 120_000,
@@ -136,6 +150,8 @@ function run(label: string, extraArgs: string[], extraEnv: NodeJS.ProcessEnv = {
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`,
       HMA_TEST_CLONE_SOURCE: source,
       HMA_TEST_GIT_ARGS: gitArgsPath,
+      NODE_OPTIONS: [env.NODE_OPTIONS, `--require "${LOOPBACK_ONLY}"`].filter(Boolean).join(' '),
+      HMA_TEST_CONNECT_LOG: connectLogPath,
       ...extraEnv,
     },
   });
@@ -146,6 +162,7 @@ function run(label: string, extraArgs: string[], extraEnv: NodeJS.ProcessEnv = {
     gitArgs: fs.existsSync(gitArgsPath) ? fs.readFileSync(gitArgsPath, 'utf8').split('\n').filter(Boolean) : [],
     pendingText: fs.existsSync(pendingPath) ? fs.readFileSync(pendingPath, 'utf8') : null,
     requests: captured().requests.slice(before),
+    connections: fs.existsSync(connectLogPath) ? fs.readFileSync(connectLogPath, 'utf8').split('\n').filter(Boolean) : [],
   };
 }
 
@@ -201,6 +218,16 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     expect(textRun.gitArgs[0]).toBe('clone');
     expect(textRun.gitArgs).toContain(TYPED_URL);
     expect(publishPosts(textRun)).toHaveLength(1);
+  });
+
+  it('harness: the CLI\'s connections pass through the loopback-only preload, which let none leave loopback', () => {
+    // The share reached the capture server through the preload, so the
+    // preload is loaded and on the path the CLI's requests take.
+    expect(textRun.connections).toContain(`allowed ${new URL(base).host}`);
+    const allowed = [textRun, jsonRun, failedCloneRun, legacyQueueRun]
+      .flatMap((r) => r.connections)
+      .filter((c) => c.startsWith('allowed '));
+    for (const c of allowed) expect(c).toMatch(/^allowed (localhost|127(\.\d{1,3}){3}|::1|\[::1\]):\d+$/);
   });
 
   it('the scan it publishes is named by host and path, without the userinfo', () => {
