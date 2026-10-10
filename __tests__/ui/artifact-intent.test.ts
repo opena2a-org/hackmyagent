@@ -42,10 +42,12 @@ const BENIGN_FIXTURE = join(CORPUS, 'benign', 'hardened-soul');
 const MALICIOUS_FIXTURE = join(CORPUS, 'malicious', 'permissive-overrides-soul');
 
 // The classifier's weights are not in the package: `TMENeuralClassifier`
-// loads `~/.opena2a/nanomind/models/nanomind-tme.bin` or a sibling training
-// checkout and answers `benign` at 0.5 when neither exists. Without them the
-// spawn cases below measure the fallback, not the reconciliation, so they run
-// only where the weights are (the same rule the corpus check applies).
+// loads only a directory it is handed and answers `benign` at 0.5 otherwise.
+// A scan hands it none, so it no longer reads `nanomind-tme.bin` from the home
+// directory or a sibling training checkout, and this gate is false everywhere:
+// the spawn cases below are skipped until they are pointed at the pinned
+// classifier a scan does run. Without a loaded model they would measure the
+// fallback, not the reconciliation.
 const classifierLoads = new TMENeuralClassifier().load();
 if (!classifierLoads) {
   console.warn('artifact-intent: NanoMind weights not found; the three spawn cases are skipped on this machine');
