@@ -10,8 +10,9 @@ issue: 941
   `node dist/arp/cli/index`, the line that was run. A `bin` shim is still
   named by itself.
 - On Windows the help quoted the script path with POSIX single quotes, which
-  cmd.exe does not accept. A path without spaces is now printed bare, and one
-  with spaces in double quotes.
+  cmd.exe does not accept. A path made only of ASCII letters and digits and
+  the characters `_ @ + = : , . \ / -` is now printed bare, and any other
+  path, such as one with a space, in double quotes.
 - `--version` printed `arp-guard v<version>` while the help header read
   `ARP Guard v<version>`. Both now print `ARP Guard v<version>`.
 - `telemetry --help` now also names
