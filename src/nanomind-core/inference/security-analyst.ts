@@ -226,10 +226,14 @@ export async function isAnalystInstalledStopped(install: AnalystInstall = {}): P
  * plist, and waits for healthz. If the installer is not on $PATH it prints
  * the pip install command and exits.
  *
+ * An analyst that is installed with its daemon stopped is left as it is: the
+ * install is not run again, and the output names `nanomind-analyst start`.
+ *
  * Returns true iff the daemon ends up healthy. Returns false if the platform
- * is unsupported, the installer is missing, or the installer exited non-zero.
+ * is unsupported, the installer is missing, the installer exited non-zero,
+ * or the analyst is installed and its daemon is stopped.
  */
-export async function setupAnalystModel(quiet = false): Promise<boolean> {
+export async function setupAnalystModel(quiet = false, install: AnalystInstall = {}): Promise<boolean> {
   const healthy = await isDaemonHealthy();
   if (healthy) {
     if (!quiet) {
@@ -239,6 +243,23 @@ export async function setupAnalystModel(quiet = false): Promise<boolean> {
       );
     }
     return true;
+  }
+
+  // A finished install whose daemon is stopped needs the daemon started, not
+  // a second install. Checked before the installer lookup so an installer
+  // missing from this PATH does not turn a finished install into "install
+  // (one-time)" instructions.
+  if (await isAnalystInstalledStopped(install)) {
+    if (!quiet) {
+      process.stderr.write(
+        'NanoMind analyst is installed and its daemon is stopped.\n' +
+        `Start it: ${ANALYST_START_COMMAND}\n` +
+        'Verify:   hackmyagent nanomind status\n' +
+        '\n' +
+        'Setup did not run the install again. To run it again: nanomind-analyst install\n',
+      );
+    }
+    return false;
   }
 
   if (process.platform !== 'darwin') {
