@@ -34,11 +34,12 @@ const TAXONOMY_MAP: Record<string, string> = {
   'SOUL-HO-001': 'SOUL-HIJACK',
   'SOUL-HO-002': 'SOUL-HIJACK',
 
-  // Harm avoidance
-  'SOUL-HV-001': 'SOUL-HV-001',
-  'SOUL-HV-002': 'SOUL-HV-002',
-  'SOUL-HV-003': 'SOUL-HV-003',
-  'SOUL-HV-004': 'SOUL-HV-004',
+  // Harm avoidance: the four controls are one family, SOUL-HV. Each id used
+  // to be its own family string.
+  'SOUL-HV-001': 'SOUL-HV',
+  'SOUL-HV-002': 'SOUL-HV',
+  'SOUL-HV-003': 'SOUL-HV',
+  'SOUL-HV-004': 'SOUL-HV',
 
   // Credential exposure
   'CRED-001': 'RETROACTIVE-PRIV',
@@ -420,6 +421,7 @@ const TAXONOMY_MAP: Record<string, string> = {
   // SEM-MCP-005 varies by matched pattern (MCP-CHAIN-EXFIL for the
   // filesystem+network chain, MCP-SCOPE-LEAK for the scope leak); its
   // primary class is listed here, same convention as AST-CRED-001 below.
+  // MCP-PRIV-ESC is a fold alias of MCP-EXPLOIT (FAMILY_FOLDS below).
   'SEM-MCP-001': 'MCP-PRIV-ESC',
   'SEM-MCP-002': 'MCP-PRIV-ESC',
   'SEM-MCP-003': 'MCP-CRED',
@@ -451,6 +453,8 @@ const TAXONOMY_MAP: Record<string, string> = {
   // (totalChecks, the checks table) denied it exists. Sites that vary the
   // class by matched pattern (AST-CRED-001, AST-GOV-003, AST-PROMPT-001,
   // AST-PROMPT-004, AST-SCOPE-001) list their primary class here.
+  // CMD-INJECT, PROMPT-INJECT and PERSISTENCE are fold aliases of the
+  // Layer 1 families that hold the same conditions (FAMILY_FOLDS below).
   'AST-CAP-001': 'PRIV-ESCALATION',
   'AST-CAP-002': 'CAPABILITY-ABUSE',
   'AST-CODE-001': 'CMD-INJECT',
@@ -788,6 +792,178 @@ export function getAttackClass(checkId: string): string | undefined {
 /** Return a copy of the full taxonomy map (checkId -> attackClass). */
 export function getTaxonomyMap(): Record<string, string> {
   return { ...TAXONOMY_MAP };
+}
+
+/**
+ * The ten canonical attack classes, the same ten the NanoMind classifier
+ * emits. The `attackClass` strings in TAXONOMY_MAP are attack FAMILIES
+ * (MCP-EXPLOIT, SOUL-INJECT, ...): a family names the surface a check
+ * inspects, a class names what the attacker is after.
+ */
+export const CANONICAL_CLASSES = [
+  'injection',
+  'exfiltration',
+  'credential_abuse',
+  'privilege_escalation',
+  'persistence',
+  'lateral_movement',
+  'social_engineering',
+  'policy_violation',
+  'steganography',
+  'benign',
+] as const;
+
+export type CanonicalClass = typeof CANONICAL_CLASSES[number];
+
+/**
+ * Every attack family under its canonical class. The class is the
+ * attacker's objective, not the carrier. Where a family's description names
+ * two objectives its name decides. Evasion and artifact-channel families
+ * (UNICODE-STEGO, PARSER-DIFFERENTIAL, TOCTOU-RACE, SCAN-EVASION) take their
+ * payload's objective, `injection`. `steganography` is reserved for hidden
+ * data as the objective and no family detects that today; a finding family
+ * is never `benign`. Both lists stay empty.
+ */
+const FAMILIES_BY_CLASS: Readonly<Record<CanonicalClass, readonly string[]>> = {
+  injection: [
+    'ASSEMBLY-INJECT',
+    // Content asserting operator or system authority is prompt injection.
+    'AUTHORITY-CONFUSION',
+    'CODE-INJECTION',
+    'FAKETOOL-INJECT',
+    // The name states the objective (RCE); the heartbeat is the carrier.
+    'HEARTBEAT-RCE',
+    'INTEGRITY-BYPASS',
+    'MCP-SUPPLY-CHAIN',
+    'MCP-TYPOSQUAT',
+    'NEMO-SUPPLY-CHAIN',
+    'PARSER-DIFFERENTIAL',
+    'RAG-POISON',
+    'SCAN-EVASION',
+    'SKILL-FRONTMATTER',
+    'SOUL-HIJACK',
+    'SOUL-INJECT',
+    'SOUL-POISON',
+    'SUPPLY-CHAIN-INSTALL',
+    'TOCTOU-RACE',
+    'UNICODE-STEGO',
+    'UNSAFE-DESER',
+  ],
+  exfiltration: [
+    // Interception is the first objective the family names.
+    'GATEWAY-EXPLOIT',
+    'MCP-CHAIN-EXFIL',
+    // Reads outside the boundary the agent was given.
+    'PATH-TRAVERSAL',
+    'SKILL-EXFIL',
+  ],
+  credential_abuse: [
+    // Stolen credentials in use.
+    'BEHAVIORAL-IMPERSONATE',
+    'CRED-EXFIL',
+    'CRED-EXPOSURE',
+    'CRED-HARDCODED',
+    'MCP-CRED',
+    'NEMO-CRED-LEAK',
+  ],
+  privilege_escalation: [
+    // An unauthenticated reachable service grants a capability to a
+    // principal that was granted none.
+    'A2A-EXPOSE',
+    'AITOOL-EXPOSE',
+    'LLM-EXPOSE',
+    'NEMO-NETWORK-EXPOSE',
+    'CAPABILITY-ABUSE',
+    'CAPABILITY-CREEP',
+    'MCP-EXPLOIT',
+    'MCP-SCOPE-EXPAND',
+    'MCP-SCOPE-WILDCARD',
+    'NEMO-OPENCLAW-INHERIT',
+    'NEMO-SANDBOX-ESCAPE',
+    // A registry family no check in this file detects yet.
+    'PRIV-DRIFT',
+    'PRIV-ESCALATION',
+    'RETROACTIVE-PRIV',
+    'SANDBOX-ESCAPE',
+    'SCOPE-UNDECLARED',
+    'SCOPE-WILDCARD',
+    // Delegation that exceeds the authorized scope.
+    'SOUL-DELEGATE',
+  ],
+  persistence: [
+    // Maintains control across sessions.
+    'MEM-POISON',
+    'PERSIST-STATE',
+    'SKILL-MEM-AMP',
+  ],
+  lateral_movement: ['ORG-SKILL-SPREAD'],
+  social_engineering: ['AGENT-IMPERSONATE'],
+  policy_violation: [
+    // The principal's own prompt defeating the model's policy. Injection is
+    // a third party's instruction arriving as data.
+    'JAILBREAK',
+    'PHANTOM-SOUL',
+    'SEMANTIC-MISMATCH',
+    'SOUL-BOUNDARY',
+    'SOUL-BYPASS',
+    'SOUL-COMPLETENESS',
+    'SOUL-CONSENT',
+    'SOUL-CONTRADICTION',
+    'SOUL-DRIFT',
+    'SOUL-ESCAPE-CLAUSE',
+    'SOUL-FORK',
+    'SOUL-GAP',
+    'SOUL-HV',
+    'SOUL-IMPERSONATE',
+    'SOUL-MISSING',
+    'SOUL-UNVERIFIABLE-CLAIM',
+  ],
+  steganography: [],
+  benign: [],
+};
+
+/** Attack family -> canonical class, one row per family. */
+export const FAMILY_CLASS: Readonly<Record<string, CanonicalClass>> = Object.freeze(
+  Object.fromEntries(
+    (Object.entries(FAMILIES_BY_CLASS) as [CanonicalClass, readonly string[]][])
+      .flatMap(([cls, families]) => families.map((family) => [family, cls])),
+  ),
+);
+
+/**
+ * Family codes that name a condition another family already holds, mapped
+ * to that family. Each is still set inline at its emission site (SEM-MCP-001
+ * and SEM-MCP-002 in the MCP config analyzer, the AST analyzers), and
+ * TAXONOMY_MAP mirrors the emission site, so the alias stays in the map until
+ * the emitters move. It is not a family in FAMILY_CLASS: its class is its
+ * target's class.
+ */
+export const FAMILY_FOLDS: Readonly<Record<string, string>> = Object.freeze({
+  // SEM-MCP-001 detects the condition MCP-001 detects: a filesystem server
+  // with unscoped reach.
+  'MCP-PRIV-ESC': 'MCP-EXPLOIT',
+  'CMD-INJECT': 'CODE-INJECTION',
+  // PROMPT-001..004 already sit in SOUL-INJECT.
+  'PROMPT-INJECT': 'SOUL-INJECT',
+  'PERSISTENCE': 'PERSIST-STATE',
+});
+
+function hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+/**
+ * The canonical class of an attack family, or of a fold alias through the
+ * family it folds into. Throws on anything else, including a class name and
+ * the empty string, so a caller that stores or displays a class can never
+ * put a family code, or nothing, in its place.
+ */
+export function getCanonicalClass(family: string): CanonicalClass {
+  const resolved = hasOwn(FAMILY_FOLDS, family) ? FAMILY_FOLDS[family] : family;
+  if (!hasOwn(FAMILY_CLASS, resolved)) {
+    throw new Error(`unknown attack family: ${family}`);
+  }
+  return FAMILY_CLASS[resolved];
 }
 
 /**
