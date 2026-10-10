@@ -12,10 +12,11 @@ breaking: true
   scan exits 1. The finding names the token type and prints `[REDACTED]` in
   place of the value.
 - A `glpat-` value is reported only when its body mixes upper- and lower-case
-  letters, so single-case runner slugs such as
-  `glpat-shared-linux-docker-runner-1` and one-letter placeholders stay quiet.
-  A slug that mixes cases, such as `glpat-Shared-Linux-Docker-Runner-1`, is
-  reported, and a real token whose body happens to be single-case is not.
+  letters, so single-case runner slugs such as `glpat-` followed by
+  `shared-linux-docker-runner-1` and one-letter placeholders stay quiet.
+  A slug that mixes cases, such as `glpat-` followed by
+  `Shared-Linux-Docker-Runner-1`, is reported, and a real token whose body
+  happens to be single-case is not.
   `hf_hub_download` and other
   `huggingface_hub` names are not reported.
 - The signal added is the vendor prefix. Key-name assignments such as
