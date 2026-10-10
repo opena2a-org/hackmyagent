@@ -5039,7 +5039,9 @@ function resolvePackageVersionPyproject(targetDir: string): string | null {
 }
 
 /**
- * Resolve the repository URL from the git remote 'origin'.
+ * Resolve the repository URL from the git remote 'origin', without the user
+ * name and password (or token) a CI checkout often writes into it: the URL is
+ * published to the registry.
  */
 function resolveRepoUrl(targetDir: string): string | null {
   try {
@@ -5049,7 +5051,7 @@ function resolveRepoUrl(targetDir: string): string | null {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
-    return url || null;
+    return url ? withoutUrlUserinfo(url, 'git') : null;
   } catch { /* ignore */ }
   return null;
 }
