@@ -30,6 +30,7 @@ const EXIT_CODE_CHANGES: Record<number, string> = {
   647: '`secure -o <file>` with the text format: report on stdout, no file -> exit 1',
   648: '`secure <dir> -l L9` without `-b`: exit 0 -> exit 1',
   658: '`check` with an error after the verdict settled: exit 2 -> the settled exit code',
+  751: '`secure -b oasb-1` on a tree with no `package.json`: exit 1 -> exit 0, or exit 2 when no file was read',
   760: '`explain` on the `SOUL-*` ids `scan-soul` prints: exit 1 -> exit 0',
   761: '`check` on a scoped name npm does not have: exit 0 -> exit 2',
 };
