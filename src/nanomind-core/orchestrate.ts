@@ -95,7 +95,7 @@ export interface OrchestrationResult {
    * until a dedicated NLM-SUM is trained.
    */
   analystZeroState?: {
-    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported';
+    reason: 'clean-scan' | 'not-ready' | 'installed-stopped' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported';
     modelLabel: string;
   };
   /**
@@ -355,13 +355,20 @@ export async function orchestrateNanoMind(
           };
         }
       } else {
+        // An installed analyst whose daemon is stopped is a finished install.
+        // Its next step is to start the daemon; pointing at setup would run
+        // the install again and leave the daemon's state unexplained.
+        const { isAnalystInstalledStopped } = await import('./inference/security-analyst.js');
+        const installedStopped = await isAnalystInstalledStopped();
         if (!silent) {
           process.stderr.write(
-            'NanoMind generative model not set up. Run: hackmyagent nanomind setup\n',
+            installedStopped
+              ? 'NanoMind analyst is installed and its daemon is stopped. Start it: nanomind-analyst start\n'
+              : 'NanoMind generative model not set up. Run: hackmyagent nanomind setup\n',
           );
         }
         result.analystZeroState = {
-          reason: 'not-ready',
+          reason: installedStopped ? 'installed-stopped' : 'not-ready',
           modelLabel: 'Qwen3 v3.0.0 inline',
         };
       }

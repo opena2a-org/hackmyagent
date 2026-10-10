@@ -58,6 +58,7 @@ export type { TMEClassification } from './inference/tme-classifier.js';
 export {
   getAnalystStatus,
   isAnalystReady,
+  isAnalystInstalledStopped,
   setupAnalystModel,
   runAnalystInference,
   analyzeThreat,
@@ -71,6 +72,7 @@ export type {
   AnalystResponse,
   AnalystBackend,
   AnalystStatus,
+  AnalystInstall,
   ThreatAnalysis,
   CredentialContext,
   FalsePositiveAssessment,
