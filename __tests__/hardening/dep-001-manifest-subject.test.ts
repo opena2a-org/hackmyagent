@@ -46,6 +46,7 @@ async function makeTree(files: Record<string, string>): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hackmyagent-dep001-'));
   tempDirs.push(dir);
   for (const [rel, content] of Object.entries(files)) {
+    await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
     await fs.writeFile(path.join(dir, rel), content);
   }
   initThrowawayRepo(dir);
@@ -79,6 +80,38 @@ describe('DEP-001 with no package manifest in the tree', () => {
     const f = records[0];
     expect(f.notApplicable?.subject).toBe('package.json');
     expect(f.notApplicable?.reason).toBeTruthy();
+    expect(f.severity).toBeUndefined();
+    expect(f.file).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(f, 'passed')).toBe(false);
+  });
+
+  it('never reaches the render channel', () => {
+    expect(dep001(result.findings)).toHaveLength(0);
+  });
+});
+
+// A non-empty tree with no package manifest in any ecosystem DEP-001 probes:
+// the shape of a Homebrew tap (Ruby formulae and shell scripts), which scored
+// a MEDIUM DEP-001 on 0.33.2 (#944).
+describe('DEP-001 on a tree of formulae and shell scripts with no package manifest', () => {
+  let result: ScanResult;
+
+  beforeAll(async () => {
+    result = await scanTree(
+      await makeTree({
+        'README.md': '# Homebrew tap\n\nbrew tap example/tap\n',
+        'Formula/example.rb':
+          'class Example < Formula\n  desc "Example tool"\n  homepage "https://example.com"\n  url "https://example.com/example-1.0.0.tar.gz"\n  sha256 "0000000000000000000000000000000000000000000000000000000000000000"\n\n  def install\n    bin.install "example"\n  end\nend\n',
+        'scripts/update-formula.sh': '#!/usr/bin/env bash\nset -euo pipefail\necho "updating formula"\n',
+      }),
+    );
+  }, SCAN_TIMEOUT);
+
+  it('emits exactly one not-applicable record naming package.json and no lock-file advisory', () => {
+    const records = dep001(result.allFindings);
+    expect(records).toHaveLength(1);
+    const f = records[0];
+    expect(f.notApplicable?.subject).toBe('package.json');
     expect(f.severity).toBeUndefined();
     expect(f.file).toBeUndefined();
     expect(Object.prototype.hasOwnProperty.call(f, 'passed')).toBe(false);
