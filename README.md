@@ -213,7 +213,9 @@ docker run -p 7001-7008:7001-7008 -p 7010-7016:7010-7016 -p 7020-7021:7020-7021 
 hackmyagent attack http://localhost:7003/v1/chat/completions --api-format openai --intensity passive
 ```
 
-![hackmyagent attack red-teaming a live DVAA agent: 100/100 CRITICAL, 28 of 28 attacks successful across 14 categories](docs/vhs/attack-dvaa.gif)
+![hackmyagent attack red-teaming a live DVAA agent at passive intensity, recorded with hackmyagent 0.33.2, 2026-10-10. The report prints Risk Score: 100/100 (CRITICAL) and Attacks: 28 sent, 28 answered, 28 successful, 0 blocked, then 14 categories with every attack in each one successful.](docs/vhs/attack-dvaa.gif)
+
+Recorded with hackmyagent 0.33.2 built from this repository on 2026-10-10 against `opena2a/dvaa:0.9.1`; the wait of over a minute while the 28 attacks run is cut, and the report's Duration line shows the real run time. Text version: [docs/vhs/attack-dvaa-capture.txt](docs/vhs/attack-dvaa-capture.txt); re-render: `vhs docs/vhs/attack-dvaa.tape`.
 
 ### `scan-soul` and `harden-soul` (governance)
 
