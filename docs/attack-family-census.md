@@ -24,8 +24,10 @@ disagree.
 The class of each family is code, not only this table: `FAMILY_CLASS` in
 `src/hardening/taxonomy.ts`, read through `getCanonicalClass`, which throws on
 a code it does not know rather than passing it through. `hackmyagent
-check-metadata --json` reports both keys for every check: `attackClass` holds
-the family and `canonicalClass` holds the class.
+check-metadata --json` reports both keys for each check in the taxonomy:
+`attackClass` holds the family and `canonicalClass` holds the class. An entry
+that `-d` adds for a finding's check id the taxonomy does not hold has no
+family, and both keys are empty strings.
 
 ## How a family gets its class
 
