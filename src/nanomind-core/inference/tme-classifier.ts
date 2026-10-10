@@ -42,6 +42,20 @@ export const MODEL_FILES: ReadonlyArray<Readonly<{ name: string; sha256: string;
 const DOWNLOAD_DIR = join(homedir(), '.nanomind', 'models');
 
 /**
+ * The name the ONNX graph gives its external weights file. The graph names
+ * it, so a session created from the graph's bytes is handed the weights
+ * under this name.
+ */
+const ONNX_DATA_FILE = 'nanomind-tme.onnx.data';
+
+/** The `MODEL_FILES` entry for `name`. */
+function pinnedModelFile(name: string): Readonly<{ name: string; sha256: string; bytes: number }> {
+  const file = MODEL_FILES.find(f => f.name === name);
+  if (!file) throw new Error(`no pinned model file named ${name}`);
+  return file;
+}
+
+/**
  * How long a model download may receive nothing, connecting included, before
  * it is abandoned and the scan continues without the classifier.
  *
@@ -390,7 +404,36 @@ export class TMEClassifier {
 
   /** SHA-256 of a model file, read in one go. */
   private static hashFileSync(filePath: string): string {
-    return createHash('sha256').update(readFileSync(filePath)).digest('hex');
+    return TMEClassifier.hashFileBytes(filePath, readFileSync(filePath));
+  }
+
+  /**
+   * SHA-256 of `bytes`, which were read from the model file at `filePath`.
+   * Every pin check on model bytes goes through here, so a test that stands
+   * in for a cached model answers for it in one place.
+   */
+  private static hashFileBytes(_filePath: string, bytes: Uint8Array): string {
+    return createHash('sha256').update(bytes).digest('hex');
+  }
+
+  /**
+   * The bytes at `path` when they are `file` as pinned, its size and then its
+   * sha256, or null. The caller parses these bytes and does not open the path
+   * again, so a file changed on disk after this check is not what is parsed.
+   * Unlike `isPinnedFile`, nothing here is remembered between calls: the
+   * check is on the bytes about to be parsed, not on an earlier read.
+   */
+  private static readPinnedFile(path: string, file: { sha256: string; bytes: number }): Buffer | null {
+    // The size first, so a file of another size is never read whole.
+    if (pinnedSizeIdentity(path, file.bytes) === null) return null;
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(path);
+    } catch {
+      return null;
+    }
+    if (bytes.length !== file.bytes) return null;
+    return TMEClassifier.hashFileBytes(path, bytes) === file.sha256 ? bytes : null;
   }
 
   /**
@@ -539,10 +582,21 @@ export class TMEClassifier {
    */
   load(): boolean {
     if (this.loaded) return true;
-    if (!this.tokenizerPath || !existsSync(this.tokenizerPath)) return false;
+    if (!this.tokenizerPath) return false;
 
     try {
-      this.vocab = JSON.parse(readFileSync(this.tokenizerPath, 'utf-8'));
+      // The tokenizer passed its pinned check when it was found, but it is
+      // parsed from a read made now, so the read is checked again. One that
+      // fails the check is dropped with the weights beside it: they came
+      // from the same directory.
+      const tokenizer = TMEClassifier.readPinnedFile(this.tokenizerPath, pinnedModelFile('tokenizer.json'));
+      if (tokenizer === null) {
+        this.tokenizerPath = '';
+        this.modelPath = '';
+        this.useOnnx = false;
+        return false;
+      }
+      this.vocab = JSON.parse(tokenizer.toString('utf-8'));
 
       // Start async ONNX load (non-blocking, classify falls back to vocab until ready)
       if (this.useOnnx && this.modelPath) {
@@ -588,6 +642,20 @@ export class TMEClassifier {
 
   private async loadOnnx(): Promise<void> {
     try {
+      // The session is created from bytes read and checked here, never from
+      // a path. Created from a path, the runtime opens the graph again after
+      // the check, and opens the weights file beside it by itself, so a file
+      // changed in between was parsed unchecked. The weights are handed over
+      // as bytes under the name the graph gives them, and the runtime then
+      // opens no file for them: the session loads with the file deleted.
+      const graph = TMEClassifier.readPinnedFile(this.modelPath, pinnedModelFile('nanomind-tme.onnx'));
+      const weights = graph === null
+        ? null
+        : TMEClassifier.readPinnedFile(join(dirname(this.modelPath), ONNX_DATA_FILE), pinnedModelFile(ONNX_DATA_FILE));
+      if (graph === null || weights === null) {
+        this.useOnnx = false;
+        return;
+      }
       const ort = require('onnxruntime-node');
       // Before `create`, because that is what triggers the enumeration — and
       // in its OWN try, because the catch below disables neural inference for
@@ -602,8 +670,9 @@ export class TMEClassifier {
         // Severity stays at the onnxruntime default; the session option below
         // is the other half and is set independently.
       }
-      this.onnxSession = await ort.InferenceSession.create(this.modelPath, {
+      this.onnxSession = await ort.InferenceSession.create(graph, {
         logSeverityLevel: TMEClassifier.ORT_SEVERITY_ERROR,
+        externalData: [{ path: ONNX_DATA_FILE, data: weights }],
       });
       trackOnnxSession(this.onnxSession);
       this.onnxReady = true;
