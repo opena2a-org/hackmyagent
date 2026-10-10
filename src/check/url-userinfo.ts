@@ -7,7 +7,7 @@
  */
 
 /**
- * `url` with the userinfo removed: `https://alice:token@gitlab.com/org/repo.git`
+ * `url` with the userinfo removed: `https://<user>:<token>@gitlab.com/org/repo.git`
  * becomes `https://gitlab.com/org/repo.git`. Every other character is kept,
  * so a URL that carries no userinfo comes back unchanged, and a string that
  * is not `scheme://...` is returned as it is.
