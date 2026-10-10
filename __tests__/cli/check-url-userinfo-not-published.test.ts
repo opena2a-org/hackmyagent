@@ -10,6 +10,10 @@
  * `--json` carried it in `name` and `url`. A clone that failed quoted it in
  * the error line and in the `--json` `target`.
  *
+ * The userinfo ends where the program that reads the URL, git or `fetch`,
+ * ends the authority. So a URL with none is reported as typed, also when its
+ * query or a `\` puts an `@` after the host.
+ *
  * Hermetic: `git` is a shim on PATH that records its arguments and copies a
  * local fixture tree; the registry is a capture server on localhost that
  * records every request and answers 503, so the scan is also queued; and
@@ -105,6 +109,8 @@ let textRun: Run;
 let jsonRun: Run;
 let failedCloneRun: Run;
 let legacyQueueRun: Run;
+const fetchPathRuns: Array<{ typed: string; requestPath: string; run: Run }> = [];
+let backslashPasswordRun: Run;
 
 function captured(): { raw: string; requests: CapturedRequest[] } {
   const raw = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, 'utf8') : '';
@@ -115,7 +121,13 @@ function publishPosts(r: Run): CapturedRequest[] {
   return r.requests.filter((q) => q.method === 'POST' && q.url === '/api/v1/trust/publish');
 }
 
-function run(label: string, extraArgs: string[], extraEnv: NodeJS.ProcessEnv = {}, pendingSeed?: unknown[]): Run {
+function run(
+  label: string,
+  extraArgs: string[],
+  extraEnv: NodeJS.ProcessEnv = {},
+  pendingSeed?: unknown[],
+  typedUrl: string = TYPED_URL,
+): Run {
   const dir = path.join(scratch, label);
   const home = path.join(dir, 'home');
   const opena2aHome = path.join(dir, 'opena2a');
@@ -136,7 +148,7 @@ function run(label: string, extraArgs: string[], extraEnv: NodeJS.ProcessEnv = {
   for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NODE_USE_ENV_PROXY']) {
     delete env[name];
   }
-  const r = spawnSync(process.execPath, ['--require', TTY_PRELOAD, CLI, 'check', TYPED_URL, ...extraArgs], {
+  const r = spawnSync(process.execPath, ['--require', TTY_PRELOAD, CLI, 'check', typedUrl, ...extraArgs], {
     encoding: 'utf8',
     timeout: 120_000,
     maxBuffer: 64 * 1024 * 1024,
@@ -206,6 +218,20 @@ beforeAll(async () => {
     findingCount: 1,
     timestamp: '2026-10-01T00:00:00.000Z',
   }]);
+  // URLs with no userinfo, where a query or a `\` puts an `@` after the host.
+  // With no `.git`, `check` fetches them: its HEAD goes to the capture server,
+  // which answers 503, and the run ends unmeasured.
+  for (const [label, suffix, requestPath] of [
+    ['query-at', '?ref=@evil.example/pkg.tgz', '/?ref=@evil.example/pkg.tgz'],
+    ['query-version', '?file=pkg@1.0.0', '/?file=pkg@1.0.0'],
+    ['backslash-at', '\\@evil.example/pkg.tgz', '/@evil.example/pkg.tgz'],
+  ] as const) {
+    const typed = `${base}${suffix}`;
+    fetchPathRuns.push({ typed, requestPath, run: run(label, ['--json'], {}, undefined, typed) });
+  }
+  // A password that holds a `\`, which git, unlike `fetch`, reads as part of
+  // the userinfo.
+  backslashPasswordRun = run('backslash-password', ['--json'], {}, undefined, `https://${USER}:${SECRET}\\x@${REPO}.git`);
 }, 300_000);
 
 afterAll(() => {
@@ -298,5 +324,26 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     for (const q of queued) expect([REPO, LEGACY_REPO]).toContain(q.name);
     expect(legacyQueueRun.pendingText).not.toContain(SECRET);
     expect(legacyQueueRun.pendingText).not.toContain(USER);
+  });
+
+  it('a URL with no userinfo, where a query or a `\\` puts an `@` after the host, is reported as typed', () => {
+    expect(fetchPathRuns).toHaveLength(3);
+    for (const { typed, requestPath, run: r } of fetchPathRuns) {
+      expect(r.status, r.stderr).toBe(2);
+      // The HEAD went to the capture server, the host before the `?` or `\`.
+      expect(r.requests.map((q) => `${q.method} ${q.url}`)).toContain(`HEAD ${requestPath}`);
+      expect(jsonDocument(r.stdout).target).toBe(typed);
+      expect(r.stdout + r.stderr).not.toContain('http://evil.example');
+      expect(r.stdout + r.stderr).not.toContain('http://1.0.0');
+    }
+  });
+
+  it('a password that holds a `\\` is removed from a git URL too, as git reads it', () => {
+    expect(backslashPasswordRun.gitArgs).toContain(`https://${USER}:${SECRET}\\x@${REPO}.git`);
+    const doc = jsonDocument(backslashPasswordRun.stdout);
+    expect(doc.url).toBe(SHOWN_URL);
+    expect(doc.name).toBe(REPO);
+    expect(backslashPasswordRun.stdout + backslashPasswordRun.stderr).not.toContain(SECRET);
+    expect(backslashPasswordRun.stdout + backslashPasswordRun.stderr).not.toContain(USER);
   });
 });

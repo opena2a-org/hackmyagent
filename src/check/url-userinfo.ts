@@ -7,19 +7,34 @@
  */
 
 /**
+ * The program a URL is handed to, which decides where the URL's authority
+ * (the userinfo, host and port after `//`) ends. `git`, and the curl it uses
+ * for http and https, end it at the first `/`, `?` or `#`. `fetch` parses a
+ * URL by the WHATWG URL standard, which for http and https also ends it at
+ * `\`. So `http://localhost\@example.com/` reaches example.com through git
+ * and localhost through `fetch`.
+ */
+export type UrlReader = 'git' | 'fetch';
+
+const USERINFO: Record<UrlReader, RegExp> = {
+  git: /^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i,
+  fetch: /^([a-z][a-z0-9+.-]*:\/\/)[^/?#\\]*@/i,
+};
+
+/**
  * `url` with the userinfo removed: `https://<user>:<token>@gitlab.com/org/repo.git`
  * becomes `https://gitlab.com/org/repo.git`. Every other character is kept,
- * so a URL that carries no userinfo comes back unchanged, and a string that
- * is not `scheme://...` is returned as it is.
+ * and a string that is not `scheme://...` is returned as it is.
  *
- * The authority of a URL ends at the first `/` after `//`, and its userinfo
- * ends at an `@` before the host. Removing everything up to the LAST `@`
- * before that first `/` therefore removes the whole userinfo for any URL
- * parser. On a malformed URL it can remove more than a parser would, which
- * only shortens a printed name; it never keeps part of a credential.
+ * The userinfo is everything up to the last `@` inside the authority, as
+ * `reader` ends it. An `@` after the authority, in the path, the query or the
+ * fragment, is left alone, so a URL whose authority holds no `@` comes back
+ * unchanged and still names the host `reader` contacts. `reader` defaults to
+ * `git`, whose authority reaches at least as far as the one `fetch` reads, so
+ * the default removes at least the userinfo `fetch` would find.
  */
-export function withoutUrlUserinfo(url: string): string {
-  return url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, '$1');
+export function withoutUrlUserinfo(url: string, reader: UrlReader = 'git'): string {
+  return url.replace(USERINFO[reader], '$1');
 }
 
 /**
@@ -27,10 +42,12 @@ export function withoutUrlUserinfo(url: string): string {
  * as `alice:token@gitlab.com/org/repo`: earlier versions queued scans under
  * that name in the pending-scan file, and a later share sends the queue.
  *
- * Only a name with an `@` before its first `/`, a `/` after that `@`, and
- * something other than `@` as its first character changes. So `org/repo`,
- * `@scope/pkg`, `pkg@1.0.0` and `gitlab.com/org/repo` come back unchanged.
+ * Only a name with an `@` before its first `/`, `?` or `#` (where git ends
+ * the authority), a `/` after that `@`, and something other than `@` as its
+ * first character changes, and only up to the last such `@`. So `org/repo`,
+ * `@scope/pkg`, `pkg@1.0.0`, `gitlab.com/org/repo` and
+ * `gitlab.com?ref=@example.com/org/repo` come back unchanged.
  */
 export function scanNameWithoutUserinfo(name: string): string {
-  return name.replace(/^[^/@][^/]*@(?=[^/]*\/)/, '');
+  return name.replace(/^[^/?#@][^/?#]*@(?=[^/]*\/)/, '');
 }
