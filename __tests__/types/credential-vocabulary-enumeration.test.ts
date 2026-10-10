@@ -101,13 +101,15 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
   // a51bdfb alone.
   'src/hardening/scanner.ts': 96,
   'src/nanomind-core/analyzers/credential-analyzer.ts': 46,
-  // 32 -> 35 in #543: two canonical entries (one Hugging Face prefix regex, one
-  // GitLab prefix regex and the slice length of that prefix in its `accept`),
-  // each under a binding security-research ruling and mirrored in
-  // `credential-format.ts`. Prose contributes 0: the comments beside them name
-  // the vendors, never the guard tokens. 35 -> 36 in #316: the OpenAI-style
-  // 32 to 47 character body regex, under the same ruling.
-  'src/nanomind-core/compiler/semantic-compiler.ts': 36,
+  // 32 -> 33 in #543. It added three literals in two canonical entries (the
+  // Hugging Face prefix regex; the GitLab prefix regex and the slice length of
+  // that prefix in its `accept`), each mirrored in `credential-format.ts`, and
+  // removed the two `glpat-` mentions in the comment those entries replaced,
+  // so the net is +1. The comments beside the new entries name the vendors,
+  // never the guard tokens. 33 -> 34 in #316: the OpenAI-style 32 to 47
+  // character body regex. Both counts were measured on each commit by this
+  // file's own scanner.
+  'src/nanomind-core/compiler/semantic-compiler.ts': 34,
   'src/nanomind-core/compiler/source-code-preprocessor.ts': 3,
   'src/nanomind-core/ingestion/artifact-parser.ts': 6,
   // 27 -> 28 in HMA-34. The counter is blind to what a literal is FOR, and the
@@ -129,9 +131,9 @@ const FROZEN_ALLOWLIST: Readonly<Record<string, number>> = {
 };
 
 // 302 -> 303 in HMA-34, the single +1 from `defense-in-depth.ts` above.
-// 303 -> 306 in #543, the +3 from `semantic-compiler.ts` above.
-// 306 -> 307 in #316, the +1 from the same file.
-const FROZEN_TOTAL = 307;
+// 303 -> 304 in #543, the net +1 from `semantic-compiler.ts` above.
+// 304 -> 305 in #316, the +1 from the same file.
+const FROZEN_TOTAL = 305;
 
 function guardLiterals(): string[] {
   return [...CREDENTIAL_SHAPES.flatMap(s => [...s.guards]), ...UNOWNED_SHAPE_LITERALS];

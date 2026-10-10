@@ -11,6 +11,8 @@
  * that leaked.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import {
   CREDENTIAL_SHAPES,
   CREDENTIAL_REDACTION_MARKERS,
@@ -29,6 +31,8 @@ import {
 } from '../helpers/credential-shape-fixtures';
 
 const byId = new Map<string, CredentialShape>(CREDENTIAL_SHAPES.map(s => [s.id, s]));
+
+const REPO_ROOT = resolve(__dirname, '..', '..');
 
 describe('credential shape registry — id set', () => {
   it('every registry shape has a hand-written fixture', () => {
@@ -221,6 +225,79 @@ describe('credential shape registry — surfaces carry their reason', () => {
         'UNDECLARED GAP',
       );
     }
+  });
+
+  it('every file:line a rationale cites still lands on what the rationale names', () => {
+    // The rule above says a citation exists so it can be checked; this is the
+    // check. Four rationales once pointed at `semantic-compiler.ts:1279-1330`
+    // for CANONICAL_CREDENTIAL_PATTERNS after the list had moved to line 1758,
+    // so a reader following them landed in unrelated code.
+    //
+    // A cited line resolves in one of two ways. It declares a symbol the
+    // rationale names, and a cited range then ends on the line that closes
+    // that declaration. Or it carries one of the shape's own guard literals,
+    // which is how a rationale points at a single rule or comment inside a
+    // list. A citation with a directory part (a test file) is prose and is
+    // not resolved here.
+    const CITED_FILES: Readonly<Record<string, string>> = {
+      'semantic-compiler.ts': 'src/nanomind-core/compiler/semantic-compiler.ts',
+      'defense-in-depth.ts': 'src/nanomind-core/security/defense-in-depth.ts',
+      'credential-format.ts': 'src/types/credential-format.ts',
+      'credential-context.ts': 'src/semantic/structural/credential-context.ts',
+    };
+    const DECLARATION = /^(?:export\s+)?(?:const|function)\s+([A-Za-z_$][\w$]*)/;
+    const CLOSE = /^[\]}];?\s*$/;
+    const linesOf = (file: string): string[] =>
+      readFileSync(join(REPO_ROOT, CITED_FILES[file]), 'utf8').split('\n');
+    // A symbol counts only when it reads as code (a capital or an underscore),
+    // so prose such as "vendor" does not match a helper named `vendor`.
+    const namedIn = (rationale: string, name: string | undefined): name is string =>
+      name !== undefined && /[A-Z_]/.test(name) && new RegExp(`\\b${name}\\b`).test(rationale);
+    const spanEnd = (lines: string[], at: number): number =>
+      lines[at - 1].trimEnd().endsWith(';')
+        ? at
+        : lines.findIndex((line, i) => i >= at && CLOSE.test(line)) + 1;
+
+    const stale: string[] = [];
+    let resolved = 0;
+    for (const shape of CREDENTIAL_SHAPES) {
+      const rationale = shape.rationale;
+      if (!rationale) continue;
+      for (const [cite, file, a, b] of rationale.matchAll(/(?<![\w/.-])([\w-]+\.ts):(\d+)(?:-(\d+))?/g)) {
+        if (!(file in CITED_FILES)) {
+          stale.push(`${shape.id}: ${cite} names a file this test does not resolve; add it to CITED_FILES`);
+          continue;
+        }
+        const lines = linesOf(file);
+        const start = Number(a);
+        const end = b === undefined ? start : Number(b);
+        const first = lines[start - 1] ?? '';
+        const declared = DECLARATION.exec(first)?.[1];
+        const ok = namedIn(rationale, declared)
+          ? end === start || spanEnd(lines, start) === end
+          : end >= start && end <= lines.length && shape.guards.some(g => first.includes(g));
+        if (ok) {
+          resolved++;
+          continue;
+        }
+        // Say where each symbol the rationale names is declared now, so the
+        // failure carries its own fix.
+        const now = lines
+          .map((line, i) => ({ name: DECLARATION.exec(line)?.[1], at: i + 1 }))
+          .filter(d => namedIn(rationale, d.name))
+          .map(d => {
+            const to = spanEnd(lines, d.at);
+            return `${d.name} is at ${file}:${d.at}${to === d.at ? '' : `-${to}`}`;
+          });
+        stale.push(
+          `${shape.id}: ${cite} reads "${first.trim().slice(0, 60)}"` +
+            (now.length > 0 ? `; ${now.join(', ')}` : ''),
+        );
+      }
+    }
+    expect(stale).toEqual([]);
+    // Non-vacuity: the citations above are what the rationales carry today.
+    expect(resolved).toBeGreaterThanOrEqual(8);
   });
 
   it('the measured divergences are still the ones recorded', () => {
