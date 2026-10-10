@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { fs } from '../../hardening/tracked-fs';
 
 /**
  * The command line that reaches this program, for its help text and hints.
@@ -14,37 +15,75 @@ import * as path from 'path';
  *
  * So the help names the invocation the reader just ran, which exists by
  * construction:
- *  - launched as a script (`node .../dist/arp/cli/index.js`), it is that
- *    `node` line, with the path relative to the working directory when the
- *    script sits under it;
- *  - launched through a `bin` shim (no script extension), it is the shim's
- *    name when its directory is on PATH, so a binary declared later is picked
- *    up with no string edit, and the shim's full path when it is not.
+ *  - launched as a script (`node .../dist/arp/cli/index.js`, or the same path
+ *    without its extension, or its directory, both of which Node completes to
+ *    index.js), it is that `node` line, with the path relative to the working
+ *    directory when the script sits under it;
+ *  - launched through a `bin` shim (a file at exactly the path that was run,
+ *    with no script extension), it is the shim's name when its directory is on
+ *    PATH, so a binary declared later is picked up with no string edit, and the
+ *    shim's full path when it is not.
+ *
+ * `argv[0]` cannot tell the two apart: a shim's `#!/usr/bin/env node` line
+ * makes it the node binary as well.
+ *
+ * Asynchronous because telling a completed path from a shim asks the
+ * filesystem, and this tree's filesystem namespace is promise-based.
  */
-export function invocation(
+export async function invocation(
   argv: readonly string[] = process.argv,
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
-): string {
-  const script = path.resolve(cwd, argv[1] || path.join(__dirname, 'index.js'));
+  platform: NodeJS.Platform = process.platform,
+): Promise<string> {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const script = p.resolve(cwd, argv[1] || p.join(__dirname, 'index.js'));
 
-  if (/\.[cm]?[jt]s$/.test(script)) {
-    const rel = path.relative(cwd, script);
-    const shown = rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : script;
+  const entry = /\.[cm]?[jt]s$/.test(script) ? script : await completedEntry(script, p);
+  if (entry) {
+    const rel = p.relative(cwd, script);
+    const shown = rel && !rel.startsWith('..') && !p.isAbsolute(rel) ? rel : script;
     // Running from source goes through tsx; plain `node` cannot load the
     // extensionless imports in this tree.
-    const runner = /\.[cm]?ts$/.test(script) ? 'npx tsx' : 'node';
-    return `${runner} ${shellWord(shown)}`;
+    const runner = /\.[cm]?ts$/.test(entry) ? 'npx tsx' : 'node';
+    return `${runner} ${shellWord(shown, platform)}`;
   }
 
-  const dir = path.dirname(script);
+  const dir = p.dirname(script);
   const onPath = (env.PATH ?? '')
-    .split(path.delimiter)
-    .some((d) => d !== '' && path.resolve(cwd, d) === dir);
-  return onPath ? shellWord(path.basename(script)) : shellWord(script);
+    .split(p.delimiter)
+    .some((d) => d !== '' && p.resolve(cwd, d) === dir);
+  return shellWord(onPath ? p.basename(script) : script, platform);
 }
 
-/** Quote a path for a POSIX shell only when it needs it. */
-function shellWord(s: string): string {
+/**
+ * The file Node loaded for a script path given without its extension:
+ * `node dist/arp/cli` runs the directory's index.js and `node dist/arp/cli/index`
+ * runs index.js beside it, while `process.argv[1]` keeps the path as typed.
+ * Undefined when the path is itself a file, which is how a bin shim arrives,
+ * or names nothing on disk.
+ */
+async function completedEntry(script: string, p: path.PlatformPath): Promise<string | undefined> {
+  const st = await statIfPresent(script);
+  if (st?.isFile()) return undefined;
+  const base = st?.isDirectory() ? p.join(script, 'index') : script;
+  for (const ext of ['.js', '.ts']) {
+    if ((await statIfPresent(base + ext))?.isFile()) return base + ext;
+  }
+  return undefined;
+}
+
+/** A path's stat, or undefined when it names nothing this process can stat. */
+function statIfPresent(file: string) {
+  return fs.stat(file).catch(() => undefined);
+}
+
+/**
+ * Quote a path only when the shell would split it: POSIX single quotes, or on
+ * Windows double quotes, the form cmd.exe and PowerShell both accept and a
+ * character no Windows path can contain.
+ */
+function shellWord(s: string, platform: NodeJS.Platform): string {
+  if (platform === 'win32') return /^[\w@+=:,.\\/-]+$/.test(s) ? s : `"${s}"`;
   return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
