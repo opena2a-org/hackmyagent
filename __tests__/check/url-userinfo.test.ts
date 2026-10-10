@@ -46,6 +46,17 @@ describe('withoutUrlUserinfo', () => {
       .toBe('https://example.com');
   });
 
+  it('removes an empty userinfo, the `@` of `https://@<host>/...`, for git and for fetch', () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      expect(withoutUrlUserinfo(withUserinfo('https', '', 'gitlab.com/org/repo.git'), reader))
+        .toBe('https://gitlab.com/org/repo.git');
+      expect(withoutUrlUserinfo(withUserinfo('https', ':', 'gitlab.com/org/repo.git'), reader))
+        .toBe('https://gitlab.com/org/repo.git');
+      expect(withoutUrlUserinfo(withUserinfo('http', '', 'localhost:8080/pkg.tgz'), reader))
+        .toBe('http://localhost:8080/pkg.tgz');
+    }
+  });
+
   it('returns a URL without userinfo unchanged, character for character', () => {
     for (const url of [
       'https://gitlab.com/example-org/example-repo.git',
