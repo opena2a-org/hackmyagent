@@ -282,6 +282,10 @@ const TIER_3_ATTACK_CLASSES = new Set<string>([
   'SOUL-CONSENT',
   // SOUL Harm-Avoidance domain checks (src/soul/scanner.ts) — control gaps
   // in pre-action risk, proportional response, etc. Defense-in-depth absence.
+  // SOUL-HV is the family the taxonomy maps all four controls to; the
+  // per-control spellings below are kept so a finding that still carries
+  // one inline ranks the same.
+  'SOUL-HV',
   'SOUL-HV-001',
   'SOUL-HV-002',
   'SOUL-HV-003',
