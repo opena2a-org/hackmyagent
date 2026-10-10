@@ -264,6 +264,35 @@ chmod +x .git/hooks/pre-commit
 
 The `--ignore` flag skips checks that are noisy during development (e.g., missing logging, missing rate limiting).
 
+## Suppressing checks and excluding paths (`.hmaignore`)
+
+Suppressing a **check** (`--ignore CRED-001`, or `!CRED-001` in `.hmaignore`)
+changes what the report lists, not what it measures: it is still scored, still
+in the verdict, still in the exit code, and named on a `Suppressed` line. Use
+`--fail-below <score>` to let a build pass over findings you have accepted: a
+threshold in your pipeline config is auditable, a missing finding is not.
+
+Excluding a **path** (`test-fixtures/` in `.hmaignore`) is a scope statement:
+those paths leave the score and the exit code, as if you had not scanned them.
+Always disclosed on a `Scope` line and as `outOfScope` in `--json`.
+
+Excluding **one check on one path** (`danger.py:NEMO-009 # canary fixture` in
+`.hmaignore`) is the narrow form of the path rule, with the same scope
+semantics: that one finding leaves the score and the exit code while every
+other check still runs on the path. The trailing `# <reason>` is required on
+this form. Any rule may carry `expires:<YYYY-MM-DD>` at the end of the line;
+the rule is active through the named day (UTC), and from the next day the
+line is reported as an error and its findings return to the report.
+
+Every rule and its match count are disclosed under `hmaignore` in `--json`.
+A line the parser cannot apply (a glob in a path rule, a missing reason, a
+bad or lapsed `expires:` date) is never a silent no-op: it prints as a
+`.hmaignore:<line>` error by default, appears in `hmaignore.errors`, and the
+line is not applied. Errors never change the exit code: an inert line hides
+nothing, so everything it would have covered is already in the score and the
+exit code. To gate CI on a clean ignore file, test the `--json` document instead:
+`hackmyagent secure --ci --json . | jq -e '.hmaignore.errors | length == 0'`.
+
 ---
 
 ## Tips
