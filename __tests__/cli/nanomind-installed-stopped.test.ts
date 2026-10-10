@@ -1,6 +1,7 @@
 /**
  * With the generative analyst installed and its daemon stopped, `nanomind
- * status` and `secure --nanomind` say so and name `nanomind-analyst start`.
+ * status`, `nanomind setup` and `secure --nanomind` say so and name
+ * `nanomind-analyst start`. Setup also leaves the install as it is.
  *
  * The daemon stops by itself when idle, so "installed, not running" is the
  * ordinary state of a finished install. Both commands used to print what they
@@ -23,7 +24,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
@@ -55,10 +56,32 @@ function fixture(): string {
   return dir;
 }
 
+/** A user-owned PATH dir holding a nanomind-analyst that records how it was called. */
+function installerShim(): { dir: string; sentinel: string } {
+  const dir = tempDir('hma-analyst-shim-');
+  const sentinel = path.join(dir, 'shim-fired');
+  const shim = path.join(dir, 'nanomind-analyst');
+  writeFileSync(shim, `#!/bin/sh\necho "$@" > "${sentinel}"\nexit 0\n`);
+  chmodSync(shim, 0o755);
+  chmodSync(dir, 0o755);
+  return { dir, sentinel };
+}
+
+/** PATH with `dir` searched first, so its nanomind-analyst shadows any other. */
+function pathWith(dir: string): string {
+  return `${dir}${path.delimiter}${process.env.PATH ?? ''}`;
+}
+
 /** Spawn the CLI with no daemon on the socket and the analyst installed or not. */
-function run(installed: boolean, args: string[], cwd: string = tempDir('hma-analyst-cwd-')): Run {
+function run(
+  installed: boolean,
+  args: string[],
+  cwd: string = tempDir('hma-analyst-cwd-'),
+  searchPath: string | undefined = process.env.PATH,
+): Run {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    PATH: searchPath,
     HOME: home(installed),
     NO_COLOR: '1',
     NODE_OPTIONS: `--require ${JSON.stringify(PRELOAD)}`,
@@ -94,6 +117,46 @@ describe('nanomind status', () => {
     expect(res.stdout).toContain('  Daemon:    not running\n');
     expect(res.stdout).toContain('\nRun: hackmyagent nanomind setup\n');
     expect(res.stdout).not.toContain('nanomind-analyst start');
+    expect(res.status).toBe(0);
+  });
+});
+
+describe('nanomind setup', () => {
+  it('RED-ON-BASE: an installed analyst with a stopped daemon is reported as installed and stopped, with `nanomind-analyst start`, and the install is not run again', () => {
+    const { dir, sentinel } = installerShim();
+    const res = run(true, ['nanomind', 'setup'], undefined, pathWith(dir));
+
+    expect(res.stderr).toContain(
+      'NanoMind analyst is installed and its daemon is stopped.\n'
+      + 'Start it: nanomind-analyst start\n'
+      + 'Verify:   hackmyagent nanomind status\n',
+    );
+    expect(existsSync(sentinel)).toBe(false);
+    expect(res.stderr).not.toContain('Running: nanomind-analyst install');
+    expect(res.status).toBe(0);
+  });
+
+  it('RED-ON-BASE: with the installer not on PATH, an installed analyst gets no install instructions', () => {
+    // An empty directory as the whole PATH: no installer can be found, and
+    // none on the machine running the test can be run.
+    const res = run(true, ['nanomind', 'setup'], undefined, tempDir('hma-analyst-empty-path-'));
+
+    expect(res.stderr).toContain('Start it: nanomind-analyst start\n');
+    expect(res.stderr).not.toContain('installer is not on PATH');
+    expect(res.stderr).not.toContain('pip install');
+    expect(res.status).toBe(0);
+  });
+
+  it('PIN: with no analyst installed it still runs the install (darwin)', () => {
+    if (process.platform !== 'darwin') {
+      return; // the installer is looked up only on darwin
+    }
+    const { dir, sentinel } = installerShim();
+    const res = run(false, ['nanomind', 'setup'], undefined, pathWith(dir));
+
+    expect(res.stderr).toContain('Running: nanomind-analyst install\n');
+    expect(readFileSync(sentinel, 'utf8')).toBe('install\n');
+    expect(res.stderr).not.toContain('nanomind-analyst start');
     expect(res.status).toBe(0);
   });
 });

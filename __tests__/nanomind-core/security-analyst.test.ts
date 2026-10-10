@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createServer, Server, Socket } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -274,6 +274,89 @@ describe('security-analyst — installed, stopped', () => {
     });
     expect(status.available).toBe(true);
     expect(status.installedStopped).toBe(false);
+  });
+
+  /** A user-owned PATH dir holding a nanomind-analyst that records how it was called. */
+  function installerShim(): { dir: string; sentinel: string } {
+    const dir = tempDir('analyst-installer-shim-');
+    const sentinel = join(dir, 'shim-fired');
+    const shim = join(dir, 'nanomind-analyst');
+    writeFileSync(shim, `#!/bin/sh\necho "$@" > "${sentinel}"\nexit 0\n`);
+    chmodSync(shim, 0o755);
+    chmodSync(dir, 0o755);
+    return { dir, sentinel };
+  }
+
+  async function setupWritingTo(
+    lines: string[],
+    install: Parameters<typeof setupAnalystModel>[1],
+  ): Promise<boolean> {
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      return await setupAnalystModel(/* quiet */ false, install);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('setup names `nanomind-analyst start` and does not run the install again', async () => {
+    const agentSocketPath = stoppedSocket();
+    const { dir, sentinel } = installerShim();
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${dir}:${originalPath}`;
+    const lines: string[] = [];
+    try {
+      const result = await setupWritingTo(lines, { platform: 'darwin', homeDir: installedHome(), agentSocketPath });
+      expect(result).toBe(false);
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    const out = lines.join('');
+
+    expect(existsSync(sentinel)).toBe(false);
+    expect(out).toContain('NanoMind analyst is installed and its daemon is stopped.\n');
+    expect(out).toContain('Start it: nanomind-analyst start\n');
+    expect(out).toContain('Verify:   hackmyagent nanomind status\n');
+    expect(out).not.toContain('Running: nanomind-analyst install');
+  });
+
+  it('setup does not give install instructions when the installer is not on PATH', async () => {
+    const agentSocketPath = stoppedSocket();
+    const originalPath = process.env.PATH;
+    process.env.PATH = '';
+    const lines: string[] = [];
+    try {
+      await setupWritingTo(lines, { platform: 'darwin', homeDir: installedHome(), agentSocketPath });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    const out = lines.join('');
+
+    expect(out).toContain('Start it: nanomind-analyst start\n');
+    expect(out).not.toContain('installer is not on PATH');
+    expect(out).not.toContain('pip install');
+  });
+
+  it('setup still runs the install when no launchd agent is installed (darwin shim test)', async () => {
+    if (process.platform !== 'darwin') {
+      return; // the installer is looked up only on darwin
+    }
+    const agentSocketPath = stoppedSocket();
+    const { dir, sentinel } = installerShim();
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${dir}:${originalPath}`;
+    const lines: string[] = [];
+    try {
+      await setupWritingTo(lines, { platform: 'darwin', homeDir: tempDir('analyst-empty-home-'), agentSocketPath });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    expect(existsSync(sentinel)).toBe(true);
+    expect(lines.join('')).not.toContain('nanomind-analyst start');
   });
 });
 

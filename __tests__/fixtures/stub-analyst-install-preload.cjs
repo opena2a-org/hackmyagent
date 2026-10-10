@@ -25,10 +25,11 @@ const path = require('node:path');
 const DIST = path.join(__dirname, '..', '..', 'dist', 'nanomind-core', 'inference');
 
 const analyst = require(path.join(DIST, 'security-analyst.js'));
-const { getAnalystStatus, isAnalystInstalledStopped } = analyst;
+const { getAnalystStatus, isAnalystInstalledStopped, setupAnalystModel } = analyst;
 const install = () => ({ platform: 'darwin', agentSocketPath: process.env.NANOMIND_GUARD_SOCK });
 analyst.getAnalystStatus = () => getAnalystStatus(install());
 analyst.isAnalystInstalledStopped = () => isAnalystInstalledStopped(install());
+analyst.setupAnalystModel = (quiet) => setupAnalystModel(quiet, install());
 
 const { TMEClassifier } = require(path.join(DIST, 'tme-classifier.js'));
 TMEClassifier.prototype.ensureModel = async function ensureModel() {};
