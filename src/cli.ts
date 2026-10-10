@@ -379,6 +379,7 @@ import {
   type ReadFailureRecord,
 } from './check/verdict';
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
+import { scanNameWithoutUserinfo, withoutUrlUserinfo } from './check/url-userinfo';
 import { FIX_LINES } from './hardening/fix-lines';
 import {
   summarizeCoverage,
@@ -8709,7 +8710,7 @@ Examples:
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const regUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = target.url || targetUrl || 'unknown';
+          const packageName = withoutUrlUserinfo(target.url || targetUrl || 'unknown');
 
           if (format === 'text') {
             console.log('\nPublishing results to registry...\n');
@@ -13779,7 +13780,10 @@ async function flushPendingScans(): Promise<void> {
   if (queue.length === 0) return;
 
   const remaining: Array<Record<string, unknown>> = [];
-  for (const scan of queue) {
+  for (const queued of queue) {
+    // A scan an earlier version queued under a name with a git URL's user
+    // name and password is sent, and kept, under the name without them.
+    const scan = typeof queued.name === 'string' ? { ...queued, name: scanNameWithoutUserinfo(queued.name) } : queued;
     const ok = await publishToRegistry(scan.name as string, {
       score: scan.score as number,
       maxScore: scan.maxScore as number,
@@ -15152,7 +15156,11 @@ async function checkRawUrl(
 
   const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-url-'));
   let scanDir = tempDir;
-  let displayName = url;
+  // A user name and password (or token) in the URL reach `git clone` and
+  // `fetch` and nothing else: every line printed, the `--json` document and
+  // the name published to the registry are built from `shownUrl`.
+  const shownUrl = withoutUrlUserinfo(url);
+  let displayName = shownUrl;
   // What the catch below may truthfully claim (#602, adversarial round 2):
   // false until the bytes have fully arrived. A failure after this flips is
   // an analysis failure, not a fetch failure — the two are different
@@ -15168,8 +15176,8 @@ async function checkRawUrl(
       || /^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(url);
 
     if (isGitUrl) {
-      const repoName = basename(url.replace(/\.git$/, '')) || 'repo';
-      displayName = url.replace(/^https?:\/\//, '').replace(/\.git$/, '');
+      const repoName = basename(shownUrl.replace(/\.git$/, '')) || 'repo';
+      displayName = shownUrl.replace(/^https?:\/\//, '').replace(/\.git$/, '');
 
       if (!options.json && !globalCiMode) {
         console.error(`Cloning ${displayName}...`);
@@ -15184,23 +15192,23 @@ async function checkRawUrl(
     } else {
       // HTTP fetch — use HEAD to determine content type
       if (!options.json && !globalCiMode) {
-        console.error(`Fetching ${url}...`);
+        console.error(`Fetching ${shownUrl}...`);
       }
 
       const headRes = await fetch(url, { method: 'HEAD', redirect: 'follow' });
       if (!headRes.ok) {
-        console.error(`Error: HTTP ${headRes.status} fetching "${escapeForDisplay(String(url))}".`);
+        console.error(`Error: HTTP ${headRes.status} fetching "${escapeForDisplay(String(shownUrl))}".`);
         // #602 — nothing was fetched, so nothing was measured: exit 2 per
         // the documented table. Settle-and-return (not process.exit) so
         // `finally` can clean up the already-allocated tempDir.
         const verdict = unmeasured(
           headRes.status === 404 || headRes.status === 410 ? 'target-not-found' : 'target-unreachable',
-          `HTTP ${headRes.status} fetching ${escapeForDisplay(String(url))}, so nothing was scanned.`,
+          `HTTP ${headRes.status} fetching ${escapeForDisplay(String(shownUrl))}, so nothing was scanned.`,
         );
         await settleCheckVerdict(verdict);
         settled = verdict;
         if (options.json) {
-          writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
+          writeJsonStdout({ hackmyagentVersion: VERSION, target: shownUrl, type: 'raw-url', coverage: coverageJson(verdict) });
         } else {
           console.error(unmeasuredBanner(verdict));
         }
@@ -15219,16 +15227,16 @@ async function checkRawUrl(
 
       const bodyRes = await fetch(finalUrl, { redirect: 'follow' });
       if (!bodyRes.ok || !bodyRes.body) {
-        console.error(`Error: Failed to download "${escapeForDisplay(String(url))}" (HTTP ${bodyRes.status}).`);
+        console.error(`Error: Failed to download "${escapeForDisplay(String(shownUrl))}" (HTTP ${bodyRes.status}).`);
         // #602 — same settlement as the HEAD failure above: unmeasured, 2.
         const verdict = unmeasured(
           'target-unreachable',
-          `Failed to download ${escapeForDisplay(String(url))} (HTTP ${bodyRes.status}), so nothing was scanned.`,
+          `Failed to download ${escapeForDisplay(String(shownUrl))} (HTTP ${bodyRes.status}), so nothing was scanned.`,
         );
         await settleCheckVerdict(verdict);
         settled = verdict;
         if (options.json) {
-          writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
+          writeJsonStdout({ hackmyagentVersion: VERSION, target: shownUrl, type: 'raw-url', coverage: coverageJson(verdict) });
         } else {
           console.error(unmeasuredBanner(verdict));
         }
@@ -15321,7 +15329,7 @@ async function checkRawUrl(
 
     // Filter local-dev-only findings irrelevant to downloaded URLs
     filterLocalOnlyFindings(result, scanner);
-    result.findings = rewriteRemoteUnreadRemedy(result.findings, 'archive', `curl -sL ${shellQuote(url)} -o archive && tar tvzf archive (or unzip -l archive)`);
+    result.findings = rewriteRemoteUnreadRemedy(result.findings, 'archive', `curl -sL ${shellQuote(shownUrl)} -o archive && tar tvzf archive (or unzip -l archive)`);
 
     const failed = result.findings.filter(f => !f.passed);
     const critical = failed.filter(f => f.severity === 'critical');
@@ -15338,7 +15346,7 @@ async function checkRawUrl(
     if (options.json) {
       const jsonOut: Record<string, any> = {
         name: displayName,
-        url,
+        url: shownUrl,
         type: 'raw-url',
         source: 'local-scan',
         projectType: result.projectType,
@@ -15392,14 +15400,15 @@ async function checkRawUrl(
     }
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
-      console.error(`Error: Could not clone repository from "${escapeForDisplay(String(url))}".`);
+      console.error(`Error: Could not clone repository from "${escapeForDisplay(String(shownUrl))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
     } else if (message.includes('timeout') || message.includes('Timeout')) {
-      console.error(`Error: Fetching "${escapeForDisplay(String(url))}" timed out. The target may be too large.`);
+      console.error(`Error: Fetching "${escapeForDisplay(String(shownUrl))}" timed out. The target may be too large.`);
       console.error(`\nTry downloading manually and scanning the local path:`);
       console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
     } else {
-      console.error(`Error scanning URL: ${escapeForDisplay(String(message))}`);
+      // The message of a failed `git clone` quotes its command line, URL included.
+      console.error(`Error scanning URL: ${escapeForDisplay(message.split(url).join(shownUrl))}`);
     }
     // #602 — the run reached no verdict: exit 2 per the documented table,
     // never 1 about a URL that was never fetched. Raise-only, so a verdict
@@ -15417,14 +15426,14 @@ async function checkRawUrl(
     const verdict = unmeasured(
       fetched ? 'no-response' : urlNotFound ? 'target-not-found' : 'target-unreachable',
       fetched
-        ? `${escapeForDisplay(String(url))} was fetched but could not be analyzed, so no verdict was measured.`
+        ? `${escapeForDisplay(String(shownUrl))} was fetched but could not be analyzed, so no verdict was measured.`
         : urlNotFound
-          ? `${escapeForDisplay(String(url))} was not found, so nothing was scanned.`
-          : `${escapeForDisplay(String(url))} could not be fetched, so nothing was scanned.`,
+          ? `${escapeForDisplay(String(shownUrl))} was not found, so nothing was scanned.`
+          : `${escapeForDisplay(String(shownUrl))} could not be fetched, so nothing was scanned.`,
     );
     await settleCheckVerdict(verdict);
     if (options.json) {
-      writeJsonStdout({ hackmyagentVersion: VERSION, target: url, type: 'raw-url', coverage: coverageJson(verdict) });
+      writeJsonStdout({ hackmyagentVersion: VERSION, target: shownUrl, type: 'raw-url', coverage: coverageJson(verdict) });
     } else {
       console.error(unmeasuredBanner(verdict));
     }
