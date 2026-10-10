@@ -69,6 +69,56 @@ describe('withoutUrlUserinfo', () => {
       expect(withoutUrlUserinfo(value)).toBe(value);
     }
   });
+
+  // No userinfo, and an `@` after the host in the query or the fragment.
+  const AT_AFTER_THE_AUTHORITY = [
+    'http://localhost?ref=@evil.example/pkg.tgz',
+    'http://localhost?file=pkg@1.0.0',
+    'http://localhost#@evil.example/pkg.tgz',
+    'https://gitlab.com?ref=@evil.example/org/repo.git',
+    'https://gitlab.com#@evil.example/org/repo.git',
+  ];
+
+  it('ends the authority at `?` and `#` for git and for fetch, so an `@` after it is left alone', () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      for (const url of AT_AFTER_THE_AUTHORITY) expect(withoutUrlUserinfo(url, reader)).toBe(url);
+    }
+  });
+
+  it('still removes userinfo that comes before a query or a fragment holding an `@`', () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      expect(withoutUrlUserinfo(withUserinfo('https', `alice:${SECRET}`, 'gitlab.com?ref=@evil.example/org/repo.git'), reader))
+        .toBe('https://gitlab.com?ref=@evil.example/org/repo.git');
+      expect(withoutUrlUserinfo(withUserinfo('http', `alice:${SECRET}`, 'localhost#@evil.example/pkg.tgz'), reader))
+        .toBe('http://localhost#@evil.example/pkg.tgz');
+    }
+  });
+
+  it('for fetch, also ends the authority at `\\`; git reads a `\\` as part of the userinfo', () => {
+    const url = 'http://localhost\\@evil.example/pkg.tgz';
+    expect(withoutUrlUserinfo(url, 'fetch')).toBe(url);
+    expect(withoutUrlUserinfo(url, 'git')).toBe('http://evil.example/pkg.tgz');
+    expect(withoutUrlUserinfo(url)).toBe('http://evil.example/pkg.tgz');
+    expect(withoutUrlUserinfo(withUserinfo('https', `alice:${SECRET}\\x`, 'gitlab.com/org/repo.git'), 'git'))
+      .toBe('https://gitlab.com/org/repo.git');
+  });
+
+  it('for fetch, keeps the host, path, query and fragment the URL parser behind fetch reads, without credentials', () => {
+    for (const url of [
+      ...AT_AFTER_THE_AUTHORITY,
+      'http://localhost\\@evil.example/pkg.tgz',
+      withUserinfo('https', `alice:${SECRET}`, 'gitlab.com/org/repo.git'),
+      withUserinfo('https', `alice:${SECRET}@x`, 'gitlab.com/org/repo.git'),
+      withUserinfo('http', `alice:${SECRET}`, 'localhost?ref=@evil.example/pkg.tgz'),
+    ]) {
+      const parsed = new URL(url);
+      const shown = new URL(withoutUrlUserinfo(url, 'fetch'));
+      expect(shown.host).toBe(parsed.host);
+      expect(shown.pathname + shown.search + shown.hash).toBe(parsed.pathname + parsed.search + parsed.hash);
+      expect(shown.username).toBe('');
+      expect(shown.password).toBe('');
+    }
+  });
 });
 
 describe('scanNameWithoutUserinfo', () => {
@@ -92,5 +142,13 @@ describe('scanNameWithoutUserinfo', () => {
     ]) {
       expect(scanNameWithoutUserinfo(name)).toBe(name);
     }
+  });
+
+  it('ends the authority at `?` and `#`, as git does, so an `@` after it is left alone', () => {
+    for (const name of ['gitlab.com?ref=@evil.example/org/repo', 'localhost#@evil.example/org/repo']) {
+      expect(scanNameWithoutUserinfo(name)).toBe(name);
+    }
+    expect(scanNameWithoutUserinfo(`alice:${SECRET}@gitlab.com?ref=@evil.example/org/repo`))
+      .toBe('gitlab.com?ref=@evil.example/org/repo');
   });
 });

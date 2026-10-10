@@ -8710,7 +8710,7 @@ Examples:
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const regUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = withoutUrlUserinfo(target.url || targetUrl || 'unknown');
+          const packageName = withoutUrlUserinfo(target.url || targetUrl || 'unknown', 'fetch');
 
           if (format === 'text') {
             console.log('\nPublishing results to registry...\n');
@@ -15156,10 +15156,15 @@ async function checkRawUrl(
 
   const tempDir = await mkdtemp(join(tmpdir(), 'hma-check-url-'));
   let scanDir = tempDir;
+  // Git clone for known forge URLs and .git suffix
+  const isGitUrl = url.endsWith('.git')
+    || /^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(url);
   // A user name and password (or token) in the URL reach `git clone` and
   // `fetch` and nothing else: every line printed, the `--json` document and
-  // the name published to the registry are built from `shownUrl`.
-  const shownUrl = withoutUrlUserinfo(url);
+  // the name published to the registry are built from `shownUrl`. The two
+  // programs end a URL's authority at different characters, so the userinfo
+  // is removed where the one that reads this URL finds it.
+  const shownUrl = withoutUrlUserinfo(url, isGitUrl ? 'git' : 'fetch');
   let displayName = shownUrl;
   // What the catch below may truthfully claim (#602, adversarial round 2):
   // false until the bytes have fully arrived. A failure after this flips is
@@ -15171,10 +15176,6 @@ async function checkRawUrl(
   let settled: CheckVerdict | undefined;
 
   try {
-    // Git clone for known forge URLs and .git suffix
-    const isGitUrl = url.endsWith('.git')
-      || /^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(url);
-
     if (isGitUrl) {
       const repoName = basename(shownUrl.replace(/\.git$/, '')) || 'repo';
       displayName = shownUrl.replace(/^https?:\/\//, '').replace(/\.git$/, '');
