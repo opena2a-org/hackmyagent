@@ -30,9 +30,13 @@ import {
   readEnrollmentRecord,
   type SignatureTelemetryConfig,
 } from '../index';
+import { invocation } from './invocation';
 
 const args = process.argv.slice(2);
 const command = args[0];
+// What every printed command line starts with. Not a literal program name:
+// none is on PATH (see ./invocation).
+const PROG = invocation();
 
 async function main(): Promise<void> {
   switch (command) {
@@ -294,11 +298,11 @@ async function telemetryCommand(): Promise<void> {
 
       if (args.includes('--no-purge')) {
         console.log('  Skipped deleting already-sent signatures (--no-purge).');
-        console.log('  Delete them later with: arp telemetry purge');
+        console.log(`  Delete them later with: ${PROG} telemetry purge`);
       } else {
         await runRemotePurge(tcfg);
       }
-      console.log('  Re-enable with: arp telemetry opt-in\n');
+      console.log(`  Re-enable with: ${PROG} telemetry opt-in\n`);
       break;
     }
     case 'purge': {
@@ -325,7 +329,7 @@ async function telemetryCommand(): Promise<void> {
     case '--help':
     case '-h':
       console.log(`
-  arp telemetry <subcommand>
+  ${PROG} telemetry <subcommand>
 
     status        Show telemetry state, sensor identity, and send counts
     register      Enroll this sensor with the registry (pending admin approval)
@@ -338,12 +342,12 @@ async function telemetryCommand(): Promise<void> {
 
   Structural signatures are DEFAULT-ON. Only the SHAPE of an anomalous
   behavior is shared, never payloads. Every byte sent is recorded locally
-  first — review it with: arp telemetry log
+  first — review it with: ${PROG} telemetry log
 `);
       break;
     default:
       console.error(`  Unknown telemetry subcommand: ${sub}`);
-      console.error('  Run: arp telemetry --help');
+      console.error(`  Run: ${PROG} telemetry --help`);
       process.exit(1); // exit-no-event(separate-entrypoint/L008): standalone binary; no src/ import (self-revoking assertion in the ratchet test)
   }
 }
@@ -363,7 +367,7 @@ async function runRemotePurge(tcfg?: SignatureTelemetryConfig): Promise<void> {
   // Fail open: the local opt-out still stands; tell the user how to retry the purge.
   console.log(`  Could not reach the registry to delete sent signatures (${result.error ?? 'unknown error'}).`);
   console.log('  Your opt-out still took effect locally; no new data will be sent.');
-  console.log('  Retry the deletion later with: arp telemetry purge');
+  console.log(`  Retry the deletion later with: ${PROG} telemetry purge`);
   console.log('  Or run it directly:');
   console.log(`    ${manualPurgeCurl(result)}`);
 }
@@ -377,7 +381,7 @@ async function telemetryRegister(tcfg?: SignatureTelemetryConfig): Promise<void>
   console.log('\n  Enrolling this sensor with the OpenA2A registry...');
   if (isOptedOut(tcfg)) {
     console.log('  NOTE: telemetry is currently opted out, so no reports will be sent');
-    console.log('  even after approval. Re-enable with: arp telemetry opt-in');
+    console.log(`  even after approval. Re-enable with: ${PROG} telemetry opt-in`);
   }
 
   const result = await enrollSensor(tcfg);
@@ -391,14 +395,14 @@ async function telemetryRegister(tcfg?: SignatureTelemetryConfig): Promise<void>
       console.log('  Next step: an OpenA2A admin must approve this enrollment.');
       console.log('  Until then, reports still send at the unverified weight.');
     }
-    console.log('  Check state anytime with: arp telemetry status\n');
+    console.log(`  Check state anytime with: ${PROG} telemetry status\n`);
     return;
   }
 
   // Fail open: enrollment is best-effort; tell the user how to retry by hand.
   console.log(`  Could not reach the registry to enroll (${result.error ?? 'unknown error'}).`);
   console.log('  No verified status was granted; reports (if enabled) still send unverified.');
-  console.log('  Retry later with: arp telemetry register');
+  console.log(`  Retry later with: ${PROG} telemetry register`);
   console.log('  Or run it directly:');
   console.log(`    ${manualEnrollCurl(result)}\n`);
 }
@@ -446,22 +450,22 @@ async function telemetryStatus(tcfg?: SignatureTelemetryConfig): Promise<void> {
     const label = enrollment.state === 'verified' ? 'verified' : 'pending admin approval';
     console.log(`  Enrollment:   ${label}`);
   } else {
-    console.log('  Enrollment:   not enrolled (run: arp telemetry register)');
+    console.log(`  Enrollment:   not enrolled (run: ${PROG} telemetry register)`);
   }
   console.log(`  Audit log:    ${auditLogPath()}`);
   console.log('  Sent:         ' + (counts['sent'] ?? 0));
   console.log('  Buffered:     ' + (counts['buffered'] ?? 0));
   console.log('  Failed:       ' + (counts['failed'] ?? 0));
   console.log('  Dropped:      ' + (counts['dropped'] ?? 0));
-  console.log('\n  Review payloads: arp telemetry log');
-  console.log('  Disclosure:      arp telemetry disclosure');
-  console.log(`  ${enabled ? 'Opt out:         arp telemetry opt-out' : 'Opt back in:     arp telemetry opt-in'}\n`);
+  console.log(`\n  Review payloads: ${PROG} telemetry log`);
+  console.log(`  Disclosure:      ${PROG} telemetry disclosure`);
+  console.log(`  ${enabled ? `Opt out:         ${PROG} telemetry opt-out` : `Opt back in:     ${PROG} telemetry opt-in`}\n`);
 }
 
 function optOutReason(tcfg?: SignatureTelemetryConfig): string {
   if (tcfg?.enabled === false) return 'config (signatureTelemetry.enabled: false)';
   if (process.env.OPENA2A_TELEMETRY_OPTOUT || process.env.ARP_TELEMETRY_DISABLED) return 'environment variable';
-  return 'local opt-out marker (arp telemetry opt-in to clear)';
+  return `local opt-out marker (${PROG} telemetry opt-in to clear)`;
 }
 
 function showHelp(): void {
@@ -469,7 +473,7 @@ function showHelp(): void {
   ARP Guard v${VERSION} — Agent Runtime Protection
 
   USAGE
-    arp-guard <command> [options]
+    ${PROG} <command> [options]
 
   COMMANDS
     start [--config <path>]   Start monitoring the agent
@@ -496,12 +500,12 @@ function showHelp(): void {
     Output scanning for leaked secrets, PII, and system prompts
 
   EXAMPLES
-    arp-guard start                     Start with auto-detected config
-    arp-guard start --config arp.yaml   Start with custom config
-    arp-guard proxy --config arp.yaml   Start proxy with AI-layer scanning
-    arp-guard status                    Check budget and monitor status
-    arp-guard tail 50                   Show last 50 events
-    arp-guard budget                    Show intelligence spending
+    ${PROG} start                     Start with auto-detected config
+    ${PROG} start --config arp.yaml   Start with custom config
+    ${PROG} proxy --config arp.yaml   Start proxy with AI-layer scanning
+    ${PROG} status                    Check budget and monitor status
+    ${PROG} tail 50                   Show last 50 events
+    ${PROG} budget                    Show intelligence spending
 `);
 }
 
