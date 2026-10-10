@@ -1,11 +1,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, Server, Socket } from 'node:net';
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { tempDir } from '../helpers/temp-dir';
 import {
   getAnalystStatus,
   isAnalystReady,
+  isAnalystInstalledStopped,
   runAnalystInference,
   analyzeThreat,
   assessCredentialContext,
@@ -179,6 +181,99 @@ describe('security-analyst — getAnalystStatus', () => {
     process.env.NANOMIND_GUARD_SOCK = '/tmp/nanomind-guard-absent-' + Date.now() + '.sock';
     const ready = await isAnalystReady();
     expect(ready).toBe(false);
+  });
+});
+
+// An installed analyst whose daemon is stopped is a finished install: the
+// daemon exits by itself when idle, and `nanomind-analyst stop` leaves the
+// same state. Reporting it as "not set up" sent the user to setup, which runs
+// the install again, when `nanomind-analyst start` is the step that fixes it.
+describe('security-analyst — installed, stopped', () => {
+  /** A home directory holding the launchd agent `nanomind-analyst install` writes. */
+  function installedHome(): string {
+    const home = tempDir('analyst-installed-home-');
+    const agents = join(home, 'Library', 'LaunchAgents');
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, 'org.opena2a.nanomind-analyst.plist'), '<plist version="1.0"/>\n');
+    return home;
+  }
+
+  /** A socket path nothing listens on, set as the one both HMA and the agent use. */
+  function stoppedSocket(): string {
+    const socketPath = join(tempDir('analyst-stopped-sock-'), 'daemon.sock');
+    process.env.NANOMIND_GUARD_SOCK = socketPath;
+    return socketPath;
+  }
+
+  it('reports the state and names `nanomind-analyst start` as the next step', async () => {
+    const agentSocketPath = stoppedSocket();
+    const install = { platform: 'darwin' as const, homeDir: installedHome(), agentSocketPath };
+
+    expect(await isAnalystInstalledStopped(install)).toBe(true);
+
+    const status = await getAnalystStatus(install);
+    expect(status.available).toBe(false);
+    expect(status.daemon).toBeNull();
+    expect(status.installedStopped).toBe(true);
+    expect(status.startCommand).toBe('nanomind-analyst start');
+  });
+
+  it('is false when no launchd agent is installed', async () => {
+    const agentSocketPath = stoppedSocket();
+    const install = { platform: 'darwin' as const, homeDir: tempDir('analyst-empty-home-'), agentSocketPath };
+
+    expect(await isAnalystInstalledStopped(install)).toBe(false);
+    expect((await getAnalystStatus(install)).installedStopped).toBe(false);
+  });
+
+  it('is false when the agent path is not a file', async () => {
+    const agentSocketPath = stoppedSocket();
+    const home = tempDir('analyst-dir-plist-home-');
+    mkdirSync(join(home, 'Library', 'LaunchAgents', 'org.opena2a.nanomind-analyst.plist'), { recursive: true });
+
+    expect(await isAnalystInstalledStopped({ platform: 'darwin', homeDir: home, agentSocketPath })).toBe(false);
+  });
+
+  it('is false on a platform that has no launchd agent', async () => {
+    const agentSocketPath = stoppedSocket();
+    expect(await isAnalystInstalledStopped({ platform: 'linux', homeDir: installedHome(), agentSocketPath })).toBe(false);
+  });
+
+  it('is false when NANOMIND_GUARD_SOCK points away from the socket the installed agent serves', async () => {
+    stoppedSocket();
+    const agentSocketPath = join(tempDir('analyst-agent-sock-'), 'daemon.sock');
+    // Starting the agent would bring up its own socket, not the one HMA was
+    // told to use, so `nanomind-analyst start` is not the next step here.
+    expect(await isAnalystInstalledStopped({ platform: 'darwin', homeDir: installedHome(), agentSocketPath })).toBe(false);
+  });
+
+  it('is false when a daemon is listening and not answering', async () => {
+    const daemon = await startMockDaemon((_line, _conn) => {
+      // intentionally write nothing and hold the connection
+    });
+    process.env.NANOMIND_GUARD_SOCK = daemon.socketPath;
+
+    expect(await isAnalystInstalledStopped({
+      platform: 'darwin',
+      homeDir: installedHome(),
+      agentSocketPath: daemon.socketPath,
+    })).toBe(false);
+  });
+
+  it('is false while the daemon answers /healthz', async () => {
+    const daemon = await startMockDaemon((_line, conn) => {
+      conn.write(JSON.stringify(healthzOk) + '\n');
+      conn.end();
+    });
+    process.env.NANOMIND_GUARD_SOCK = daemon.socketPath;
+
+    const status = await getAnalystStatus({
+      platform: 'darwin',
+      homeDir: installedHome(),
+      agentSocketPath: daemon.socketPath,
+    });
+    expect(status.available).toBe(true);
+    expect(status.installedStopped).toBe(false);
   });
 });
 

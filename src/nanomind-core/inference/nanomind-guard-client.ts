@@ -351,6 +351,59 @@ export async function isDaemonHealthy(opts: ClientOptions = {}): Promise<boolean
   return response !== null && response.ok === true;
 }
 
+/**
+ * True when nothing is listening on the daemon socket: the socket file is
+ * absent, or it is there and the connection is refused. Sends no request.
+ *
+ * sendHealthz returns null for a stopped daemon and for one that is up and
+ * not answering (booting, busy, wedged) alike. Callers that tell the user to
+ * start the daemon need the first case only, so every other outcome — a
+ * connection that succeeds, any other error, a symlink at the socket path, a
+ * connect that never settles — returns false.
+ */
+export async function isDaemonStopped(opts: ClientOptions = {}): Promise<boolean> {
+  const socketPath = resolveSocketPath(opts.socketPath);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_HEALTHZ_TIMEOUT_MS;
+
+  if (!isSocketPathSafe(socketPath)) {
+    // Never connected to (see sendRequest), so what is behind it is unknown.
+    return false;
+  }
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+
+    const settle = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        socket.removeAllListeners();
+        socket.destroy();
+      } catch {
+        // ignore — socket already closing
+      }
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => settle(false), timeoutMs);
+
+    let socket: Socket;
+    try {
+      socket = createConnection({ path: socketPath });
+    } catch {
+      clearTimeout(timer);
+      resolve(false);
+      return;
+    }
+
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      settle(err.code === 'ENOENT' || err.code === 'ECONNREFUSED');
+    });
+    socket.on('connect', () => settle(false));
+  });
+}
+
 // ============================================================================
 // Response validation
 // ============================================================================

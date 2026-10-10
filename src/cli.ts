@@ -1473,7 +1473,7 @@ interface UnifiedCheckDisplayOptions {
    * of leaving the flag silent. Shape from orchestrate.ts.
    */
   analystZeroState?: {
-    reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported';
+    reason: 'clean-scan' | 'not-ready' | 'installed-stopped' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported';
     modelLabel: string;
   };
   /**
@@ -3182,6 +3182,10 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       console.log(`          release.`);
     } else if (reason === 'not-ready') {
       console.log(`  ${colors.yellow}Model not set up.${RESET()} Run: ${colors.cyan}${CLI_PREFIX} nanomind setup${RESET()}`);
+    } else if (reason === 'installed-stopped') {
+      console.log(`  ${colors.yellow}Analyst installed, daemon stopped.${RESET()} No per-finding analysis ran on this scan.`);
+      console.log(`  Start:  ${colors.cyan}nanomind-analyst start${RESET()}`);
+      console.log(`  Verify: ${colors.cyan}${CLI_PREFIX} nanomind status${RESET()}`);
     } else if (reason === 'daemon-error') {
       console.log(`  ${colors.yellow}Analyst layer reached the NanoMind-Guard daemon but produced no verdicts.${RESET()}`);
       console.log(`  The daemon may be reachable but unable to classify (model load failure,`);
@@ -13457,6 +13461,10 @@ nanomindCmd
       console.log('');
       console.log('Daemon is up but the gate probe failed. Check daemon logs and');
       console.log('verify the input-classifier artifacts are present and unmodified.');
+    } else if (status.installedStopped) {
+      console.log(`  Daemon:    ${colors.yellow}installed, stopped${RESET()}`);
+      console.log('');
+      console.log(`Start it: ${colors.cyan}${status.startCommand}${RESET()}`);
     } else {
       console.log(`  Daemon:    ${colors.yellow}not running${RESET()}`);
       console.log('');
@@ -14617,7 +14625,7 @@ async function checkGitHubRepo(
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'installed-stopped' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
     let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;
@@ -14995,7 +15003,7 @@ async function checkPyPiPackage(
 
     // Run NanoMind semantic analysis and re-filter
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'installed-stopped' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
     let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;
@@ -15277,7 +15285,7 @@ async function checkRawUrl(
     const result = await scanner.scan({ targetDir: scanDir, autoFix: false, ...FETCHED_TREE });
 
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'installed-stopped' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
     let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;
@@ -15518,7 +15526,7 @@ async function checkNpmPackage(
 
     // Run NanoMind semantic analysis and re-filter (matches secure command pipeline)
     let analystFindings: any[] | undefined;
-    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
+    let analystZeroState: { reason: 'clean-scan' | 'not-ready' | 'installed-stopped' | 'backend-unavailable' | 'daemon-error' | 'platform-not-supported'; modelLabel: string } | undefined;
     let analystEscalations: any[] | undefined;
     let coverageSweep: Record<string, unknown> | undefined;
     let artifactSummaries: any[] | undefined;

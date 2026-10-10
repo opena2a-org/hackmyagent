@@ -30,14 +30,18 @@
 
 import { execFileSync } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { escapePathForDisplay, escapeForDisplay } from '../../ui/display-safe';
 import {
   sendClassify,
   sendHealthz,
   isDaemonHealthy,
+  isDaemonStopped,
   isClassifyOk,
+  resolveSocketPath,
   DEFAULT_SOCK_PATH,
+  FALLBACK_SOCK_PATH,
   type ClassifyOkResponse,
   type HealthzResponse,
 } from './nanomind-guard-client.js';
@@ -106,8 +110,25 @@ export interface AnalystStatus {
   modelCached: boolean;
   platform: string;
   setupCommand: string;
+  /**
+   * True when the analyst is installed and its daemon is stopped. The next
+   * step is then startCommand; setupCommand would repeat a finished install.
+   */
+  installedStopped: boolean;
+  startCommand: string;
   /** Full /healthz body when reachable; null otherwise. */
   daemon: HealthzResponse | null;
+}
+
+/**
+ * Where an installed analyst is looked for. Every field defaults to this
+ * machine; tests pass their own so they do not read it.
+ */
+export interface AnalystInstall {
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+  /** Socket the installed agent's daemon serves. */
+  agentSocketPath?: string;
 }
 
 // ============================================================================
@@ -123,11 +144,20 @@ const MODEL_VERSION = '3.0.0';
  */
 const MAX_INPUT_CHARS = 4096;
 
+/**
+ * Label of the per-user launchd agent `nanomind-analyst install` writes, as
+ * ~/Library/LaunchAgents/<label>.plist. `nanomind-analyst uninstall` removes
+ * the file, so its presence is what "installed" means here.
+ */
+const ANALYST_AGENT_LABEL = 'org.opena2a.nanomind-analyst';
+
+const ANALYST_START_COMMAND = 'nanomind-analyst start';
+
 // ============================================================================
 // Status & setup
 // ============================================================================
 
-export async function getAnalystStatus(): Promise<AnalystStatus> {
+export async function getAnalystStatus(install: AnalystInstall = {}): Promise<AnalystStatus> {
   const daemon = await sendHealthz();
   const platform = process.platform === 'darwin'
     ? 'Apple Silicon (NanoMind-Guard daemon)'
@@ -139,6 +169,8 @@ export async function getAnalystStatus(): Promise<AnalystStatus> {
       modelCached: false,
       platform,
       setupCommand: 'hackmyagent nanomind setup',
+      installedStopped: await isAnalystInstalledStopped(install),
+      startCommand: ANALYST_START_COMMAND,
       daemon: null,
     };
   }
@@ -148,12 +180,42 @@ export async function getAnalystStatus(): Promise<AnalystStatus> {
     modelCached: daemon.ok,
     platform,
     setupCommand: 'hackmyagent nanomind setup',
+    installedStopped: false,
+    startCommand: ANALYST_START_COMMAND,
     daemon,
   };
 }
 
 export async function isAnalystReady(): Promise<boolean> {
   return isDaemonHealthy();
+}
+
+/**
+ * True when the analyst is installed and its daemon is stopped: the launchd
+ * agent is present for this user and nothing is listening on the daemon
+ * socket. A daemon that stopped by itself after an idle period, or was
+ * stopped with `nanomind-analyst stop`, leaves a complete install in this
+ * state, and `nanomind-analyst start` is what brings it back.
+ *
+ * False when the daemon is up and not answering (see isDaemonStopped), and
+ * false when NANOMIND_GUARD_SOCK points away from the socket the installed
+ * agent serves: starting that agent would not make the other socket answer.
+ */
+export async function isAnalystInstalledStopped(install: AnalystInstall = {}): Promise<boolean> {
+  const platform = install.platform ?? process.platform;
+  const agentSocketPath = install.agentSocketPath ?? FALLBACK_SOCK_PATH;
+  if (platform !== 'darwin') return false;
+  if (resolveSocketPath() !== agentSocketPath) return false;
+  try {
+    const plist = join(
+      install.homeDir ?? homedir(),
+      'Library', 'LaunchAgents', `${ANALYST_AGENT_LABEL}.plist`,
+    );
+    if (!statSync(plist).isFile()) return false;
+  } catch {
+    return false;
+  }
+  return isDaemonStopped();
 }
 
 /**

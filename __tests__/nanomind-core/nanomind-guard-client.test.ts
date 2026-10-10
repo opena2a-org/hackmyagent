@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, Server, Socket } from 'node:net';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -8,6 +9,7 @@ import {
   sendClassify,
   sendHealthz,
   isDaemonHealthy,
+  isDaemonStopped,
   isClassifyOk,
   isDaemonError,
 } from '../../src/nanomind-core/inference/nanomind-guard-client';
@@ -564,5 +566,47 @@ describe('nanomind-guard-client', () => {
     expect(existsSync(path)).toBe(true);
     // afterEach removes; nothing to assert here. This test mostly documents
     // the cleanup contract for readers.
+  });
+});
+
+// sendHealthz answers null for a stopped daemon and for one that is up and
+// silent. isDaemonStopped is what tells them apart, so the CLI names
+// `nanomind-analyst start` only when starting is what the daemon needs.
+describe('nanomind-guard-client — isDaemonStopped', () => {
+  it('is true when the socket file is absent', async () => {
+    const socketPath = join(tempDir('nanomind-guard-absent-'), 'daemon.sock');
+    expect(await isDaemonStopped({ socketPath, timeoutMs: 500 })).toBe(true);
+  });
+
+  it('is true when the socket file is there and nothing listens on it', async () => {
+    // A daemon killed without a chance to clean up leaves its socket file.
+    const socketPath = join(tempDir('nanomind-guard-stale-'), 'daemon.sock');
+    spawnSync(process.execPath, [
+      '-e',
+      "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
+      socketPath,
+    ]);
+    expect(existsSync(socketPath)).toBe(true);
+
+    expect(await isDaemonStopped({ socketPath, timeoutMs: 500 })).toBe(true);
+  });
+
+  it('is false, without waiting out the timeout, when a daemon accepts the connection and stays silent', async () => {
+    const daemon = await startMockDaemon((_line, _conn) => {
+      // intentionally write nothing and hold the connection
+    });
+    const start = Date.now();
+    const stopped = await isDaemonStopped({ socketPath: daemon.socketPath, timeoutMs: 5_000 });
+    expect(stopped).toBe(false);
+    expect(Date.now() - start).toBeLessThan(2_000);
+    // The probe sends no request.
+    expect(daemon.receivedLines).toHaveLength(0);
+  });
+
+  it('is false when the socket path is a symbolic link, whatever it points at', async () => {
+    const dir = tempDir('nanomind-guard-stopped-link-');
+    const symlinkPath = join(dir, 'daemon.sock');
+    symlinkSync(join(dir, 'not-here.sock'), symlinkPath);
+    expect(await isDaemonStopped({ socketPath: symlinkPath, timeoutMs: 500 })).toBe(false);
   });
 });
