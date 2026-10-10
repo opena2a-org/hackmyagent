@@ -152,24 +152,24 @@ export class TMENeuralClassifier {
   private modelPath = '';
   private tokenizerPath = '';
 
+  /**
+   * `modelDir` is the only place a model is read from. Without it nothing
+   * loads, `load()` returns false, and a scan goes on to the pinned classifier.
+   *
+   * This used to fall back to `~/.opena2a/nanomind/models` and to sibling
+   * training checkouts. No release pins a `nanomind-tme.bin`, so a scan ran
+   * whatever weights the operator had left there, and the same tree scored
+   * differently on two machines: an older file in that directory labelled two
+   * SOUL files malicious, which kept the prompt-hardening checks on and moved
+   * their score from 69 to 65.
+   */
   constructor(modelDir?: string) {
-    const home = require('os').homedir();
-    const locations = [
-      modelDir,
-      join(home, '.opena2a', 'nanomind', 'models'),
-      join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v3'),
-      join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme-v2'),
-      join(__dirname, '..', '..', '..', '..', 'nanomind', 'training', 'models-tme'),
-    ].filter(Boolean) as string[];
-
-    for (const dir of locations) {
-      const bin = join(dir, 'nanomind-tme.bin');
-      const tok = join(dir, 'tokenizer.json');
-      if (existsSync(bin) && existsSync(tok)) {
-        this.modelPath = bin;
-        this.tokenizerPath = tok;
-        break;
-      }
+    if (!modelDir) return;
+    const bin = join(modelDir, 'nanomind-tme.bin');
+    const tok = join(modelDir, 'tokenizer.json');
+    if (existsSync(bin) && existsSync(tok)) {
+      this.modelPath = bin;
+      this.tokenizerPath = tok;
     }
   }
 
