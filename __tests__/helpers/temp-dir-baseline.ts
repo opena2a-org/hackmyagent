@@ -180,7 +180,6 @@ export const RAW_MKDTEMP_BASELINE: Record<string, number> = {
   '__tests__/nanomind-core/model-download-proxy.test.ts': 1,
   '__tests__/nanomind-core/model-download-stall.test.ts': 5,
   '__tests__/nanomind-core/name-gated-credential-width.test.ts': 1,
-  '__tests__/nanomind-core/nanomind-guard-client.test.ts': 2,
   '__tests__/nanomind-core/onnx-session-release.test.ts': 1,
   '__tests__/nanomind-core/per-file-finding-attribution.test.ts': 1,
   '__tests__/nanomind-core/scanner-bridge.test.ts': 3,

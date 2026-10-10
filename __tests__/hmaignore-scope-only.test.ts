@@ -29,9 +29,10 @@
  * open (see #457).
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { cpSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { parseHmaIgnore } from '../src/hardening/scanner';
+import { HardeningScanner, parseHmaIgnore } from '../src/hardening/scanner';
+import { tempDir } from './helpers/temp-dir';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HMAIGNORE = path.join(REPO_ROOT, '.hmaignore');
@@ -106,6 +107,28 @@ describe("this repo's .hmaignore excludes no shipped path", () => {
       .map((r) => `.hmaignore:${r.line} ${r.rule}`);
     expect(offenders).toEqual([]);
   });
+});
+
+/**
+ * `CHANGELOG.md` carries a narrowed UNICODE-STEGO-002 rule: release notes
+ * about the decoder check spell its ranges next to the word `.codePointAt(`.
+ * A pending fragment in `changelog.d/` cannot carry one, because the rule
+ * must name an existing file and the release removes the fragment, so a
+ * fragment's prose must not read as the decoder shape (#937).
+ */
+describe('changelog fragments do not read as a decoder to our own scan', () => {
+  it('secure reports no UNICODE-STEGO-002 on changelog.d', async () => {
+    const dir = tempDir('hma-changelog-d-');
+    cpSync(path.join(REPO_ROOT, 'changelog.d'), path.join(dir, 'changelog.d'), { recursive: true });
+
+    const result = await new HardeningScanner().scan({ targetDir: dir });
+    const fragments = readdirSync(path.join(dir, 'changelog.d')).filter((f) => f.endsWith('.md'));
+    expect(fragments.length).toBeGreaterThan(0);
+    const offenders = result.findings
+      .filter((f) => f.checkId === 'UNICODE-STEGO-002')
+      .map((f) => `${f.file}:${f.line} ${f.message}`);
+    expect(offenders).toEqual([]);
+  }, 120_000);
 });
 
 describe('shipped source carries no literal zero-width codepoint', () => {

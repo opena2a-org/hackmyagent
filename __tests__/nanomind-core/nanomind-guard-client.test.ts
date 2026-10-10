@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, Server, Socket } from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { tempDir } from '../helpers/temp-dir';
@@ -27,7 +27,6 @@ interface MockDaemon {
 
 type MockHandler = (line: string, conn: Socket) => void;
 
-const tmpDirs: string[] = [];
 const activeMockDaemons: MockDaemon[] = [];
 
 // A Unix socket path longer than sun_path (104 bytes on macOS, 108 on Linux)
@@ -40,9 +39,8 @@ function tempSocketPath(prefix: string, name: string): string {
   const fits = (base: string): boolean =>
     Buffer.byteLength(join(base, `${prefix}XXXXXX`, name)) <= SOCKET_PATH_MAX_BYTES;
   const base = fits(tmpdir()) ? tmpdir() : '/tmp';
-  const dir = mkdtempSync(join(base, prefix));
-  tmpDirs.push(dir);
-  return join(dir, name);
+  // Removed when the test finishes, after afterEach has closed the daemons.
+  return join(tempDir(prefix, base), name);
 }
 
 const MOCK_SOCKET_PREFIX = 'nanomind-guard-test-';
@@ -100,14 +98,6 @@ afterEach(async () => {
   while (activeMockDaemons.length > 0) {
     const d = activeMockDaemons.pop()!;
     await d.close();
-  }
-  while (tmpDirs.length > 0) {
-    const dir = tmpDirs.pop()!;
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
   }
 });
 
@@ -498,8 +488,7 @@ describe('nanomind-guard-client', () => {
   });
 
   it('starts the mock daemon when a long TMPDIR would push the socket path past sun_path', async () => {
-    const longTmp = mkdtempSync(join(tmpdir(), `nanomind-guard-${'x'.repeat(80)}-`));
-    tmpDirs.push(longTmp);
+    const longTmp = tempDir(`nanomind-guard-${'x'.repeat(80)}-`);
     const savedTmpdir = process.env.TMPDIR;
     process.env.TMPDIR = longTmp;
     try {
@@ -520,14 +509,20 @@ describe('nanomind-guard-client', () => {
     }
   });
 
-  // A TMPDIR whose mock daemon socket path would be exactly socketPathBytes long.
-  function tmpdirForSocketPathOf(socketPathBytes: number): string {
-    const suffixBytes = Buffer.byteLength(join('/', `${MOCK_SOCKET_PREFIX}XXXXXX`, MOCK_SOCKET_NAME));
+  // The mock daemon socket path under TMPDIR, minus the TMPDIR itself.
+  const SOCKET_SUFFIX = join('/', `${MOCK_SOCKET_PREFIX}XXXXXX`, MOCK_SOCKET_NAME);
+
+  // A TMPDIR whose mock daemon socket path would be exactly socketPathBytes
+  // long. `pad` is the padding character; one 'x' evens out an odd remainder.
+  function tmpdirForSocketPathOf(socketPathBytes: number, pad = 'x'): string {
     // Rooted under /tmp, not TMPDIR, so the padding below stays short enough to exist.
     const root = tempDir('nanomind-guard-', '/tmp');
-    const dir = join(root, 'x'.repeat(socketPathBytes - suffixBytes - Buffer.byteLength(root) - 1));
+    const padBytes = socketPathBytes - Buffer.byteLength(SOCKET_SUFFIX) - Buffer.byteLength(root) - 1;
+    const padCharBytes = Buffer.byteLength(pad);
+    const padding = pad.repeat(Math.floor(padBytes / padCharBytes)) + 'x'.repeat(padBytes % padCharBytes);
+    const dir = join(root, padding);
     mkdirSync(dir);
-    expect(Buffer.byteLength(dir) + suffixBytes).toBe(socketPathBytes);
+    expect(Buffer.byteLength(dir + SOCKET_SUFFIX)).toBe(socketPathBytes);
     return dir;
   }
 
@@ -557,6 +552,15 @@ describe('nanomind-guard-client', () => {
     },
   );
 
+  // sun_path is a byte limit. With two-byte padding the path is over it in
+  // bytes and well under it in characters, so a check that counted characters
+  // would keep the socket under TMPDIR.
+  it('moves the socket to /tmp when its path is over SOCKET_PATH_MAX_BYTES in bytes but not in characters', async () => {
+    const dir = tmpdirForSocketPathOf(SOCKET_PATH_MAX_BYTES + 2, 'é');
+    expect((dir + SOCKET_SUFFIX).length).toBeLessThanOrEqual(SOCKET_PATH_MAX_BYTES);
+    expect(await socketDirUnderTmpdir(dir)).toBe('/tmp');
+  });
+
   it('does not leak the temp socket file after the test', async () => {
     const daemon = await startMockDaemon((_line, conn) => {
       conn.write(JSON.stringify(bypassResponse) + '\n');
@@ -564,8 +568,8 @@ describe('nanomind-guard-client', () => {
     });
     const path = daemon.socketPath;
     expect(existsSync(path)).toBe(true);
-    // afterEach removes; nothing to assert here. This test mostly documents
-    // the cleanup contract for readers.
+    // tempDir removes it when the test finishes; nothing to assert here.
+    // This test mostly documents the cleanup contract for readers.
   });
 });
 

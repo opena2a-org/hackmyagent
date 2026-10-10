@@ -3147,6 +3147,23 @@ function isRealCalendarDate(value: string): boolean {
 }
 
 /**
+ * The most UTF-16 code units of one `.hmaignore` field that an error message
+ * or the `hmaignore` disclosure repeats. A longer line is still parsed and
+ * applied in full; only its echo is cut, so a 4 MB line no longer makes a
+ * report that carries it twice (as `rule` and again as `path`).
+ */
+export const HMAIGNORE_ECHO_MAX = 1024;
+
+/** `text`, or its first HMAIGNORE_ECHO_MAX code units and its full length. */
+function boundHmaIgnoreEcho(text: string): string {
+  if (text.length <= HMAIGNORE_ECHO_MAX) return text;
+  // Never end on the first half of a surrogate pair.
+  const high = text.charCodeAt(HMAIGNORE_ECHO_MAX - 1);
+  const cut = high >= 0xd800 && high <= 0xdbff ? HMAIGNORE_ECHO_MAX - 1 : HMAIGNORE_ECHO_MAX;
+  return `${text.slice(0, cut)}… (${text.length} characters)`;
+}
+
+/**
  * The two-step `.hmaignore` parser, steps (a)-(h).
  * `today` is the scan clock's UTC calendar date as `YYYY-MM-DD`, injected so
  * the row table in the tests is deterministic; a rule is active while
@@ -3192,7 +3209,7 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
       }
       const value = token.slice('expires:'.length);
       if (!isRealCalendarDate(value)) {
-        attrError = `\`${token}\` is not a valid date; write \`expires:YYYY-MM-DD\``;
+        attrError = `\`${boundHmaIgnoreEcho(token)}\` is not a valid date; write \`expires:YYYY-MM-DD\``;
         break;
       }
       expires = value;
@@ -3226,7 +3243,7 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
       const wellFormed = pattern.includes('*')
         ? CHECK_PATTERN_WITH_STAR.test(pattern)
         : CHECK_PATTERN_EXACT.test(pattern);
-      if (!wellFormed) { fail(`\`${pattern}\` is not a check pattern; write \`!<CHECK-ID>\` (for example \`!NEMO-009\`), or a path without the \`!\``); continue; }
+      if (!wellFormed) { fail(`\`${boundHmaIgnoreEcho(pattern)}\` is not a check pattern; write \`!<CHECK-ID>\` (for example \`!NEMO-009\`), or a path without the \`!\``); continue; }
       attach({
         channel: CHECK_CHANNEL,
         checkId: pattern.toUpperCase(),
@@ -3249,11 +3266,11 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
         // contains `/`, `\`, `.` or whitespace: not a check; the line is a path
       } else if (suffix.includes('*')) {
         if (/^[*-]+$/.test(suffix)) {
-          suffixError = `\`<path>:*\` is not a form; write \`${prefix}\` to exclude the whole path`;
+          suffixError = `\`<path>:*\` is not a form; write \`${boundHmaIgnoreEcho(prefix)}\` to exclude the whole path`;
         } else if (CHECK_PATTERN_WITH_STAR.test(suffix)) {
           isPathCheck = true;
         } else {
-          suffixError = `\`${suffix}\` is a malformed check pattern; use letters, digits, \`-\` and \`*\` only`;
+          suffixError = `\`${boundHmaIgnoreEcho(suffix)}\` is a malformed check pattern; use letters, digits, \`-\` and \`*\` only`;
         }
       } else if (CHECK_PATTERN_EXACT.test(suffix)) {
         isPathCheck = true;
@@ -3585,20 +3602,22 @@ export function buildHmaIgnoreDisclosure(
       const absorbedBy = r.channel === PATH_CHECK_CHANNEL
         ? wholePathRules.find((wp) => isPathIgnored(r.path as string, [wp.path as string]))
         : undefined;
+      // Every field taken from the line's own text is echoed bounded; the
+      // rule itself was matched above and during the scan in full.
       return {
         line: r.line,
-        rule: r.rule,
+        rule: boundHmaIgnoreEcho(r.rule),
         channel: r.channel,
-        ...(r.path !== undefined ? { path: r.path } : {}),
-        ...(r.checkId !== undefined ? { checkId: r.checkId } : {}),
-        ...(r.reason !== undefined ? { reason: r.reason } : {}),
+        ...(r.path !== undefined ? { path: boundHmaIgnoreEcho(r.path) } : {}),
+        ...(r.checkId !== undefined ? { checkId: boundHmaIgnoreEcho(r.checkId) } : {}),
+        ...(r.reason !== undefined ? { reason: boundHmaIgnoreEcho(r.reason) } : {}),
         ...(r.expires !== undefined ? { expires: r.expires } : {}),
         matched: matchedByLine.get(r.line) ?? 0,
         ...(excludedByLine.get(r.line)?.length ? { excluded: [...excludedByLine.get(r.line)!] } : {}),
         ...(absorbedBy ? { redundantTo: absorbedBy.line } : {}),
       };
     }),
-    errors: parsed.errors.map((e) => ({ line: e.line, rule: e.rule, error: e.error })),
+    errors: parsed.errors.map((e) => ({ line: e.line, rule: boundHmaIgnoreEcho(e.rule), error: e.error })),
   };
 }
 
