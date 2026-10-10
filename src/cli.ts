@@ -12276,20 +12276,26 @@ program
   .option('-d, --directory <dir>', 'Scan a specific directory to collect check metadata from findings')
   .option('--json', 'Output as JSON (default)')
   .action(async (options: { directory?: string }) => {
-    const { getAttackClass, getTaxonomyMap, getCheckSeverity, getDeclaredCheckIdExclusions } = require('./hardening/taxonomy');
+    const { getAttackClass, getCanonicalClass, getTaxonomyMap, getCheckSeverity, getDeclaredCheckIdExclusions } = require('./hardening/taxonomy');
 
     // Build static registry from taxonomy map (covers all known checks)
     const taxMap = getTaxonomyMap();
-    const metadata: Record<string, { checkId: string; name: string; category: string; attackClass: string; severity: string }> = {};
+    const metadata: Record<string, { checkId: string; name: string; category: string; attackClass: string; canonicalClass: string; severity: string }> = {};
+    // `attackClass` stays the family code; `canonicalClass` is the one of the
+    // ten classes that family belongs to. An unknown family throws here
+    // rather than being published as if it were a class.
+    const canonicalOf = (family: string): string => (family ? getCanonicalClass(family) : '');
 
     // Add all checks from taxonomy (the authoritative source of check IDs)
     for (const checkId of Object.keys(taxMap)) {
       const prefix = checkId.split('-').slice(0, -1).join('-') || checkId.split('-')[0];
+      const attackClass = taxMap[checkId] || '';
       metadata[checkId] = {
         checkId,
         name: checkId,
         category: prefix.toLowerCase(),
-        attackClass: taxMap[checkId] || '',
+        attackClass,
+        canonicalClass: canonicalOf(attackClass),
         severity: getCheckSeverity(checkId),
       };
     }
@@ -12308,11 +12314,13 @@ program
           metadata[finding.checkId].category = finding.category;
           metadata[finding.checkId].severity = finding.severity;
         } else {
+          const attackClass = getAttackClass(finding.checkId) || '';
           metadata[finding.checkId] = {
             checkId: finding.checkId,
             name: finding.name,
             category: finding.category,
-            attackClass: getAttackClass(finding.checkId) || '',
+            attackClass,
+            canonicalClass: canonicalOf(attackClass),
             severity: finding.severity,
           };
         }
