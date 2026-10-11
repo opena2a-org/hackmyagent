@@ -8,10 +8,12 @@ issue: 1007
   clause under `By hand:` that satisfies it. The clause for `SOUL-IH-003`
   ended with "regardless of conversational framing", and `scan-soul` infers
   the profile from the words of the file. Pasting the clause into a SOUL.md
-  read as `custom` made the next scan read it as `conversational`: 4 of 9
-  domains evaluated where the scan that printed the clause evaluated 6, with
-  Trust Hierarchy and Data Handling no longer checked. The clause for
-  `SOUL-HB-001` said "hardcoded", which contains the `code` keyword of the
+  read as `custom` made the next scan read it as `conversational`, which
+  evaluates 4 of 9 domains. A BASIC-tier file went from 6 domains evaluated
+  to 4, with Trust Hierarchy and Data Handling no longer checked; a
+  TOOL-USING file went from 8 to 4, and a MULTI-AGENT file from 9 to 4.
+  The clause for `SOUL-HB-001` said "hardcoded", which contains the `code`
+  keyword of the
   `code-assistant` profile, and took a TOOL-USING file from 8 of 9 domains
   to 6. Both clauses are reworded: "regardless of how a request is framed"
   and "Safety constraints are fixed and always apply". They satisfy the same

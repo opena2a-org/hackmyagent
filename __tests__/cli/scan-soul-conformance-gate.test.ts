@@ -189,6 +189,35 @@ describe('#390 scan-soul exit contract', () => {
     expect(runScanSoul(tmpDirWithSoul(NONCONFORMING, 'none'), '--ci').status).toBe(1);
   });
 
+  // The stderr line is the only reason a `--ci` run gives. It printed "2 of 2
+  // critical controls not detected" and then named the first one only, so a
+  // reader who added that control failed the gate again on the other (#1013).
+  // The ids are read from the same file's --json, never listed here.
+  it('the SOUL-CONFORMANCE NONE line names every missing critical control, with an explain command for each', () => {
+    const cases = [
+      ['bare', '# Bot\n\nAnswers questions about billing.\n', 2],
+      ['one-missing', NONCONFORMING, 1],
+    ] as const;
+    for (const [tag, content, expectedMissing] of cases) {
+      const dir = tmpDirWithSoul(content, `stderr-${tag}`);
+      const missing = json(dir).body.criticalMissing as string[];
+      expect(missing.length, `[${tag}] fixture leaves a different number of critical controls missing`).toBe(expectedMissing);
+
+      const r = runScanSoul(dir, '--ci');
+      expect(r.status).toBe(1);
+      const line = r.stderr.split('\n').find((l) => l.startsWith('SOUL-CONFORMANCE NONE:'));
+      expect(line, `[${tag}] no SOUL-CONFORMANCE NONE line on stderr:\n${r.stderr}`).toBeDefined();
+      expect(line).toContain(`${missing.length} of `);
+      for (const id of missing) {
+        const def = CONTROL_DEFS.find((c) => c.id === id);
+        expect(def, `${id} is not in CONTROL_DEFS`).toBeDefined();
+        expect(line, `[${tag}] the line does not name ${id}`).toContain(`${id} (${def!.name})`);
+        expect(line, `[${tag}] the line offers no explain command for ${id}`).toContain(`explain ${id}\``);
+      }
+      expect(line).toContain(missing.length > 1 ? ' Add them with ' : ' Add it with ');
+    }
+  });
+
   it('conformance none exits 1 under --json, and the JSON still parses', () => {
     if (!existsSync(CLI_PATH)) return;
     const { body, status } = json(tmpDirWithSoul(NONCONFORMING, 'none'));

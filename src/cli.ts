@@ -11502,8 +11502,9 @@ Examples:
           // `harden-soul` works and is non-destructive, but it took the
           // canonical prose fixture from 50 lines to 456. For one missing
           // control that is a heavy remediation to be the ONLY offer, so the
-          // small honest fix is quoted here too. The clause is the one
-          // `harden-soul` itself generates for the control, which is why
+          // small honest fix is quoted here too. The clause is authored in
+          // `HAND_EDIT_CLAUSES`, not taken from the `harden-soul` template,
+          // so nothing derives it from the control's keywords. That is why
           // `__tests__/cli/scan-soul-conformance-gate.test.ts` feeds this
           // literal string back through the scanner: a fix line that stops
           // satisfying its own control is worse than no fix line.
@@ -11592,21 +11593,28 @@ Examples:
       // SOUL-PROFILE-MISMATCH lines below, which are `ciMode`-gated because
       // they also `process.exit(1)`; this one only explains a code already set.
       if (conformanceFails) {
-        const first = missingCritical[0];
-        const detail = first ? `${first.id} (${first.name})` : result.criticalMissing.join(', ');
-        // Same #273 reasoning as the Next Steps block: the control ID goes
-        // through `commandNaming`, and the sentence offering `explain` is
-        // dropped entirely rather than emitted with an unnameable operand.
-        const explainCmd = first
-          ? commandNaming(first.id, (cited) => `\`${CLI_PREFIX} explain ${cited}\``)
-          : undefined;
+        // Every missing control is named, not only the first (#1013): a file
+        // missing both printed "2 of 2 ... not detected" and then named one,
+        // so a reader who added that one failed the gate again on the other.
+        const detail = missingCritical.length > 0
+          ? missingCritical.map((c) => `${c.id} (${c.name})`).join(', ')
+          : result.criticalMissing.join(', ');
+        const several = result.criticalMissing.length > 1;
+        // Same #273 reasoning as the Next Steps block: each control ID goes
+        // through `commandNaming`, and an `explain` command whose operand
+        // cannot be named is dropped rather than emitted.
+        const explainCmds = missingCritical
+          .map((c) => commandNaming(c.id, (cited) => `\`${CLI_PREFIX} explain ${cited}\``))
+          .filter((cmd): cmd is string => cmd !== undefined);
         process.stderr.write(
           `SOUL-CONFORMANCE NONE: ${result.criticalMissing.length} of ${applicableCritical.length} `
           + `critical control${applicableCritical.length === 1 ? '' : 's'} not detected in ${soulFileName} `
-          + `— ${detail}. Add it with \`${CLI_PREFIX} harden-soul ${citationTarget(directory)}\`.`
-          + (explainCmd ? ` Run ${explainCmd} for the clause the scanner looks for.` : '')
+          + `— ${detail}. Add ${several ? 'them' : 'it'} with \`${CLI_PREFIX} harden-soul ${citationTarget(directory)}\`.`
+          + (explainCmds.length > 0
+            ? ` Run ${explainCmds.join(' and ')} for the clause${explainCmds.length === 1 ? '' : 's'} the scanner looks for.`
+            : '')
           + (options.deep
-            ? ` Controls written as prose in other words are reported missing, and the semantic pass did not recover this one.\n`
+            ? ` Controls written as prose in other words are reported missing, and the semantic pass did not recover ${several ? 'these' : 'this one'}.\n`
             : ` Controls written as prose in other words are reported missing; re-check with --deep.\n`),
         );
       }
