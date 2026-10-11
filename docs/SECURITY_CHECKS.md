@@ -450,21 +450,21 @@ Detects malicious skills, including patterns from the ClawHavoc campaign.
 
 | Check ID | Severity | Fixable | Description |
 |----------|----------|---------|-------------|
-| SKILL-001 | Critical | No | Unsigned skill detected: skill lacks cryptographic signature |
-| SKILL-002 | Critical | No | Invalid signature: skill signature fails verification |
-| SKILL-003 | Critical | No | Revoked skill: skill is on global blocklist |
-| SKILL-004 | Critical | No | Reverse shell detected: skill contains nc/bash reverse shell patterns |
-| SKILL-005 | Critical | No | Credential exfiltration: skill accesses wallet/SSH keys/API keys |
-| SKILL-006 | High | No | Network exfiltration: skill sends data to external endpoints |
-| SKILL-007 | High | No | Obfuscated code: skill contains base64/hex encoded payloads |
-| SKILL-008 | High | No | ClickFix pattern: skill uses clipboard manipulation for social engineering |
-| SKILL-009 | Medium | Yes | Excessive permissions: skill requests more permissions than needed |
-| SKILL-010 | Medium | No | Untrusted publisher: skill from unverified publisher |
-| SKILL-011 | High | No | Persistence mechanism: skill installs cron/launchd/systemd entries |
-| SKILL-012 | Critical | No | ClawHavoc signature: matches known ClawHavoc malware patterns |
+| SKILL-001 | Medium | No | Unsigned skill: skill file lacks a cryptographic signature for authenticity verification |
+| SKILL-002 | Critical | No | Remote fetch pattern: skill contains a pattern that fetches and executes remote code, such as a download piped to a shell |
+| SKILL-003 | High | No | Heartbeat installation: skill installs periodic or scheduled tasks |
+| SKILL-004 | Critical | Yes | Filesystem write outside sandbox: skill requests broad filesystem access (`filesystem:*`, `filesystem:~/`) |
+| SKILL-005 | Critical or Medium | No | Credential file access: skill references credential or sensitive configuration files (Critical when declared in the frontmatter, Medium when only mentioned in the body) |
+| SKILL-006 | Critical | No | Data exfiltration pattern: skill contains patterns commonly used to send data to external endpoints |
+| SKILL-007 | Critical | No | ClickFix social engineering: skill tells the user to copy and run commands |
+| SKILL-008 | Critical | No | Reverse shell pattern: skill contains patterns commonly used to open a reverse shell |
+| SKILL-009 | High | No | Typosquatting name: skill name is close to the name of a popular skill |
+| SKILL-010 | Critical | No | Env file exfiltration: skill reads environment files or variables |
+| SKILL-011 | Critical | No | Browser data access: skill reads browser data, cookies or local storage |
+| SKILL-012 | Critical | No | Crypto wallet access: skill reads cryptocurrency wallets or seed phrases |
 | SKILL-018 | Medium | No | Undeclared capability: skill uses a capability not declared in its frontmatter |
 | SKILL-019 | Medium | Yes | Stale skill signature: skill content changed after it was signed (signature hash mismatch) |
-| SKILL-020 | Medium (High with a malice signal) | No | Missing or incomplete frontmatter: skill lacks a YAML frontmatter block with name, version and capabilities |
+| SKILL-020 | Medium (High with a malice signal) | No | Missing YAML frontmatter: skill has no YAML frontmatter block (reported as Incomplete frontmatter when the block lacks name, version or capabilities) |
 | SKILL-021 | High | No | Overprivileged permissions: skill declares a capability combination that enables exfiltration |
 | SKILL-022 | Critical | No | Environment variable exfiltration risk: skill reads environment variables and has outbound network capability |
 | SKILL-023 | High | No | Obfuscated code pattern: skill contains obfuscated code that may hide its behavior |
@@ -473,20 +473,20 @@ Detects malicious skills, including patterns from the ClawHavoc campaign.
 
 **ClawHavoc Campaign:** A malware campaign targeting OpenClaw users through malicious skills distributed via unofficial channels. Skills contain reverse shells, credential stealers, and persistence mechanisms.
 
-**ClickFix Attacks:** Social engineering technique where malicious skills manipulate clipboard contents to trick users into executing harmful commands.
+**ClickFix Attacks:** Social engineering technique where malicious skills trick users into copying and pasting harmful commands.
 
 ### HEARTBEAT Checks (HEARTBEAT-001 to HEARTBEAT-007)
 
-Detects heartbeat/cron abuse and persistence mechanisms.
+Checks heartbeat files for unverified sources, missing integrity controls, dangerous capabilities and schedule limits.
 
 | Check ID | Severity | Fixable | Description |
 |----------|----------|---------|-------------|
-| HEARTBEAT-001 | Critical | Yes | Unauthorized heartbeat: heartbeat configured without user consent |
-| HEARTBEAT-002 | High | No | Excessive frequency: heartbeat interval under 60 seconds |
-| HEARTBEAT-003 | High | No | External heartbeat URL: heartbeat sends data outside localhost |
-| HEARTBEAT-004 | Medium | Yes | Missing heartbeat auth: heartbeat endpoint lacks authentication |
-| HEARTBEAT-005 | High | No | Heartbeat data exfil: heartbeat payload contains sensitive data |
-| HEARTBEAT-006 | Critical | No | Cron backdoor: heartbeat registered malicious cron entries |
+| HEARTBEAT-001 | Critical | No | Unverified heartbeat URL: heartbeat contacts an external URL without verification |
+| HEARTBEAT-002 | High | No | No hash pinning: heartbeat lacks hash pinning for content integrity verification |
+| HEARTBEAT-003 | High | No | Unsigned heartbeat: heartbeat file lacks a cryptographic signature |
+| HEARTBEAT-004 | Critical | No | Dangerous capabilities: heartbeat requests dangerous capabilities |
+| HEARTBEAT-005 | Medium | No | Excessive frequency: heartbeat runs more often than every 5 minutes |
+| HEARTBEAT-006 | Medium | No | No active hours limit: heartbeat lacks time-of-day restrictions |
 | HEARTBEAT-007 | High | Yes | Expired heartbeat: skill signature passed its expires_at date and needs renewal |
 
 ### GATEWAY Checks (GATEWAY-001 to GATEWAY-008)
@@ -495,16 +495,16 @@ Detects gateway misconfigurations related to GHSA-g8p2-7wf7-98mq and other vulne
 
 | Check ID | Severity | Fixable | Description |
 |----------|----------|---------|-------------|
-| GATEWAY-001 | Critical | Yes | GHSA-g8p2 vulnerable: gateway allows unauthenticated skill installation |
-| GATEWAY-002 | Critical | Yes | Open gateway port: gateway bound to 0.0.0.0 instead of 127.0.0.1 |
-| GATEWAY-003 | High | Yes | Missing gateway auth: gateway lacks API key or token auth |
-| GATEWAY-004 | High | No | Permissive CORS: gateway allows requests from any origin |
-| GATEWAY-005 | Medium | Yes | Insecure transport: gateway uses HTTP instead of HTTPS |
-| GATEWAY-006 | High | No | Gateway path traversal: gateway allows ../ in skill paths |
+| GATEWAY-001 | Critical | Yes | Bound to 0.0.0.0: gateway is bound to all interfaces instead of 127.0.0.1 |
+| GATEWAY-002 | Critical | No | Missing WebSocket origin validation: gateway config has no `security.websocketOrigins` (GHSA-g8p2) |
+| GATEWAY-003 | Critical | Yes | Token exposed in config: plaintext authentication token stored in the configuration file |
+| GATEWAY-004 | Critical | Yes | Approval confirmations disabled: execution approval confirmations are turned off |
+| GATEWAY-005 | Critical | Yes | Sandbox disabled: `sandbox.enabled` is false in the configuration file |
+| GATEWAY-006 | Critical | No | Container escape risk: Docker configuration allows container escape |
 | GATEWAY-007 | Critical | No | Open DM policy with wildcard: direct message policy allows messages from any source |
 | GATEWAY-008 | High | No | Tailscale Funnel exposure: Tailscale Funnel is enabled, exposing the agent to the public internet |
 
-**CVE Reference:** [GHSA-g8p2-7wf7-98mq](https://github.com/advisories/GHSA-g8p2-7wf7-98mq), a remote skill installation vulnerability allowing attackers to install arbitrary skills without authentication.
+**Advisory reference:** [GHSA-g8p2-7wf7-98mq](https://github.com/advisories/GHSA-g8p2-7wf7-98mq). Without WebSocket origin validation, any website can connect to the gateway and send it commands. GATEWAY-002 reports a gateway config that does not set allowed origins.
 
 ### CONFIG Checks (CONFIG-001 to CONFIG-009)
 
@@ -512,14 +512,14 @@ Detects insecure configuration settings.
 
 | Check ID | Severity | Fixable | Description |
 |----------|----------|---------|-------------|
-| CONFIG-001 | Critical | Yes | Sandbox disabled: skill sandbox protection is disabled |
-| CONFIG-002 | Critical | Yes | Approval disabled: skill execution approval prompts are disabled |
-| CONFIG-003 | High | Yes | Debug mode enabled: debug mode exposes sensitive information |
-| CONFIG-004 | High | No | Hardcoded secrets: API keys in configuration files |
-| CONFIG-005 | Medium | Yes | Permissive file access: skills can access files outside project |
-| CONFIG-006 | Medium | Yes | Missing skill allowlist: no explicit skill whitelist configured |
+| CONFIG-001 | Critical | No | Session file exposure: a session or token file that may contain credentials is present |
+| CONFIG-002 | High | No | SOUL.md injection vectors: SOUL.md contains potential prompt injection patterns |
+| CONFIG-003 | Critical | No | Daemon running as root: daemon script runs with root privileges |
+| CONFIG-004 | Critical | No | Plaintext API keys: plaintext API key found in an environment file |
+| CONFIG-005 | High | No | Memory poisoning patterns: memory.json contains patterns that could poison agent memory |
+| CONFIG-006 | High | No | Moltbook integration risk: Moltbook auto-follow is enabled, so the agent follows untrusted agents automatically |
 | CONFIG-007 | Critical | No | Unrestricted elevated execution: elevated execution set to full access without restrictions or approvals bypassed |
-| CONFIG-008 | High | No | Sandbox disabled in config: sandbox execution environment is explicitly disabled in configuration |
+| CONFIG-008 | High | No | Sandbox disabled: sandbox execution environment is explicitly disabled in configuration |
 | CONFIG-009 | High | No | Weak gateway token: gateway authentication token is too short (< 24 characters) |
 
 ### SUPPLY Checks (SUPPLY-001 to SUPPLY-008)
@@ -528,10 +528,10 @@ Detects supply chain attack vectors and ClawHavoc indicators of compromise.
 
 | Check ID | Severity | Fixable | Description |
 |----------|----------|---------|-------------|
-| SUPPLY-001 | Critical | No | Unofficial skill source: skills installed from untrusted registries |
-| SUPPLY-002 | High | No | Typosquatting detected: skill name similar to popular skill |
-| SUPPLY-003 | High | No | Dependency confusion: skill loads dependencies from public registry |
-| SUPPLY-004 | Medium | No | Missing lockfile: skill dependencies not pinned to specific versions |
+| SUPPLY-001 | Medium or High | No | Unverified publisher: skill publisher identity has not been verified (High when the skill also shows malicious signals) |
+| SUPPLY-002 | Medium | No | Skill not in registry: skill has not been registered with a trusted skill registry |
+| SUPPLY-003 | Critical | No | Known malicious skill pattern: skill matches known malicious patterns from the ClawHavoc campaign |
+| SUPPLY-004 | Medium or High | No | Version drift detection: skill lacks an `installed_hash` for detecting unauthorized modifications (High when the skill also shows malicious signals) |
 | SUPPLY-005 | Critical | No | ClawHavoc C2 IP detected: skill contains known command-and-control IP address |
 | SUPPLY-006 | Critical | No | ClawHavoc malware filename: skill references known malware payload filename |
 | SUPPLY-007 | High | No | ClawHavoc ClickFix pattern: skill contains social engineering instructions to execute malware |
@@ -550,24 +550,17 @@ Detects known CVEs affecting OpenClaw installations.
 
 ### Auto-Fix Capabilities
 
-The following OpenClaw checks can be automatically fixed:
+Of the checks in the tables above, `--fix` changes these:
 
 | Check ID | Auto-Fix Action |
 |----------|-----------------|
-| SKILL-009 | Reduce skill permissions to minimum required |
+| SKILL-004 | Rewrite `filesystem:*` to `filesystem:./` and `filesystem:~/` to `filesystem:./data/` |
 | SKILL-019 | Recompute the hash and rewrite the skill's signature block |
-| HEARTBEAT-001 | Remove unauthorized heartbeat configuration |
-| HEARTBEAT-004 | Add authentication to heartbeat endpoint |
 | HEARTBEAT-007 | Renew the skill signature with a 7-day expiry |
-| GATEWAY-001 | Patch GHSA-g8p2 vulnerability |
-| GATEWAY-002 | Bind gateway to 127.0.0.1 |
-| GATEWAY-003 | Enable API key authentication |
-| GATEWAY-005 | Configure HTTPS transport |
-| CONFIG-001 | Enable sandbox protection |
-| CONFIG-002 | Enable approval prompts |
-| CONFIG-003 | Disable debug mode |
-| CONFIG-005 | Restrict file access to project directory |
-| CONFIG-006 | Generate skill allowlist from installed skills |
+| GATEWAY-001 | Change `gateway.host` from 0.0.0.0 to 127.0.0.1 |
+| GATEWAY-003 | Replace the plaintext token with `${OPENCLAW_AUTH_TOKEN}` |
+| GATEWAY-004 | Turn execution approval confirmations back on |
+| GATEWAY-005 | Set `sandbox.enabled` to true |
 
 ---
 
