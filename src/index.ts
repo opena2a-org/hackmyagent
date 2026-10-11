@@ -202,6 +202,8 @@ export {
   getPlugin,
   listPlugins,
   clearRegistry,
+  fixAllowedByPolicy,
+  FIX_CAPABILITY,
 } from './plugins/core';
 
 export type {
@@ -220,6 +222,7 @@ export type { ProjectStore, LegacyKeyMaterial } from './store/project-store';
 
 // OpenClaw plugins
 export { createPlugin as createCredVaultPlugin } from './plugins/credvault';
+export { createPlugin as createSecretlessPlugin } from './plugins/secretless';
 export { createPlugin as createSigncryptPlugin } from './plugins/signcrypt';
 export { createPlugin as createSkillguardPlugin } from './plugins/skillguard';
 

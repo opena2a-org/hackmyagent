@@ -141,7 +141,7 @@ const all = listPlugins();           // List all registered plugins
 
 ## Built-in Plugins
 
-HackMyAgent ships with 3 built-in plugins:
+HackMyAgent ships with 4 built-in plugins:
 
 | Plugin | Factory | What it does |
 |--------|---------|-------------|
@@ -178,4 +178,38 @@ const aim = new AIMCore({ agentName: 'my-agent' });
 
 await myPlugin.init({ aimCore: aim });
 const findings = await myPlugin.scan('/path/to/agent');
+```
+
+### Capability policy
+
+Each built-in plugin asks the AIM policy for the `file:write` capability
+before its fix step, dry runs included. The policy is `policy.yaml` in the
+aim-core data directory (`aim.getDataDir()`; for `fix-all --with-aim` that is
+the `aim/` directory of the project's store). Rules match in order and the
+first match wins; `plugins` limits a rule to the named plugins: `credvault`,
+`secretless`, `signcrypt`, `skillguard`.
+
+```yaml
+version: "1"
+defaultAction: allow
+rules:
+  - capability: file:write
+    action: deny
+    plugins: [credvault]
+```
+
+With this policy, Credential Protection still scans and reports, but its fix
+step returns no remediations and writes a `fix.denied` event to the audit log.
+The other three plugins fix as before. Without a `policy.yaml`, nothing is
+restricted.
+
+A custom plugin runs the same check with `fixAllowedByPolicy`:
+
+```typescript
+import { fixAllowedByPolicy } from 'hackmyagent';
+
+async fix(agentDir: string): Promise<Remediation[]> {
+  if (!fixAllowedByPolicy(this.aimCore, 'my-plugin', agentDir)) return [];
+  // ...apply fixes
+}
 ```

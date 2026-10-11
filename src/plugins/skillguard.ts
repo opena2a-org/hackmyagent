@@ -9,6 +9,7 @@ import type {
   FixOptions,
   PluginInitOptions,
 } from './core';
+import { fixAllowedByPolicy } from './core';
 import type { AIMCore } from '@opena2a/aim-core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -304,6 +305,8 @@ export class SkillGuardPlugin implements OpenA2APlugin {
   async fix(agentDir: string, options?: FixOptions): Promise<Remediation[]> {
     const remediations: Remediation[] = [];
     const findings = await this.scan(agentDir);
+
+    if (!fixAllowedByPolicy(this.aimCore, 'skillguard', agentDir)) return [];
 
     if (options?.dryRun) {
       return findings
