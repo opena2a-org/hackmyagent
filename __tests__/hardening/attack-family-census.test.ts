@@ -140,6 +140,29 @@ describe('docs/attack-family-census.md agrees with the taxonomy', () => {
     }
   });
 
+  it('counts the check ids and family codes TAXONOMY_MAP holds in this tree', () => {
+    const text = readFileSync(CENSUS_PATH, 'utf8');
+    const m = /^\| HackMyAgent taxonomy \| .*?, (\d+) check ids \| (.+?) \| (\d+) \|$/m.exec(text);
+    expect(m, 'census has the HackMyAgent taxonomy register row').not.toBeNull();
+    const map = taxonomy.getTaxonomyMap();
+    expect({ checkIds: Number(m![1]), families: Number(m![3]) }).toEqual({
+      checkIds: Object.keys(map).length,
+      families: new Set(Object.values(map)).size,
+    });
+  });
+
+  it('each row lists exactly the TAXONOMY_MAP keys that map to its code', () => {
+    const map = taxonomy.getTaxonomyMap();
+    const wrong = loadCensus()
+      .rows.map((r) => ({
+        code: r.code,
+        census: [...r.checks].sort(),
+        taxonomy: Object.keys(map).filter((id) => map[id] === r.code).sort(),
+      }))
+      .filter((r) => r.census.join() !== r.taxonomy.join());
+    expect(wrong).toEqual([]);
+  });
+
   it('every check id a row lists maps to that code, or to the family it folds or merges into', () => {
     const map = taxonomy.getTaxonomyMap();
     const wrong: string[] = [];
