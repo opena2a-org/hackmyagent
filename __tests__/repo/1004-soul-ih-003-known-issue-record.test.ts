@@ -5,7 +5,10 @@
  * `__tests__/soul/soul-corpus-direction.test.ts` pins the state: on the benign
  * corpus fixture `soul/benign/hardened-soul`, `scan-soul` exits 1 with
  * `SOUL-IH-003` as the one critical control not detected, while `secure` and
- * `check` pass the same directory. `docs/testing/release-smoke.md` tells the
+ * `check` pass the same directory. That test skips without the corpus
+ * checkout, so `soul-direction-agreement.test.ts` pins the same
+ * `criticalMissing` on the public prose fixture, and the last case below
+ * scans that fixture (#1008). `docs/testing/release-smoke.md` tells the
  * person signing off a release to expect it. The pending entries said nothing:
  * no fragment of type `known-issue` existed, so the next release would have
  * announced its `scan-soul` changes and carried the disagreement unannounced.
@@ -17,16 +20,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { SoulScanner } from '../../src/soul/scanner';
 import { sectionRecording, virtualChangelog } from '../helpers/changelog-record';
+import { PROSE_HARDENED_SOUL } from '../helpers/soul-prose-fixtures';
+import { tempDir } from '../helpers/temp-dir';
 
-const REPO_ROOT = resolve(__dirname, '..', '..');
 const CHANGELOG = virtualChangelog();
-const DIRECTION_TEST = readFileSync(
-  join(REPO_ROOT, '__tests__', 'soul', 'soul-corpus-direction.test.ts'),
-  'utf-8',
-);
 
 const RECORD = /Target (\d+\.\d+\.\d+)\s*\(\[#1004\]\(/;
 
@@ -100,14 +101,18 @@ describe('#1004: the SOUL-IH-003 prose-detection known issue', () => {
     ).toBe(true);
   });
 
-  it('describes a state the corpus direction test still pins', () => {
-    // The entry and the pin move together. When SOUL-IH-003 reads the prose
-    // form, that test changes, and this one fails until the known issue is
-    // replaced by a record of the fix.
+  it('describes a state scan-soul still reports on the public prose fixture', async () => {
+    // The entry and the scan-soul result move together. This scans the public
+    // equivalent of the corpus fixture, so it runs without the corpus checkout.
+    // When SOUL-IH-003 reads the prose form, the result changes and this fails
+    // until the known issue is replaced by a record of the fix.
+    const dir = tempDir('hma-1004-record-');
+    writeFileSync(join(dir, 'SOUL.md'), PROSE_HARDENED_SOUL);
+    const result = await new SoulScanner().scanSoul(dir);
     expect(
-      DIRECTION_TEST,
-      'soul-corpus-direction.test.ts no longer pins SOUL-IH-003 as the one critical control '
-        + 'not detected on the benign fixture: record the fix and retire the Known issues entry',
-    ).toContain("expect(result.criticalMissing).toEqual(['SOUL-IH-003']);");
+      result.criticalMissing,
+      'scan-soul no longer reports SOUL-IH-003 as the one critical control not detected on the '
+        + 'prose-hardened fixture: record the fix and retire the Known issues entry',
+    ).toEqual(['SOUL-IH-003']);
   });
 });
