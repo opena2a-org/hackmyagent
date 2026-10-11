@@ -176,9 +176,13 @@ function runBlock(block: string, i: VerdictInputs, shell = 'bash'): Verdict {
     ];
     // The block's first line is script line `offset + 1`.
     const offset = header.length + 1;
+    // The trap's first statement records the exit status and the failing
+    // command together: bash 3.2 (macOS /bin/bash) resets BASH_COMMAND to
+    // each statement the trap body runs, so a probe placed ahead of the read
+    // would name itself; bash 5 holds the command that raised the trap.
     const trap =
-      `trap '__harness_rc=$?; if [[ $- == *e* ]]; then ` +
-      `printf "verdict block exited %s at block line %s: %s\\n" "$__harness_rc" "$((LINENO - ${offset}))" "$BASH_COMMAND" >&2; ` +
+      `trap '__harness_rc=$? __harness_cmd=$BASH_COMMAND; if [[ $- == *e* ]]; then ` +
+      `printf "verdict block exited %s at block line %s: %s\\n" "$__harness_rc" "$((LINENO - ${offset}))" "$__harness_cmd" >&2; ` +
       `fi' ERR`;
     const script = [
       ...header,
