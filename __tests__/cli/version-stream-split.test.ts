@@ -40,7 +40,8 @@ function runVersion(flag: string): { stdout: string; stderr: string; status: num
   const res = spawnSync(process.execPath, [CLI_PATH, flag], {
     encoding: 'utf8',
     timeout: 20000,
-    env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1', OPENA2A_TELEMETRY: 'on', XDG_CONFIG_HOME },
+    // A run that turns telemetry on points it at the discard port (#963).
+    env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1', OPENA2A_TELEMETRY: 'on', OPENA2A_TELEMETRY_URL: 'http://127.0.0.1:9', XDG_CONFIG_HOME },
   });
   return {
     stdout: (res.stdout ?? '').replace(STRIP_ANSI, ''),

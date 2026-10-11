@@ -358,7 +358,7 @@ Exit 2 is non-zero on purpose. A CI job that asked for a security verdict and go
 
 ## Telemetry
 
-Usage telemetry is on by default, and `hackmyagent --version` says so on its second line: `Telemetry: on (opt-out: OPENA2A_TELEMETRY=off ...)`. Each command sends one event to the OpenA2A Registry with these fields only: tool, version, a random install ID, event type, command name, success, duration, platform and Node major version (a failed command adds an error code to the name). No file paths, scanned content, arguments beyond the command name, or environment variables. Policy: [opena2a.org/telemetry](https://opena2a.org/telemetry).
+Usage telemetry is on by default, and `hackmyagent --version` says so on its second line: `Telemetry: on (opt-out: OPENA2A_TELEMETRY=off ...)`. Each command sends one event to the OpenA2A Registry with these fields only: tool, version, a random install ID, event type, command name, success, duration, platform and Node major version (a failed command adds an error code to the name). No file paths, scanned content, arguments beyond the command name, or environment variables. Policy: [opena2a.org/telemetry](https://opena2a.org/telemetry). Under CI (`CI`, `GITHUB_ACTIONS` and the other CI services' variables) and test runners (Vitest, Jest, `node --test`, `NODE_ENV=test`) it is off, and `--version` prints `Telemetry: off`, unless `OPENA2A_TELEMETRY=on` is set for the run.
 
 ```bash
 OPENA2A_TELEMETRY=off hackmyagent secure          # off for one run
