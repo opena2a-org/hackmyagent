@@ -15164,9 +15164,14 @@ async function checkRawUrl(
   let scanDir = tempDir;
   // Git clone for known forge URLs and .git suffix. The forge is the host
   // git contacts, so it is read from the URL without its userinfo:
-  // `https://<user>:<token>@gitlab.com/org/repo` is cloned too.
+  // `https://<user>:<token>@gitlab.com/org/repo` is cloned too. git ends the
+  // userinfo at the first `@` before the path and `withoutUrlUserinfo` at
+  // the last, so with two or more there git does not read the forge as the
+  // host. Such a URL is not cloned: it goes to `fetch`, as it did when the
+  // forge was matched on the URL as typed.
   const isGitUrl = url.endsWith('.git')
-    || /^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(withoutUrlUserinfo(url, 'git'));
+    || (/^https?:\/\/(gitlab\.com|bitbucket\.org|codeberg\.org|gitea\.com|sr\.ht)\//.test(withoutUrlUserinfo(url, 'git'))
+      && !/^https?:\/\/[^/?#@]*@[^/?#]*@/.test(url));
   // A user name and password (or token) in the URL reach `git clone` and
   // `fetch` and nothing else: every line printed, the `--json` document and
   // the name published to the registry are built from `shownUrl`. The two
@@ -15408,7 +15413,15 @@ async function checkRawUrl(
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
+    // git's own error lines can quote a URL's user name or password in a form
+    // that is not the URL as typed, which is all the last branch below takes
+    // out: `<scheme>://<user>@<host>` when it cannot ask for a password, or
+    // the whole URL with a control character replaced when it holds a line
+    // break. So when the clone of a forge URL with no `.git` and an `@`
+    // before its host fails, a URL earlier versions did not clone, those
+    // lines are not printed.
+    const forgeUserinfoCloneFailed = isGitUrl && !fetched && !url.endsWith('.git') && shownUrl !== url;
+    if (forgeUserinfoCloneFailed || message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(shownUrl))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
     } else if (message.includes('timeout') || message.includes('Timeout')) {

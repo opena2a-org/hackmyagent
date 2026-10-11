@@ -15,6 +15,12 @@
  * query or a `\` puts an `@` after the host. A password that holds a raw `?`,
  * which ends the authority inside the userinfo, is masked instead.
  *
+ * A forge URL with no `.git` is cloned when it has at most one `@` before its
+ * host. git ends the user name at the first `@`, so one with two goes to
+ * `fetch`. When the clone of one with an `@` fails, git's own error lines,
+ * which can quote the user name or the password in a form that is not the URL
+ * as typed, are not printed.
+ *
  * Hermetic: `git` is a shim on PATH that records its arguments and copies a
  * local fixture tree; the registry is a capture server on localhost that
  * records every request and answers 503, so the scan is also queued; and
@@ -54,7 +60,11 @@ const GIT_SHIM = `#!/bin/sh
 # Stands in for git: \`git clone ... <url> <dest>\` records its arguments and
 # copies the fixture tree to <dest>, or fails when HMA_TEST_GIT_FAIL is set,
 # or answers as a missing repository, quoting <url>, when
-# HMA_TEST_GIT_NOT_FOUND is set. Any other git command fails.
+# HMA_TEST_GIT_NOT_FOUND is set. When HMA_TEST_GIT_QUOTES is set it fails with
+# an error line that quotes <url> in a form git prints that is not <url> as
+# typed: "after-first-at" quotes it from its first @ on, as git quotes a URL
+# it cannot access, and "user-name" quotes <scheme>://<user>@<host>, as git
+# does when it cannot ask for a password. Any other git command fails.
 if [ "$1" = "clone" ]; then
   printf '%s\\n' "$@" > "$HMA_TEST_GIT_ARGS"
   for dest in "$@"; do url="$last"; last="$dest"; done
@@ -65,6 +75,18 @@ if [ "$1" = "clone" ]; then
   if [ -n "$HMA_TEST_GIT_NOT_FOUND" ]; then
     echo "remote: Repository not found." >&2
     echo "fatal: repository '$url' not found" >&2
+    exit 128
+  fi
+  if [ -n "$HMA_TEST_GIT_QUOTES" ]; then
+    scheme="\${url%%://*}"
+    rest="\${url#*://}"
+    if [ "$HMA_TEST_GIT_QUOTES" = "user-name" ]; then
+      authority="\${rest%%/*}"
+      user="\${authority%%@*}"
+      printf '%s\\n' "fatal: could not read Password for '$scheme://\${user%%:*}@\${authority##*@}': terminal prompts disabled" >&2
+    else
+      printf '%s\\n' "fatal: unable to access '$scheme://\${rest#*@}/': The requested URL returned error: 403" >&2
+    fi
     exit 128
   fi
   mkdir -p "$dest" && cp -R "$HMA_TEST_CLONE_SOURCE/." "$dest/"
@@ -125,6 +147,10 @@ let forgeUserinfoRun: Run;
 let forgePasswordOnlyRun: Run;
 let forgeEmptyUserinfoRun: Run;
 let questionPasswordRun: Run;
+let forgeNoUserinfoFailedRun: Run;
+let forgeEmailUserRun: Run;
+let forgeAtPasswordRun: Run;
+let forgeUserNameQuotedRun: Run;
 
 function captured(): { raw: string; requests: CapturedRequest[] } {
   const raw = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, 'utf8') : '';
@@ -261,6 +287,17 @@ beforeAll(async () => {
   // A password that holds a raw `?`, where git ends the authority, so git
   // reads the user name and the start of the password as a host and port.
   questionPasswordRun = run('question-password', ['--json'], { HMA_TEST_GIT_FAIL: '1' }, undefined, `https://${USER}:pa?${SECRET}@${REPO}.git`);
+  // Forge URLs with no `.git`, and a git that fails quoting the URL in a form
+  // that is not the URL as typed. First one with no user name or password,
+  // which earlier versions cloned too.
+  forgeNoUserinfoFailedRun = run('forge-no-userinfo-failed', [], { HMA_TEST_GIT_QUOTES: 'after-first-at' }, undefined, `https://${REPO}`);
+  // Two `@` before the host: an email address as the user name, and a raw `@`
+  // in the password. git ends the user name at the first `@`, so it would
+  // quote the rest, password included.
+  forgeEmailUserRun = run('forge-email-user', [], { HMA_TEST_GIT_QUOTES: 'after-first-at' }, undefined, `https://${USER}@example.com:${SECRET}@${REPO}`);
+  forgeAtPasswordRun = run('forge-at-password', ['--json'], { HMA_TEST_GIT_QUOTES: 'after-first-at' }, undefined, `https://${USER}:pa@${SECRET}@${REPO}`);
+  // One `@`, a user name and no password, and a git that cannot ask for one.
+  forgeUserNameQuotedRun = run('forge-user-name-quoted', ['--json'], { HMA_TEST_GIT_QUOTES: 'user-name' }, undefined, `https://${USER}@${REPO}`);
 }, 400_000);
 
 /** Every run in this file. */
@@ -270,6 +307,7 @@ function allRuns(): Run[] {
     ...fetchPathRuns.map((f) => f.run),
     backslashPasswordRun, notFoundRun, fetchUserinfoRun, forgeUserinfoRun,
     forgePasswordOnlyRun, forgeEmptyUserinfoRun, questionPasswordRun,
+    forgeNoUserinfoFailedRun, forgeEmailUserRun, forgeAtPasswordRun, forgeUserNameQuotedRun,
   ];
 }
 
@@ -289,7 +327,7 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     // The share reached the capture server through the preload, so the
     // preload is loaded and on the path the CLI's requests take.
     expect(textRun.connections).toContain(`allowed ${new URL(base).host}`);
-    expect(allRuns()).toHaveLength(14);
+    expect(allRuns()).toHaveLength(18);
     const allowed = allRuns()
       .flatMap((r) => r.connections)
       .filter((c) => c.startsWith('allowed '));
@@ -452,5 +490,48 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     expect(jsonDocument(questionPasswordRun.stdout).target).toBe(shown);
     expect(questionPasswordRun.stdout + questionPasswordRun.stderr).not.toContain(SECRET);
     expect(questionPasswordRun.stdout + questionPasswordRun.stderr).not.toContain(USER);
+  });
+
+  it('harness: a failed clone of a forge URL with no user name or password is reported with the error line of the git stand-in', () => {
+    expect(forgeNoUserinfoFailedRun.status, forgeNoUserinfoFailedRun.stderr).toBe(2);
+    expect(forgeNoUserinfoFailedRun.gitArgs).toContain(`https://${REPO}`);
+    // The stand-in quotes the URL from its first `@` on, here the whole URL.
+    expect(forgeNoUserinfoFailedRun.stderr).toContain(`fatal: unable to access 'https://${REPO}/': The requested URL returned error: 403`);
+  });
+
+  it('a forge URL with no `.git` and an email address as its user name, two `@` before the host, is not handed to git', () => {
+    const output = forgeEmailUserRun.stdout + forgeEmailUserRun.stderr;
+    expect(forgeEmailUserRun.status, forgeEmailUserRun.stderr).toBe(2);
+    // git would end the user name at the first `@` and quote the rest,
+    // password included, in its error line, as the stand-in does.
+    expect(forgeEmailUserRun.gitArgs).toEqual([]);
+    expect(forgeEmailUserRun.stderr).toContain(`Fetching https://${REPO}...`);
+    expect(output).not.toContain(SECRET);
+    expect(output).not.toContain(USER);
+    expect(output).not.toContain('example.com');
+    // `fetch` refuses the URL before it opens a connection.
+    expect(forgeEmailUserRun.connections.filter((c) => c.includes('gitlab.com'))).toEqual([]);
+    expect(publishPosts(forgeEmailUserRun)).toHaveLength(0);
+  });
+
+  it('a forge URL with no `.git` and a raw `@` in its password is not handed to git either', () => {
+    const output = forgeAtPasswordRun.stdout + forgeAtPasswordRun.stderr;
+    expect(forgeAtPasswordRun.status, forgeAtPasswordRun.stderr).toBe(2);
+    expect(forgeAtPasswordRun.gitArgs).toEqual([]);
+    expect(jsonDocument(forgeAtPasswordRun.stdout).target).toBe(`https://${REPO}`);
+    expect(output).not.toContain(SECRET);
+    expect(output).not.toContain(USER);
+    expect(forgeAtPasswordRun.connections.filter((c) => c.includes('gitlab.com'))).toEqual([]);
+  });
+
+  it('a failed clone of a forge URL with a user name and no `.git` is reported without git\'s error lines, which can quote the user name', () => {
+    const typed = `https://${USER}@${REPO}`;
+    const output = forgeUserNameQuotedRun.stdout + forgeUserNameQuotedRun.stderr;
+    expect(forgeUserNameQuotedRun.status, forgeUserNameQuotedRun.stderr).toBe(2);
+    expect(forgeUserNameQuotedRun.gitArgs).toContain(typed);
+    expect(forgeUserNameQuotedRun.stderr).toContain(`Could not clone repository from "https://${REPO}".`);
+    expect(forgeUserNameQuotedRun.stderr).not.toContain('could not read Password');
+    expect(jsonDocument(forgeUserNameQuotedRun.stdout).target).toBe(`https://${REPO}`);
+    expect(output).not.toContain(USER);
   });
 });

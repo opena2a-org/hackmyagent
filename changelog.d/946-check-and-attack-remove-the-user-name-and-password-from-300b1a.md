@@ -18,12 +18,31 @@ breaking: true
   address and scanned it as one file. The forge is now matched on the URL
   with its user name, password and `@` removed, so these URLs are handed to
   `git clone`, and a repository it clones is scanned: the run reports a
-  measured verdict and exits on its findings. That holds when the host
-  after the `@` is exactly `gitlab.com`, `bitbucket.org`, `codeberg.org`,
-  `gitea.com` or `sr.ht` and a `/` follows it. A forge URL without `.git`
-  whose password holds a raw `?` or `#` is still not cloned, because the
-  host part ends at that character. A `github.com` URL with a user name is
-  not matched as one: it still goes to `fetch`, ends unmeasured and exits 2.
+  measured verdict and exits on its findings. That holds when the `@` is
+  the only one before the first `/`, the host after it is exactly
+  `gitlab.com`, `bitbucket.org`, `codeberg.org`, `gitea.com` or `sr.ht`, and
+  a `/` follows the host. A forge URL without `.git` that has two or more
+  `@` before the first `/` is not cloned, as when the user name is an email
+  address, `https://<name>@<domain>:<token>@bitbucket.org/<org>/<repo>`, or
+  the password holds a raw `@`. git ends the user name at the first `@`, so
+  it does not read the forge as the host, and its error line quotes the URL
+  from that `@` on, with the part of the password that follows it. Such a
+  URL goes to `fetch`, as before, and when `fetch` reads a user name or
+  password in it the run ends unmeasured and exits 2. With that `@` written
+  as `%40`, as in
+  `https://<name>%40<domain>:<token>@bitbucket.org/<org>/<repo>`, the URL
+  has one `@` before the host and is handed to `git clone`. A forge URL
+  without `.git` whose password holds a raw `?` or `#` is still not cloned,
+  because the host part ends at that character. When the clone of a forge
+  URL without `.git` that has an `@` before the host fails, `check` prints
+  `Error: Could not clone repository from "<URL>".`, with the URL as it
+  shows it, and not the failed command and git's own error lines. git can
+  quote the user name there as `<scheme>://<user>@<host>` when it cannot ask
+  for a password, or the whole URL when it holds a line break, with a
+  control character in it replaced. A failed clone of a URL that ends in
+  `.git` is reported as before, with the failed command and git's error
+  lines. A `github.com` URL with a user name is not matched as one: it still
+  goes to `fetch`, ends unmeasured and exits 2.
 - `check` printed a URL's user name and password as typed when a raw `?` or
   `#` in the password, or a `\` in a URL it fetches, ends the host part
   early, no `/` comes before the `@`, and what comes before that character
