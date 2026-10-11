@@ -72,6 +72,9 @@ function run(args: string[], cwd: string): Run {
       ...process.env,
       NO_COLOR: '1',
       HOME: tmp('hma-350-home-'),
+      // On explicitly: under a test runner the CLI starts with usage
+      // telemetry off (#963), and this file counts the events.
+      OPENA2A_TELEMETRY: 'on',
       OPENA2A_TELEMETRY_DEBUG: 'print',
       OPENA2A_TELEMETRY_URL: DEAD_TELEMETRY,
     },

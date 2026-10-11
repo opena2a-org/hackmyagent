@@ -463,6 +463,7 @@ import { guidanceAfterDemotion } from './ui/demoted-guidance';
 import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand, rebaseOwnFileCitation } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
+import { initWithAutomationOptOut } from './telemetry/automation';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { collapsedLocation } from './ui/collapse-label';
 import { SARIF_SCHEMA_URL } from './output/sarif-schema';
@@ -689,6 +690,7 @@ Quick start:
 program.addHelpText('after', `
 Telemetry:
   Usage telemetry is on and each event carries a persistent install ID. Disable: OPENA2A_TELEMETRY=off
+  It is off under CI and test runners (CI, GITHUB_ACTIONS, VITEST, JEST_WORKER_ID, ...) unless OPENA2A_TELEMETRY=on.
   Local scans may contribute to the OpenA2A Registry once you have opted in. Disable: --no-contribute,
   or set contribute.enabled to false in ~/.opena2a/config.json. '${CLI_PREFIX} telemetry off' covers usage telemetry only.
 `);
@@ -15790,8 +15792,12 @@ async function checkNpmPackage(
   // dashboard event row (not a generic command failure) and a per-event
   // pager threshold of 1. tele.init() is silent on file-I/O failures
   // (sandboxed envs) so this never blocks startup.
+  //
+  // Under a CI or test-runner marker the session starts with telemetry off
+  // unless OPENA2A_TELEMETRY turns it on (#963): each such run starts from a
+  // fresh home and would register as a new install.
   const tele = await import('@opena2a/telemetry');
-  await tele.init({ tool: TELEMETRY_TOOL, version: VERSION });
+  await initWithAutomationOptOut(() => tele.init({ tool: TELEMETRY_TOOL, version: VERSION }));
 
   try {
     const { verifyAll } = await import('./nanomind-core/security/integrity-verifier.js');

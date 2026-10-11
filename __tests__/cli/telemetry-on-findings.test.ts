@@ -62,10 +62,16 @@ function scan(mode: string[]): { status: number | null; events: number } {
       // A sandboxed HOME so the developer's own telemetry config and install id
       // are neither read nor written.
       HOME: path.join(base, 'home'),
+      // On explicitly: under a test runner the CLI starts with usage telemetry
+      // off (#963), and this file measures the event.
+      OPENA2A_TELEMETRY: 'on',
       OPENA2A_TELEMETRY_DEBUG: 'print',
       // Discard port. The assertion is that the event was BUILT and posted, not
       // that a server received it — and a test must not emit real telemetry.
-      OPENA2A_TELEMETRY_ENDPOINT: 'http://127.0.0.1:9/',
+      // OPENA2A_TELEMETRY_URL is the variable the SDK reads; this line named
+      // OPENA2A_TELEMETRY_ENDPOINT until #963, which nothing reads, so every
+      // run of this file posted to the production endpoint.
+      OPENA2A_TELEMETRY_URL: 'http://127.0.0.1:9/',
       NO_COLOR: '1',
     },
   });
@@ -103,7 +109,8 @@ describe('the instrument is real (#297)', () => {
       env: {
         ...process.env,
         HOME: path.join(base, 'home'),
-        OPENA2A_TELEMETRY_ENDPOINT: 'http://127.0.0.1:9/',
+        OPENA2A_TELEMETRY: 'on',
+        OPENA2A_TELEMETRY_URL: 'http://127.0.0.1:9/',
         OPENA2A_TELEMETRY_DEBUG: '',
         NO_COLOR: '1',
       },

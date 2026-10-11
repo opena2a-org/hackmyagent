@@ -42,6 +42,22 @@ if (!process.env.OPENA2A_CORPUS_DETERMINISTIC) {
   process.env.OPENA2A_CORPUS_DETERMINISTIC = '1';
 }
 
+// A spawn in this suite sends no usage telemetry to the Registry (#963).
+//
+// The CLI starts with usage telemetry off when it sees a test-runner marker,
+// and Vitest sets one in every worker, which spawned children inherit. A test
+// that measures the event turns telemetry back on with OPENA2A_TELEMETRY=on;
+// this default points that case, and any other spawn that inherits the
+// worker's environment, at the discard port, where a send fails as a fast
+// local connection refusal. Each
+// spawn handed a fresh HOME, so before #963 each one registered as a new
+// install in the production aggregates.
+//
+// Pinned by __tests__/harness/suite-sends-no-telemetry.test.ts.
+if (!process.env.OPENA2A_TELEMETRY_URL) {
+  process.env.OPENA2A_TELEMETRY_URL = 'http://127.0.0.1:9';
+}
+
 // Second half of the same contract: a test that shells out to git must talk to
 // the repository it created, not to whichever one launched the suite.
 //
