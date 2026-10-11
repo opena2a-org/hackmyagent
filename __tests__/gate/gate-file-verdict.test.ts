@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -103,9 +103,20 @@ interface VerdictInputs {
   reviewCommit?: string;
 }
 
-interface Verdict {
-  status: number;
+/** How one spawned child ended, with every way of ending kept apart. */
+interface ChildRun {
+  /** The exit status; null when the child was killed or never started. */
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  /** The code of the error spawnSync reported (EAGAIN, ENOENT, ENOBUFS, ...), or ''. */
+  spawnError: string;
+  stdout: string;
   stderr: string;
+  /** How the child ended, its stderr and its stdout, for an assertion message. */
+  report: string;
+}
+
+interface Verdict extends ChildRun {
   conclusion: string;
   title: string;
   summary: string;
@@ -116,14 +127,42 @@ function sq(v: string): string {
 }
 
 /**
- * Run the lifted block exactly as Actions would: bash with `set -euo
+ * Spawn `shell script` and report how it ended. A signal kill and a spawn
+ * failure are reported as themselves: folding them into "exit 1" with an
+ * empty stderr made a failure under machine load unreadable.
+ */
+function runChild(shell: string, scriptPath: string): ChildRun {
+  const res = spawnSync(shell, [scriptPath], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdout = res.stdout ?? '';
+  const stderr = res.stderr ?? '';
+  const spawnError = res.error ? ((res.error as NodeJS.ErrnoException).code ?? res.error.name) : '';
+  const ended = res.error
+    ? `spawn failed: ${res.error.message}${res.signal ? `, killed by ${res.signal}` : ''}`
+    : res.signal
+      ? `killed by ${res.signal}`
+      : `exit status ${res.status}`;
+  const report = `${ended}; stderr: ${stderr.trim() || '(empty)'}; stdout: ${stdout.trim() || '(empty)'}`;
+  return { status: res.status, signal: res.signal, spawnError, stdout, stderr, report };
+}
+
+/**
+ * Run a verdict block exactly as Actions would: bash with `set -euo
  * pipefail`, the eight input variables planted, nothing else on the PATH's
  * mind. The three output variables are read back over a sentinel prefix.
+ *
+ * Under `set -e` a failing command ends the script without a word, so the
+ * harness installs an ERR trap ahead of the block that names the exit status,
+ * the line within the block and the command on stderr. The trap stays quiet
+ * where errexit is off: the block's own `set +e` region expects grep to
+ * return 1. It changes no control flow, so the block still runs verbatim.
  */
-function runVerdict(i: VerdictInputs): Verdict {
+function runBlock(block: string, i: VerdictInputs, shell = 'bash'): Verdict {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-gate-verdict-'));
   try {
-    const script = [
+    const header = [
       '#!/bin/bash',
       'set -euo pipefail',
       `approvers=${sq(APPROVERS)}`,
@@ -134,7 +173,17 @@ function runVerdict(i: VerdictInputs): Verdict {
       `head_copy=${sq(i.headCopy ?? '')}`,
       `review_state=${sq(i.reviewState ?? '')}`,
       `review_commit=${sq(i.reviewCommit ?? '')}`,
-      verdictBlock(),
+    ];
+    // The block's first line is script line `offset + 1`.
+    const offset = header.length + 1;
+    const trap =
+      `trap '__harness_rc=$?; if [[ $- == *e* ]]; then ` +
+      `printf "verdict block exited %s at block line %s: %s\\n" "$__harness_rc" "$((LINENO - ${offset}))" "$BASH_COMMAND" >&2; ` +
+      `fi' ERR`;
+    const script = [
+      ...header,
+      trap,
+      block,
       "printf 'OUT conclusion=%s\\n' \"$conclusion\"",
       "printf 'OUT title=%s\\n' \"$title\"",
       "printf 'OUT summary=%s\\n' \"$summary\"",
@@ -143,28 +192,13 @@ function runVerdict(i: VerdictInputs): Verdict {
     const scriptPath = path.join(dir, 'verdict.sh');
     fs.writeFileSync(scriptPath, script);
 
-    let status = 0;
-    let stdout = '';
-    let stderr = '';
-    try {
-      stdout = execFileSync('bash', [scriptPath], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (e: unknown) {
-      const err = e as { status?: number; stdout?: string; stderr?: string };
-      status = err.status ?? 1;
-      stdout = err.stdout ?? '';
-      stderr = err.stderr ?? '';
-    }
-
+    const child = runChild(shell, scriptPath);
     const grab = (key: string): string => {
-      const line = stdout.split('\n').find((l) => l.startsWith(`OUT ${key}=`));
+      const line = child.stdout.split('\n').find((l) => l.startsWith(`OUT ${key}=`));
       return line ? line.slice(`OUT ${key}=`.length) : '';
     };
     return {
-      status,
-      stderr,
+      ...child,
       conclusion: grab('conclusion'),
       title: grab('title'),
       summary: grab('summary'),
@@ -172,6 +206,11 @@ function runVerdict(i: VerdictInputs): Verdict {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** The workflow's own verdict block, lifted and run. */
+function runVerdict(i: VerdictInputs): Verdict {
+  return runBlock(verdictBlock(), i);
 }
 
 /** Ordinary paths that must never gate; every gated fixture rides among them. */
@@ -207,11 +246,38 @@ describe('gate-file verdict: the block is lifted from the workflow and is pure',
   });
 });
 
+describe('gate-file verdict: the harness says how a child ended, never a bare exit 1', () => {
+  it('a block that ends under set -e names its exit status, its line in the block and the command on stderr', () => {
+    // The verdict block's own fail-closed line, reached with a grep status
+    // above 1: the shell exits without printing anything itself.
+    const r = runBlock('gate_rc=141\n[ "$gate_rc" -le 1 ]\nconclusion=unreachable', { files: [] });
+    expect(r.status).toBe(1);
+    expect(r.signal).toBeNull();
+    expect(r.stderr.trim()).toBe('verdict block exited 1 at block line 2: [ "$gate_rc" -le 1 ]');
+    expect(r.report).toContain('exit status 1; stderr: verdict block exited 1 at block line 2');
+    expect(r.conclusion).toBe('');
+  });
+
+  it('a child killed by a signal is reported as that signal, not as exit status 1', () => {
+    const r = runBlock('kill -TERM $$', { files: [] });
+    expect(r.status).toBeNull();
+    expect(r.signal).toBe('SIGTERM');
+    expect(r.report).toMatch(/^killed by SIGTERM; stderr: /);
+  });
+
+  it('a child that never started is reported with its spawn error, not as exit status 1', () => {
+    const r = runBlock('conclusion=success', { files: [] }, 'hma-gate-verdict-no-such-shell');
+    expect(r.status).toBeNull();
+    expect(r.spawnError).toBe('ENOENT');
+    expect(r.report).toMatch(/^spawn failed: .*ENOENT/);
+  });
+});
+
 describe('gate-file verdict: AC1 — boundary paths require approval on the current head', () => {
   for (const p of BOUNDARY_PATHS) {
     it(`HMA-25.AC1 ${p} in the changed-file list with no approving review evaluates to action_required`, () => {
       const r = runVerdict({ files: [...INNOCUOUS, p] });
-      expect(r.status, r.stderr).toBe(0);
+      expect(r.status, r.report).toBe(0);
       expect(r.conclusion).toBe('action_required');
       expect(r.title).toBe('Gate-file change needs approval');
       expect(r.summary).toContain(HEAD);
@@ -240,7 +306,7 @@ describe('gate-file verdict: the changelog assembler is a gate file', () => {
 
   it('scripts/changelog.mjs in the changed-file list with no approving review evaluates to action_required', () => {
     const r = runVerdict({ files: [...INNOCUOUS, CHANGELOG_SCRIPT] });
-    expect(r.status, r.stderr).toBe(0);
+    expect(r.status, r.report).toBe(0);
     expect(r.conclusion).toBe('action_required');
     expect(r.title).toBe('Gate-file change needs approval');
   });
@@ -255,7 +321,7 @@ describe('gate-file verdict: the changelog assembler is a gate file', () => {
         'CHANGELOG.md',
       ],
     });
-    expect(r.status, r.stderr).toBe(0);
+    expect(r.status, r.report).toBe(0);
     expect(r.conclusion).toBe('success');
   });
 });
@@ -265,9 +331,12 @@ describe('gate-file verdict: AC2 — a change touching no gate file passes untou
     const r = runVerdict({
       files: [...INNOCUOUS, 'src/nanomind-core/analyzers/behavior-analyzer.ts', 'README.md'],
     });
-    expect(r.status, r.stderr).toBe(0);
+    expect(r.status, r.report).toBe(0);
     expect(r.conclusion).toBe('success');
     expect(r.title).toBe('No gate files touched');
+    // grep returns 1 here inside the block's `set +e` region: an expected
+    // result, so the harness's ERR trap stays silent.
+    expect(r.stderr).toBe('');
   });
 
   it('HMA-25.AC2 lookalike paths do not gate: a suffix, a prefix and a nested .github miss the anchored pattern', () => {
@@ -324,7 +393,7 @@ describe('gate-file verdict: AC3 — the conclusion vocabulary blocks auto-merge
               reviewCommit: review.commit,
             });
             const at = `${p} / ${review.label} / ${trip.label} / ${changedCount} files`;
-            expect(r.status, `${at}: ${r.stderr}`).toBe(0);
+            expect(r.status, `${at}: ${r.report}`).toBe(0);
             expect(['action_required', 'failure'], at).toContain(r.conclusion);
             expect(r.conclusion, at).not.toBe('success');
             expect(r.conclusion, at).not.toBe('neutral');
