@@ -89,6 +89,11 @@ const TRACKED_FS_SHA256 = 'bf6566fa2dfab6877ebed88b67b0d28e518e013d2ca164d5640aa
  * recorded here. `--scan-history` ADDS a pass over the commits reachable from
  * any ref; `--since` bounds only that added pass. Neither narrows the walk over
  * the checked-out tree, and a scan without them is unchanged.
+ *
+ * SCOPE DECISION, taken with #989 (`create-skill --no-sign`), on the same rule:
+ * that change adds one flag, recorded here. It leaves the SKILL.md that
+ * `create-skill` writes unsigned; `create-skill` generates files and never
+ * walks a directory for skills, so it cannot make the walk opt-in.
  */
 const REGISTERED_LONG_FLAGS = [
   '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--as', '--at',
@@ -100,7 +105,7 @@ const REGISTERED_LONG_FLAGS = [
   '--header', '--ignore', '--intensity', '--iterations', '--json', '--level',
   '--local', '--mcp-tool', '--min-trust', '--model', '--name', '--nanomind',
   '--no-color', '--no-contribute', '--no-machine-posture', '--no-registry',
-  '--no-scan', '--offline', '--output', '--payload-file', '--ports', '--profile',
+  '--no-scan', '--no-sign', '--offline', '--output', '--payload-file', '--ports', '--profile',
   '--publish', '--range', '--reason', '--registry-key', '--registry-report', '--registry-url',
   '--rescan', '--root', '--scan-depth', '--scan-history', '--scan-only', '--since',
   '--source-commit', '--staged',

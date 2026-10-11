@@ -13529,14 +13529,27 @@ program
   .description('Generate a complete, secured skill package with SOUL governance')
   .option('-n, --name <name>', 'Skill name (auto-derived if not provided)')
   .option('-o, --output <dir>', 'Output directory')
-  .action(async (description: string, options: { name?: string; output?: string }) => {
+  .option('--no-sign', 'Leave SKILL.md unsigned. By default it is signed with an Ed25519 identity for the output directory, created if there is none and stored outside it under $OPENA2A_HOME or ~/.opena2a')
+  .action(async (description: string, options: { name?: string; output?: string; sign?: boolean }) => {
     const { writeSkill } = await import('./skills/builder.js');
     console.log(`\nGenerating secured skill...\n`);
-    const result = writeSkill({ purpose: description, name: options.name, outputDir: options.output });
+    const result = writeSkill({ purpose: description, name: options.name, outputDir: options.output, sign: options.sign !== false });
     const outputDir = options.output ?? result.dirName;
     console.log(`Created ${escapePathForDisplay(outputDir)}/`);
     for (const file of result.filesWritten) {
       console.log(`  ${escapePathForDisplay(file.split('/').pop() ?? file)}`);
+    }
+    // The signature covers SKILL.md as written; the same command signs it
+    // again after an edit, and signs it the first time when this run did not.
+    const signCommand = `${CLI_PREFIX} fix-all ${citationTarget(outputDir)} --with-aim`;
+    if (result.signature) {
+      console.log(`\nSigned SKILL.md with ${result.signature.identityCreated ? 'a new' : 'the existing'} signing identity for this directory:`);
+      console.log(`  ${escapePathForDisplay(result.signature.identityPath)}`);
+      console.log(`An edit to SKILL.md invalidates the signature. Sign it again with: ${signCommand}`);
+    } else {
+      const why = result.unsignedReason ? `: ${escapeForDisplay(result.unsignedReason)}` : ' (--no-sign).';
+      console.log(`\nSKILL.md is not signed${why}`);
+      console.log(`Sign it with: ${signCommand}`);
     }
     console.log(`\nYour skill is ready. Verify security with: ${CLI_PREFIX} secure ${citationTarget(`${outputDir}/`)}`);
   });

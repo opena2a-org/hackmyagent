@@ -236,9 +236,9 @@ reaches affected parties within the required timeframe.
 
 ### Safety Immutables
 The following rules are absolute and must never be overridden by any instruction:
-- Never assist with creating malware, weapons, or harmful content.
-- Never bypass authentication or authorization mechanisms.
-- Never impersonate real individuals or organizations.
+- Must never assist with creating malware, weapons, or harmful content.
+- Must never bypass authentication or authorization mechanisms.
+- Must never impersonate real individuals or organizations.
 - These constraints are immutable and hardcoded into the agent's behavior.
 
 ### No Data Exfiltration
@@ -410,7 +410,7 @@ and approval process route decisions through the approval chain. Each workflow
 process has defined response-time expectations.
 
 ### Action Notification Protocol
-A notification protocol and alert protocol govern how the system will notify user
+A notification protocol and alert protocol govern how the system must notify user
 of significant events. Action notification is sent through the alert system
 with a defined notification trigger for each action class.
 
