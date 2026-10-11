@@ -518,6 +518,79 @@ withheld file is dropped without being named.
 
 ---
 
+## 6.6 Git-history credential scan: `secure --scan-history` (2 min)
+
+New in 0.34.0. A credential that one commit added and a later commit deleted
+is not in the tree, so every other `secure` pass misses it.
+The fixture is a throwaway repository built here: commit 1 is empty, commit 2
+adds a config file carrying a synthetic key, commit 3 deletes it. The key is
+assembled at run time from parts, the construction
+`__tests__/cli/secure-scan-history.test.ts` uses, so no credential-shaped string
+is written in this file. Run from the repository root after the build.
+
+```bash
+HIST=$(mktemp -d)
+g() { git -C "$HIST" -c user.name=smoke -c user.email=smoke@example.invalid -c commit.gpgsign=false "$@"; }
+g init -q && g commit -q --allow-empty -m init
+KEY="sk-""proj-$(printf 'q8Rv2Lm7Nc4W%.0s' 1 2 3)"
+printf 'KEY = "%s"\n' "$KEY" > "$HIST/config.py"
+g add config.py && g commit -q -m 'add config'
+ADDED=$(g rev-parse HEAD)
+g rm -q config.py && g commit -q -m 'remove config'
+
+# 1. Without the flag, secure reads the tree only, where the file is gone.
+node dist/cli.js secure "$HIST" > /tmp/smoke-hist-tree.txt 2>&1; echo "tree: exit $?"            # expect 0
+grep -c 'Credential in git history' /tmp/smoke-hist-tree.txt                                   # expect 0
+
+# 2. With it, the key is reported once, at the commit that added it.
+node dist/cli.js secure "$HIST" --scan-history > /tmp/smoke-hist.txt 2>&1; echo "history: exit $?"  # expect 1
+grep -c '3 commits of history read' /tmp/smoke-hist.txt                                        # expect 1
+grep -c 'CRITICAL  Credential in git history' /tmp/smoke-hist.txt                              # expect 1
+grep -c "${ADDED:0:12}:config.py:1\$" /tmp/smoke-hist.txt                                      # expect 1
+
+# 3. The printed Verify command, run as printed, returns the line commit 2 added.
+VERIFY=$(sed -n 's/.*Verify: \(git .*\)/\1/p' /tmp/smoke-hist.txt)
+sh -c "$VERIFY" | grep -c "$KEY"                                                               # expect 1
+
+# 4. The same finding on the other channels, and the value on none of them.
+node dist/cli.js secure "$HIST" --scan-history --json > /tmp/smoke-hist.json 2>/dev/null; echo "json: exit $?"     # expect 1
+node dist/cli.js secure "$HIST" --scan-history -f sarif > /tmp/smoke-hist.sarif 2>/dev/null; echo "sarif: exit $?" # expect 1
+node -e '
+const fs=require("fs"); const [json,sarif,added]=process.argv.slice(1);
+const d=JSON.parse(fs.readFileSync(json,"utf8"));
+const h=d.findings.filter(f=>f.checkId==="CRED-HIST-001");
+const r=JSON.parse(fs.readFileSync(sarif,"utf8")).runs[0].results.filter(x=>x.ruleId==="CRED-HIST-001");
+console.log(h.length, h[0]&&h[0].severity, h[0]&&h[0].commit===added, h[0]&&`${h[0].file}:${h[0].line}`, JSON.stringify(d.history), r.length, r[0]&&r[0].properties.commit===added);
+' /tmp/smoke-hist.json /tmp/smoke-hist.sarif "$ADDED"
+# expect: 1 critical true config.py:1 {"commitsScanned":3,"credentialsFound":1} 1 true
+for f in /tmp/smoke-hist.txt /tmp/smoke-hist.json /tmp/smoke-hist.sarif; do printf '%s ' "$f"; grep -c "$KEY" "$f"; done  # expect 0 on each line
+
+# 5. --since the commit that added the key reads only the deletion after it.
+node dist/cli.js secure "$HIST" --scan-history --since "$ADDED" > /tmp/smoke-hist-since.txt 2>&1; echo "since: exit $?"  # expect 0
+grep -c "1 commit of history read after $ADDED" /tmp/smoke-hist-since.txt                    # expect 1
+
+# 6. A directory outside any git work tree is refused before scanning.
+NOGIT=$(mktemp -d)
+node dist/cli.js secure "$NOGIT" --scan-history > /tmp/smoke-hist-nogit.txt 2> /tmp/smoke-hist-nogit.err; echo "no git: exit $?"  # expect 1
+grep -c 'is not inside a git work tree' /tmp/smoke-hist-nogit.err                             # expect 1
+wc -c < /tmp/smoke-hist-nogit.txt                                                              # expect 0
+
+rm -rf "$HIST" "$NOGIT" /tmp/smoke-hist-*
+```
+
+The text report names the finding `Credential in git history` and cites
+`<commit>:<file>:<line>`; the check ID `CRED-HIST-001` is in `--json` and
+SARIF. Step 1 is the control: without it, a pass in step 2 does not show that
+the history pass found what the tree scan cannot.
+
+Fail the release if: step 1 reports the key or exits non-zero, step 2 exits 0
+or reports the key other than once at commit 2, the printed `Verify:` command
+does not return the line, the raw key appears on any channel, `--since` reads
+more than one commit or exits non-zero, or a directory outside a git work tree
+is scanned instead of refused.
+
+---
+
 ---
 
 ## 7. Cleanup

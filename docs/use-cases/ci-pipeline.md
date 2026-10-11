@@ -246,6 +246,59 @@ jobs:
             results.sarif
 ```
 
+## Credentials committed in git history
+
+`secure --scan-history` also reads every commit reachable from any ref and reports each credential once, at the commit that added it, as `CRED-HIST-001` (critical) cited `<commit>:<file>:<line>`. A key that a later commit deleted is still reported: the commit still holds it, and every clone that contains the commit can read it. The pass is opt-in; a finding is critical, so the run exits 1.
+
+It matches these key shapes: Anthropic, OpenAI, AWS access key ID, GitHub (classic and fine-grained tokens), Slack, Google API, Stripe live and SendGrid. A value added to a test file, or one carrying a fixture marker or placeholder word (`FAKE`, `EXAMPLE`, `changeme`), is not reported, the same as in the tree scan.
+
+```yaml
+name: Credentials in history
+on: [push, pull_request]
+
+jobs:
+  history-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Credentials committed in any reachable commit
+        run: npx hackmyagent secure --scan-history --ci
+```
+
+**`fetch-depth: 0` is required.** The default checkout fetches one commit, and the pass reads only the commits the checkout holds: a `--depth 1` clone of a repository whose key was added in one commit and deleted in the next reports `1 commit of history read` and exits 0. The header line names how many commits were read; check it the first time the job runs.
+
+A repository whose third commit deleted the file its second commit added reports:
+
+```
+  agent  library · 3 commits of history read
+  1 critical issue found
+  [...]
+  │ CRITICAL  Credential in git history
+  │ 5aa3aeb031f8:config.py:1
+  │ Anyone with a clone can read this value from the commit, whether or not the file still holds it. Rotate it first. Rewriting history (for example with git filter-repo) is a separate step: it changes every later commit and needs every clone re-fetched. A rotated value still reports here, because the commit still holds it; after rotating, --since <ref> limits later runs to the commits after <ref>.
+  │ Verify: git -C /home/runner/work/agent/agent show 5aa3aeb031f8:./config.py | sed -n '1p'
+  │ Fix: Rotate this OPENAI_API_KEY at its issuer: deleting it from the tree does not remove it from commit 5aa3aeb031f8
+```
+
+The `Verify:` command prints the line the commit added, from your own clone. The value itself is printed on no channel: not in the text report, not in `--json` and not in SARIF. `--json` carries the finding with its full `commit` beside `file` and `line`, plus a `history` object (`commitsScanned`, `credentialsFound`, and `since` when one was given); SARIF carries the commit in the result's `properties.commit`.
+
+**Rotate first.** Deleting the file does not reach a clone that already holds the commit, and neither does rewriting history; rotating the value at its issuer is the step that ends the exposure. Rewriting history (for example with `git filter-repo`) is a separate step: it changes every later commit, and every clone has to re-fetch.
+
+**After rotating, bound later runs with `--since <ref>`.** A rotated value still reports, because the commit still holds it. `--since <ref>` reads only the commits not reachable from `<ref>`. Point it at the commit by which every reported value was rotated, for example through a tag you push on that commit (here `history-rotated`), and the run reports only credentials added after it; the header reads `N commits of history read after history-rotated`:
+
+```yaml
+      - name: Credentials committed since the last rotation
+        run: npx hackmyagent secure --scan-history --since history-rotated --ci
+```
+
+`--since` without `--scan-history` is refused, and so is `--scan-history` with `-b` or on a directory outside a git work tree: each prints a usage message on stderr and exits 1 before scanning.
+
 ## Pre-commit hook
 
 For local checks before each commit:

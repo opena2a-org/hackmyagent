@@ -293,9 +293,7 @@ grep -A3 hackmyagent .mcp.json    # Claude Code; or .cursor/mcp.json, .vscode/mc
 
 ## CI/CD integration
 
-`secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output; it also turns contribution off for that run. Most scanning commands take `--json`: `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `scan-text`, `harden-soul`, `red-team`, `wild`, `detect`, `trust`. `secure` and `attack` also take `-f, --format <format>`; on those two commands `--json` is shorthand for `--format json`.
-
-`--json` never changes the exit code. `--ci` mostly doesn't either; the one exception is `scan-soul`, which also exits 1 under `--ci` on a HIGH-severity SOUL finding that renders as a warning without the flag. To gate on severity, read the exit code; to gate on the score, use `--fail-below <n>`. A threshold only raises the exit code: a run that could not read one of its inputs still exits 2, not 1.
+`secure` and `scan-soul` take `--ci` for non-interactive, byte-stable output; it also turns contribution off for that run. Most scanning commands take `--json`: `check`, `secure`, `attack`, `scan`, `fix-all`, `scan-soul`, `scan-text`, `harden-soul`, `red-team`, `wild`, `detect`, `trust`. `secure` and `attack` also take `-f, --format <format>`; on those two commands `--json` is shorthand for `--format json`. `--json` never changes the exit code. `--ci` mostly doesn't either; the one exception is `scan-soul`, which also exits 1 under `--ci` on a HIGH-severity SOUL finding that renders as a warning without the flag. To gate on severity, read the exit code; to gate on the score, use `--fail-below <n>`. A threshold only raises the exit code: a run that could not read one of its inputs still exits 2, not 1.
 
 ```yaml
 name: Agent Security
@@ -322,6 +320,10 @@ SARIF output, a pre-commit hook, and the `.hmaignore` rules for suppressing a ch
         with: { fetch-depth: 0 }
       - run: npx hackmyagent secure --range origin/${{ github.base_ref }}...HEAD
 ```
+
+### Finding a credential a commit added, even one deleted since
+
+`npx hackmyagent secure --scan-history` also reads every commit reachable from any ref, so check out with `fetch-depth: 0` as above; a one-commit checkout reads that one commit only. Each credential is reported once, at the commit that added it, as `CRED-HIST-001` (critical, exit 1) cited `<commit>:<file>:<line>`, including one a later commit deleted. Rotate it at its issuer first: every clone that holds the commit can still read it. After rotating, `--since <ref>` reads only the commits not reachable from `<ref>`. The pass matches Anthropic, OpenAI, AWS access key, GitHub, Slack, Google API, Stripe live and SendGrid key shapes, and never prints the value. Recipe and sample output: [`docs/use-cases/ci-pipeline.md`](docs/use-cases/ci-pipeline.md#credentials-committed-in-git-history).
 
 ### Scanning a text a pipeline was handed
 
