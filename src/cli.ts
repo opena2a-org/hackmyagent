@@ -15413,23 +15413,39 @@ async function checkRawUrl(
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
+    // Why a clone did not finish is read from the fields of the error
+    // `execFile` rejects with, not from its message: `code` is `ENOENT` when
+    // there is no `git` on PATH to start, and `killed` is set when the 120 s
+    // limit ended the clone. The message of the second is the failed command
+    // line and says nothing of a timeout.
+    const cloneFailed = isGitUrl && !fetched;
+    const cloneErr = err as { code?: unknown; killed?: unknown } | null | undefined;
+    const gitNotFound = cloneFailed && cloneErr?.code === 'ENOENT';
+    const cloneTimedOut = cloneFailed && cloneErr?.killed === true;
     // git's own error lines can quote a URL's user name or password in a form
     // that is not the URL as typed, which is all the last branch below takes
-    // out: `<scheme>://<user>@<host>` when it cannot ask for a password, or
-    // the whole URL with a control character replaced when it holds a line
-    // break. So when the clone of a forge URL with no `.git` and an `@`
-    // before its host fails, a URL earlier versions did not clone, those
-    // lines are not printed.
-    const forgeUserinfoCloneFailed = isGitUrl && !fetched && !url.endsWith('.git') && shownUrl !== url;
-    if (forgeUserinfoCloneFailed || message.includes('128') || message.includes('not found') || message.includes('Repository not found')) {
+    // out: the URL from its first `@` on when two come before the host,
+    // `<scheme>://<user>@<host>` when it cannot ask for a password, or the
+    // whole URL with a control character replaced when it holds a line
+    // break. So when the clone of a URL that is shown without a user name or
+    // password fails, with or without `.git`, those lines are not printed.
+    const userinfoCloneFailed = cloneFailed && shownUrl !== url;
+    if (gitNotFound) {
+      console.error(`Error: git was not found on PATH, so "${escapeForDisplay(String(shownUrl))}" was not cloned.`);
+      console.error(`\nInstall git and run the command again, or download the repository and scan the local path:`);
+      console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
+    } else if (!cloneTimedOut && (userinfoCloneFailed || message.includes('128') || message.includes('not found') || message.includes('Repository not found'))) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(shownUrl))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
-    } else if (message.includes('timeout') || message.includes('Timeout')) {
+    } else if (cloneTimedOut || message.includes('timeout') || message.includes('Timeout')) {
       console.error(`Error: Fetching "${escapeForDisplay(String(shownUrl))}" timed out. The target may be too large.`);
       console.error(`\nTry downloading manually and scanning the local path:`);
       console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
     } else {
-      // The message of a failed `git clone` quotes its command line, URL included.
+      // A failed `git clone` that gets here is of a URL shown as typed, so its
+      // command line and git's error lines are printed as they are. The
+      // message of a `fetch` that refuses a URL for its user name or password
+      // quotes that URL.
       console.error(`Error scanning URL: ${escapeForDisplay(message.split(url).join(shownUrl))}`);
     }
     // #602 — the run reached no verdict: exit 2 per the documented table,
