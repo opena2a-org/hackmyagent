@@ -465,6 +465,7 @@ import { generateVerifyCommand, rebaseOwnFileCitation } from './ui/verify-comman
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { initWithAutomationOptOut } from './telemetry/automation';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
+import { runDeepSimulation, deepSimulationFailure, type DeepSimulationReport } from './simulation/deep-run';
 import { collapsedLocation } from './ui/collapse-label';
 import { SARIF_SCHEMA_URL } from './output/sarif-schema';
 import {
@@ -6029,10 +6030,14 @@ Change scope (--range, --staged):
         }
       }
 
-      // Behavioral simulation: auto-runs on --deep, or when NanoMind detects ambiguity
-      if (isDeep && format === 'text') {
+      // Behavioral simulation: runs on --deep in every output format (#983).
+      // It was guarded on text output, so `--deep --json` skipped it without
+      // a word. Its lines go to stderr, beside whatever stdout carries, and
+      // the JSON documents carry the result as the advisory `simulation`
+      // block.
+      let simulationReport: DeepSimulationReport | undefined;
+      if (isDeep) {
         try {
-          const { SimulationEngine, parseSkillProfile } = await import('./simulation/index.js');
           const { readFileSync, readdirSync, statSync } = await import('node:fs');
           const { join } = await import('node:path');
 
@@ -6062,37 +6067,14 @@ Change scope (--range, --staged):
             } catch { /* skip inaccessible dirs */ }
           };
           findSkills(targetDir);
-          if (skippedLinks > 0) {
-            process.stderr.write(`\n[Simulation] ${skippedLinks} link${skippedLinks === 1 ? '' : 's'} resolving outside the scanned tree skipped.\n`);
-          }
 
-          if (skillFiles.length === 0) {
-            process.stderr.write(`\n[Simulation] No skill/SOUL/MCP artifacts found. Simulation skipped.\n\n`);
-          } else {
-            process.stderr.write(`\n[Simulation] Running behavioral simulation on ${skillFiles.length} artifact(s)...\n`);
-            // The engine resolves its own executor (NanoMind daemon, Ollama,
-            // ANTHROPIC_API_KEY). Without one it runs no probe and reports
-            // NOT_MEASURED; the static findings above are then the whole
-            // verdict. A verdict computed from the artifact's own wording
-            // rated the SOUL.md that `harden-soul` writes MALICIOUS (#446).
-            const sim = new SimulationEngine({ useLLM: true });
-
-            for (const file of skillFiles.slice(0, 10)) { // Cap at 10 files
-              const content = readFileSync(file, 'utf-8');
-              const profile = parseSkillProfile(content, file.split('/').pop() ?? 'unknown');
-              const simResult = await sim.runLayer3(profile);
-
-              if (!simResult.measured) {
-                process.stderr.write(`  [Simulation] NOT MEASURED — no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_API_KEY); the Findings block is the verdict.\n`);
-                break;
-              }
-
-              // Advisory only: the simulation never moves the score or the exit
-              // code, so the line carries a count and the probe ids, not a
-              // severity word.
-              const flagged = simResult.failedProbes.map(p => p.probeId).join(', ');
-              process.stderr.write(`  [INFO] ${escapePathForDisplay(file.split('/').pop() ?? file)} — ${simResult.failedProbes.length}/${simResult.probeCount} probes flagged (advisory, not scored)${flagged ? `: ${flagged}` : ''}\n`);
-
+          simulationReport = await runDeepSimulation({
+            targetDir,
+            files: skillFiles,
+            linksSkipped: skippedLinks,
+            read: (file) => readFileSync(file, 'utf-8'),
+            write: (text) => { process.stderr.write(text); },
+            onMeasured: async (content, simResult) => {
               // Training export is opt-in only (HMA_EXPORT_TRAINING=1). Self-labeled
               // simulation verdicts bypass the training sanitizer, so the default
               // path must not write to the corpus (audit 2026-06-01).
@@ -6100,11 +6082,12 @@ Change scope (--range, --staged):
                 const { exportSimulationTraining } = await import('./attack-engine/training-pipeline.js');
                 exportSimulationTraining(content, simResult);
               }
-            }
-            process.stderr.write(`[Simulation] Complete.\n\n`);
-          } // end skillFiles.length > 0
+            },
+          });
         } catch (err) {
-          process.stderr.write(`[Simulation] Skipped: ${escapeForDisplay(err instanceof Error ? err.message : 'unknown error')}\n\n`);
+          const reason = err instanceof Error ? err.message : 'unknown error';
+          process.stderr.write(`[Simulation] Skipped: ${escapeForDisplay(reason)}\n\n`);
+          simulationReport = deepSimulationFailure(reason);
         }
       }
 
@@ -6164,6 +6147,8 @@ Change scope (--range, --staged):
             // The key `secure --fix --format json` carries; absent when
             // `--fix` wrote no backup.
             ...(result.backupPath ? { backupPath: result.backupPath } : {}),
+            // The `--deep` simulation, on the key `secure --json` uses.
+            ...(simulationReport ? { simulation: simulationReport } : {}),
           };
           // This arm bypasses writeJsonStdout (writeFileSync(1, ...) below),
           // so it carries its own boundary read.
@@ -6324,6 +6309,8 @@ Change scope (--range, --staged):
                 // The backup `--fix` wrote, on the key `secure --format json`
                 // uses; absent when it wrote none.
                 ...(result.backupPath ? { backupPath: result.backupPath } : {}),
+                // The `--deep` simulation, on the key `secure --json` uses.
+                ...(simulationReport ? { simulation: simulationReport } : {}),
               },
               null,
               2,
@@ -6522,6 +6509,9 @@ Change scope (--range, --staged):
           ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),
           ...(nmResult.coverageSweep ? { coverageSweep: nmResult.coverageSweep } : {}),
           ...(changeScopeReport ? { changeScope: changeScopeReport } : {}),
+          // #983 — what the `--deep` simulation observed. Advisory: nothing
+          // above moves with it. Absent without `--deep`.
+          ...(simulationReport ? { simulation: simulationReport } : {}),
         };
         const jsonOutput = publishStatus ? { ...jsonBase, publish: publishStatus } : jsonBase;
         // The --output arm below bypasses writeJsonStdout, so the boundary
