@@ -265,7 +265,7 @@ With `--grant`, `trust` is gated by the [Agent Authorization Protocol](https://g
 
 ### OpenClaw and NemoClaw auto-detection
 
-`hackmyagent secure` auto-detects OpenClaw and NemoClaw installations (`.openclaw/`, `.moltbot/`, `.nemoclaw/`, `openclaw.json`, `openclaw.plugin.json`) and runs their check groups alongside the standard suite. No separate command needed.
+`hackmyagent secure` runs the OpenClaw check groups and the NemoClaw sandbox checks (`NEMO-`) as part of the standard suite on any target. No separate command needed. The gateway (`GATEWAY-`) and CVE (`CVE-`) findings count only when the target is an OpenClaw project, one that holds `.openclaw/`, `.moltbot/`, `.clawdbot/`, `openclaw.json`, `HEARTBEAT.md`, `SKILL.md`, a `*.skill.md` file or a `skills/` directory. An install in your home directory outside the target (`~/.openclaw`, `~/.nemoclaw`, `~/.openshell`, `~/.moltbot`, `~/.clawdbot`) is listed under Machine Posture with the `secure` command that scans it; it is not scanned or scored in that run.
 
 ## Using with opena2a-cli
 
