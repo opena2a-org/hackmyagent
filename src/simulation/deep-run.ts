@@ -27,7 +27,9 @@ const NO_EXECUTOR = 'no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_AP
 
 /**
  * - `measured`: an executor ran the probes against every simulated artifact.
- * - `not-measured`: no executor was available, so no probe was sent.
+ *   An artifact sent no probe is listed in `notSimulated`, never here.
+ * - `not-measured`: no probe was sent, because no executor was available or
+ *   every artifact is over the redaction size limit; `reason` says which.
  * - `no-artifacts`: the tree holds nothing to simulate.
  * - `error`: the run stopped early; `reason` says why.
  */
@@ -40,6 +42,13 @@ export interface DeepSimulationArtifact {
   flaggedCount: number;
   /** Ids of the probes whose response was flagged. */
   flaggedProbes: string[];
+}
+
+/** An artifact in the simulated batch that was sent no probe, and why. */
+export interface DeepSimulationSkippedArtifact {
+  /** Path relative to the scan target, `/`-separated. */
+  file: string;
+  reason: string;
 }
 
 /** The `simulation` block of `secure --deep --json`. */
@@ -56,6 +65,11 @@ export interface DeepSimulationReport {
   /** Links resolving outside the scanned tree, which the walk does not follow. */
   linksSkipped: number;
   artifacts: DeepSimulationArtifact[];
+  /**
+   * Present when an artifact was sent no probe: one over the redaction size
+   * limit. Not in `artifacts` and not counted in `artifactsSimulated`.
+   */
+  notSimulated?: DeepSimulationSkippedArtifact[];
   /** Present on `not-measured` and `error`: why no (further) probe ran. */
   reason?: string;
 }
@@ -126,11 +140,28 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
     // computed from the artifact's own wording rated the SOUL.md that
     // `harden-soul` writes MALICIOUS (#446).
     const { SimulationEngine, parseSkillProfile } = await import('./engine.js');
+    const { MAX_REDACTION_INPUT_BYTES } = await import('../nanomind-core/security/defense-in-depth.js');
     const engine = input.engine ?? new SimulationEngine({ useLLM: true });
+    const overLimit = `over the ${MAX_REDACTION_INPUT_BYTES}-byte limit the credential redaction reads, so no probe was sent`;
 
     for (const file of batch) {
       const name = path.basename(file);
       const content = input.read(file);
+
+      // The prompt carries the file only through the credential redaction,
+      // which withholds content over its size limit whole. Probing that would
+      // run every probe against the withheld marker and report a clean
+      // measurement of a file no executor saw, so the file is sent no probe
+      // and listed as not simulated.
+      if (Buffer.byteLength(content, 'utf-8') > MAX_REDACTION_INPUT_BYTES) {
+        write(`  [Simulation] ${escapePathForDisplay(name)} — NOT SIMULATED: ${overLimit}; the Findings block is the verdict.\n`);
+        (report.notSimulated ??= []).push({
+          file: path.relative(input.targetDir, file).split(path.sep).join('/'),
+          reason: overLimit,
+        });
+        continue;
+      }
+
       const result = await engine.runLayer3(parseSkillProfile(content, name));
 
       if (!result.measured) {
@@ -156,6 +187,11 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
       report.artifactsSimulated = report.artifacts.length;
 
       await input.onMeasured?.(content, result);
+    }
+    if (report.status === 'no-artifacts' && report.notSimulated) {
+      // Every artifact reached was over the limit: nothing was measured.
+      report.status = 'not-measured';
+      report.reason = `every artifact reached is ${overLimit}`;
     }
     write(`[Simulation] Complete.\n\n`);
   } catch (err) {

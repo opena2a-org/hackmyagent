@@ -240,8 +240,14 @@ export async function executeProbeLLM(
  *
  * The prompt leaves the process for whichever executor answers, so the
  * file's text and the tool names read from it pass through the redaction
- * `attack` applies to its target first: a credential value in a scanned
- * `.md` or `.yaml` file is replaced by a marker before any probe is sent.
+ * `attack` applies to its target first. It replaces the credential shapes it
+ * recognises with a marker: known key and token formats, a database
+ * connection string, a user name and password in a URL, an `Authorization`
+ * header value, a `password=` value, and a value of 8 or more characters
+ * with no space in it written after another credential-named key and `:` or
+ * `=`. A shorter value there (`api_key: abc1234`), a quoted value with a
+ * space in it, or a credential written in prose is sent as written. Content over the redaction's size limit becomes the withheld
+ * marker alone, so `runDeepSimulation` sends no probe for such a file.
  */
 function buildSkillSystemPrompt(skill: SkillProfile): string {
   const tools = skill.capabilities.map(cap => redactTargetArtifact(cap).text).map(cap =>
