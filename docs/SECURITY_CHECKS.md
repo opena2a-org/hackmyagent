@@ -4,12 +4,39 @@ HackMyAgent performs 362 security checks across 86 categories (317 static checks
 
 ## Severity Levels
 
-| Severity | Score Impact | Description |
+| Severity | Score Weight | Description |
 |----------|--------------|-------------|
-| **Critical** | -15 points | Immediate risk, must fix before deployment |
-| **High** | -10 points | Significant risk, should fix promptly |
-| **Medium** | -5 points | Moderate risk, plan to address |
-| **Low** | -2 points | Minor risk, best practice improvement |
+| **Critical** | 25 | Immediate risk, must fix before deployment |
+| **High** | 15 | Significant risk, should fix promptly |
+| **Medium** | 8 | Moderate risk, plan to address |
+| **Low** | 3 | Minor risk, best practice improvement |
+
+### How the score is computed
+
+A weight is not a number of points subtracted from 100. Each open finding (failed, and not repaired by a `--fix` that its verification pass confirmed) adds its severity weight to a sum, and the score is:
+
+```
+score = round(100 * exp(-sum / 150))
+```
+
+A scan with no open finding scores 100. Two adjustments apply to a finding's weight before it is added:
+
+- **Governance findings count at 0.4 of their weight.** These are findings in the `governance`, `injection-hardening` or `trust-hierarchy` category, or with a check ID starting `AST-GOV`, `AST-PROMPT` or `AST-HEARTBEAT`.
+- **After the third finding from one check, each further finding counts at 0.1 of its weight.** The first three findings with the same check ID count in full. Every finding is still reported; only its share of the score is reduced.
+
+When any critical or high finding is open, the score shown is capped at 69, the top of the band below 70, and the report gives the uncapped score beside it.
+
+| Open findings | Sum | Score |
+|---------------|-----|-------|
+| 1 low | 3 | 98 |
+| 1 medium | 8 | 95 |
+| 1 medium, governance | 3.2 | 98 |
+| 5 medium, one check | 25.6 | 84 |
+| 1 high | 15 | 90, shown as 69 |
+| 1 critical | 25 | 85, shown as 69 |
+| 1 critical, 3 high, 4 medium, 1 low | 105 | 50 |
+
+Rows without "governance" are findings outside the governance categories; rows without "one check" are findings from different checks.
 
 ---
 
