@@ -19,6 +19,10 @@
  * `code: 'ENOENT'` or `killed: true` and the URL has a user name and
  * password.
  *
+ * A clone git gives up on itself, with `Timeout was reached` in its error,
+ * printed the `timed out` lines for every kind of URL here until the URL had
+ * a user name or password: then it printed the `Could not clone` lines.
+ *
  * Hermetic: with no git, PATH is an empty directory. For the time limit,
  * `git` is a stand-in on PATH that never answers, and
  * __tests__/fixtures/git-time-limit-preload.cjs shortens the 120 s the CLI
@@ -94,6 +98,17 @@ const SCAN_ERRORS = [
 /** Every scan error, for every kind of URL. */
 const SCAN_FAILED_CASES = SCAN_ERRORS.flatMap((e) => URLS.map((u) => ({ ...u, error: e.kind, fields: e.fields })));
 
+// Stands in for a git that gives up on the connection itself: it fails at
+// once with exit 128 and git's own `Timeout was reached` line, which quotes
+// the URL without its user name and password.
+const GIT_SAYS_TIMEOUT = `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in https://*) rest="\${arg#https://}" ;; esac
+done
+printf '%s\\n' "fatal: unable to access 'https://\${rest##*@}/': Failed to connect to gitlab.com port 443 after 75002 ms: Timeout was reached" >&2
+exit 128
+`;
+
 interface Run {
   status: number | null;
   stdout: string;
@@ -104,9 +119,11 @@ let scratch = '';
 let emptyBin = '';
 let hangBin = '';
 let cloneBin = '';
+let timeoutWordBin = '';
 const noGitRuns: Run[] = [];
 const timedOutRuns: Run[] = [];
 const scanFailedRuns: Run[] = [];
+const timeoutWordRuns: Run[] = [];
 
 function run(label: string, typedUrl: string, extraEnv: NodeJS.ProcessEnv, preloads: string[]): Run {
   const dir = path.join(scratch, label);
@@ -151,6 +168,9 @@ beforeAll(() => {
   fs.writeFileSync(path.join(cloneBin, 'git'), GIT_CLONES, { mode: 0o755 });
   const scanRejects = path.join(scratch, 'scan-rejects.cjs');
   fs.writeFileSync(scanRejects, SCAN_REJECTS);
+  timeoutWordBin = path.join(scratch, 'timeout-word-bin');
+  fs.mkdirSync(timeoutWordBin, { recursive: true });
+  fs.writeFileSync(path.join(timeoutWordBin, 'git'), GIT_SAYS_TIMEOUT, { mode: 0o755 });
 
   URLS.forEach(({ typed }, i) => {
     noGitRuns.push(run(`no-git-${i}`, typed, { PATH: emptyBin }, [LOOPBACK_ONLY]));
@@ -169,6 +189,14 @@ beforeAll(() => {
       typed,
       { PATH: `${cloneBin}${path.delimiter}${process.env.PATH ?? ''}`, HMA_TEST_SCAN_ERROR: JSON.stringify(fields) },
       [LOOPBACK_ONLY, scanRejects],
+    ));
+  });
+  URLS.forEach(({ typed }, i) => {
+    timeoutWordRuns.push(run(
+      `timeout-word-${i}`,
+      typed,
+      { PATH: `${timeoutWordBin}${path.delimiter}${process.env.PATH ?? ''}` },
+      [LOOPBACK_ONLY],
     ));
   });
 }, 600_000);
@@ -231,5 +259,31 @@ describe('check <git URL> whose clone finished and whose scan then failed prints
     expect(r.stderr).not.toContain('timed out');
     expect(output).not.toContain(SECRET);
     expect(output).not.toContain(USER);
+  });
+});
+
+// A user name or password in the URL does not change which lines a clone
+// whose git error says `Timeout was reached` prints: the `timed out` lines,
+// which name only the URL as shown, never git's own error lines.
+describe('check <git URL> whose git error holds the word `Timeout` says that it timed out', () => {
+  it.each(URLS.map((u, i) => ({ ...u, i })))('for $kind', ({ shown, i }) => {
+    const r = timeoutWordRuns[i];
+    const output = r.stdout + r.stderr;
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.stderr).toContain(`Error: Fetching "${shown}" timed out. The target may be too large.`);
+    expect(r.stderr).toContain('Try downloading manually and scanning the local path:');
+    expect(r.stderr).toMatch(/ check \.\/downloaded-dir\/$/m);
+    expect(r.stderr).not.toContain('Could not clone repository');
+    expect(r.stderr).not.toContain('Command failed');
+    expect(r.stderr).not.toContain('fatal:');
+    expect(r.stderr).toContain(`${shown} could not be fetched, so nothing was scanned.`);
+    expect(output).not.toContain(SECRET);
+    expect(output).not.toContain(USER);
+  });
+
+  it('with the same lines for all three, but for the URL they name', () => {
+    const [first, ...rest] = URLS.map((u, i) => timeoutWordRuns[i].stderr.split(u.shown).join('<URL>').replace(/Cloning .*\n/, ''));
+    expect(first).toContain('timed out');
+    for (const other of rest) expect(other).toBe(first);
   });
 });

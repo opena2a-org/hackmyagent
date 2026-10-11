@@ -36,7 +36,10 @@ breaking: true
   because the host part ends at that character. When the clone of a forge
   URL without `.git` that has an `@` before the host fails, `check` prints
   `Error: Could not clone repository from "<URL>".`, with the URL as it
-  shows it, and not the failed command and git's own error lines. git can
+  shows it, and not the failed command and git's own error lines. When
+  git's error holds the word `timeout`, it prints
+  `Error: Fetching "<URL>" timed out. The target may be too large.`
+  instead. git can
   quote the user name there as `<scheme>://<user>@<host>` when it cannot ask
   for a password, or the whole URL when it holds a line break, with a
   control character in it replaced. A failed clone of a URL that ends in

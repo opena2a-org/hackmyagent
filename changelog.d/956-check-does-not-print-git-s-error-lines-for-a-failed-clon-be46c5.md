@@ -4,9 +4,10 @@ issue: 956
 ---
 #### `check` does not print git's error lines for a failed clone of a `.git` URL with a user name or password, and says when git was not found or the clone timed out (#956)
 
-- When the clone of a URL that ends in `.git` failed, and git did not report
-  the repository as not found, `check` printed the failed command and git's
-  own error lines with only the URL as typed replaced. git can quote part of
+- When the clone of a URL that ends in `.git` failed, and git's error neither
+  reported the repository as not found nor held the word `timeout`, `check`
+  printed the failed command and git's own error lines with only the URL as
+  typed replaced. git can quote part of
   the user name or password there in another form: the URL from its first
   `@` on when two come before the host, as in
   `check https://<name>@<domain>:<token>@bitbucket.org/<org>/<repo>.git`,
@@ -19,7 +20,12 @@ issue: 956
   `Error: Could not clone repository from "<URL>".`, with the URL as it shows
   it, and `Verify the URL is accessible and contains a git repository.`, as
   it does for a forge URL without `.git`. git's reason for the failure is
-  not printed for such a URL. A failed clone of a URL that is shown as typed
+  not printed for such a URL. When git's error holds the word `timeout`, as
+  in `Timeout was reached`, such a clone prints
+  `Error: Fetching "<URL>" timed out. The target may be too large.` and
+  `Try downloading manually and scanning the local path:` instead, as a
+  `.git` URL did before and as the same URL without a user name or password
+  does. A failed clone of a URL that is shown as typed
   still prints the failed command and git's error lines. If a log that other
   people can read kept the output of such a run, rotate that password or
   token.

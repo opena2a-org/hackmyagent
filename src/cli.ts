@@ -15435,15 +15435,19 @@ async function checkRawUrl(
     // whole URL with a control character replaced when it holds a line
     // break. So when the clone of a URL that is shown without a user name or
     // password fails, with or without `.git`, those lines are not printed.
+    // When git's error holds the word `timeout`, as in `Timeout was reached`,
+    // the `timed out` lines are printed instead, as for the same URL without
+    // a user name or password: they name only the URL as shown.
     const userinfoCloneFailed = cloneFailed && shownUrl !== url;
+    const timeoutInMessage = message.includes('timeout') || message.includes('Timeout');
     if (gitNotFound) {
       console.error(`Error: git was not found on PATH, so "${escapeForDisplay(String(shownUrl))}" was not cloned.`);
       console.error(`\nInstall git and run the command again, or download the repository and scan the local path:`);
       console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
-    } else if (!cloneTimedOut && (userinfoCloneFailed || message.includes('128') || message.includes('not found') || message.includes('Repository not found'))) {
+    } else if (!cloneTimedOut && ((userinfoCloneFailed && !timeoutInMessage) || message.includes('128') || message.includes('not found') || message.includes('Repository not found'))) {
       console.error(`Error: Could not clone repository from "${escapeForDisplay(String(shownUrl))}".`);
       console.error(`\nVerify the URL is accessible and contains a git repository.`);
-    } else if (cloneTimedOut || message.includes('timeout') || message.includes('Timeout')) {
+    } else if (cloneTimedOut || timeoutInMessage) {
       console.error(`Error: Fetching "${escapeForDisplay(String(shownUrl))}" timed out. The target may be too large.`);
       console.error(`\nTry downloading manually and scanning the local path:`);
       console.error(`  ${getCheckCommand()} ./downloaded-dir/`);
