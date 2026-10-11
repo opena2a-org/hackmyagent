@@ -117,7 +117,10 @@ IOCs checked:
 - Unauthorized skill installations in `skills/` directory
 - Modified gateway configuration files with injected endpoints
 - Unexpected cron jobs or heartbeat entries
-- Outbound connections to known C2 domains
+- Known ClawHavoc command-and-control (C2) IP addresses written in skill
+  files (`SUPPLY-005`). This is a text match on file content. HMA does not
+  observe network connections, so check your network logs for connections
+  to any address it reports.
 
 If IOCs are found, HMA reports them as CRITICAL findings with specific remediation steps.
 
