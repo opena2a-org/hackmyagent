@@ -108,7 +108,7 @@ it in.
 
 Every pull request runs a check named `parity / parity`: the cross-CLI output-parity
 harness (`.github/workflows/parity-gate.yml`), built against your branch. It runs
-unconditionally, even for changes that cannot affect CLI output -- a check that is
+unconditionally, even for changes that cannot affect CLI output. A check that is
 always present under one name is what allows it to be required on `main`.
 
 If the parity leg fails, your change altered JSON output that downstream consumers pin as

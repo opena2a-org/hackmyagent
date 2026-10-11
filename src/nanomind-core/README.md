@@ -1,4 +1,4 @@
-# NanoMind Core -- Semantic Security Compiler
+# NanoMind Core: Semantic Security Compiler
 
 The foundational intelligence layer for HackMyAgent. Compiles raw artifacts into Abstract Security Trees (ASTs) that all analyzers query.
 
@@ -15,18 +15,18 @@ Artifact → Secure Ingestion → NanoMind Compiler → Signed AST → Analyzers
 
 ## Principles
 
-1. **NanoMind is the foundation** -- analyzers query the AST, not raw text
-2. **Security-first** -- input sanitized, ASTs signed, secrets redacted, integrity verified
-3. **Defense-in-depth** -- NanoMind can upgrade findings but NEVER suppress static analysis
+1. **NanoMind is the foundation**: analyzers query the AST, not raw text
+2. **Security-first**: input sanitized, ASTs signed, secrets redacted, integrity verified
+3. **Defense-in-depth**: NanoMind can upgrade findings but NEVER suppress static analysis
 
 ## Components
 
 ### Ingestion (`ingestion/`)
-- `artifact-parser.ts` -- Validates, classifies, hashes artifacts
-- `input-sanitizer.ts` -- Strips prompt injection attempts targeting NanoMind
+- `artifact-parser.ts`: Validates, classifies, hashes artifacts
+- `input-sanitizer.ts`: Strips prompt injection attempts targeting NanoMind
 
 ### Compiler (`compiler/`)
-- `semantic-compiler.ts` -- Produces signed SecurityASTs from artifacts
+- `semantic-compiler.ts`: Produces signed SecurityASTs from artifacts
 
 ### Analyzers (`analyzers/`)
 | Analyzer | Checks | What It Detects |
@@ -39,11 +39,11 @@ Artifact → Secure Ingestion → NanoMind Compiler → Signed AST → Analyzers
 | `code-analyzer.ts` | AST-CODE-001 to 003 | Command injection, unsafe deserialization, path traversal |
 
 ### Security (`security/`)
-- `defense-in-depth.ts` -- 7 rules: severity floor, benign consensus, secret redaction, AST integrity, training provenance, audit logging
-- `integrity-verifier.ts` -- `verifyAll()` startup check, bounded hash-linked event log (diagnostic, unkeyed), manifest generation
+- `defense-in-depth.ts`: 7 rules (severity floor, benign consensus, secret redaction, AST integrity, training provenance, audit logging)
+- `integrity-verifier.ts`: `verifyAll()` startup check, bounded hash-linked event log (diagnostic, unkeyed), manifest generation
 
 ### Bridge
-- `scanner-bridge.ts` -- Merges AST findings with static findings (defense-in-depth)
+- `scanner-bridge.ts`: Merges AST findings with static findings (defense-in-depth)
 
 ## Usage
 

@@ -25,11 +25,11 @@ We acknowledge receipt within 48 hours and give a remediation timeline in that r
 
 ## Scope
 
-This policy covers `hackmyagent` — the CLI, its published npm package, and this repository. Other
+This policy covers `hackmyagent`: the CLI, its published npm package, and this repository. Other
 repositories in the [opena2a-org](https://github.com/opena2a-org) organization have their own
 policies.
 
-Reports about a *scanned target* — a package or repository this tool reports on — should go to that
+Reports about a *scanned target* (a package or repository this tool reports on) should go to that
 project, not to us. Reports about how this tool **handles** what it scans, including anything it
 writes into its own output, are in scope here.
 

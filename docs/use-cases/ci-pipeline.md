@@ -43,7 +43,7 @@ HMA uses exit codes to signal scan results:
 |------|---------|-------------|
 | `0` | The target was measured, and no critical or high issue was found | Pipeline passes |
 | `1` | The target was measured, and a critical or high issue was found | Pipeline fails |
-| `2` | The target was **not measured** -- no result is reported | Pipeline fails |
+| `2` | The target was **not measured**, so no result is reported | Pipeline fails |
 
 Any critical or high finding causes exit code `1`, which fails the GitHub Actions step by default.
 
@@ -62,7 +62,7 @@ produced a result, the rating prints as `Not Assessed`, and the category
 results are still printed. When nothing at all was measured there is no
 compliance figure and `--fail-below` is not evaluated; a `--category` whose
 L2 or L3 controls did produce results keeps its measured figure, and a
-`--fail-below` breach over it exits 1. It is non-zero on purpose --
+`--fail-below` breach over it exits 1. It is non-zero on purpose:
 "I could not tell you" must not be read by a pipeline as "it is safe".
 
 ## JSON output format
@@ -174,7 +174,7 @@ The `--fail-on-vulnerable medium` flag fails the step if any medium-or-higher vu
 
 `attack` needs a running agent to test. It probes the endpoint before sending
 any payload, and exits `2` without a score if the endpoint is unreachable or if
-no payload is answered -- a suite that never arrived tells you nothing about the
+no payload is answered. A suite that never arrived tells you nothing about the
 agent, so it reports nothing.
 
 Do not use `--local` as a CI gate. It generates payloads and checks that they

@@ -9,8 +9,8 @@
 
 This workflow combines two approaches:
 
-1. **Static analysis** (`secure`) -- checks MCP config files for misconfigurations
-2. **Adversarial testing** (`attack`) -- sends up to 164 attack payloads against your agent or MCP server
+1. **Static analysis** (`secure`): checks MCP config files for misconfigurations
+2. **Adversarial testing** (`attack`): sends up to 164 attack payloads against your agent or MCP server
 
 ## Step 1: Check MCP configurations
 
@@ -153,7 +153,7 @@ Attacks: 10 sent | 10 answered | 3 successful | 5 blocked | 2 inconclusive
 ```
 
 `attack` probes the endpoint once before sending any payload. If nothing is
-listening, or if no payload is answered, it exits 2 and reports no score --
+listening, or if no payload is answered, it exits 2 and reports no score:
 a suite that never arrived says nothing about the server.
 
 ## Step 4: Run the full payload suite
@@ -180,7 +180,7 @@ npx hackmyagent attack http://localhost:3010 --target-type mcp
 ```
 
 A clean run shows 0 successful payloads and exits `0`. If it exits `2`, the
-server was not reached and nothing was verified -- start it and re-run.
+server was not reached and nothing was verified. Start it and re-run.
 
 ---
 

@@ -20,7 +20,7 @@ npm run build                       # zero output, zero errors
 npm test                            # all green
 ```
 
-Then run the benign FPR regression suite separately — this is the most critical
+Then run the benign FPR regression suite separately. This is the most critical
 gate and must pass with zero high/critical findings across all 10 oracle fixtures:
 
 ```bash
@@ -39,7 +39,7 @@ HMA_VERIFY_MODEL_PINS=1 npx vitest run __tests__/nanomind-core/tme-classifier-pi
 # Expected: 1 passed (skipped when HMA_VERIFY_MODEL_PINS is not set)
 ```
 
-Then the corpus gate — BLOCKING. It runs the built CLI over every fixture in the
+Then the corpus gate, which is BLOCKING. It runs the built CLI over every fixture in the
 opena2a-corpus checkout and compares scores against the manifest bands and the
 rendered output against `golden/hma/`. A red result here means either the scoring
 moved (re-bake the goldens in the same PR that moved it and say why) or the corpus
@@ -81,7 +81,7 @@ Fail the release if:
 ## 0.5 Build the throwaway fixtures (1 min)
 
 Every scan step below targets one of these. They are built here so the
-checklist works **from a clean clone** — do not substitute a path that only
+checklist works **from a clean clone**. Do not substitute a path that only
 exists on a maintainer's machine.
 
 ```bash
@@ -117,7 +117,7 @@ test -f "$BAD/config.json" && test -d "$CLEAN" && test -f "$NESTED/.claude/skill
 `test/` and `test/fixtures/governed-mcp` are tracked in this repo and are the
 only in-repo scan targets the checklist uses.
 
-**Instrument rule — read before reading any result.** A missing target makes
+**Instrument rule: read before reading any result.** A missing target makes
 HMA print `Error: Directory '...' does not exist.` and exit **1**, which is
 the same exit code as "findings were found". Any step whose expectation is a
 non-zero exit MUST also assert on output content, or it passes vacuously. This
@@ -186,7 +186,7 @@ $HMA wild --help
 ```
 
 For each command verify:
-1. Output is produced — not silent, no hang
+1. Output is produced: not silent, no hang
 2. Exit code 0 (success paths); exit code 1 for critical/high finding paths
 3. No credentials printed (API keys, tokens, any `sk-` prefix)
 4. No stack traces in normal output (stderr is acceptable for DEBUG)
@@ -206,7 +206,7 @@ coverage.
 | Empty dir | `"$CLEAN"` (§0.5) | 98 (`.gitignore` LOW only: `DEP-001` reads `package.json` as its subject and records not-applicable on a tree without one; measured 0.34.0) |
 | Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 98/100 (no `package.json`, so `DEP-001` is not-applicable; measured 0.34.0) |
 | Standalone SOUL.md | `node dist/cli.js scan-soul test/` | see note below |
-| One text (PR body) | `node dist/cli.js scan-text "$PRBODY" --as pr-body` (§0.5) | no score, by design: 2 findings — `TEXT-001` and `TEXT-002`, both at line 1 — and exit 1. A `/100` or the word `Score` anywhere in this output is a defect |
+| One text (PR body) | `node dist/cli.js scan-text "$PRBODY" --as pr-body` (§0.5) | no score, by design: 2 findings (`TEXT-001` and `TEXT-002`, both at line 1) and exit 1. A `/100` or the word `Score` anywhere in this output is a defect |
 | One text (stdin, clean) | `printf 'LGTM, approved.\n' \| node dist/cli.js scan-text - --json` | no score: `findings: []` and exit 0. A benign approval is not a payload |
 | npm package | `node dist/cli.js check express` | ≥ 95 |
 | PyPI package | `node dist/cli.js check pip:requests` | ~90 |
@@ -218,35 +218,35 @@ coverage.
 **On the `scan-soul test/` row.** Measured 18/100 on 0.25.1 (BASIC tier, "23 of
 29 applicable controls not detected"). That number is depressed by the
 keyword-vs-prose matcher gap tracked as **#266**, not by anything wrong with
-the fixture — `test/SOUL.md` is a well-formed governance file. Gate on the
+the fixture: `test/SOUL.md` is a well-formed governance file. Gate on the
 command running, emitting per-domain scores, and not regressing *further*;
 do not "fix" this row by loosening the matcher, and re-baseline it upward when
 #266 lands. The row above it (`secure test/fixtures/governed-mcp` → 96/100)
 is the one that gates the clean-tree direction.
 
 **Score sanity rule:** a score below 30 for a known-good project, or above 70
-for a known-bad project, means the scoring is broken — investigate before
+for a known-bad project, means the scoring is broken. Investigate before
 publishing. Do not publish a release where `"$BAD"` scores ≥ 70 (it carries a
 credential at the scan root) or where `../ai-trust` scores < 30 (it is
 intentionally clean).
 
 ---
 
-## 4. Per-finding review protocol (MANDATORY — all surfaces above)
+## 4. Per-finding review protocol (MANDATORY, all surfaces above)
 
 For every finding visible in every scan output during release testing, write a
 one-line verdict against 5 questions. "Score sane, no crashes" is NOT a
-verdict — the verdict is per-finding.
+verdict: the verdict is per-finding.
 
-1. **Specificity** — Names WHAT specifically is wrong (file:line, capability
+1. **Specificity**: Names WHAT specifically is wrong (file:line, capability
    name, secret type, masked preview).
-2. **Action** — Fix line gives a runnable command or specific edit. Generic
+2. **Action**: Fix line gives a runnable command or specific edit. Generic
    advice ("review this file") fails.
-3. **Severity coherence** — Compare HIGH vs MEDIUM/LOW on the SAME file. HIGH
+3. **Severity coherence**: Compare HIGH vs MEDIUM/LOW on the SAME file. HIGH
    must be at least as specific as MEDIUM. If a HIGH is vaguer than a MEDIUM,
    the severity model is broken.
-4. **Internal consistency** — Findings on the same file tell a consistent story.
-5. **CISO test** — A non-developer security manager understands what's wrong,
+4. **Internal consistency**: Findings on the same file tell a consistent story.
+5. **CISO test**: A non-developer security manager understands what's wrong,
    what to do, why it matters.
 
 **Verdict format:**
@@ -284,10 +284,10 @@ unset OPENA2A_TELEMETRY
 
 `OPENA2A_TELEMETRY_URL` and `OPENA2A_TELEMETRY_DEBUG` are implemented in the
 `@opena2a/telemetry` dependency, **not** in this repo's `src/`. Grepping `src/`
-alone will wrongly suggest they do not exist. They work — 5.6 emits exactly the
+alone will wrongly suggest they do not exist. They work: 5.6 emits exactly the
 allowlisted fields.
 
-**5.6 targets `"$BAD"` on purpose — a findings-bearing scan is the path that
+**5.6 targets `"$BAD"` on purpose: a findings-bearing scan is the path that
 used to report nothing.** Tracked as **#297**, fixed in 0.25.2: the scan
 commands used to call `process.exit(1)` when they found something, which
 skipped the Commander `postAction` hook that fires `tele.track()`, so text,
@@ -295,7 +295,7 @@ SARIF and HTML mode emitted no telemetry at all on a findings-bearing scan and
 only `--json` did. `finishWithFindings` is now the single ending for all five
 branches. Measured on 0.25.2: text mode on `"$BAD"` emits exactly 1 event
 carrying `success: true`. Empty output here is now a REGRESSION, not the old
-known issue — it means a branch has gone back to hard-exiting. Guarded by
+known issue. It means a branch has gone back to hard-exiting. Guarded by
 `__tests__/cli/telemetry-on-findings.test.ts`.
 
 | # | Command | Expected |
@@ -317,7 +317,7 @@ unset OPENA2A_TELEMETRY_URL   # restore after telemetry section
 
 After every release that touches exit codes, the router, or JSON output shape:
 
-Capture the exit code from the command itself, never through a pipe — `cmd |
+Capture the exit code from the command itself, never through a pipe: `cmd |
 head; echo $?` reports `head`'s status and will read as a pass regardless of
 what the CLI did.
 
@@ -389,8 +389,8 @@ row said 1; the row was wrong, not the code. Do not "fix" the CLI to match it.
 ### The `--ci` cells
 
 This section was titled for `--ci` from the day it was written and contained no
-`--ci` cell, which is how #454 shipped twice — closed 2026-08-10 as completed
-with the defect fully live. `--ci` is an **output-mode** flag: it suppresses
+`--ci` cell, which is how #454 shipped twice (closed 2026-08-10 as completed
+with the defect fully live). `--ci` is an **output-mode** flag: it suppresses
 prompts and turns contribution off. In `secure` and `fix-all` it **never**
 changes the exit code. `scan-soul` is the deliberate exception (pre-existing,
 #162/#206, not touched by #454): it additionally exits 1 under `--ci` on a
@@ -450,7 +450,7 @@ rm -rf "$KEYTREE"
 
 **Count the queue correctly.** The queue file is an object `{"events":[…]}`, not
 a bare array. A counter written as `Array.isArray(q)?q.length:0` reports **0**
-for every run and reads as a permanent pass — it silently inverted this exact
+for every run and reads as a permanent pass. It silently inverted this exact
 measurement once already.
 
 **Do not use a dead sink at `127.0.0.1`.** `REGISTRY_URL` is validated: only
@@ -494,7 +494,7 @@ every later row silently measures nothing. That happened during the 0.29.0 gate.
 
 **MCP confinement runs through the WALK, not just the argument.** The escape that
 shipped was a link at a name discovery looks for, with the root itself as the
-argument — not a hostile path passed in:
+argument, not a hostile path passed in:
 
 ```bash
 B=$(mktemp -d); mkdir -p "$B/project" "$B/outside"
