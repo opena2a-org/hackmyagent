@@ -84,19 +84,27 @@ describe('invocation(): the command line that reaches the ARP CLI', () => {
   });
 
   it('still names an extensionless file that exists as a bin shim', async () => {
-    await withTree(['bin/some-arp-bin'], async (root) => {
+    // The .js beside it is what Node would complete the path to if the shim
+    // were not itself a file, so the shim wins only through the exact-file check.
+    await withTree(['bin/some-arp-bin', 'bin/some-arp-bin.js'], async (root) => {
       expect(await invocation(['/usr/bin/node', path.join(root, 'bin/some-arp-bin')], { PATH: path.join(root, 'bin') }, root))
         .toBe('some-arp-bin');
     });
   });
 
-  it('on Windows, leaves a path without spaces bare and double-quotes one with spaces', async () => {
+  it('on Windows, leaves a path of ASCII letters, digits and _ @ + = : , . \\ / - bare and double-quotes any other', async () => {
     const winEnv = { PATH: 'C:\\Windows\\system32' };
     const node = 'C:\\Program Files\\nodejs\\node.exe';
     expect(await invocation([node, 'C:\\proj\\node_modules\\hackmyagent\\dist\\arp\\cli\\index.js'], winEnv, 'C:\\proj', 'win32'))
       .toBe('node node_modules\\hackmyagent\\dist\\arp\\cli\\index.js');
-    expect(await invocation([node, 'C:\\Users\\a b\\dist\\arp\\cli\\index.js'], winEnv, 'C:\\proj', 'win32'))
-      .toBe('node "C:\\Users\\a b\\dist\\arp\\cli\\index.js"');
+    expect(await invocation([node, 'C:\\a_b@c+d=e,f.g-h\\dist\\arp\\cli\\index.js'], winEnv, 'D:\\elsewhere', 'win32'))
+      .toBe('node C:\\a_b@c+d=e,f.g-h\\dist\\arp\\cli\\index.js');
+    // A space, and characters the shell would not split on but that fall
+    // outside the bare set: a tilde, a parenthesis and a non-ASCII letter.
+    for (const dir of ['a b', 'RUNNER~1', 'x(86)', 'José']) {
+      expect(await invocation([node, `C:\\Users\\${dir}\\dist\\arp\\cli\\index.js`], winEnv, 'C:\\proj', 'win32'), dir)
+        .toBe(`node "C:\\Users\\${dir}\\dist\\arp\\cli\\index.js"`);
+    }
   });
 });
 
