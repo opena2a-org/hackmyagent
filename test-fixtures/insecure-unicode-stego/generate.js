@@ -32,8 +32,9 @@ const variationSelectorsContent = Buffer.concat([
 ]);
 fs.writeFileSync(path.join(outDir, 'variation-selectors.js'), variationSelectorsContent);
 
-// UNICODE-STEGO-001/004: Tag characters (U+E0100-E01EF range)
-// UTF-8: F3 A0 84 80 through F3 A0 87 AF
+// UNICODE-STEGO-001/004: Variation Selectors Supplement (U+E0100-E01EF); the
+// checks report U+E0100-E01FF, which adds the unassigned U+E01F0-E01FF
+// UTF-8: F3 A0 84 80 through F3 A0 87 BF
 const tagCharsContent = Buffer.concat([
   Buffer.from('// Normal looking code\nconst y = "world'),
   // U+E0100 = F3 A0 84 80
@@ -44,7 +45,7 @@ const tagCharsContent = Buffer.concat([
 ]);
 fs.writeFileSync(path.join(outDir, 'tag-characters.js'), tagCharsContent);
 
-// UNICODE-STEGO-004 only: Tag block characters (U+E0000-U+E00FF)
+// UNICODE-STEGO-004 only: Tags block (U+E0000-E007F) and unassigned U+E0080-E00FF
 // UTF-8: F3 A0 80 80 through F3 A0 83 BF
 const tagBlockContent = Buffer.concat([
   Buffer.from('// Innocent looking code\nconst z = "test'),
