@@ -3,18 +3,27 @@ type: security
 issue: 946
 breaking: true
 ---
-#### Breaking: `check` scans a forge URL with a user name and no `.git` instead of ending unmeasured with exit 2, and `attack --registry-report` names the target as `--publish` does (#946)
+#### Breaking: `check` clones a forge URL with no `.git` that has a user name, a password, or an `@` with neither, and `attack --registry-report` names the target as `--publish` does (#946)
 
-- Breaking: `check https://<user>:<token>@gitlab.com/<org>/<repo>`, a forge
-  URL without `.git`, was not cloned. The forge was matched on the URL as
-  typed, where the user name comes before the host, so the URL went to
+- Breaking: `check` did not clone a forge URL without `.git` that has a user
+  name, a password or both before its `@`, such as
+  `check https://<user>:<token>@gitlab.com/<org>/<repo>` or
+  `check https://:<token>@gitlab.com/<org>/<repo>`. The forge was matched on
+  the URL as typed, where they come before the host, so the URL went to
   `fetch`, which refuses a URL with a user name or password, and the run
-  ended unmeasured, with nothing scanned, and exited 2. The forge is now
-  matched on the URL without them, so the repository is cloned and scanned,
-  the run reports a measured verdict and it exits on its findings. The
-  forges are `gitlab.com`, `bitbucket.org`, `codeberg.org`, `gitea.com` and
-  `sr.ht`. A `github.com` URL with a user name is not matched as one: it
-  still goes to `fetch`, ends unmeasured and exits 2.
+  ended unmeasured, with nothing scanned, and exited 2. A forge URL with an
+  `@` and no user name or password before it, such as
+  `check https://@gitlab.com/<org>/<repo>`, went to `fetch` as well, which
+  accepts it, so `check` fetched the web page the forge serves at that
+  address and scanned it as one file. The forge is now matched on the URL
+  with its user name, password and `@` removed, so these URLs are handed to
+  `git clone`, and a repository it clones is scanned: the run reports a
+  measured verdict and exits on its findings. That holds when the host
+  after the `@` is exactly `gitlab.com`, `bitbucket.org`, `codeberg.org`,
+  `gitea.com` or `sr.ht` and a `/` follows it. A forge URL without `.git`
+  whose password holds a raw `?` or `#` is still not cloned, because the
+  host part ends at that character. A `github.com` URL with a user name is
+  not matched as one: it still goes to `fetch`, ends unmeasured and exits 2.
 - `check` printed a URL's user name and password as typed when a raw `?` or
   `#` in the password, or a `\` in a URL it fetches, ends the host part
   early, no `/` comes before the `@`, and what comes before that character
