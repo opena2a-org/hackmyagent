@@ -8724,9 +8724,12 @@ Examples:
             console.log('\nPublishing results to registry...\n');
           }
 
+          // No `directory`: the target is a URL, and the publish path hashes
+          // the directory it is given as the content hash of what was scanned.
+          // The shell's working directory is not that, so the payload for a
+          // remote target carries no tree hash.
           const publishData = {
             packageName,
-            directory: process.cwd(),
             attackReport: report,
           };
 
