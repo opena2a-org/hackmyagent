@@ -90,13 +90,13 @@ NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
 
 ## Step 2: CVE detection
 
-HMA checks for these known OpenClaw vulnerabilities:
+HMA checks the `openclaw` (or `@openclaw/core`) version declared in `package.json` for these known OpenClaw vulnerabilities:
 
-| CVE | Severity | Description | Fixed in |
-|-----|----------|-------------|----------|
-| CVE-2026-25253 | Critical | WebSocket RCE via crafted skill message | >= 0.3.5 |
-| CVE-2026-25157 | Critical | Skill sandbox escape via symlink traversal | >= 0.3.4 |
-| CVE-2026-24763 | High | Gateway authentication bypass via header injection | >= 0.3.3 |
+| CVE | Check ID | Severity | Description | Fixed in |
+|-----|----------|----------|-------------|----------|
+| CVE-2026-25253 | CVE-001 | Critical | WebSocket hijacking RCE: WebSocket hijacking enables 1-click RCE (CVSS 8.8) | v2026.1.29 |
+| CVE-2026-25157 | CVE-003 | High | OS command injection via SSH path: unescaped project path enables command injection on SSH hosts (CVSS 7.8) | v2026.1.29 |
+| CVE-2026-24763 | CVE-004 | Critical | Docker PATH command injection: unsafe PATH handling enables command injection in Docker sandbox (CVSS 8.8) | v2026.1.29 |
 
 For details on CVE-2026-25253, see the [disclosure blog post](https://opena2a.org/blogs/cve-2026-25253-openclaw-rce).
 
