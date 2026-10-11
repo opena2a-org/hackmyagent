@@ -118,6 +118,25 @@ function json(target: string, ...flags: string[]): { body: Record<string, unknow
   return { body: JSON.parse(r.stdout.slice(start)) as Record<string, unknown>, status: r.status };
 }
 
+/**
+ * The quoted clauses of the Next Steps block AS RENDERED — each stanza runs
+ * from its "By hand:" line to the following "Why:" line, and a clause may wrap
+ * over several lines.
+ */
+function printedHandEditClauses(stdout: string): string[] {
+  const lines = stdout.split('\n');
+  const clauses: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes('By hand:')) continue;
+    const body: string[] = [];
+    for (let j = i + 1; j < lines.length && !lines[j].includes('Why:'); j++) {
+      body.push(lines[j].trim());
+    }
+    clauses.push(body.join(' ').replace(/^"|"$/g, ''));
+  }
+  return clauses;
+}
+
 describe('#390 scan-soul exit contract', () => {
   it('dist/cli.js exists', () => {
     expect(existsSync(CLI_PATH)).toBe(true);
@@ -251,19 +270,7 @@ describe('#390 scan-soul exit contract', () => {
     expect(missingBefore.length, 'fixture must leave critical controls missing').toBeGreaterThan(0);
 
     const { stdout } = runScanSoul(dir);
-    // Pull the quoted clauses out of the Next Steps block AS RENDERED — each
-    // stanza runs from its "By hand:" line to the following "Why:" line, and
-    // a clause may wrap over several lines.
-    const lines = stdout.split('\n');
-    const clauses: string[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      if (!lines[i].includes('By hand:')) continue;
-      const body: string[] = [];
-      for (let j = i + 1; j < lines.length && !lines[j].includes('Why:'); j++) {
-        body.push(lines[j].trim());
-      }
-      clauses.push(body.join(' ').replace(/^"|"$/g, ''));
-    }
+    const clauses = printedHandEditClauses(stdout);
     expect(
       clauses.length,
       `expected one quoted clause per missing control (${missingBefore.join(', ')}); output was:\n${stdout}`,
@@ -305,6 +312,85 @@ describe('#390 scan-soul exit contract', () => {
         `the clause offered for ${control} does not satisfy ${control} on its own.\nclause: ${clauses[i]}`,
       ).not.toContain(control);
     }
+  });
+
+  // ── The fix must not change what the next scan measures (#1007) ────────
+  //
+  // Tier and profile are inferred from the file's own words by substring, and
+  // the profile decides which domains are evaluated. A clause that carries one
+  // of those words re-scopes the file it is pasted into: "conversational
+  // framing" moved a `custom` file to `conversational` (6 of 9 domains to 4),
+  // and "hardcoded" — which contains `code` — moved one to `code-assistant`
+  // (8 of 9 to 6 on a TOOL-USING file). The re-check the output asks for then
+  // reported on a narrower scope than the scan that printed the clause.
+  //
+  // Two bases, because a profile only shows as a narrower scope where the tier
+  // has not already left the same domains out: at BASIC, `code-assistant` and
+  // `custom` evaluate the same six.
+  const UNPROFILED = [
+    ['BASIC', '# Bot\n\nAnswers questions about billing.\n'],
+    ['TOOL-USING', '# Bot\n\nAnswers questions about billing using the tools it is given.\n'],
+  ] as const;
+  const scope = (body: Record<string, unknown>) => ({
+    agentTier: body.agentTier,
+    agentProfile: body.agentProfile,
+    skippedDomains: body.skippedDomains,
+    totalControls: body.totalControls,
+  });
+
+  it.each(UNPROFILED)('pasting a quoted hand-edit clause leaves a %s file on the same tier, profile and domains', (tier, base) => {
+    if (!existsSync(CLI_PATH)) return;
+    const dir = tmpDirWithSoul(base, `scope-${tier}`);
+    const bare = json(dir).body;
+    const before = scope(bare);
+    // The fixture must start where a keyword can move it: on the tier named,
+    // with no profile inferred. Otherwise the comparison below proves nothing.
+    expect(before.agentTier, 'fixture tier').toBe(tier);
+    expect(before.agentProfile, 'fixture profile').toBe('custom');
+
+    // Every critical control is missing from the bare file, so every clause
+    // the CLI can offer is printed — a later one included.
+    const missing = bare.criticalMissing as string[];
+    const critical = CONTROL_DEFS.filter((d) => d.critical).map((d) => d.id);
+    expect([...missing].sort(), 'fixture must leave every critical control missing').toEqual([...critical].sort());
+    const clauses = printedHandEditClauses(runScanSoul(dir).stdout);
+    expect(clauses.length, 'expected one quoted clause per missing control').toBe(missing.length);
+
+    // Each clause alone, then all of them, as a reader fixing one control or
+    // both would paste them.
+    const pastes = [...clauses.map((c) => [c]), clauses];
+    for (let i = 0; i < pastes.length; i++) {
+      const after = json(tmpDirWithSoul(`${base}\n## Governance\n${pastes[i].join('\n')}\n`, `scope-${tier}-${i}`));
+      expect(
+        scope(after.body),
+        `the scan after the paste measures a different scope.\npasted: ${JSON.stringify(pastes[i])}`,
+      ).toEqual(before);
+    }
+  });
+
+  // `harden-soul` is the other fix the same block offers, and the sections it
+  // appends carry such words throughout ("orchestrator", "encoded",
+  // "autonomous", "conversational framing"). It leaves the scope alone for a
+  // different reason than the clauses do: it writes the tier and profile it
+  // read BEFORE appending into the file as markers, and a marker outranks the
+  // words. Measured for #1007, which asked whether the template was affected.
+  it.each(UNPROFILED)('`harden-soul` leaves a %s file on the same tier, profile and domains', (tier, base) => {
+    if (!existsSync(CLI_PATH)) return;
+    const dir = tmpDirWithSoul(base, `harden-${tier}`);
+    const before = scope(json(dir).body);
+    expect(before.agentTier, 'fixture tier').toBe(tier);
+    expect(before.agentProfile, 'fixture profile').toBe('custom');
+
+    execFileSync(process.execPath, [CLI_PATH, 'harden-soul', dir], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+      timeout: 20000,
+      env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1' },
+    });
+    const hardened = readFileSync(join(dir, 'SOUL.md'), 'utf-8');
+    expect(hardened.length, 'harden-soul appended nothing').toBeGreaterThan(base.length);
+
+    expect(scope(json(dir).body), 'the scan after harden-soul measures a different scope').toEqual(before);
   });
 
   // ── The structural guard the deleted score gate used to provide ────────
