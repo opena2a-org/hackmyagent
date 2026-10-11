@@ -13,12 +13,21 @@
  * error's message: the message of a command Node ended at its time limit is
  * the command line, with no such word.
  *
+ * Those three readings hold only while the clone has not finished. An error
+ * the scan raises after a clone that did finish is not about git or the
+ * URL: it prints `Error scanning URL: <message>`, even when it carries
+ * `code: 'ENOENT'` or `killed: true` and the URL has a user name and
+ * password.
+ *
  * Hermetic: with no git, PATH is an empty directory. For the time limit,
  * `git` is a stand-in on PATH that never answers, and
  * __tests__/fixtures/git-time-limit-preload.cjs shortens the 120 s the CLI
- * gives it, so Node's own timer ends it. The CLI runs with no proxy variables
- * and with __tests__/helpers/loopback-only.cjs preloaded, so nothing reaches
- * the network. Every credential-bearing URL is assembled at runtime.
+ * gives it, so Node's own timer ends it. For a scan that fails, `git` is a
+ * stand-in that writes one file where the clone goes and exits 0, and a
+ * preload the test writes makes the scan reject. The CLI runs with no proxy
+ * variables and with __tests__/helpers/loopback-only.cjs preloaded, so
+ * nothing reaches the network. Every credential-bearing URL is assembled at
+ * runtime.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -51,6 +60,40 @@ const GIT_NEVER_ANSWERS = `#!/bin/sh
 exec sleep 30
 `;
 
+// Stands in for a git whose clone succeeds: the last argument is where the
+// clone goes, and it gets one file there.
+const GIT_CLONES = `#!/bin/sh
+for dest; do :; done
+mkdir -p "$dest" && printf '# Example repository\\n' > "$dest/README.md"
+`;
+
+const BUILT_SCANNER = path.join(__dirname, '..', '..', 'dist', 'hardening', 'scanner.js');
+
+// Makes every scan reject with an error built from $HMA_TEST_SCAN_ERROR: its
+// `message`, and each other field set on the error as it is.
+const SCAN_REJECTS = `'use strict';
+const { HardeningScanner } = require(${JSON.stringify(BUILT_SCANNER)});
+const { message, ...fields } = JSON.parse(process.env.HMA_TEST_SCAN_ERROR);
+HardeningScanner.prototype.scan = async function scan() {
+  throw Object.assign(new Error(message), fields);
+};
+`;
+
+/**
+ * Errors a scan can raise after the clone finished. The last two carry the
+ * fields that, on the error of a clone that did not finish, mean there was no
+ * git to start and that the time limit ended it. No message holds `128`,
+ * `not found` or `timeout`, which choose other lines.
+ */
+const SCAN_ERRORS = [
+  { kind: 'an error with no code', fields: { message: 'injected scan failure after the clone' } },
+  { kind: 'an error whose code is ENOENT', fields: { message: "ENOENT: no such file or directory, scandir 'injected-scan-step'", code: 'ENOENT' } },
+  { kind: 'an error from a process its time limit ended', fields: { message: 'Command failed: injected-scan-step', killed: true, signal: 'SIGTERM' } },
+] as const;
+
+/** Every scan error, for every kind of URL. */
+const SCAN_FAILED_CASES = SCAN_ERRORS.flatMap((e) => URLS.map((u) => ({ ...u, error: e.kind, fields: e.fields })));
+
 interface Run {
   status: number | null;
   stdout: string;
@@ -60,8 +103,10 @@ interface Run {
 let scratch = '';
 let emptyBin = '';
 let hangBin = '';
+let cloneBin = '';
 const noGitRuns: Run[] = [];
 const timedOutRuns: Run[] = [];
+const scanFailedRuns: Run[] = [];
 
 function run(label: string, typedUrl: string, extraEnv: NodeJS.ProcessEnv, preloads: string[]): Run {
   const dir = path.join(scratch, label);
@@ -101,6 +146,11 @@ beforeAll(() => {
   fs.mkdirSync(emptyBin, { recursive: true });
   fs.mkdirSync(hangBin, { recursive: true });
   fs.writeFileSync(path.join(hangBin, 'git'), GIT_NEVER_ANSWERS, { mode: 0o755 });
+  cloneBin = path.join(scratch, 'clone-bin');
+  fs.mkdirSync(cloneBin, { recursive: true });
+  fs.writeFileSync(path.join(cloneBin, 'git'), GIT_CLONES, { mode: 0o755 });
+  const scanRejects = path.join(scratch, 'scan-rejects.cjs');
+  fs.writeFileSync(scanRejects, SCAN_REJECTS);
 
   URLS.forEach(({ typed }, i) => {
     noGitRuns.push(run(`no-git-${i}`, typed, { PATH: emptyBin }, [LOOPBACK_ONLY]));
@@ -113,7 +163,15 @@ beforeAll(() => {
       [LOOPBACK_ONLY, GIT_TIME_LIMIT],
     ));
   });
-}, 400_000);
+  SCAN_FAILED_CASES.forEach(({ typed, fields }, i) => {
+    scanFailedRuns.push(run(
+      `scan-failed-${i}`,
+      typed,
+      { PATH: `${cloneBin}${path.delimiter}${process.env.PATH ?? ''}`, HMA_TEST_SCAN_ERROR: JSON.stringify(fields) },
+      [LOOPBACK_ONLY, scanRejects],
+    ));
+  });
+}, 600_000);
 
 describe('check <git URL> with no git on PATH says that git was not found', () => {
   it.each(URLS.map((u, i) => ({ ...u, i })))('for $kind', ({ shown, i }) => {
@@ -153,6 +211,24 @@ describe('check <git URL> whose clone is ended at the time limit says that it ti
     expect(r.stderr).not.toContain('Could not clone repository');
     expect(r.stderr).not.toContain('Command failed');
     expect(r.stderr).not.toContain('git was not found');
+    expect(output).not.toContain(SECRET);
+    expect(output).not.toContain(USER);
+  });
+});
+
+describe('check <git URL> whose clone finished and whose scan then failed prints the scan error', () => {
+  it.each(SCAN_FAILED_CASES.map((c, i) => ({ ...c, i })))('for $error, on $kind', ({ shown, fields, i }) => {
+    const r = scanFailedRuns[i];
+    const output = r.stdout + r.stderr;
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.stderr).toContain(`Error scanning URL: ${fields.message}`);
+    expect(r.stderr).toContain(`${shown} was fetched but could not be analyzed, so no verdict was measured.`);
+    // Not the lines for a clone that did not finish, whatever the error's
+    // fields and whether or not the URL has a user name and password.
+    expect(r.stderr).not.toContain('git was not found');
+    expect(r.stderr).not.toContain('Could not clone repository');
+    expect(r.stderr).not.toContain('Verify the URL is accessible');
+    expect(r.stderr).not.toContain('timed out');
     expect(output).not.toContain(SECRET);
     expect(output).not.toContain(USER);
   });
