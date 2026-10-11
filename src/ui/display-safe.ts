@@ -68,6 +68,13 @@
  * invisible without being Cc/Cf: the variation selectors, and the Hangul filler
  * letters that render as nothing.
  *
+ * #959 — `\p{Cf}` ends where the Tags block does, at U+E007F, while the
+ * steganography checks report every code point in U+E0000-U+E01FF. Two runs
+ * inside that range are unassigned (`\p{Cn}`, neither Cf nor a variation
+ * selector): U+E0080-U+E00FF and U+E01F0-U+E01FF. They render as nothing as
+ * well, so `benign<U+E01F0>evil.js` printed as `benignevil.js`; they are
+ * named explicitly and escaped wherever they appear.
+ *
  * One deliberate exemption: a variation selector that FOLLOWS a pictograph is
  * emoji presentation, not concealment — the character it modifies is visible and
  * is what the reader sees. Escaping those would turn every `❤️` in a filename
@@ -75,7 +82,7 @@
  * nothing visible to modify, and is escaped.
  */
 const DISPLAY_HAZARD = new RegExp(
-  '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\u{115F}\\u{1160}\\u{3164}\\u{FFA0}]'
+  '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\u{115F}\\u{1160}\\u{3164}\\u{FFA0}\\u{E0080}-\\u{E00FF}\\u{E01F0}-\\u{E01FF}]'
   + '|(?<!\\p{Extended_Pictographic})[\\u{FE00}-\\u{FE0F}\\u{E0100}-\\u{E01EF}]',
   'gu',
 );

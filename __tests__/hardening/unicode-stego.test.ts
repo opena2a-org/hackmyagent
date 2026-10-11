@@ -77,7 +77,7 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego001[0].message).toContain('variation selectors');
     });
 
-    it('detects tag characters (U+E0100-E01EF) in source files', async () => {
+    it('detects supplementary variation selectors (U+E0100-E01EF) in source files', async () => {
       // U+E0100 = F3 A0 84 80 in UTF-8
       const content = Buffer.concat([
         Buffer.from('const y = "world'),
@@ -92,10 +92,44 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego001.length).toBeGreaterThanOrEqual(1);
       expect(stego001[0].severity).toBe('critical');
       expect(stego001[0].file).toBe('tag-chars.ts');
-      expect(stego001[0].message).toContain('tag characters');
+      expect(stego001[0].message).toContain('supplementary variation selectors or unassigned code points (U+E0100-E01FF)');
     });
 
-    it('names a range that contains the tag character it found at U+E01F0-E01FF', async () => {
+    /**
+     * #959 — U+E0100-E01EF is the Variation Selectors Supplement and
+     * U+E01F0-E01FF is unassigned; the Tags block is U+E0000-E007F, which this
+     * check does not read. The finding called U+E0100-E01FF "tag characters".
+     * And the default text output renders `guidance`, not `message`, so a
+     * guidance that names no type left the reader without the one thing the
+     * finding measured.
+     */
+    it('names the invisible character type it found, in the guidance the text output prints', async () => {
+      const cases = [
+        ['e0100.js', [0xF3, 0xA0, 0x84, 0x80], 'supplementary variation selectors or unassigned code points (U+E0100-E01FF)'],
+        ['zwsp.js', [0xE2, 0x80, 0x8B], 'zero-width characters (U+200B-200D)'],
+        ['rlo.js', [0xE2, 0x80, 0xAE], 'bidi overrides (U+202A-202E, U+2066-2069)'],
+      ] as const;
+      for (const [name, bytes] of cases) {
+        await fs.writeFile(
+          path.join(tempDir, name),
+          Buffer.concat([Buffer.from('const x = "a'), Buffer.from(bytes), Buffer.from('b";\n')])
+        );
+      }
+
+      const findings = await scanForUnicodeStego();
+      for (const [name, , label] of cases) {
+        const stego001 = findings.filter(
+          (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === name
+        );
+        expect(stego001.length, name).toBe(1);
+        expect(stego001[0].guidance, name).toContain(label);
+        expect(stego001[0].message, name).toContain(label);
+        expect(stego001[0].message, name).not.toMatch(/tag characters/i);
+        expect(stego001[0].guidance, name).not.toMatch(/tag characters/i);
+      }
+    });
+
+    it('names a range that contains the character it found at U+E01F0-E01FF', async () => {
       // The byte check matches F3 A0 84-87 with any fourth byte, so it reports
       // U+E0100 through U+E01FF; the message range has to reach U+E01FF.
       for (const [name, bytes, codepoint] of [
@@ -113,7 +147,7 @@ describe('UNICODE-STEGO checks', () => {
         );
 
         expect(stego001.length).toBe(1);
-        const range = /tag characters \(U\+([0-9A-F]+)-([0-9A-F]+)\)/.exec(stego001[0].message);
+        const range = /unassigned code points \(U\+([0-9A-F]+)-([0-9A-F]+)\)/.exec(stego001[0].message);
         expect(range).not.toBeNull();
         expect(parseInt(range![1], 16)).toBeLessThanOrEqual(codepoint);
         expect(parseInt(range![2], 16)).toBeGreaterThanOrEqual(codepoint);
@@ -1511,6 +1545,32 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego004.length).toBe(1);
       expect(stego004[0].description).toContain('(U+E0000-U+E01FF)');
       expect(stego004[0].guidance).toContain('(U+E0000-U+E01FF)');
+    });
+
+    it('names the Unicode blocks in its range instead of calling all of it the Tag block', async () => {
+      // #959 — U+E0000-E01FF holds the Tags block (U+E0000-E007F), the
+      // Variation Selectors Supplement (U+E0100-E01EF) and two unassigned runs
+      // (U+E0080-E00FF, U+E01F0-E01FF). The text called the whole range "the
+      // Unicode Tag block".
+      const content = Buffer.concat([
+        Buffer.from('const z = "test'),
+        Buffer.from([0xF3, 0xA0, 0x80, 0x81]), // U+E0001
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'tag-names.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego004 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-004' && f.file === 'tag-names.js'
+      );
+
+      expect(stego004.length).toBe(1);
+      for (const text of [stego004[0].description, stego004[0].guidance]) {
+        expect(text).toContain('Unicode Tags block, Variation Selectors Supplement');
+        expect(text).toContain('unassigned plane-14 characters (U+E0000-U+E01FF)');
+        expect(text).not.toMatch(/tag block characters|the Unicode Tag block/i);
+      }
+      expect(stego004[0].message).toBe('Found invisible plane-14 characters (U+E0000-U+E01FF) in tag-names.js');
     });
 
     it('does not duplicate when 001 already flagged tag characters', async () => {

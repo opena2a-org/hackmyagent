@@ -16902,7 +16902,8 @@ dist/
       // UNICODE-STEGO-001: Invisible Codepoint Detection
       // Scan for:
       //   - Variation selectors U+FE00-FE0F (UTF-8: EF B8 80-8F)
-      //   - Tag characters U+E0100-E01FF (UTF-8: F3 A0 84 80 - F3 A0 87 BF)
+      //   - Variation Selectors Supplement U+E0100-E01EF and unassigned U+E01F0-E01FF
+      //     (UTF-8: F3 A0 84 80 - F3 A0 87 BF)
       //   - Zero-width chars: U+200B (E2 80 8B), U+200C (E2 80 8C), U+200D (E2 80 8D)
       //   - Mid-file BOM: U+FEFF (EF BB BF) -- skip offset 0
       //   - Bidi overrides: U+202A-202E (E2 80 AA-AE), U+2066-2069 (E2 81 A6-A9)
@@ -16974,7 +16975,8 @@ dist/
             variationSelectorLine = currentLine;
           }
         }
-        // Tag characters in U+E0100-E01FF: F3 A0 84 80 through F3 A0 87 BF
+        // Supplementary variation selectors and unassigned code points in
+        // U+E0100-E01FF: F3 A0 84 80 through F3 A0 87 BF
         if (
           rawBuffer[i] === 0xF3 &&
           i + 2 < rawBuffer.length &&
@@ -17050,7 +17052,9 @@ dist/
       if (hasAnyInvisible) {
         const detectedTypes: string[] = [];
         if (hasVariationSelectors) detectedTypes.push('variation selectors (U+FE00-FE0F)');
-        if (hasTagCharsIn001) detectedTypes.push('tag characters (U+E0100-E01FF)');
+        // #959 — U+E0100-E01EF is the Variation Selectors Supplement and
+        // U+E01F0-E01FF is unassigned; neither is the Tags block (U+E0000-E007F).
+        if (hasTagCharsIn001) detectedTypes.push('supplementary variation selectors or unassigned code points (U+E0100-E01FF)');
         if (hasZeroWidth) detectedTypes.push('zero-width characters (U+200B-200D)');
         if (hasMidFileBom) detectedTypes.push('mid-file BOM (U+FEFF)');
         if (hasBidiOverride) detectedTypes.push('bidi overrides (U+202A-202E, U+2066-2069)');
@@ -17078,7 +17082,10 @@ dist/
           line: firstLine,
           fixable: false,
           fix: 'xxd ' + shellEscape(relativePath) + ' | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"',
-          guidance: 'Invisible Unicode codepoints (zero-width chars, variation selectors, tag characters, bidi overrides) can hide malicious payloads in source code. This is the GlassWorm attack vector. Inspect with a hex editor and remove all non-functional invisible characters.',
+          // #959 — the text channel renders `guidance`, not `message`, so the
+          // detected types are named here too or the default output never says
+          // which invisible characters were found.
+          guidance: `This file contains ${detectedTypes.join(' and ')}. Invisible Unicode codepoints can hide malicious payloads in source code. This is the GlassWorm attack vector. Inspect with a hex editor and remove all non-functional invisible characters.`,
         });
       }
 
@@ -17406,7 +17413,8 @@ dist/
       }
 
       // UNICODE-STEGO-004: Tag Character Block Presence
-      // Scan for any U+E0000-U+E01FF characters (broader than 001, covers entire tag block)
+      // Scan for any U+E0000-U+E01FF characters (broader than 001: adds the Tags
+      // block U+E0000-E007F and the unassigned U+E0080-E00FF)
       // UTF-8 encoding: F3 A0 80 80 through F3 A0 87 BF
       let hasTagBlock = false;
       let tagBlockLine = 1;
@@ -17440,16 +17448,16 @@ dist/
           findings.push({
             checkId: 'UNICODE-STEGO-004',
             name: 'Unicode Tag Character Block Detected',
-            description: 'Source file contains characters from the Unicode Tag block (U+E0000-U+E01FF) which have no visible rendering and can be used to hide data',
+            description: 'Source file contains Unicode Tags block, Variation Selectors Supplement or unassigned plane-14 characters (U+E0000-U+E01FF), which have no visible rendering and can be used to hide data',
             category: 'unicode-stego',
             severity: 'high',
             passed: false,
-            message: `Found Unicode tag block characters in ${relativePath}`,
+            message: `Found invisible plane-14 characters (U+E0000-U+E01FF) in ${relativePath}`,
             file: relativePath,
             line: tagBlockLine,
             fixable: false,
             fix: 'xxd ' + shellEscape(relativePath) + ' | grep "f3a0"',
-            guidance: 'Unicode Tag block characters (U+E0000-U+E01FF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all tag block characters found.',
+            guidance: 'Unicode Tags block, Variation Selectors Supplement and unassigned plane-14 characters (U+E0000-U+E01FF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all of these characters.',
           });
         }
       }
