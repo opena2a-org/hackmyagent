@@ -10,6 +10,12 @@
  * `--json` carried it in `name` and `url`. A clone that failed quoted it in
  * the error line and in the `--json` `target`.
  *
+ * When the clone of a URL with an `@` before its host fails, with or without
+ * `.git`, git's own error lines are not printed. git can quote the user name
+ * or the password there in a form that is not the URL as typed: the URL from
+ * its first `@` on when two come before the host, or `<scheme>://<user>@<host>`
+ * when it cannot ask for a password.
+ *
  * The userinfo ends where the program that reads the URL, git or `fetch`,
  * ends the authority. So a URL with none is reported as typed, also when its
  * query or a `\` puts an `@` after the host. A password that holds a raw `?`,
@@ -17,9 +23,7 @@
  *
  * A forge URL with no `.git` is cloned when it has at most one `@` before its
  * host. git ends the user name at the first `@`, so one with two goes to
- * `fetch`. When the clone of one with an `@` fails, git's own error lines,
- * which can quote the user name or the password in a form that is not the URL
- * as typed, are not printed.
+ * `fetch`.
  *
  * Hermetic: `git` is a shim on PATH that records its arguments and copies a
  * local fixture tree; the registry is a capture server on localhost that
@@ -151,6 +155,9 @@ let forgeNoUserinfoFailedRun: Run;
 let forgeEmailUserRun: Run;
 let forgeAtPasswordRun: Run;
 let forgeUserNameQuotedRun: Run;
+let gitSuffixNoUserinfoFailedRun: Run;
+let gitSuffixEmailUserRun: Run;
+let gitSuffixUserNameQuotedRun: Run;
 
 function captured(): { raw: string; requests: CapturedRequest[] } {
   const raw = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, 'utf8') : '';
@@ -298,6 +305,11 @@ beforeAll(async () => {
   forgeAtPasswordRun = run('forge-at-password', ['--json'], { HMA_TEST_GIT_QUOTES: 'after-first-at' }, undefined, `https://${USER}:pa@${SECRET}@${REPO}`);
   // One `@`, a user name and no password, and a git that cannot ask for one.
   forgeUserNameQuotedRun = run('forge-user-name-quoted', ['--json'], { HMA_TEST_GIT_QUOTES: 'user-name' }, undefined, `https://${USER}@${REPO}`);
+  // The same three failures for URLs that end in `.git`, which `check` hands
+  // to git with any number of `@` before the host.
+  gitSuffixNoUserinfoFailedRun = run('git-suffix-no-userinfo-failed', [], { HMA_TEST_GIT_QUOTES: 'after-first-at' }, undefined, SHOWN_URL);
+  gitSuffixEmailUserRun = run('git-suffix-email-user', ['--json'], { HMA_TEST_GIT_QUOTES: 'after-first-at' }, undefined, `https://${USER}@example.com:${SECRET}@${REPO}.git`);
+  gitSuffixUserNameQuotedRun = run('git-suffix-user-name-quoted', [], { HMA_TEST_GIT_QUOTES: 'user-name' }, undefined, `https://${USER}@${REPO}.git`);
 }, 400_000);
 
 /** Every run in this file. */
@@ -308,6 +320,7 @@ function allRuns(): Run[] {
     backslashPasswordRun, notFoundRun, fetchUserinfoRun, forgeUserinfoRun,
     forgePasswordOnlyRun, forgeEmptyUserinfoRun, questionPasswordRun,
     forgeNoUserinfoFailedRun, forgeEmailUserRun, forgeAtPasswordRun, forgeUserNameQuotedRun,
+    gitSuffixNoUserinfoFailedRun, gitSuffixEmailUserRun, gitSuffixUserNameQuotedRun,
   ];
 }
 
@@ -327,7 +340,7 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     // The share reached the capture server through the preload, so the
     // preload is loaded and on the path the CLI's requests take.
     expect(textRun.connections).toContain(`allowed ${new URL(base).host}`);
-    expect(allRuns()).toHaveLength(18);
+    expect(allRuns()).toHaveLength(21);
     const allowed = allRuns()
       .flatMap((r) => r.connections)
       .filter((c) => c.startsWith('allowed '));
@@ -378,8 +391,11 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
   it('a clone that fails is reported without the userinfo, in its error line and its --json target', () => {
     expect(failedCloneRun.status, failedCloneRun.stderr).toBe(2);
     expect(failedCloneRun.gitArgs).toContain(TYPED_URL);
-    // The error quotes the failed command line, with the URL as it is shown.
-    expect(failedCloneRun.stderr).toContain(`--single-branch ${SHOWN_URL} `);
+    // The error names the URL as it is shown, and quotes neither the failed
+    // command line nor the error line of the git stand-in.
+    expect(failedCloneRun.stderr).toContain(`Could not clone repository from "${SHOWN_URL}".`);
+    expect(failedCloneRun.stderr).not.toContain('--single-branch');
+    expect(failedCloneRun.stderr).not.toContain('fatal:');
     expect(jsonDocument(failedCloneRun.stdout).target).toBe(SHOWN_URL);
     expect(failedCloneRun.stdout + failedCloneRun.stderr).not.toContain(SECRET);
     expect(failedCloneRun.stdout + failedCloneRun.stderr).not.toContain(USER);
@@ -486,7 +502,7 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     const shown = `https://***@${REPO}.git`;
     expect(questionPasswordRun.status, questionPasswordRun.stderr).toBe(2);
     expect(questionPasswordRun.gitArgs).toContain(`https://${USER}:pa?${SECRET}@${REPO}.git`);
-    expect(questionPasswordRun.stderr).toContain(`--single-branch ${shown} `);
+    expect(questionPasswordRun.stderr).toContain(`Could not clone repository from "${shown}".`);
     expect(jsonDocument(questionPasswordRun.stdout).target).toBe(shown);
     expect(questionPasswordRun.stdout + questionPasswordRun.stderr).not.toContain(SECRET);
     expect(questionPasswordRun.stdout + questionPasswordRun.stderr).not.toContain(USER);
@@ -532,6 +548,38 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     expect(forgeUserNameQuotedRun.stderr).toContain(`Could not clone repository from "https://${REPO}".`);
     expect(forgeUserNameQuotedRun.stderr).not.toContain('could not read Password');
     expect(jsonDocument(forgeUserNameQuotedRun.stdout).target).toBe(`https://${REPO}`);
+    expect(output).not.toContain(USER);
+  });
+
+  it('harness: a failed clone of a `.git` URL with no user name or password is reported with the error line of the git stand-in', () => {
+    expect(gitSuffixNoUserinfoFailedRun.status, gitSuffixNoUserinfoFailedRun.stderr).toBe(2);
+    expect(gitSuffixNoUserinfoFailedRun.gitArgs).toContain(SHOWN_URL);
+    expect(gitSuffixNoUserinfoFailedRun.stderr).toContain(`--single-branch ${SHOWN_URL} `);
+    expect(gitSuffixNoUserinfoFailedRun.stderr).toContain(`fatal: unable to access '${SHOWN_URL}/': The requested URL returned error: 403`);
+  });
+
+  it('a failed clone of a `.git` URL with an email address as its user name is reported without git\'s error lines, which can quote the password', () => {
+    const typed = `https://${USER}@example.com:${SECRET}@${REPO}.git`;
+    const output = gitSuffixEmailUserRun.stdout + gitSuffixEmailUserRun.stderr;
+    expect(gitSuffixEmailUserRun.status, gitSuffixEmailUserRun.stderr).toBe(2);
+    // A URL that ends in `.git` is handed to git with two `@` before the
+    // host, and the stand-in quotes it from the first one on, as git does.
+    expect(gitSuffixEmailUserRun.gitArgs).toContain(typed);
+    expect(gitSuffixEmailUserRun.stderr).toContain(`Could not clone repository from "${SHOWN_URL}".`);
+    expect(gitSuffixEmailUserRun.stderr).not.toContain('unable to access');
+    expect(jsonDocument(gitSuffixEmailUserRun.stdout).target).toBe(SHOWN_URL);
+    expect(output).not.toContain(SECRET);
+    expect(output).not.toContain(USER);
+    expect(output).not.toContain('example.com');
+    expect(publishPosts(gitSuffixEmailUserRun)).toHaveLength(0);
+  });
+
+  it('a failed clone of a `.git` URL with a user name is reported without git\'s error lines, which can quote the user name', () => {
+    const output = gitSuffixUserNameQuotedRun.stdout + gitSuffixUserNameQuotedRun.stderr;
+    expect(gitSuffixUserNameQuotedRun.status, gitSuffixUserNameQuotedRun.stderr).toBe(2);
+    expect(gitSuffixUserNameQuotedRun.gitArgs).toContain(`https://${USER}@${REPO}.git`);
+    expect(gitSuffixUserNameQuotedRun.stderr).toContain(`Could not clone repository from "${SHOWN_URL}".`);
+    expect(gitSuffixUserNameQuotedRun.stderr).not.toContain('could not read Password');
     expect(output).not.toContain(USER);
   });
 });
