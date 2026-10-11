@@ -5259,7 +5259,7 @@ Change scope (--range, --staged):
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
-  .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation + adaptive attacks (~30s per file)')
+  .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation (~30s per file)')
   .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
@@ -5650,7 +5650,8 @@ Change scope (--range, --staged):
       // Analysis mode: smart defaults, minimal flags
       // Default: static checks + NanoMind AST semantic compiler
       // --nanomind: also runs the generative analyst layer (opt-in; adds latency)
-      // --deep: everything (static + AST + simulation + adaptive attacks)
+      // --deep: everything (static + AST + Layer 3 LLM analysis + simulation).
+      // No attack stage runs under --deep, so neither surface below may claim one (#975).
       // --static-only: skip the AST semantic compiler too (CI/deterministic baseline)
       // The AST semantic compiler runs by default; the generative analyst is opt-in.
       const isStaticOnly = (options as Record<string, unknown>).staticOnly as boolean ?? false;
@@ -5674,7 +5675,7 @@ Change scope (--range, --staged):
         if (isStaticOnly) {
           // Static only -- no extra output
         } else if (nanomindAvailable && isDeep) {
-          console.log(`Analysis: static + semantic + behavioral simulation + adaptive attacks\n`);
+          console.log(`Analysis: static + semantic + behavioral simulation\n`);
         } else if (nanomindAvailable) {
           console.log(`Analysis: static + semantic (ML-enhanced accuracy)\n`);
         } else if (isDeep) {
