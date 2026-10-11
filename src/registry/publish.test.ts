@@ -483,6 +483,37 @@ describe('publishScanResults', () => {
     expect(body.source).toBeUndefined();
   });
 
+  // #999 — `attack --json --publish` printed "No signing keys found ..." on
+  // stdout after its JSON document, so the stream no longer parsed.
+  it('writes its status lines to stderr, never to stdout', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ scanToken: 'tok-s', tokenId: 'tid-s', expiresIn: '300s' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ accepted: true, publishId: 'pub-stderr', consensusStatus: 'pending', weight: 0.5 }),
+      }));
+    const out = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await publishScanResults(
+        { packageName: '@test/agent', directory: '/tmp/test', hardeningFindings: makeHardeningFindings() },
+        'https://api.oa2a.org',
+      );
+      expect(result.isCommunity).toBe(true);
+      expect(out).not.toHaveBeenCalled();
+      const lines = err.mock.calls.map((c) => String(c[0]));
+      expect(lines.some((l) => l.startsWith('No signing keys found'))).toBe(true);
+      expect(lines.some((l) => l.startsWith('Published to registry'))).toBe(true);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
+  });
+
   it('publishes as claimed agent when keypair exists', async () => {
     createFakeKeypair(tmpHome);
 

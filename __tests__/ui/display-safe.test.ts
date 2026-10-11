@@ -185,4 +185,51 @@ describe('escapeForDisplay', () => {
     }
     expect(unescaped).toEqual([]);
   });
+
+  /**
+   * #999 — U+E0200-U+EFFFF is unassigned and renders as nothing, like the
+   * runs #959 named. Measured before the fix: `a` + U+E0200 + `b` came back
+   * unchanged.
+   */
+  it('escapes every plane-14 code point, including the unassigned ones above U+E01FF', () => {
+    expect(escapeForDisplay(`a${String.fromCodePoint(0xe0200)}b`)).toBe('a\\u{e0200}b');
+    const unescaped: string[] = [];
+    for (let code = 0xe0000; code <= 0xeffff; code++) {
+      const out = escapeForDisplay(`a${String.fromCodePoint(code)}b`);
+      if (out !== `a\\u{${code.toString(16)}}b`) unescaped.push(`U+${code.toString(16).toUpperCase()}`);
+    }
+    expect(unescaped.slice(0, 5), `${unescaped.length} plane-14 code points printed raw`).toEqual([]);
+  });
+
+  /**
+   * #999 — the pictograph exemption covered every variation selector, but only
+   * U+FE0E and U+FE0F choose a pictograph's presentation. Measured before the
+   * fix: `❤` + U+E0100 + `evil.js`, a path UNICODE-STEGO-001 reports, came
+   * back unchanged, and so did `🚀` + U+FE01, the head of a hidden selector run.
+   */
+  it('exempts only U+FE0E and U+FE0F after a pictograph', () => {
+    const heart = String.fromCodePoint(0x2764);
+    const rocket = String.fromCodePoint(0x1f680);
+    expect(escapeForDisplay(`${heart}${String.fromCodePoint(0xe0100)}evil.js`)).toBe(`${heart}\\u{e0100}evil.js`);
+    expect(escapeForDisplay(`${rocket}${String.fromCodePoint(0xfe01)}`)).toBe(`${rocket}\\ufe01`);
+
+    const raw: string[] = [];
+    const selectors = [
+      ...Array.from({ length: 14 }, (_, i) => 0xfe00 + i),
+      ...Array.from({ length: 0xe01ef - 0xe0100 + 1 }, (_, i) => 0xe0100 + i),
+    ];
+    for (const code of selectors) {
+      const ch = String.fromCodePoint(code);
+      if (escapeForDisplay(`${heart}${ch}`).includes(ch)) raw.push(`U+${code.toString(16).toUpperCase()}`);
+    }
+    expect(raw).toEqual([]);
+
+    // The two presentation selectors keep their exemption after a pictograph
+    // and are escaped after anything else.
+    for (const code of [0xfe0e, 0xfe0f]) {
+      const ch = String.fromCodePoint(code);
+      expect(escapeForDisplay(`${heart}${ch}.txt`)).toBe(`${heart}${ch}.txt`);
+      expect(escapeForDisplay(`a${ch}b`)).toBe(`a\\u${code.toString(16)}b`);
+    }
+  });
 });

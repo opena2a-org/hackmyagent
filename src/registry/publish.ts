@@ -417,8 +417,10 @@ export async function publishScanResults(
 
   const isCommunity = !keypair && !firstPartySigner;
 
+  // Status lines go to stderr (#999): `attack --json --publish` writes its JSON
+  // document to stdout, and a line after it there broke every parser reading it.
   if (isCommunity) {
-    console.log("No signing keys found at ~/.opena2a/keys/. Run 'opena2a claim <package>' to create keys for full-weight publishing. Submitting as community contribution (0.5x weight).");
+    console.error("No signing keys found at ~/.opena2a/keys/. Run 'opena2a claim <package>' to create keys for full-weight publishing. Submitting as community contribution (0.5x weight).");
   }
 
   // Compute CAAT tree hash from the scanned directory if not already set
@@ -497,7 +499,7 @@ export async function publishScanResults(
     const result = await client.reportPublishResult(payload, scanToken);
 
     if (result.publishId) {
-      console.log(`Published to registry (${result.publishId.slice(0, 8)})`);
+      console.error(`Published to registry (${result.publishId.slice(0, 8)})`);
     }
 
     // Report remediation tracking (non-blocking)

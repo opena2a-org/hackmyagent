@@ -1,12 +1,12 @@
 // Usage telemetry is off under CI and test runners unless asked for (#963).
 //
-// Each CI job and each spawn test starts from a fresh home directory, so each
-// run registered as a new install: 197 of 219 monthly install ids were active
-// on one day only. These cells hold the decision as a function; the spawn-level
-// claim is in __tests__/harness/suite-sends-no-telemetry.test.ts.
+// Each CI job and each spawn test sent a usage event like an interactive run.
+// These cells hold the decision as a function; the spawn-level claim is in
+// __tests__/harness/suite-sends-no-telemetry.test.ts.
 import { describe, it, expect } from 'vitest';
 import {
   automationMarker,
+  automationOffReason,
   automationOptOut,
   initWithAutomationOptOut,
   telemetryExplicitlyOn,
@@ -70,6 +70,26 @@ describe('automationOptOut (#963)', () => {
     // Every object in the suite that turns telemetry on also pins the endpoint
     // to loopback (__tests__/harness/suite-sends-no-telemetry.test.ts).
     expect(automationOptOut({ OPENA2A_TELEMETRY: 'on', OPENA2A_TELEMETRY_URL: DISCARD })).toBeUndefined();
+  });
+});
+
+describe('automationOffReason (#999)', () => {
+  it('names the marker and the opt-in when the marker is what keeps telemetry off', () => {
+    expect(automationOffReason({ CI: 'true' }, true)).toBe(
+      'CI is set, and usage telemetry is off under CI and test runners unless OPENA2A_TELEMETRY=on is set for the run',
+    );
+    expect(automationOffReason({ NODE_ENV: 'test' }, true)).toMatch(/^NODE_ENV=test is set,/);
+  });
+
+  it('gives no reason naming the marker when the user\'s own settings already turn it off', () => {
+    // A persisted `telemetry off` keeps telemetry off with or without the
+    // marker, and OPENA2A_TELEMETRY=on would not turn it back on.
+    expect(automationOffReason({ CI: 'true' }, false)).toBeUndefined();
+  });
+
+  it('gives none outside automation or on an explicit opt-in', () => {
+    expect(automationOffReason({}, true)).toBeUndefined();
+    expect(automationOffReason({ CI: 'true', OPENA2A_TELEMETRY: 'on', OPENA2A_TELEMETRY_URL: DISCARD }, true)).toBeUndefined();
   });
 });
 

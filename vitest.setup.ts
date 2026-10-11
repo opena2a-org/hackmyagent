@@ -49,9 +49,10 @@ if (!process.env.OPENA2A_CORPUS_DETERMINISTIC) {
 // that measures the event turns telemetry back on with OPENA2A_TELEMETRY=on;
 // this default points that case, and any other spawn that inherits the
 // worker's environment, at the discard port, where a send fails as a fast
-// local connection refusal. Each
-// spawn handed a fresh HOME, so before #963 each one registered as a new
-// install in the production aggregates.
+// local connection refusal. Before #963 each spawn sent a usage event to the
+// production endpoint. A fresh HOME did not make it a new install: the install
+// id is a hash of the machine identifier, so every spawn on one machine
+// carried the same id.
 //
 // Pinned by __tests__/harness/suite-sends-no-telemetry.test.ts.
 if (!process.env.OPENA2A_TELEMETRY_URL) {
