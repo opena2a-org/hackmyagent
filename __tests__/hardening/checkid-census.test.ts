@@ -182,6 +182,7 @@ const EXPRESSION_SITES: Record<string, string> = {
   'registry/publish.ts :: r.payload.id': 'payload-templates',
   'semantic/integration/finding-adapter.ts :: finding.id': 'semantic-finding-ids',
   'ui/unresolved-categories.ts :: s.checkId': 'pass-through',
+  "ui/verdict-band.ts :: f.checkId || '_unknown_'": 'pass-through',
   'ui/verdict-band.ts :: row.checkId': 'pass-through',
 };
 

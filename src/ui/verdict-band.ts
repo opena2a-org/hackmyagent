@@ -236,6 +236,87 @@ export type SuppressedStub = {
 } & Pick<SecurityFinding, 'redactionStatus' | 'redactedShapes'>;
 
 /**
+ * Where one suppressed finding sat (#1000). Text report only: it is never
+ * placed on `ScanResult`, so it reaches no `--json` document, no publish
+ * payload and no report format. The disclosure row stays identity-only.
+ */
+export interface SuppressedLocation {
+  checkId: string;
+  severity: string;
+  file: string;
+  line?: number;
+  commit?: string;
+}
+
+/**
+ * The locations of the suppressed findings the disclosure summarises, in
+ * the same order and through the same gates as `summarizeSuppressed`, so a
+ * location exists for exactly the findings a row counts.
+ *
+ * #1000 — a suppressed finding is still scored, still in the verdict and
+ * still in the exit code, and the report says so on its `Suppressed` line.
+ * But the stubs `expandSuppressed` builds carry no `file`, so the two places
+ * that read a finding's path to describe the tree changed anyway: the
+ * `Artifacts` line lost the corroboration for its `malicious` label and
+ * printed `unknown`, and the Verdict dropped `in SOUL.md` from the lead it
+ * still named. A path is not evidence: the artifact line and the scope line
+ * already print it, so carrying it to the text renderer withholds nothing
+ * the caller asked to have withheld.
+ */
+export function locateSuppressed(
+  findings: readonly {
+    checkId?: string;
+    severity?: string;
+    file?: string;
+    line?: number;
+    commit?: string;
+    suppressed?: boolean;
+    passed?: boolean;
+    fixed?: boolean;
+    fixVerified?: boolean;
+  }[],
+): SuppressedLocation[] {
+  const out: SuppressedLocation[] = [];
+  for (const f of findings) {
+    if (!f.suppressed || !countsAgainstScore(f)) continue;
+    if (typeof f.file !== 'string' || f.file.length === 0) continue;
+    out.push({
+      checkId: f.checkId || '_unknown_',
+      severity: f.severity || 'info',
+      file: f.file,
+      ...(typeof f.line === 'number' ? { line: f.line } : {}),
+      ...(f.commit ? { commit: f.commit } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Give each `expandSuppressed` stub the location of one finding its row
+ * counted (#1000). Each location is used once, matched by check ID, so a row
+ * that folded three findings hands three stubs three different paths. A stub
+ * with no location left (a pathless finding, or a caller that recorded none)
+ * is returned unchanged. Pure; the stubs are copied, never mutated.
+ */
+export function attachSuppressedLocations<T extends { checkId: string }>(
+  stubs: readonly T[],
+  locations: readonly SuppressedLocation[],
+): Array<T & { file?: string; line?: number; commit?: string }> {
+  const remaining = [...locations];
+  return stubs.map((stub) => {
+    const at = remaining.findIndex((loc) => loc.checkId === stub.checkId);
+    if (at === -1) return { ...stub };
+    const [loc] = remaining.splice(at, 1);
+    return {
+      ...stub,
+      file: loc.file,
+      ...(typeof loc.line === 'number' ? { line: loc.line } : {}),
+      ...(loc.commit ? { commit: loc.commit } : {}),
+    };
+  });
+}
+
+/**
  * Whether a finding is shown in the rendered findings list.
  *
  * #450 — the counterpart to `countsAgainstScore`, and deliberately the ONLY
