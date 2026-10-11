@@ -177,7 +177,7 @@ function computeFileHash(filePath: string): string | null {
   }
 }
 
-interface AppliedBlock {
+export interface AppliedBlock {
   hash: string;
   /** Base64 signer key, or undefined when only the hash was pinned. */
   signer?: string;
@@ -188,7 +188,7 @@ interface AppliedBlock {
  * Returns undefined when nothing was written: the file already verifies, or it
  * already carries a matching hash pin and there is no identity to sign with.
  */
-function appendSignatureBlock(filePath: string, aimCore?: AIMCore): AppliedBlock | undefined {
+export function appendSignatureBlock(filePath: string, aimCore?: AIMCore): AppliedBlock | undefined {
   const content = fs.readFileSync(filePath, 'utf-8');
 
   const verdict = verifySigncryptSignature(content);

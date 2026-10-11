@@ -59,6 +59,10 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
  * committed there; the second bounds that added pass to the commits not
  * reachable from `<ref>`. The tree scan and the floor run unchanged with or
  * without them, and neither turns any part of either off.
+ *
+ * #989 adds one: `--no-sign` on `create-skill`. It leaves the generated
+ * SKILL.md unsigned instead of signing it; `create-skill` writes files and runs
+ * no scan, so it reaches no semantic layer and no deterministic floor.
  */
 const COMMAND_SURFACE = [
   '--a2a-recipient', '--a2a-sender', '--analm', '--api-format', '--at', '--atx',
@@ -68,6 +72,7 @@ const COMMAND_SURFACE = [
   '--as',                                                      // HMA-70, see note above
   '--range', '--staged',                                       // #537, see note above
   '--scan-history', '--since',                                 // #536, see note above
+  '--no-sign',                                                 // #989, see note above
   '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',

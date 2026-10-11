@@ -354,8 +354,14 @@ describe('#328 every report that renders a tree-derived path renders it safely',
   }, 300_000);
 
   it('create-skill', () => {
-    const out = run(['create-skill', 'summarise a file', '-o', path.join(hostileDir, 'out')]);
+    // create-skill signs SKILL.md by default; the store is isolated so the run
+    // writes no identity into the developer's own store.
+    const out = run(
+      ['create-skill', 'summarise a file', '-o', path.join(hostileDir, 'out')],
+      { OPENA2A_HOME: path.join(root, 'create-skill-store') },
+    );
     expect(out, 'create-skill never named its output directory').toContain(SPLIT_MARKER);
+    expect(out, 'create-skill did not sign under the hostile directory name').toContain('Signed SKILL.md');
     assertRenderSafe(out, 'create-skill');
   }, 300_000);
 
