@@ -7,8 +7,12 @@
  * footer and the `telemetry` subcommand description are the two places this
  * CLI writes that claim itself; both must state the install ID instead.
  *
- * The disclosure has to survive the rewording: the footer must still say
- * telemetry is on, name the install ID, and give the opt-out.
+ * The disclosure has to survive the rewording: the footer must name the
+ * install ID and, when telemetry is on, give the opt-out.
+ *
+ * The footer states the live on/off state, the same one `--version` prints on
+ * stderr. It was a fixed "Usage telemetry is on" line, printed even under
+ * OPENA2A_TELEMETRY=off (#986).
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -30,11 +34,27 @@ beforeAll(() => {
   XDG_CONFIG_HOME = tempDir('hma-telemetry-wording-');
 });
 
-function run(args: string[]): { stdout: string; stderr: string; status: number } {
+function run(
+  args: string[],
+  telemetry: 'off' | 'on' | 'unset' = 'off',
+): { stdout: string; stderr: string; status: number } {
+  const env: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1', XDG_CONFIG_HOME };
+  if (telemetry === 'off') {
+    env.OPENA2A_TELEMETRY = 'off';
+  } else {
+    // A spawn from this suite carries the test runner's marker, so usage
+    // telemetry is off unless OPENA2A_TELEMETRY=on is set for the run (#963).
+    // Neither `--help` nor `--version` posts an event; the closed local
+    // endpoint keeps it that way if one did.
+    env.VITEST = 'true';
+    if (telemetry === 'on') env.OPENA2A_TELEMETRY = 'on';
+    else delete env.OPENA2A_TELEMETRY;
+    env.OPENA2A_TELEMETRY_URL = 'http://127.0.0.1:9/';
+  }
   const res = spawnSync(process.execPath, [CLI_PATH, ...args], {
     encoding: 'utf8',
     timeout: 20000,
-    env: { ...process.env, NODE_OPTIONS: '', NO_COLOR: '1', OPENA2A_TELEMETRY: 'off', XDG_CONFIG_HOME },
+    env,
   });
   return {
     stdout: (res.stdout ?? '').replace(STRIP_ANSI, ''),
@@ -56,9 +76,25 @@ describe('usage telemetry wording', () => {
 
     const footer = stdout.slice(stdout.indexOf('\nTelemetry:\n'));
     expect(footer).toMatch(/^\nTelemetry:\n/);
-    expect(footer).toMatch(/Usage telemetry is on/);
     expect(footer).toMatch(/persistent install ID/);
-    expect(footer).toMatch(/OPENA2A_TELEMETRY=off/);
+  });
+
+  it.each([
+    ['off', 'off', /Usage telemetry is off/, /Usage telemetry is on/],
+    ['on', 'on', /Usage telemetry is on\b.*Disable: OPENA2A_TELEMETRY=off/, /Usage telemetry is off/],
+    ['unset', 'off', /Usage telemetry is off/, /Usage telemetry is on/],
+  ] as const)('--help with OPENA2A_TELEMETRY %s under a test runner states usage telemetry is %s, as --version does', (setting, state, says, doesNotSay) => {
+    if (!existsSync(CLI_PATH)) return;
+    const help = run(['--help'], setting);
+    expect(help.status).toBe(0);
+    const footer = help.stdout.slice(help.stdout.indexOf('\nTelemetry:\n'));
+    expect(footer).toMatch(says);
+    expect(footer).not.toMatch(doesNotSay);
+    expect(footer).toMatch(/off under CI and test runners .* unless OPENA2A_TELEMETRY=on/);
+
+    const version = run(['--version'], setting);
+    expect(version.status).toBe(0);
+    expect(version.stderr).toMatch(new RegExp(`^Telemetry: ${state}\\b`, 'm'));
   });
 
   it.each([
