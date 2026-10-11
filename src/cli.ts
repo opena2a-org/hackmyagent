@@ -1353,6 +1353,11 @@ interface UnifiedCheckDisplayOptions {
     score: number;
     maxScore: number;
     findings: SecurityFinding[];
+    /**
+     * The records of the same scan that passed (#974). `findings` holds only
+     * what did not pass, so the passed checks `--verbose` lists come from here.
+     */
+    passed?: SecurityFinding[];
     filesScanned?: number;
     /** Pre-clamp composite, when the #259 verdict-band clamp lowered `score`. */
     rawScore?: number;
@@ -3091,6 +3096,26 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         : Math.min(100, recoveryBase + (critical * 15 + high * 8));
       console.log();
       console.log(`  ${colors.cyan}${colors.bold}Path forward:${RESET()} ${colors.cyan}${score} ${colors.dim}->${RESET()} ${colors.green}${colors.bold}${estRecovery}${RESET()} ${colors.cyan}by fixing ${recoveryParts.join(' + ')}${RESET()}`);
+    }
+  }
+
+  // ── Passed checks (verbose) ─────────────────────────────────────────
+  // #974 — `secure --help` says `--verbose` shows the passed checks, and the
+  // Findings block above is built from what did not pass. One line per passed
+  // record, in the order `--json` carries them under `allFindings`. The name
+  // and the message are the check's own text and can interpolate a path from
+  // the scanned tree, so both are escaped.
+  const passedChecks = verbose ? (localScan?.passed ?? []) : [];
+  if (passedChecks.length > 0) {
+    divider('Passed checks');
+    console.log(`  ${colors.green}${passedChecks.length} passed${RESET()}`);
+    console.log();
+    const idWidth = Math.max(...passedChecks.map(f => (f.checkId || '').length));
+    for (const f of passedChecks) {
+      const label = escapeForDisplay(f.name || f.message);
+      const detail = f.name && f.message && f.message !== f.name ? `${colors.dim} — ${escapeForDisplay(f.message)}${RESET()}` : '';
+      const where = f.file ? `${colors.dim} (${escapePathForDisplay(f.file)})${RESET()}` : '';
+      console.log(`  ${colors.green}✓${RESET()} ${(f.checkId || '').padEnd(idWidth)}  ${label}${detail}${where}`);
     }
   }
 
@@ -6736,6 +6761,10 @@ Change scope (--range, --staged):
           // `Verdict  Usable with caveats.` — the #259 incoherence again,
           // with the number and the words swapped.
           findings: result.findings.filter((f) => !f.fixed || f.fixVerified === false),
+          // #974 — the passed records `--json` carries under `allFindings`, so
+          // `--verbose` can list them. A finding this run fixed is reported by
+          // the fix summary, not as a pass.
+          passed: (result.allFindings ?? []).filter((f) => f.passed === true && !f.fixed),
 
           // Measured coverage for this run. Without it the Observations block
           // falls back to deriving its claim from the configured check set,

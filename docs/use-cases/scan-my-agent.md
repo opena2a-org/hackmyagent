@@ -167,7 +167,7 @@ A clean scan exits with code `0` and shows no critical or high findings.
 
 ## Tips
 
-- Use `--verbose` to see all 317 static checks, including ones that passed.
+- Use `--verbose` to see every finding with its check ID and category, followed by the checks that passed.
 - Use `--ignore CRED-001,LOG-001` to skip specific checks (e.g., known false positives).
 - Use `--json` to get machine-readable output for scripting.
 - Add `--ci` for non-interactive mode (no color, no prompts).
