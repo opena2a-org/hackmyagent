@@ -158,20 +158,35 @@ Apply the fixes:
 npx hackmyagent secure --fix
 ```
 
-**Abbreviated sample; your output will differ:**
+**Output** on a copy of the same fixture, run from inside it (the report above the fix list is cut at `...`):
 
 ```
-  FIXED     GATEWAY-001  Set host to 127.0.0.1 in openclaw.json
-            Backup: .hackmyagent-backup/openclaw.json.1710504000
+  ...
 
-  FIXED     GATEWAY-003  Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN}
-            Backup: .hackmyagent-backup/openclaw.json.1710504000
+Fixed 7 issues (7 verified):
+  ✓✓ [PERM-001] .env - Sensitive File Permissions
+    → Changed permissions to 600
+  ✓✓ [GIT-001] .gitignore - Missing .gitignore
+  ✓✓ [SKILL-004] SKILL.md:18 - Filesystem Write Outside Sandbox
+    → Restricted filesystem access to sandbox scope
+  ✓✓ [GATEWAY-001] openclaw.json - Bound to 0.0.0.0
+    → Changed gateway.host from 0.0.0.0 to 127.0.0.1
+  ✓✓ [GATEWAY-003] openclaw.json - Token Exposed in Config
+    → Replaced plaintext token with ${OPENCLAW_AUTH_TOKEN} env var reference. Set OPENCLAW_AUTH_TOKEN in your environment.
+  ✓✓ [GATEWAY-004] openclaw.json - Approval Confirmations Disabled
+    → Enabled approval confirmations for command execution
+  ✓✓ [GATEWAY-005] openclaw.json - Sandbox Disabled
+    → Enabled sandbox mode for isolated code execution
 
-  FIXED     GATEWAY-004  Set approval_required: true in openclaw.json
-  FIXED     GATEWAY-005  Set sandbox: true in openclaw.json
+48 remaining issues have fix guidance. Run `hackmyagent fix-all` to apply all available fixes.
 
-Backups saved to .hackmyagent-backup/
+Backup created: .../insecure-openclaw/.hackmyagent-backup/2026-10-11-103357213-000-c8f9f986
+Something wrong? Run `hackmyagent rollback .` to undo all changes.
+
+  Scanned with hackmyagent v0.33.2
 ```
+
+Each fix is one line: the check ID, the file and the finding name, with `✓✓` when a re-check confirmed it. The run keeps its backup in one timestamped directory, the one the `Backup created:` line names, and `npx hackmyagent rollback` restores from it.
 
 ## Step 5: Verify
 

@@ -132,22 +132,27 @@ No files are modified during a dry run.
 npx hackmyagent secure --fix
 ```
 
-**Abbreviated sample; your output will differ:**
+**Output** on a copy of the same fixture, run from inside it (the report above the fix list is cut at `...`):
 
 ```
-  FIXED     CRED-001  Replaced hardcoded key with ${OPENAI_API_KEY} in .env
-            Backup: .hackmyagent-backup/.env.1710504000
+  ...
 
-  FIXED     GIT-002   Added .env, *.pem, *.key to .gitignore
-            Backup: .hackmyagent-backup/.gitignore.1710504000
+Fixed 2 issues (2 verified):
+  ✓✓ [PERM-001] .env - Sensitive File Permissions
+    → Changed permissions to 600
+  ✓✓ [GIT-002] .gitignore - Incomplete .gitignore
 
-  FIXED     PERM-001  Set config.json permissions to 0600
-            Backup: .hackmyagent-backup/config.json.1710504000
+2 remaining issues have fix guidance. Run `hackmyagent fix-all` to apply all available fixes.
 
-Backups saved to .hackmyagent-backup/
+Backup created: .../insecure-library/.hackmyagent-backup/2026-10-11-103437788-000-ebd2ce08
+Something wrong? Run `hackmyagent rollback .` to undo all changes.
+
+  Scanned with hackmyagent v0.33.2
 ```
 
-All changes are backed up automatically. To undo:
+Each fix is one line: the check ID, the file and the finding name. `✓✓` means a re-check confirmed the fix, and `✓?` means it could not be confirmed. A `→` line follows when the fix describes its change. The critical `.env Not Ignored` from Step 1 has no line of its own: the `.env` entry the GIT-002 fix writes into `.gitignore` clears it.
+
+Each run keeps its backup in one timestamped directory, the one the `Backup created:` line names. To undo:
 
 ```bash
 npx hackmyagent rollback
