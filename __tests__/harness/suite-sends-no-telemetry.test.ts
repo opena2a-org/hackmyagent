@@ -19,7 +19,12 @@
  *     test that turns telemetry back on still sends nothing off the machine;
  *   - a test that turns telemetry on in a spawn environment pins
  *     OPENA2A_TELEMETRY_URL to a loopback address in the same object, and no
- *     test names an OPENA2A_TELEMETRY_* variable nothing reads.
+ *     test names an OPENA2A_TELEMETRY_* variable nothing reads;
+ *   - a test that spawns the CLI with an environment object that REPLACES the
+ *     worker's (no spread) carries the test-runner marker forward or sets
+ *     OPENA2A_TELEMETRY in that object. Without either, the CLI sees no marker
+ *     and sends a usage event: one file did exactly that, naming a variable
+ *     nothing reads in place of OPENA2A_TELEMETRY.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -118,6 +123,12 @@ describe('vitest.setup.ts points telemetry at a loopback address (#963)', () => 
 /** The OPENA2A_TELEMETRY_* variables something reads: the usage SDK and ARP. */
 const READ_NAMES = new Set(['OPENA2A_TELEMETRY_URL', 'OPENA2A_TELEMETRY_DEBUG', 'OPENA2A_TELEMETRY_OPTOUT']);
 const OPT_IN = new Set(['on', '1', 'true', 'yes']);
+/** A child_process call whose `env` option, given without a spread, replaces the worker's environment. */
+const SPAWN_CALL = /(?:^|\.)(?:spawn|spawnSync|execFile|execFileSync|fork)$/;
+/** How a test names the built CLI in a spawn's command or argument list. */
+const CLI_ARG = /\b(?:CLI|BUILT_CLI)\b|cli\.js/;
+/** A property that keeps a replaced environment from sending: a marker the CLI reads, or its own telemetry choice. */
+const KEEPS_OFF = new Set([...CI_MARKERS, ...TEST_RUNNER_MARKERS, 'NODE_ENV', 'OPENA2A_TELEMETRY']);
 
 /** Every test source: `__tests__/**` and `src/**\/*.test.ts`, as vitest includes them. */
 function testSources(): string[] {
@@ -163,6 +174,27 @@ function scan(file: string): Finding[] {
     if (named?.startsWith('OPENA2A_TELEMETRY_') && !READ_NAMES.has(named)) {
       findings.push({ file: rel, line: at(node), problem: `${named} is read by nothing` });
     }
+    if (ts.isCallExpression(node) && SPAWN_CALL.test(node.expression.getText())
+      && CLI_ARG.test(node.arguments.slice(0, 2).map((a) => a.getText()).join(' '))) {
+      const options = node.arguments.find(ts.isObjectLiteralExpression);
+      const env = options?.properties.find((p) => ts.isPropertyAssignment(p) && keyName(p.name) === 'env');
+      if (env && ts.isPropertyAssignment(env) && ts.isObjectLiteralExpression(env.initializer)) {
+        const given = env.initializer;
+        const replaces = !given.properties.some(ts.isSpreadAssignment);
+        const names = given.properties.flatMap((p) => {
+          if (ts.isPropertyAssignment(p)) return [keyName(p.name) ?? ''];
+          if (ts.isShorthandPropertyAssignment(p)) return [p.name.text];
+          return [];
+        });
+        if (replaces && !names.some((n) => KEEPS_OFF.has(n))) {
+          findings.push({
+            file: rel,
+            line: at(given),
+            problem: 'spawns the CLI with an environment that replaces the worker\'s and carries no CI or test-runner marker and no OPENA2A_TELEMETRY, so the run sends a usage event',
+          });
+        }
+      }
+    }
     ts.forEachChild(node, visit);
   };
   visit(sf);
@@ -198,12 +230,12 @@ function scan(file: string): Finding[] {
 }
 
 describe('a test that turns telemetry on keeps it on this machine (#963)', () => {
-  it('pins OPENA2A_TELEMETRY_URL to loopback beside every OPENA2A_TELEMETRY=on, and names only variables something reads', () => {
+  it('pins OPENA2A_TELEMETRY_URL to loopback beside every OPENA2A_TELEMETRY=on, names only variables something reads, and hands no CLI spawn a replaced environment without a marker or OPENA2A_TELEMETRY', () => {
     const findings = testSources().flatMap(scan);
     expect(findings.map((f) => `${f.file}:${f.line} ${f.problem}`)).toEqual([]);
   });
 
-  it('the scan sees both problems (non-vacuity)', () => {
+  it('the scan sees all three problems (non-vacuity)', () => {
     const dir = tempDir('hma-963-scan-');
     const bad = path.join(dir, 'bad.test.ts');
     const unread = ['OPENA2A', 'TELEMETRY', 'ENDPOINT'].join('_');
@@ -214,6 +246,16 @@ describe('a test that turns telemetry on keeps it on this machine (#963)', () =>
       `const misnamed = { OPENA2A_TELEMETRY: 'on', ${unread}: DEAD };`,
       "const ok = { OPENA2A_TELEMETRY: 'on', OPENA2A_TELEMETRY_URL: DEAD };",
       "const off = { OPENA2A_TELEMETRY: 'off' };",
+      // Line 7: the CLI, an environment that replaces the worker's, no marker
+      // and no telemetry choice: the shape that posted to production.
+      "spawnSync(process.execPath, [CLI, 'check', 'left-pad', '--json'], { env: { PATH: '', HOME: '', HMA_TELEMETRY: '0' } });",
+      // Not problems: the CLI with the environment inherited, with its own
+      // telemetry choice, or with a marker carried forward; and a plain
+      // `node -e` child, which runs no CLI.
+      "spawn(process.execPath, [CLI, 'secure', '.'], { env: { ...process.env, HOME: '' } });",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { PATH: '', OPENA2A_TELEMETRY: 'off' } });",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { PATH: '', CI: 'true' } });",
+      "spawnSync(process.execPath, ['-e', 'fetch(url)'], { env: { PATH: '', HOME: '' } });",
       '',
     ].join('\n'));
     const problems = scan(bad).map((f) => `${f.line} ${f.problem}`).sort();
@@ -222,6 +264,7 @@ describe('a test that turns telemetry on keeps it on this machine (#963)', () =>
       expect.stringMatching(/^3 turns usage telemetry on/),
       expect.stringMatching(new RegExp(`^4 ${unread} is read by nothing`)),
       expect.stringMatching(/^4 turns usage telemetry on/),
+      expect.stringMatching(/^7 spawns the CLI with an environment that replaces/),
     ]);
   });
 });
