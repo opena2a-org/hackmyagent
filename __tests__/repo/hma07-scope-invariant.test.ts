@@ -94,6 +94,14 @@ const TRACKED_FS_SHA256 = 'bf6566fa2dfab6877ebed88b67b0d28e518e013d2ca164d5640aa
  * that change adds one flag, recorded here. It leaves the SKILL.md that
  * `create-skill` writes unsigned; `create-skill` generates files and never
  * walks a directory for skills, so it cannot make the walk opt-in.
+ *
+ * SCOPE DECISION, taken with #1010 (`secure --include-dist`), on the same rule:
+ * that change adds one flag, recorded here. It WIDENS the static walk into
+ * `dist/`, which the default skips as build output generated from `src/`; it
+ * narrows nothing, and it does not touch the skills walk this suite guards.
+ * Unlike a `--deep-skills` hatch, the default no longer reports the skipped
+ * directory as clean: `coverage.skippedDirectories` names every `dist/` the
+ * walk left out, with its file count, and the text report prints it.
  */
 const REGISTERED_LONG_FLAGS = [
   '--a2a-recipient', '--a2a-sender', '--all', '--analm', '--api-format', '--as', '--at',
@@ -102,7 +110,7 @@ const REGISTERED_LONG_FLAGS = [
   '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',
-  '--header', '--ignore', '--intensity', '--iterations', '--json', '--level',
+  '--header', '--ignore', '--include-dist', '--intensity', '--iterations', '--json', '--level',
   '--local', '--mcp-tool', '--min-trust', '--model', '--name', '--nanomind',
   '--no-color', '--no-contribute', '--no-machine-posture', '--no-registry',
   '--no-scan', '--no-sign', '--offline', '--output', '--payload-file', '--ports', '--profile',

@@ -16,7 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
 import { execFile } from 'child_process';
-import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure } from './security-check';
+import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure, SkippedDirectoryRecord } from './security-check';
 import { isScopeChannel } from './security-check';
 import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
@@ -150,6 +150,84 @@ const DECODE_ARTIFACT_EXTENSIONS = new Set<string>([
  * identity rather than by name (`isOwnBackupDir`).
  */
 const DECODE_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.venv', '__pycache__']);
+
+/**
+ * The build-output directory the source walkers skip unless the run includes
+ * it (`ScanOptions.includeDist`, #1010).
+ */
+const DIST_DIR = 'dist';
+
+/**
+ * Files counted under skipped `dist/` directories before the count stops. The
+ * count is a disclosure, not a scan, so it is bounded; a record the bound cut
+ * short says so (`countCapped`) rather than presenting a partial count as the
+ * whole.
+ */
+const MAX_SKIPPED_DIST_FILES = 10_000;
+
+/**
+ * Every `dist/` directory the source walkers did not enter, with the number
+ * of files under it (#1010).
+ *
+ * Found with the walkers' own descent rules (no `node_modules`, no
+ * `__pycache__`, no hidden directory, no symlink, ten levels), so a directory
+ * is listed only where a
+ * walker would otherwise have reached it, and a path the operator's ignore
+ * rules exclude is not listed. Read with the untracked `fs`: listing a
+ * directory to count it is not examining its contents, and an unlistable one
+ * is left uncounted rather than recorded as an unread input, which would move
+ * the exit code of a scan that never set out to read it. Paths are
+ * target-relative with `/` separators, the form a finding's `file` takes, so
+ * no temp-directory name reaches the document.
+ */
+async function skippedDistDirectories(targetDir: string, ignoredPaths: string[]): Promise<SkippedDirectoryRecord[]> {
+  const found: SkippedDirectoryRecord[] = [];
+  let budget = MAX_SKIPPED_DIST_FILES;
+  const list = async (dir: string): Promise<fsSync.Dirent[]> => {
+    try {
+      return await fsSync.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+  };
+  const count = async (dir: string, depth: number): Promise<number> => {
+    if (depth > 10) return 0;
+    let n = 0;
+    for (const entry of await list(dir)) {
+      if (budget <= 0) break;
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isFile()) {
+        n++;
+        budget--;
+      } else if (entry.isDirectory()) {
+        n += await count(path.join(dir, entry.name), depth + 1);
+      }
+    }
+    return n;
+  };
+  const discover = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 10) return;
+    for (const entry of await list(dir)) {
+      // A Dirent for a symlink is never `isDirectory()`, so links stay out.
+      if (!entry.isDirectory()) continue;
+      if (entry.name === 'node_modules' || entry.name === '__pycache__' || entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      const rel = path.relative(targetDir, full).split(path.sep).join('/');
+      if (isPathIgnored(rel, ignoredPaths)) continue;
+      if (entry.name !== DIST_DIR) {
+        await discover(full, depth + 1);
+        continue;
+      }
+      const files = await count(full, 0);
+      const countCapped = budget <= 0;
+      if (files > 0 || countCapped) {
+        found.push({ path: rel, files, ...(countCapped ? { countCapped: true as const } : {}) });
+      }
+    }
+  };
+  await discover(targetDir, 0);
+  return found;
+}
 
 /**
  * Artifacts one decode pass reads.
@@ -1091,6 +1169,16 @@ export interface ScanOptions {
    * Suppresses checks that only make sense for source repos (GIT-001, GIT-002, GIT-003).
    */
   isNpmPackage?: boolean;
+  /**
+   * Walk `dist/` too (#1010). The source walkers skip it by default because
+   * in a project checkout it is build output generated from `src/`; in an
+   * extracted package it is the code that runs, and skipping it scored a
+   * package with every `.js` under `dist/` on its README and `package.json`.
+   * Absent: `dist/` is skipped as before, and `coverage.skippedDirectories`
+   * names each one the walk did not enter, so "nothing examined" and "nothing
+   * found" are different documents.
+   */
+  includeDist?: boolean;
   /**
    * Read `.hmaignore` from `targetDir` (default true). Set false when the
    * target is a tree the operator did not author — a package, archive or
@@ -4369,6 +4457,8 @@ interface ScanRun {
   cliName: string;
   /** The verb a SCAN-UNREAD-001 remedy re-runs; see `ScanOptions.unreadRemedyCommand`. */
   unreadRemedyCommand: string;
+  /** Whether the source walkers enter `dist/`; see `ScanOptions.includeDist`. */
+  includeDist: boolean;
   /** Coverage ledger for this run. */
   coverage: CoverageLedger;
   /** Fix writes that did not land this run. */
@@ -4454,6 +4544,7 @@ function newScanRun(coverage: CoverageLedger): ScanRun {
   return {
     cliName: 'hackmyagent',
     unreadRemedyCommand: 'secure',
+    includeDist: false,
     coverage,
     fixWriteFailures: [],
     fixWritesIntoForeignArchive: [],
@@ -4500,6 +4591,8 @@ export class HardeningScanner {
   private set cliName(v: string) { this.currentRun.cliName = v; }
   private get unreadRemedyCommand(): string { return this.currentRun.unreadRemedyCommand; }
   private set unreadRemedyCommand(v: string) { this.currentRun.unreadRemedyCommand = v; }
+  private get includeDist(): boolean { return this.currentRun.includeDist; }
+  private set includeDist(v: boolean) { this.currentRun.includeDist = v; }
   private get coverage(): CoverageLedger { return this.currentRun.coverage; }
   private get fixWriteFailures(): ScanRun['fixWriteFailures'] { return this.currentRun.fixWriteFailures; }
   private get fixWritesIntoForeignArchive(): string[] { return this.currentRun.fixWritesIntoForeignArchive; }
@@ -4879,6 +4972,7 @@ export class HardeningScanner {
     // from another run.
     this.cliName = cliName;
     this.unreadRemedyCommand = unreadRemedyCommand;
+    this.includeDist = options.includeDist === true;
 
     // Resolve effective scan depth — --deep flag implies 'deep' depth
     const scanDepth: ScanDepth = options.scanDepth || (options.deep ? 'deep' : 'standard');
@@ -5740,6 +5834,7 @@ export class HardeningScanner {
           scanDepth: verifyDepth,
           ignorePaths: options.ignorePaths,
           isNpmPackage: options.isNpmPackage,
+          includeDist: options.includeDist,
           readHmaIgnore: options.readHmaIgnore,
         });
 
@@ -6156,6 +6251,11 @@ export class HardeningScanner {
     // a latent hazard rather than a live defect — but it is one a future reader
     // would have no way to see, and preserving identity costs a Map.
     //
+    // #1010 — what the walkers' `dist/` skip left out, named so a caller can
+    // tell "nothing examined" from "nothing found". Nothing to name when the
+    // run walked `dist/`.
+    const skippedDirectories = this.includeDist ? [] : await skippedDistDirectories(targetDir, allIgnoredPaths);
+
     // It also halves the work: a finding in both channels is redacted once.
     const emitted = new Map<SecurityFindingDraft, ReturnType<typeof emitFinding>>();
     const emitOnce = (f: SecurityFindingDraft) => {
@@ -6239,6 +6339,9 @@ export class HardeningScanner {
         // keeps the matching finding visible for the same reason. This is the
         // number `cli.ts` settles the exit code on (#590).
         unreadableInputs: this.allUnreadableInputs(),
+        // #1010 — absent when no `dist/` was skipped, so a tree without one
+        // produces the document it produced before this key existed.
+        ...(skippedDirectories.length > 0 ? { skippedDirectories } : {}),
       },
       // Links the scan refused to follow, with the retarget instruction.
       // Absent when nothing was withheld, so an unchanged tree produces an
@@ -16093,7 +16196,8 @@ dist/
 
   /**
    * Recursively find source files (.ts, .js, .mjs, .cjs, .tsx, .jsx)
-   * Skips node_modules, dist, .git, and hidden directories
+   * Skips node_modules, .git, hidden directories, and dist unless the run
+   * includes it (`ScanOptions.includeDist`, #1010)
    */
   private async findSourceFiles(
     dir: string,
@@ -16103,7 +16207,7 @@ dist/
     if (depth > 10) return [];
 
     const sourceExtensions = new Set(['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx']);
-    const skipDirs = new Set(['node_modules', 'dist', '.git']);
+    const skipDirs = new Set(['node_modules', '.git', ...(this.includeDist ? [] : [DIST_DIR])]);
     const files: string[] = [];
 
     let entries;
@@ -16149,7 +16253,8 @@ dist/
 
   /**
    * Walk a directory recursively and return files matching the given extensions.
-   * Skips node_modules, dist, .git, and hidden directories.
+   * Skips node_modules, .git, hidden directories, and dist unless the run
+   * includes it (`ScanOptions.includeDist`, #1010).
    */
   private async walkDirectory(
     dir: string,
@@ -16160,7 +16265,7 @@ dist/
     if (depth > maxDepth) return [];
 
     const extSet = new Set(extensions.map((e) => e.toLowerCase()));
-    const skipDirs = new Set(['node_modules', 'dist', '.git', '__pycache__', '.venv']);
+    const skipDirs = new Set(['node_modules', '.git', '__pycache__', '.venv', ...(this.includeDist ? [] : [DIST_DIR])]);
     const files: string[] = [];
 
     let entries;
@@ -20205,6 +20310,9 @@ dist/
         // The scratch tree is not a source repo — no git history, no
         // `.gitignore` to be missing.
         isNpmPackage: true,
+        // A payload decoded out of `dist/` sits at the same relative path in
+        // the scratch tree, so the rescan walks `dist/` iff the outer one did.
+        includeDist: options.includeDist,
         // The line that terminates the recursion.
         decodeRescan: false,
         cliName: options.cliName,
@@ -20364,7 +20472,7 @@ dist/
         const full = path.join(dir, entry.name);
         if (!this.isPathWithinDirectory(full, targetDir)) continue;
         if (entry.isDirectory()) {
-          if (DECODE_SKIP_DIRS.has(entry.name)) continue;
+          if (DECODE_SKIP_DIRS.has(entry.name) && !(entry.name === DIST_DIR && this.includeDist)) continue;
           if (await this.isOwnBackupDir(full)) continue;
           await walk(full, depth + 1);
         } else if (entry.isFile()) {
