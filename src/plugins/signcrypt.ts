@@ -9,6 +9,7 @@ import type {
   FixOptions,
   PluginInitOptions,
 } from './core';
+import { fixAllowedByPolicy } from './core';
 import type { AIMCore } from '@opena2a/aim-core';
 import { resolveProjectStore, type ProjectStore } from '../store/project-store';
 import {
@@ -292,6 +293,8 @@ export class SignCryptPlugin implements OpenA2APlugin {
   async fix(agentDir: string, options?: FixOptions): Promise<Remediation[]> {
     const remediations: Remediation[] = [];
     const findings = await this.scan(agentDir);
+
+    if (!fixAllowedByPolicy(this.aimCore, 'signcrypt', agentDir)) return [];
 
     if (options?.dryRun) {
       return findings

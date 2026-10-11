@@ -9,6 +9,7 @@ import type {
   FixOptions,
   PluginInitOptions,
 } from './core';
+import { fixAllowedByPolicy } from './core';
 import type { AIMCore } from '@opena2a/aim-core';
 
 // --- Types for secretless-ai dynamic import ---
@@ -204,6 +205,8 @@ export class SecretlessPlugin implements OpenA2APlugin {
 
     const remediations: Remediation[] = [];
     const findings = await this.scan(agentDir);
+
+    if (!fixAllowedByPolicy(this.aimCore, 'secretless', agentDir)) return [];
 
     if (options?.dryRun) {
       return findings

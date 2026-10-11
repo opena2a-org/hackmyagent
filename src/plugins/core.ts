@@ -1,5 +1,6 @@
 export const VERSION = '0.1.0';
 
+import { hasPolicy } from '@opena2a/aim-core';
 import type { AIMCore } from '@opena2a/aim-core';
 import type { ProjectStore } from '../store/project-store';
 import type { Evidence, Rationale, ConceptId } from '../types/finding-evidence';
@@ -87,7 +88,8 @@ export interface PluginMetadata {
 /**
  * The contract every OpenA2A security plugin implements.
  * Each plugin works standalone (no aim-core required).
- * When aim-core is provided, plugins gain identity-aware audit logging and capability checks.
+ * When aim-core is provided, plugins gain identity-aware audit logging and a
+ * capability policy check before each fix step (see `fixAllowedByPolicy`).
  */
 export interface OpenA2APlugin {
   /** Plugin metadata */
@@ -127,6 +129,39 @@ export interface PluginInitOptions {
   store?: ProjectStore;
   /** Plugin-specific configuration */
   config?: Record<string, unknown>;
+}
+
+// --- Capability Policy ---
+
+/**
+ * The capability a plugin's fix step asks the AIM policy for. Every built-in
+ * fix writes into the project, so that is what a policy rule allows or denies.
+ */
+export const FIX_CAPABILITY = 'file:write';
+
+/**
+ * Whether the AIM capability policy lets `plugin` run its fix step.
+ *
+ * Without aim-core, or without a `policy.yaml` in its data directory, nothing
+ * is restricted: aim-core's built-in default denies everything, and applying
+ * that to a user who never wrote a policy would stop every `--with-aim` fix.
+ * A denial is written to the audit log, so a fix that did not run is on record.
+ */
+export function fixAllowedByPolicy(
+  aimCore: AIMCore | undefined,
+  plugin: string,
+  agentDir: string,
+): boolean {
+  if (!aimCore || !hasPolicy(aimCore.getDataDir())) return true;
+  if (aimCore.checkCapability(FIX_CAPABILITY, plugin)) return true;
+  aimCore.logEvent({
+    plugin,
+    action: 'fix.denied',
+    target: agentDir,
+    result: 'denied',
+    metadata: { capability: FIX_CAPABILITY },
+  });
+  return false;
 }
 
 // --- Plugin Registry ---
