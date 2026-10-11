@@ -190,19 +190,61 @@ describe('#316: scan time is linear on 1 MB of sk- and alphanumerics', () => {
     return performance.now() - started;
   }
 
+  /**
+   * Median of three timings of each input, taken alternately. One run on a
+   * shared runner can stall for several times its length (#958: a 1 MB scan
+   * that takes about 4x the quarter took 12x once), so a single sample lets
+   * the scheduler decide the ratio. Alternating puts a slow stretch on both
+   * sizes, and the median drops a lone stall.
+   */
+  function medianTimes(time: (content: string) => number, small: string, large: string) {
+    const smalls: number[] = [];
+    const larges: number[] = [];
+    for (let run = 0; run < 3; run++) {
+      smalls.push(time(small));
+      larges.push(time(large));
+    }
+    const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[1];
+    return { small: median(smalls), large: median(larges) };
+  }
+
+  // Linear is about 4x for 4x the input; quadratic is about 16x. The floor
+  // keeps sub-millisecond timer noise from deciding the ratio.
+  const linearBound = (small: number) => Math.max(small, 5) * 10;
+
+  /** Replays recorded timings in order, keyed by input. */
+  const replay = (timings: Record<string, number[]>) => (content: string) => {
+    const next = timings[content].shift();
+    if (next === undefined) throw new Error(`no timing left for ${content}`);
+    return next;
+  };
+
+  it('one stalled 1 MB run does not decide the ratio', () => {
+    // The #958 run: the quarter took 8 ms, one 1 MB run took 97 ms.
+    const { small, large } = medianTimes(
+      replay({ quarter: [8.3, 8.4, 8.2], full: [97.1, 33.5, 34.0] }), 'quarter', 'full',
+    );
+    expect(large).toBe(34.0);
+    expect(large).toBeLessThan(linearBound(small));
+  });
+
+  it('a quadratic scan still exceeds the bound on the median', () => {
+    const { small, large } = medianTimes(
+      replay({ quarter: [8.3, 8.4, 8.2], full: [133.0, 31.0, 134.0] }), 'quarter', 'full',
+    );
+    expect(large).toBeGreaterThanOrEqual(linearBound(small));
+  });
+
   it('each hostile shape scans 1 MB in under two seconds, and a quarter of it in proportion', () => {
     const full = hostile(size);
     const quarter = hostile(size / 4);
     for (let i = 0; i < full.length; i++) {
       expect(full[i].length).toBe(size);
       timeScan(quarter[i]); // warm the regex before timing it
-      const small = timeScan(quarter[i]);
-      const large = timeScan(full[i]);
+      const { small, large } = medianTimes(timeScan, quarter[i], full[i]);
       expect(large, `shape ${i}: 1 MB took ${Math.round(large)} ms`).toBeLessThan(2000);
-      // Linear is about 4x for 4x the input; quadratic is about 16x. The floor
-      // keeps sub-millisecond timer noise from deciding the ratio.
       expect(large, `shape ${i}: ${Math.round(small)} ms -> ${Math.round(large)} ms`)
-        .toBeLessThan(Math.max(small, 5) * 10);
+        .toBeLessThan(linearBound(small));
     }
   });
 });
