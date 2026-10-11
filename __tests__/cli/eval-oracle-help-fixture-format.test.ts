@@ -20,7 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { assertDistFreshIfPresent, BUILT_CLI } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
-import { GATE_F1, GATE_PRECISION, GATE_RECALL, ORACLE_LABELS, REPORTED_SURFACES } from '../../src/eval/oracle';
+import { GATE_F1, GATE_PRECISION, GATE_RECALL, ORACLE_LABELS, ORACLE_SURFACES, REPORTED_SURFACES } from '../../src/eval/oracle';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const SRC_CLI = path.join(REPO_ROOT, 'src', 'cli.ts');
@@ -116,6 +116,19 @@ describe('#990 eval oracle --help documents the fixture format and the release g
     }
   });
 
+  // #1003: training-sample, veil-payload and aiis-signature are surfaces a
+  // label.json can carry too; the help listed only the four with a row of
+  // their own.
+  it('RED-ON-BASE: the help names every surface the label type allows, and which ones get no row', () => {
+    const surfaceRow = blockRows(oracleHelp, 'label.json fields:').get('surface') ?? '';
+    for (const surface of ORACLE_SURFACES) expect(surfaceRow).toMatch(new RegExp(`(^|[\\s,;])${surface}\\b`));
+    const unreported = ORACLE_SURFACES.filter((s) => !REPORTED_SURFACES.includes(s));
+    expect(unreported.length).toBeGreaterThan(0);
+    const tail = surfaceRow.slice(surfaceRow.indexOf(';'));
+    for (const surface of unreported) expect(tail).toContain(surface);
+    expect(tail).toContain('counted only in the overall row');
+  });
+
   it('RED-ON-BASE: the help states the thresholds the release gate applies', () => {
     const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
     const gate = oracleHelp.slice(oracleHelp.indexOf('Release gate:'));
@@ -149,7 +162,8 @@ describe('#990 eval oracle --help documents the fixture format and the release g
     const { bin, argv } = cliCommand(['eval', 'oracle', '--oracle-dir', root, '--format', 'json']);
     const r = spawnSync(bin, argv, { env: cliEnv(), encoding: 'utf8', cwd: REPO_ROOT, timeout: 110_000 });
     expect(r.status).toBe(0);
-    const report = JSON.parse(r.stdout.slice(r.stdout.indexOf('{'))) as {
+    // #1003: stdout is the JSON document alone.
+    const report = JSON.parse(r.stdout) as {
       totalFixtures: number;
       retired: number;
       all: Array<{ fixturePath: string; surface: string; scanError?: string }>;

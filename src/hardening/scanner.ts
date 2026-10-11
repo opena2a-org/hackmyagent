@@ -14152,7 +14152,8 @@ dist/
           passed: false,
           message: `${relativePath}: Skill file lacks required YAML frontmatter (---). Add frontmatter with name, version, and capabilities fields.`,
           file: relativePath,
-          fixable: true,
+          // `secure --fix` writes nothing for SKILL-020: the values are the author's to choose.
+          fixable: false,
           fix: 'Add YAML frontmatter block with name, version, and capabilities fields',
           guidance: 'Skills without frontmatter cannot declare their capabilities, making permission validation impossible. Add a --- delimited YAML block at the top of the file.',
         });
@@ -14170,7 +14171,7 @@ dist/
             passed: false,
             message: `${relativePath}: Missing required frontmatter fields: ${missingFields.join(', ')}. These are needed for capability declaration and version tracking.`,
             file: relativePath,
-            fixable: true,
+            fixable: false,
             fix: `Add missing fields to frontmatter: ${missingFields.join(', ')}`,
             guidance: 'Incomplete frontmatter prevents proper capability validation. Every skill should declare name, version, and capabilities.',
           });
@@ -14334,7 +14335,8 @@ dist/
             passed: false,
             message: `${relativePath}: Skill declares tool:chain capability without maxIterations or iterationLimit. Unbounded chaining can lead to infinite loops or resource exhaustion.`,
             file: relativePath,
-            fixable: true,
+            // No fix step writes a limit: the right one depends on the skill.
+            fixable: false,
             fix: 'Add maxIterations or iterationLimit to skill frontmatter',
             guidance: 'Tool chaining without iteration limits can cause infinite loops, resource exhaustion, or runaway costs. Set a reasonable maxIterations value in frontmatter.',
           });

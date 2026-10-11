@@ -63,6 +63,16 @@ describe('#649 eval oracle refuses a format it cannot render', { timeout: 120_00
     expect(r.stdout).toMatch(/"overall"/);
   });
 
+  // #1003: the progress line came first on stdout, so the output did not
+  // parse as JSON.
+  it('RED-ON-BASE: --format json writes only the JSON document to stdout, the progress line to stderr', () => {
+    const r = run(['--oracle-dir', oracleDir, '--format', 'json']);
+    expect(r.status).toBe(0);
+    expect(() => JSON.parse(r.stdout)).not.toThrow();
+    expect(r.stdout).not.toContain('Running oracle eval');
+    expect(r.stderr).toContain('Running oracle eval against: ');
+  });
+
   it('PIN: the default format prints the text report', () => {
     const r = run(['--oracle-dir', oracleDir]);
     expect(r.status).toBe(0);
