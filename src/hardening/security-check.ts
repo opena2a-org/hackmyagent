@@ -607,7 +607,30 @@ export interface ScanResult {
      * the volume is visible and can be attacked at the check level later.
      */
     unevidencedFailures?: number;
+    /**
+     * #1010 — each `dist/` directory the source walkers did not enter, by
+     * target-relative path, with the number of files under it. The walkers
+     * skip `dist/` as build output unless the run includes it
+     * (`ScanOptions.includeDist`, `secure --include-dist`); on an extracted
+     * package it is the code that runs, and `filesExamined` alone could not
+     * tell a caller that it was never read.
+     *
+     * Absent when nothing was skipped, including every run that walked
+     * `dist/`. Not part of `unreadableInputs`: these were left out by
+     * policy, not lost to an error, so they do not move the exit code.
+     */
+    skippedDirectories?: SkippedDirectoryRecord[];
   };
+}
+
+/** A directory the source walkers skipped by policy. See `coverage.skippedDirectories`. */
+export interface SkippedDirectoryRecord {
+  /** Target-relative, `/`-separated. Never absolute. */
+  path: string;
+  /** Regular files under it, symlinks not followed. */
+  files: number;
+  /** Set when the count stopped at its bound, so `files` is a lower bound. */
+  countCapped?: true;
 }
 
 /** One check method's execution record. Mirrors `CheckExecution`. */

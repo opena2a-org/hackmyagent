@@ -63,6 +63,10 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
  * #989 adds one: `--no-sign` on `create-skill`. It leaves the generated
  * SKILL.md unsigned instead of signing it; `create-skill` writes files and runs
  * no scan, so it reaches no semantic layer and no deterministic floor.
+ *
+ * #1010 adds one: `--include-dist` on `secure`. It WIDENS the static walk into
+ * `dist/`, which the default skips as build output; it touches no semantic
+ * layer and no deterministic floor, and turns nothing off.
  */
 const COMMAND_SURFACE = [
   '--a2a-recipient', '--a2a-sender', '--analm', '--api-format', '--at', '--atx',
@@ -73,6 +77,7 @@ const COMMAND_SURFACE = [
   '--range', '--staged',                                       // #537, see note above
   '--scan-history', '--since',                                 // #536, see note above
   '--no-sign',                                                 // #989, see note above
+  '--include-dist',                                            // #1010, see note above
   '--contribute', '--deep', '--delay', '--depth', '--directory', '--dry-run', '--explain',
   '--export-csv', '--export-training', '--fail-below', '--fail-on-gate',
   '--fail-on-vulnerable', '--fix', '--format', '--grant', '--grant-agent-id',

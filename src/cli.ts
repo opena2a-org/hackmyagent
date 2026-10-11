@@ -2203,6 +2203,27 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  ${colors.dim}${line}${RESET()}`);
   }
 
+  // #1010 — each dist/ the walk skipped as build output, with its file count,
+  // then the command that walks it. A disclosure, not a finding: the score is
+  // over what was walked, and on an extracted package dist/ is the code that
+  // runs, so without this line a package scored on its README alone looked
+  // the same as one examined and found clean.
+  const skippedDirs = localScan?.coverage?.skippedDirectories ?? [];
+  if (skippedDirs.length > 0) {
+    // The JSON carries every one; the report names the first few.
+    const SHOWN = 5;
+    for (const d of skippedDirs.slice(0, SHOWN)) {
+      const count = `${d.files}${d.countCapped ? '+' : ''} file${d.files === 1 && !d.countCapped ? '' : 's'}`;
+      console.log(`  ${colors.yellow}Not walked${RESET()}  ${escapePathForDisplay(`${d.path}/`)}  ${colors.dim}(${count}, build output)${RESET()}`);
+    }
+    if (skippedDirs.length > SHOWN) {
+      console.log(`  ${colors.dim}and ${skippedDirs.length - SHOWN} more dist/ director${skippedDirs.length - SHOWN === 1 ? 'y' : 'ies'}, listed under coverage.skippedDirectories in --json${RESET()}`);
+    }
+    const rerunAt = opts.nextStepsTarget ?? scanRoot;
+    const cited = rerunAt ? citationTarget(rerunAt) : '<dir>';
+    console.log(`  ${colors.dim}The risk level below does not cover ${skippedDirs.length === 1 ? 'that directory' : 'those directories'}. Where dist/ is the code that runs (an extracted package): ${CLI_PREFIX} secure --include-dist ${cited}${RESET()}`);
+  }
+
   // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
     let verdictText: string;
@@ -5373,6 +5394,7 @@ Change scope (--range, --staged):
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
   .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
+  .option('--include-dist', 'Also walk dist/ with the static checks. Skipped by default as build output; use it on an extracted package, where dist/ is the code that runs. Without it, coverage.skippedDirectories names each dist/ left out')
   .option('--scan-history', 'Also read every commit reachable from any ref and report credentials committed there as <commit>:<file>:<line>, including ones since deleted from the tree (needs a git work tree; not with -b)')
   .option('--since <ref>', 'With --scan-history: read only commits not reachable from <ref>')
   .option('--ci-publish', 'Submit scan results to registry CI endpoint (requires CI_SCAN_HMAC_SECRET env; not with -b)')
@@ -5388,7 +5410,7 @@ Change scope (--range, --staged):
   .option('--no-machine-posture', 'Skip the advisory scan of AI runtimes installed outside the target (~/.openclaw, ~/.nemoclaw)')
   .option('--range <base..head>', 'Report only what the commits in this git range introduce (<base>..<head>, or <base>...<head> to measure from the merge base). A finding already present at <base> is not reported and does not set the exit code')
   .option('--staged', 'Report only what the staged changes introduce, measured against HEAD (for a pre-commit hook)')
-  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; scanHistory?: boolean; since?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean; range?: string; staged?: boolean }, cmd: Command) => {
+  .action(async (directory: string, options: { fix?: boolean; dryRun?: boolean; ignore?: string; json?: boolean; format?: string; output?: string; failBelow?: string; verbose?: boolean; benchmark?: string; level?: string; category?: string; deep?: boolean; nanomind?: boolean; analm?: boolean; scanDepth?: string; scanHistory?: boolean; since?: string; ciPublish?: boolean; publish?: boolean; registryReport?: boolean; registry?: boolean; versionId?: string; registryUrl?: string; registryKey?: string; contribute?: boolean; ci?: boolean; machinePosture?: boolean; range?: string; staged?: boolean; includeDist?: boolean }, cmd: Command) => {
     try {
       const originalTarget = require("path").resolve(directory);
       let targetDir = originalTarget;
@@ -5825,6 +5847,7 @@ Change scope (--range, --staged):
         ...(historyPlan ? { scanHistory: historyPlan } : {}),
         deep: isDeep,
         scanDepth,
+        includeDist: options.includeDist === true,
         cliName: RAW_CLI_PREFIX,
         onProgress,
         semanticPass: async ({ findings: existingFindings, projectType }) => {
@@ -5879,6 +5902,9 @@ Change scope (--range, --staged):
           ignore: ignoreList,
           deep: isDeep,
           scanDepth,
+          // The base is walked like the head, or a dist/ finding the base
+          // already holds would be reported as introduced.
+          includeDist: options.includeDist === true,
           cliName: RAW_CLI_PREFIX,
           semanticPass: async ({ findings: existingFindings, projectType }) => {
             const baseNm = await orchestrateNanoMind(baseDir, existingFindings, {

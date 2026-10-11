@@ -164,6 +164,7 @@ hackmyagent secure --fix                      # auto-fix issues with rollback
 hackmyagent secure --fix --dry-run            # preview fixes
 hackmyagent secure --deep                     # full behavioural simulation (20 probes)
 hackmyagent secure --static-only              # static checks only, faster
+hackmyagent secure --include-dist package     # extracted npm package: also scan dist/
 hackmyagent secure --ignore CRED-001,GIT-002  # leave check IDs out of the findings list
 hackmyagent secure --json                     # JSON output for CI
 hackmyagent secure --ci                       # non-interactive, no contribution, exit code unchanged
@@ -181,10 +182,8 @@ Every HIGH or CRITICAL finding names the file it came from. Findings from one li
 
 Runs on every `secure` scan. On first use, HMA downloads an ONNX classifier from Hugging Face ([`opena2a/nanomind-security-classifier`](https://huggingface.co/opena2a/nanomind-security-classifier)) into `~/.nanomind/models`. Before the first request it prints on stderr, in every output format, the download size, the hosts (huggingface.co and Hugging Face's content CDN), the cache path and the flag that skips it (`--static-only`). Later scans use the cached copy and make no model request. Behind a proxy, the download goes through the one in `HTTPS_PROXY` (or `HTTP_PROXY` when that is unset), skipping hosts listed in `NO_PROXY`; the notice names the proxy by host and port, never by the credentials in its URL.
 
-- 7 AST analyzers: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`.
-- 9 attack classes: `exfiltration`, `injection`, `privilege_escalation`, `persistence`, `credential_abuse`, `lateral_movement`, `social_engineering`, `policy_violation`, `benign`.
-- `--deep` adds the 20-probe behavioural simulation in every output format (needs a probe executor; otherwise `NOT MEASURED`); `--json` carries the result as the advisory `simulation` block. `--static-only` disables the semantic layer.
-- `--nanomind` opts into the generative analyst: per-finding threat narratives on HIGH or CRITICAL findings, and a coverage sweep whose verdicts surface as advisory escalations for human review (never changing the score, findings, or exit code).
+- 7 AST analyzers: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`. 9 attack classes: `exfiltration`, `injection`, `privilege_escalation`, `persistence`, `credential_abuse`, `lateral_movement`, `social_engineering`, `policy_violation`, `benign`.
+- `--deep` adds the 20-probe behavioural simulation in every output format (needs a probe executor; otherwise `NOT MEASURED`); `--json` carries the result as the advisory `simulation` block. `--static-only` disables the semantic layer. `--nanomind` opts into the generative analyst: per-finding threat narratives on HIGH or CRITICAL findings, and a coverage sweep whose verdicts surface as advisory escalations for human review (never changing the score, findings, or exit code).
 
 ### `red-team` (attack surface and payload generation)
 
