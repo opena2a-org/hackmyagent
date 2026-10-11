@@ -75,4 +75,4 @@ if (match === null) {
   `!<CHECK-ID>`. Check ids and patterns compare case-insensitively, and `*`
   in a pattern matches any run of characters.
 
-Plugin authoring: [`docs/PLUGIN_API.md`](docs/PLUGIN_API.md).
+Plugin authoring: [`docs/PLUGIN_API.md`](PLUGIN_API.md).
