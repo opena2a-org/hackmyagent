@@ -130,9 +130,12 @@ const REVIEWED: Record<string, { count: number; why: string }> = {
     why: 'realpathSync for containment decisions; resolves a path, never reads bytes',
   },
   'hardening/scanner.ts': {
-    count: 1,
+    count: 2,
     why: 'fsSync — realpathSync.native for containment, plus readArtifactForCitation, a re-read '
-      + 'of an already-attempted path that must not be able to record an unread input',
+      + 'of an already-attempted path that must not be able to record an unread input. The second '
+      + 'match acquires nothing: `require("fs")` in STEGO_CODEPOINT_LISTER is the text of the '
+      + '`node -e` command UNICODE-STEGO-003 prints for the user to run (#999), and HMA never '
+      + 'evaluates it',
   },
   'nanomind-core/scanner-bridge.ts': {
     count: 1,

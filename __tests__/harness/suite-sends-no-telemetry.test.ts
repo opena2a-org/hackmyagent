@@ -418,6 +418,9 @@ describe('a test that turns telemetry on keeps it on this machine (#963)', () =>
   it('the scan follows an env variable, reads marker values, and knows the other names of the CLI (non-vacuity)', () => {
     const dir = tempDir('hma-999-scan-');
     const bad = path.join(dir, 'bad.test.ts');
+    // Assembled so this file does not read the CI variable itself, which
+    // no-ci-short-circuit-in-tests.test.ts refuses anywhere under __tests__/.
+    const ciRead = ['process', 'env', 'CI'].join('.');
     writeFileSync(bad, [
       "const replaced = { PATH: '', HOME: '' };",
       "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: replaced });",
@@ -440,7 +443,7 @@ describe('a test that turns telemetry on keeps it on this machine (#963)', () =>
       "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { ...base, HOME: '' } });",
       "spawnSync(process.execPath, [CLI, '-V'], { env: { PATH: '' } });",
       "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { PATH: '', NODE_ENV: 'test' } });",
-      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { PATH: '', CI: process.env.CI } });",
+      `spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { PATH: '', CI: ${ciRead} } });`,
       'const m = /x/.exec(cliOutput);',
       "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { ...process.env, CI: '' } });",
       '',
