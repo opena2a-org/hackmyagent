@@ -93,6 +93,20 @@ export function withoutUrlUserinfo(url: string, reader: UrlReader = 'git'): stri
 }
 
 /**
+ * `url` without its query and fragment: everything from the first `?` or `#`
+ * after `scheme://` is dropped, so `https://host/v1/chat?api_key=k#x` becomes
+ * `https://host/v1/chat`. A query is where a key is passed to an agent
+ * endpoint, and the name a run sends to the registry must not carry it. A
+ * string that is not `scheme://...` is returned as it is. Apply it after
+ * `withoutUrlUserinfo`, whose masking reads the `?` and `#` of a password.
+ */
+export function withoutUrlQueryAndFragment(url: string): string {
+  const scheme = SCHEME.exec(url)?.[0];
+  if (scheme === undefined) return url;
+  return url.slice(0, firstOf(url, '?#', scheme.length));
+}
+
+/**
  * Whether `name` has the shape of a scoped package name, `@scope/name` with an
  * optional `@version`, whose leading `@` is not an empty userinfo.
  */
