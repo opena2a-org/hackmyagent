@@ -13533,9 +13533,13 @@ program
         .name('oracle')
         .description(
           'Evaluate scanner + classifier accuracy against hand-labeled oracle fixtures.\n\n' +
-          'Fixture dir must contain subdirectories, each with a label.json and scannable content.\n' +
-          'See: hackmyagent-redteam-oracle/METHODOLOGY.md for fixture format and release-gate thresholds.'
+          'Fixture dir must contain subdirectories, each with a label.json and scannable content.'
         )
+        // #990 — the description pointed at a methodology file that is in
+        // neither this repository nor the published package. The fixture
+        // format and the gate thresholds are printed here instead, built from
+        // the values the evaluation uses.
+        .addHelpText('after', () => (require('./eval/oracle.js') as typeof import('./eval/oracle.js')).oracleFormatHelp())
         .requiredOption('--oracle-dir <path>', 'Path to oracle fixture directory')
         .option('--format <format>', 'Output format: text or json', 'text')
         .option('--output <file>', 'Write results to file (JSON) in addition to console output')

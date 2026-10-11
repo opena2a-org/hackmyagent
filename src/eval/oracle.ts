@@ -7,7 +7,8 @@
  * Usage:
  *   hackmyagent eval oracle --oracle-dir <path> [--format json|text] [--output <file>]
  *
- * See: hackmyagent-redteam-oracle/METHODOLOGY.md for fixture format and release-gate thresholds.
+ * The fixture format and the release-gate thresholds are printed by
+ * `hackmyagent eval oracle --help` (see `oracleFormatHelp` below).
  */
 
 import { spawnSync } from 'child_process';
@@ -47,6 +48,9 @@ export type OracleSurface =
   | 'training-sample'
   | 'veil-payload'
   | 'aiis-signature';
+
+/** Surfaces that get a row of their own in the report and a line in the release gate. */
+export const REPORTED_SURFACES: readonly OracleSurface[] = ['skill', 'soul', 'mcp', 'arp-input'];
 
 // ── Schema types ────────────────────────────────────────────────────────────
 
@@ -393,9 +397,8 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
     });
   }
 
-  const surfaces: OracleSurface[] = ['skill', 'soul', 'mcp', 'arp-input'];
   const bySurface: Record<string, SurfaceMetrics> = {};
-  for (const s of surfaces) {
+  for (const s of REPORTED_SURFACES) {
     const subset = results.filter(r => r.surface === s);
     if (subset.length > 0) bySurface[s] = computeMetrics(subset, s);
   }
@@ -424,6 +427,70 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
     misclassified,
     all: results,
   };
+}
+
+// ── Help text ────────────────────────────────────────────────────────────────
+
+/** Comma-separated `items`, wrapped to `width` columns with every line behind `indent`. */
+function wrapList(items: readonly string[], indent: string, width = 80): string[] {
+  const lines: string[] = [];
+  let line = '';
+  items.forEach((item, i) => {
+    const piece = i < items.length - 1 ? `${item},` : item;
+    if (line && indent.length + line.length + 1 + piece.length > width) {
+      lines.push(indent + line);
+      line = '';
+    }
+    line += line ? ` ${piece}` : piece;
+  });
+  if (line) lines.push(indent + line);
+  return lines;
+}
+
+/**
+ * The fixture format and the release gate, as `eval oracle --help` prints them
+ * after its options. The help is the only place a user of the installed
+ * package can read either, so the labels, surfaces and thresholds are taken
+ * from the values the evaluation itself uses (#990).
+ */
+export function oracleFormatHelp(): string {
+  const pct = (n: number) => (n * 100).toFixed(1) + '%';
+  const surfaces = `${REPORTED_SURFACES.slice(0, -1).join(', ')} or ${REPORTED_SURFACES[REPORTED_SURFACES.length - 1]}`;
+  const valueIndent = ' '.repeat(22);
+  return [
+    '',
+    'Fixture format:',
+    '  Every directory below --oracle-dir that holds a label.json is one fixture.',
+    '  A directory without one is searched for fixtures further down.',
+    '',
+    '  label.json fields:',
+    `    surface           ${surfaces}`,
+    '    expectedLabel     benign, or the attack class the fixture carries:',
+    ...wrapList(ORACLE_LABELS.filter(l => l !== 'benign'), valueIndent),
+    '    expectedSeverity  critical, high, medium, low, info or none',
+    '    attackFamily      free-text name for the group the fixture belongs to',
+    '    expectedChecks    array of the check IDs the scan should report, [] for',
+    '                      none',
+    '    hardNegative      optional; true tags the fixture [hard-neg] in the list',
+    '                      of misclassified fixtures',
+    '    retired           optional; true leaves the fixture out of the evaluation',
+    '',
+    '  Scanned content:',
+    '    arp-input         the input.txt in the fixture directory, matched against',
+    '                      the runtime protection (ARP) patterns',
+    '    other surfaces    the fixture directory, scanned as `secure --static-only`',
+    '                      scans a directory',
+    '',
+    'Release gate:',
+    '  A fixture is flagged when its scan reports at least one failed finding.',
+    '  Recall is the share of non-benign fixtures that are flagged, precision the',
+    '  share of flagged fixtures that are non-benign. The gate passes when:',
+    `    recall     is ${pct(GATE_RECALL)} or higher, overall and on each surface`,
+    `    precision  is ${pct(GATE_PRECISION)} or higher, overall and on each surface`,
+    `    F1         is ${pct(GATE_F1)} or higher, overall`,
+    '    no non-benign fixture with expectedSeverity critical goes unflagged',
+    '  The text report prints the result; --fail-on-gate exits 1 when the gate fails.',
+  ].join('\n');
 }
 
 // ── Text report printer ──────────────────────────────────────────────────────
