@@ -7,7 +7,7 @@
 
 ## Background
 
-HMA includes 34 checks specifically for [OpenClaw](https://github.com/open-claw/open-claw) installations. These cover gateway configuration, skill security, credential redaction, and known CVEs. Six of the findings led to [upstream PRs merged into OpenClaw](https://opena2a.org/blogs/securing-openclaw-6-prs-merged).
+HMA includes 56 checks specifically for [OpenClaw](https://github.com/open-claw/open-claw) installations. These cover gateway configuration, skill security, credential redaction, and known CVEs. Six of the findings led to [upstream PRs merged into OpenClaw](https://opena2a.org/blogs/securing-openclaw-6-prs-merged).
 
 ## Step 1: Run the scan
 
@@ -17,7 +17,7 @@ From your OpenClaw project directory:
 npx hackmyagent secure
 ```
 
-HMA detects OpenClaw from an `openclaw.json`, a `SKILL.md` or `HEARTBEAT.md`, or a `.openclaw`, `.moltbot` or `.clawdbot` directory. All 34 OpenClaw checks run automatically alongside the standard 317 static checks.
+HMA detects OpenClaw from an `openclaw.json`, a `SKILL.md` or `HEARTBEAT.md`, or a `.openclaw`, `.moltbot` or `.clawdbot` directory. All 56 OpenClaw checks run automatically; they are part of the 317 static checks, not added to them.
 
 **Output** from this repository's `test-fixtures/insecure-openclaw` (your findings depend on your installation):
 
