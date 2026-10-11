@@ -12970,10 +12970,12 @@ Scans your machine and the current project directory for:
 Reports a governance score and actionable findings for CISOs and security engineers.
 
 Exit codes:
-  0  scanned, and no high or critical finding
+  0  scanned, and no high or critical finding. A machine and directory with
+     no AI agent, MCP server, AI config or governance file also exit 0: the
+     scan ran and found nothing.
   1  scanned, and at least one high or critical finding
-  2  NOT MEASURED — no AI agent, MCP server, AI config or governance file
-     was found to examine, so no governance posture is reported.
+  2  NOT MEASURED — the directory does not exist or could not be read, or
+     --depth was not a whole number, so nothing was scanned.
 
 The machine-wide discovery (running assistants, MCP servers, machine-level
 configs) ALWAYS runs; the directory argument only sets which project tree is
