@@ -8,7 +8,7 @@
  * part and the rest, so no line of this file spells a credential-bearing URL.
  */
 import { describe, it, expect } from 'vitest';
-import { scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from '../../src/check/url-userinfo';
+import { isLocalGitRemote, scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from '../../src/check/url-userinfo';
 
 const SECRET = ['FAKE', 'secret', '123'].join('');
 
@@ -76,8 +76,46 @@ describe('withoutUrlUserinfo', () => {
   });
 
   it('returns a string that is not `scheme://...` as it is', () => {
-    for (const value of ['unknown', 'org/repo', 'git@github.com:org/repo.git', '']) {
+    for (const value of ['unknown', 'org/repo', 'git@github.com:org/repo.git', '', "ext::ssh -i key git@host %S 'repo'"]) {
       expect(withoutUrlUserinfo(value)).toBe(value);
+    }
+  });
+
+  it("removes userinfo from the address of git's `<transport>::<address>` syntax, for git and for fetch", () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      expect(withoutUrlUserinfo(`https::${withUserinfo('https', `alice:${SECRET}`, 'gitlab.com/org/repo.git')}`, reader))
+        .toBe('https::https://gitlab.com/org/repo.git');
+      expect(withoutUrlUserinfo(`git-remote.x+y::${withUserinfo('ssh', `alice:${SECRET}`, 'host/org/repo.git')}`, reader))
+        .toBe('git-remote.x+y::ssh://host/org/repo.git');
+      expect(withoutUrlUserinfo(`a::b::${withUserinfo('https', SECRET, 'gitlab.com/org/repo.git')}`, reader))
+        .toBe('a::b::https://gitlab.com/org/repo.git');
+      expect(withoutUrlUserinfo('https::https://gitlab.com/org/repo.git', reader))
+        .toBe('https::https://gitlab.com/org/repo.git');
+    }
+  });
+
+  it('removes userinfo after a scheme that starts with a digit, which git accepts for remote helpers', () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      expect(withoutUrlUserinfo(withUserinfo('3ssh', `alice:${SECRET}`, 'host/org/repo.git'), reader))
+        .toBe('3ssh://host/org/repo.git');
+      expect(withoutUrlUserinfo(`9x::${withUserinfo('3ssh', SECRET, 'host/org/repo.git')}`, reader))
+        .toBe('9x::3ssh://host/org/repo.git');
+    }
+  });
+
+  it('masks and keeps after `<transport>::` and after a scheme that starts with a digit as it does after `https://`', () => {
+    for (const reader of ['git', 'fetch'] as const) {
+      expect(withoutUrlUserinfo(`https::${withUserinfo('https', `alice:pa?${SECRET}`, 'gitlab.com/org/repo.git')}`, reader))
+        .toBe('https::https://***@gitlab.com/org/repo.git');
+      expect(withoutUrlUserinfo(withUserinfo('3ssh', `alice:pa#${SECRET}`, 'host/org/repo.git'), reader))
+        .toBe('3ssh://***@host/org/repo.git');
+      for (const url of [
+        'https::https://gitlab.com?ref=@evil.example/org/repo.git',
+        '3ssh://host?ref=@evil.example/org/repo.git',
+        '9x::3ssh://host:22#@evil.example/org/repo.git',
+      ]) {
+        expect(withoutUrlUserinfo(url, reader)).toBe(url);
+      }
     }
   });
 
@@ -151,6 +189,39 @@ describe('withoutUrlUserinfo', () => {
       expect(shown.pathname + shown.search + shown.hash).toBe(parsed.pathname + parsed.search + parsed.hash);
       expect(shown.username).toBe('');
       expect(shown.password).toBe('');
+    }
+  });
+});
+
+describe('isLocalGitRemote', () => {
+  it('reads a path on this machine as local, as git does', () => {
+    for (const remote of [
+      '/srv/git/org/repo.git',
+      '../repo',
+      'repo.git',
+      './dir:with-colon/repo.git',
+      'file:///srv/git/org/repo.git',
+      'FILE:///srv/git/org/repo.git',
+      'C:\\repos\\repo.git',
+      'c:/repos/repo.git',
+      '\\\\server\\share\\repo.git',
+    ]) {
+      expect(isLocalGitRemote(remote), remote).toBe(true);
+    }
+  });
+
+  it('reads a URL, a `<transport>::` remote and an scp-style remote as not local', () => {
+    for (const remote of [
+      'https://github.com/org/repo.git',
+      'ssh://git@github.com/org/repo.git',
+      'git://example.com/org/repo.git',
+      '3ssh://host/org/repo.git',
+      'https::https://gitlab.com/org/repo.git',
+      'git@github.com:org/repo.git',
+      'github.com:org/repo.git',
+      'host:path/with/slash.git',
+    ]) {
+      expect(isLocalGitRemote(remote), remote).toBe(false);
     }
   });
 });
@@ -230,6 +301,13 @@ describe('withoutUrlQueryAndFragment', () => {
     expect(withoutUrlQueryAndFragment('http://localhost:8080/v1/chat/completions')).toBe('http://localhost:8080/v1/chat/completions');
     expect(withoutUrlQueryAndFragment('unknown')).toBe('unknown');
     expect(withoutUrlQueryAndFragment('what?#')).toBe('what?#');
+  });
+
+  it('reads `scheme://` as withoutUrlUserinfo does, after `<transport>::` and with a leading digit', () => {
+    expect(withoutUrlQueryAndFragment(`https::https://agent.example/v1/chat?api_key=${SECRET}`))
+      .toBe('https::https://agent.example/v1/chat');
+    expect(withoutUrlQueryAndFragment(`3ssh://host/org/repo.git#${SECRET}`)).toBe('3ssh://host/org/repo.git');
+    expect(withoutUrlQueryAndFragment('ext::ssh host?x')).toBe('ext::ssh host?x');
   });
 
   it('after withoutUrlUserinfo, a masked userinfo with a `?` in its password is gone before the cut', () => {

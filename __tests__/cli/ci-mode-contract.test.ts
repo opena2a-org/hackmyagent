@@ -104,9 +104,10 @@ function makeConformantSoulFixture(): string {
 /**
  * A HOME carrying a prior contribution opt-in.
  *
- * REGISTRY_URL must be `http://localhost:*`, not `http://127.0.0.1:*` —
- * `validateRegistryUrl` accepts only https and localhost, and an invalid value
- * aborts the run before it scans, which would make every cell below read exit 1.
+ * REGISTRY_URL must be plain http to this machine, such as `http://localhost:*` —
+ * `validateRegistryUrl` accepts only https and http to localhost, 127.0.0.1 or
+ * [::1], and an invalid value aborts the run before it scans, which would make
+ * every cell below read exit 1.
  */
 function makeOptedInHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'hma-454-home-'));
