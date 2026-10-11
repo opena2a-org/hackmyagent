@@ -75,7 +75,8 @@
  * U+E0080-U+E00FF and U+E01F0-U+E01FF. They render as nothing as well, so
  * `benign<U+E01F0>evil.js` printed as `benignevil.js`; the whole of
  * U+E0000-U+E00FF and U+E01F0-U+E01FF is named explicitly, so every code
- * point the two checks report is escaped wherever it appears. Unassigned
+ * point the two checks report is escaped after a plain letter; the exemption
+ * below leaves U+E0100-U+E01EF unescaped after a pictograph. Unassigned
  * plane-14 code points above U+E01FF, which the checks do not report, are
  * not covered.
  *

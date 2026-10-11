@@ -18,4 +18,6 @@ issue: 959
   reached the terminal unescaped, so `benign` + U+E01F0 + `evil.js` printed
   as `benignevil.js`. These code points are now shown as `\u{e01f0}`, as the
   assigned tag characters and the variation selectors already were, so every
-  code point in the range the two checks report prints escaped.
+  code point in the range the two checks report prints escaped after a plain
+  letter. A variation selector in U+E0100-E01EF that follows a pictograph is
+  left as emoji presentation, as before.
