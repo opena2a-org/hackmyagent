@@ -459,7 +459,7 @@ import { checkGroupTally, scanDepthDisclosure } from './ui/scan-depth-disclosure
 import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
-import { clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed, type MeasuredFinding } from './ui/verdict-band';
+import { attachSuppressedLocations, clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, locateSuppressed, retainForVerdict, summarizeSuppressed, type MeasuredFinding, type SuppressedLocation } from './ui/verdict-band';
 import { refilterAfterLateSemanticMerge, refilterAfterSemanticMerge } from './hardening/semantic-refilter';
 import { gateSet, deepScanIncomplete, deepScanNotRunLines, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
 import { shouldPrintVersionFooter, watchStreamWrites } from './ui/version-footer';
@@ -1140,6 +1140,8 @@ Examples:
           // #450 — the two narrowings, carried so the report can name them.
           outOfScope: result.outOfScope,
           suppressed: result.suppressed,
+          // #1000 — and where the suppressed findings sat, text report only.
+          suppressedLocations: scanner.lastSuppressedLocations,
           hmaignore: result.hmaignore,
           localScan: {
             score: result.score,
@@ -1490,6 +1492,12 @@ interface UnifiedCheckDisplayOptions {
    * are already in the score. Top-level for the same reason as `outOfScope`.
    */
   suppressed?: ScanResult['suppressed'];
+  /**
+   * Where the suppressed findings sat (#1000), so the `Artifacts` and
+   * `Verdict` lines keep describing the tree the way the un-suppressed run
+   * does. Text only: never on `ScanResult`, never in `--json`.
+   */
+  suppressedLocations?: SuppressedLocation[];
   /**
    * The per-rule `.hmaignore` disclosure. The renderer reads `errors[]` from
    * it: every line the parser refused prints, by default, beside the
@@ -1938,9 +1946,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
    * Defaults to `failed` and differs from it only when the caller suppressed a
    * check ID: the suppressed penalties are added back so the words, the number
    * and the exit code cannot disagree, while the findings list below still
-   * shows only what the caller asked for. The stubs carry a `name` and a
-   * `checkId` but no `file`, so the verdict can say WHAT still counts against
-   * the tree without naming the path the caller asked to have withheld.
+   * shows only what the caller asked for. The stubs carry a `name`, a
+   * `checkId` and (#1000) the `file` the caller's channel recorded, so the
+   * verdict reads the same as on the un-suppressed run: the caller asked for
+   * a quieter list, not a different description of the tree. They carry no
+   * message and no evidence.
    */
   let verdictInput: Array<{ severity: string; name?: string; checkId?: string; file?: string; line?: number; commit?: string }> = [];
   let score = 0;
@@ -1951,6 +1961,16 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
   // no ScanResult to hang them off, so they are tracked here.
   let nanomindRawScore: number | undefined;
   let nanomindScoreClamped = false;
+  // #450 — the suppressed penalties, as findings the gate can count. #1000 —
+  // each one carrying the path its finding sat on, when the caller recorded
+  // it, so the Verdict and the `Artifacts` line below describe the tree the
+  // same way whether or not the caller asked for a quieter list. The stubs
+  // still carry no message and no evidence; a path is already on the
+  // `Artifacts` line and in the scope disclosure.
+  const suppressedStubs = attachSuppressedLocations(
+    expandSuppressed(opts.suppressed),
+    opts.suppressedLocations ?? [],
+  );
 
   if (localScan) {
     // The shared predicate, not a raw field read. `passed` alone is wrong in
@@ -1970,7 +1990,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // back here. Without this the report printed `69/100 (fail-direction)` and
     // exit 1 directly above `Verdict  Usable with caveats` — the #259
     // incoherence, reintroduced through the suppression channel.
-    const gatedFailed = [...failed, ...(expandSuppressed(opts.suppressed) as any[])];
+    const gatedFailed = [...failed, ...(suppressedStubs as any[])];
     critical = gatedFailed.filter(f => f.severity === 'critical').length;
     high = gatedFailed.filter(f => f.severity === 'high').length;
     medium = gatedFailed.filter(f => f.severity === 'medium').length;
@@ -1981,7 +2001,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // #450 — same add-back as the localScan branch: `check`'s skill path has an
     // `.hmaignore` suppression channel of its own, and its risk band must not
     // move because the caller quietened the list.
-    const gatedIssues = [...issues, ...(expandSuppressed(opts.suppressed) as any[])];
+    const gatedIssues = [...issues, ...(suppressedStubs as any[])];
     critical = gatedIssues.filter(f => f.severity === 'critical').length;
     high = gatedIssues.filter(f => f.severity === 'high').length;
     medium = gatedIssues.filter(f => f.severity === 'medium').length;
@@ -2467,8 +2487,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // artifact. Otherwise the line reads `unknown` and the raw affinity moves
     // behind --verbose. Applied to the renderer's INPUT rather than its
     // output so the line stays formatted by one place.
+    // #1000 — a finding the caller suppressed still corroborates: it is still
+    // scored and still in the verdict, so the label it supported stays. Only
+    // the stubs that know their path can match an artifact; the rest are inert.
     const { artifacts: reconciledArtifacts, suppressed: suppressedIntents } =
-      reconcileArtifactIntents(opts.artifactSummaries ?? [], failed);
+      reconcileArtifactIntents(opts.artifactSummaries ?? [], [...failed, ...suppressedStubs]);
 
     // The renderer prints `0 skipped` whenever it is handed no skip list, and
     // hackmyagent never handed it one — so `0 skipped` was emitted on every
@@ -5887,10 +5910,15 @@ Change scope (--range, --staged):
         if (result.findings) result.findings = result.findings.filter((f) => keptSet.has(f));
       }
 
+      // #1000 — where every suppressed finding sat, for the text report's
+      // `Artifacts` and `Verdict` lines. Kept off `result`, which `--json`
+      // and the publish payload spread; the disclosure there is identity-only.
+      let suppressedLocations: SuppressedLocation[] = [];
       {
         // Re-apply all filters after NanoMind merge. Shared with `check`'s
         // local-directory arm (#740), which runs this same scan.
         await refilterAfterSemanticMerge(scanner, result, targetDir);
+        suppressedLocations = [...scanner.lastSuppressedLocations];
         // Re-apply CLI --ignore list (reapplyIgnoreFilters only covers .hmaignore file rules)
         //
         // #450 — the findings still leave, and their penalties do not. This
@@ -5907,12 +5935,15 @@ Change scope (--range, --staged):
             // Merged by expanding the EXISTING rows back out and re-summarising
             // the union, so a check suppressed by both `.hmaignore` and
             // `--ignore` is counted once, not twice.
+            const firstSeen = newlySuppressed
+              .filter((f: any) => !(result.suppressed ?? []).some((r) => r.checkId === f.checkId))
+              .map((f: any) => ({ ...f, suppressed: true, suppressedBy: 'ignore-flag' }));
             result.suppressed = summarizeSuppressed([
               ...expandSuppressed(result.suppressed).map((r) => ({ ...r, suppressedBy: 'hmaignore-check' })),
-              ...newlySuppressed
-                .filter((f: any) => !(result.suppressed ?? []).some((r) => r.checkId === f.checkId))
-                .map((f: any) => ({ ...f, suppressed: true, suppressedBy: 'ignore-flag' })),
+              ...firstSeen,
             ]);
+            // #1000 — the same findings the rows above count, with their paths.
+            suppressedLocations = [...suppressedLocations, ...locateSuppressed(firstSeen)];
           }
           result.findings = (result.findings || []).filter((f: any) => !hit(f));
           if (result.allFindings) {
@@ -6798,6 +6829,7 @@ Change scope (--range, --staged):
         // `.hmaignore` held back 65 findings, 26 of them critical.
         outOfScope: result.outOfScope,
         suppressed: result.suppressed,
+        suppressedLocations,
         hmaignore: result.hmaignore,
         localScan: {
           score: result.score,

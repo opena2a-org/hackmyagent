@@ -31,7 +31,7 @@ import {
   inferActualCapabilities,
   validateCapabilities,
 } from './skill-capability-validator';
-import { clampScoreToVerdictBand, confirmedFix, countsAgainstScore, expandSuppressed, isMeasured, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
+import { clampScoreToVerdictBand, confirmedFix, countsAgainstScore, expandSuppressed, isMeasured, locateSuppressed, retainForVerdict, summarizeSuppressed } from '../ui/verdict-band';
 import { DEEP_SCAN_NOT_RUN_FIX, DEEP_SCAN_NOT_RUN_NAME } from './settled-outcome';
 import { shellQuote, citationTarget, citationPath, citationPaths, commandNaming } from '../ui/shell-quote';
 import {
@@ -4604,6 +4604,7 @@ export class HardeningScanner {
     // let the previous target's scope narrowing be disclosed against this one.
     this.lastOutOfScope = [];
     this.lastSuppressed = [];
+    this.lastSuppressedLocations = [];
     // Presence rule, not rule-count rule: an empty or all-error file still
     // discloses itself (and its errors) on this run.
     this.lastHmaIgnore = buildHmaIgnoreDisclosure(parsed, new Map());
@@ -4668,6 +4669,9 @@ export class HardeningScanner {
     const reportable = (f: SecurityFindingDraft) => isReportableFinding(f, projectType);
     this.lastOutOfScope = summarizeSuppressed(pathExcluded.filter(reportable));
     this.lastSuppressed = summarizeSuppressed(checkSuppressed.filter(reportable));
+    // #1000 — over the same array, so the text report can keep naming the
+    // artifact a suppressed finding sits on. Never written to the result.
+    this.lastSuppressedLocations = locateSuppressed(checkSuppressed.filter(reportable));
     // Σ matched per rule ≡ the Row counts above: counted over the same arrays,
     // through the same reportable + countsAgainstScore gates the summaries use.
     const tally = tallyHmaIgnoreMatches(
@@ -4697,6 +4701,14 @@ export class HardeningScanner {
    * every score and gate the caller derives afterwards.
    */
   lastSuppressed: ReturnType<typeof summarizeSuppressed> = [];
+
+  /**
+   * Where the findings `lastSuppressed` counts sat (#1000), for the text
+   * report's `Artifacts` and `Verdict` lines only. Not a `ScanResult` field:
+   * the result is what `--json`, the publish payload and every report format
+   * spread, and the disclosure there stays identity-only.
+   */
+  lastSuppressedLocations: ReturnType<typeof locateSuppressed> = [];
 
   /**
    * The per-rule `.hmaignore` disclosure from the most recent
