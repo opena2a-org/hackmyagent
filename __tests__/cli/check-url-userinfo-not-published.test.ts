@@ -122,6 +122,8 @@ let backslashPasswordRun: Run;
 let notFoundRun: Run;
 let fetchUserinfoRun: Run;
 let forgeUserinfoRun: Run;
+let forgePasswordOnlyRun: Run;
+let forgeEmptyUserinfoRun: Run;
 let questionPasswordRun: Run;
 
 function captured(): { raw: string; requests: CapturedRequest[] } {
@@ -251,6 +253,11 @@ beforeAll(async () => {
   fetchUserinfoRun = run('fetch-userinfo', [], {}, undefined, `http://${USER}:${SECRET}@${new URL(base).host}/pkg.tgz`);
   // Userinfo and no `.git` on a forge: `check` clones it.
   forgeUserinfoRun = run('forge-userinfo', ['--json'], {}, undefined, `https://${USER}:${SECRET}@${REPO}`);
+  // The same with a password and no user name, which `fetch` refuses too, and
+  // with an `@` and neither, which `fetch` accepts: `check` clones both, and
+  // does not fetch the forge's web page.
+  forgePasswordOnlyRun = run('forge-password-only', ['--json'], {}, undefined, `https://:${SECRET}@${REPO}`);
+  forgeEmptyUserinfoRun = run('forge-empty-userinfo', ['--json'], {}, undefined, `https://@${REPO}`);
   // A password that holds a raw `?`, where git ends the authority, so git
   // reads the user name and the start of the password as a host and port.
   questionPasswordRun = run('question-password', ['--json'], { HMA_TEST_GIT_FAIL: '1' }, undefined, `https://${USER}:pa?${SECRET}@${REPO}.git`);
@@ -261,7 +268,8 @@ function allRuns(): Run[] {
   return [
     textRun, jsonRun, failedCloneRun, legacyQueueRun,
     ...fetchPathRuns.map((f) => f.run),
-    backslashPasswordRun, notFoundRun, fetchUserinfoRun, forgeUserinfoRun, questionPasswordRun,
+    backslashPasswordRun, notFoundRun, fetchUserinfoRun, forgeUserinfoRun,
+    forgePasswordOnlyRun, forgeEmptyUserinfoRun, questionPasswordRun,
   ];
 }
 
@@ -281,7 +289,7 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     // The share reached the capture server through the preload, so the
     // preload is loaded and on the path the CLI's requests take.
     expect(textRun.connections).toContain(`allowed ${new URL(base).host}`);
-    expect(allRuns()).toHaveLength(12);
+    expect(allRuns()).toHaveLength(14);
     const allowed = allRuns()
       .flatMap((r) => r.connections)
       .filter((c) => c.startsWith('allowed '));
@@ -410,6 +418,30 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     expect(doc.name).toBe(REPO);
     expect(forgeUserinfoRun.stdout + forgeUserinfoRun.stderr).not.toContain(SECRET);
     expect(forgeUserinfoRun.stdout + forgeUserinfoRun.stderr).not.toContain(USER);
+  });
+
+  it('a forge URL with a password and no user name, and no `.git`, is cloned, and reported without the password', () => {
+    const typed = `https://:${SECRET}@${REPO}`;
+    expect(forgePasswordOnlyRun.status, forgePasswordOnlyRun.stderr).toBe(0);
+    expect(forgePasswordOnlyRun.gitArgs[0]).toBe('clone');
+    expect(forgePasswordOnlyRun.gitArgs).toContain(typed);
+    const doc = jsonDocument(forgePasswordOnlyRun.stdout);
+    expect(doc.url).toBe(`https://${REPO}`);
+    expect(doc.name).toBe(REPO);
+    expect(forgePasswordOnlyRun.stdout + forgePasswordOnlyRun.stderr).not.toContain(SECRET);
+  });
+
+  it('a forge URL with an `@` and no user name or password, and no `.git`, is cloned, not fetched as a web page', () => {
+    const typed = `https://@${REPO}`;
+    expect(forgeEmptyUserinfoRun.status, forgeEmptyUserinfoRun.stderr).toBe(0);
+    expect(forgeEmptyUserinfoRun.gitArgs[0]).toBe('clone');
+    expect(forgeEmptyUserinfoRun.gitArgs).toContain(typed);
+    // A fetch would have opened a connection to the forge, which the
+    // loopback-only preload records.
+    expect(forgeEmptyUserinfoRun.connections.filter((c) => c.includes('gitlab.com'))).toEqual([]);
+    const doc = jsonDocument(forgeEmptyUserinfoRun.stdout);
+    expect(doc.url).toBe(`https://${REPO}`);
+    expect(doc.name).toBe(REPO);
   });
 
   it('a password with a raw `?` is masked in the error line and the --json target', () => {
