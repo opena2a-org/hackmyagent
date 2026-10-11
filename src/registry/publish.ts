@@ -81,7 +81,13 @@ export interface PublishScanData {
   packageName: string;
   packageVersion?: string;
   packageType?: string;
-  directory: string;
+  /**
+   * The scanned directory, whose contents `treeHash` is computed from when
+   * it is not given. Absent for a remote target (`attack <url>`), which has
+   * no directory: a tree hash of some other directory would be sent as the
+   * content hash of the target.
+   */
+  directory?: string;
   /** Hardening scan findings (from `secure` command) */
   hardeningFindings?: SecurityFinding[];
   /** Attack scan report (from `attack` command) */

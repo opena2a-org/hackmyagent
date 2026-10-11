@@ -17,8 +17,12 @@
  * while `spawnSync` blocks the event loop) answers every request with an
  * OpenAI-style reply and records it, so it is both the target and the
  * registry. The CLI runs with __tests__/helpers/loopback-only.cjs preloaded,
- * no proxy variables and a scratch HOME, from a scratch working directory
- * (`--publish` hashes the working directory).
+ * no proxy variables and a scratch HOME, from a scratch working directory.
+ *
+ * The publish payload for a URL target carries no `treeHash`. Before: it
+ * carried the tree hash of the shell's working directory, computed by the
+ * publish path from the `directory` the attack command passed it, as the
+ * content hash of the remote target.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -152,6 +156,14 @@ describe('attack sends the registry one name for a target URL', () => {
     expect(published[0].name).toBe(backslashTarget);
     expect(posts(backslashRun, '/api/v1/registry/community/request-scan-token').map((b) => b.packageName))
       .toEqual([backslashTarget]);
+  });
+
+  it('--publish on a URL target sends no treeHash (it hashed the working directory before)', () => {
+    for (const r of [backslashRun, emptyUserinfoRun]) {
+      const published = posts(r, '/api/v1/trust/publish');
+      expect(published, r.out).toHaveLength(1);
+      expect(published[0]).not.toHaveProperty('treeHash');
+    }
   });
 
   it('--registry-report and --publish send the same name, without the empty userinfo', () => {
