@@ -379,7 +379,7 @@ import {
   type ReadFailureRecord,
 } from './check/verdict';
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
-import { scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from './check/url-userinfo';
+import { isLocalGitRemote, scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from './check/url-userinfo';
 import { FIX_LINES } from './hardening/fix-lines';
 import {
   summarizeCoverage,
@@ -577,16 +577,29 @@ function resolveNanomindFlag(options: { nanomind?: boolean; analm?: boolean }): 
 
 /**
  * Validate that a registry URL uses HTTPS.
- * Allows http://localhost for local development.
- * Rejects all other non-HTTPS URLs to prevent credential leakage.
+ * Allows plain http to this machine (localhost, 127.0.0.1, [::1]) for local
+ * development, judged by the host the URL parser reads, so a remote host such
+ * as `http://localhost.example.com` or `http://localhost@example.com` is not
+ * taken for it. Rejects all other non-HTTPS URLs to prevent credential leakage.
  */
 function validateRegistryUrl(url: string): string {
-  if (url && !url.startsWith('https://') && !url.startsWith('http://localhost')) {
+  if (url && !isAllowedRegistryUrl(url)) {
     console.error('Error: Registry URL must use HTTPS. Got: ' + url);
-    console.error('Only https:// URLs and http://localhost are allowed.');
+    console.error('Only https:// URLs and http://localhost, http://127.0.0.1 and http://[::1] are allowed.');
     process.exit(1); // exit-unsettled(#350/S001): pre-work refusal; events await the schema reason field (#525)
   }
   return url;
+}
+
+function isAllowedRegistryUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === 'https:') return true;
+  return parsed.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
 }
 
 // Global CI mode flag -- set before parse() by stripping --ci from argv.
@@ -5077,9 +5090,10 @@ function resolvePackageVersionPyproject(targetDir: string): string | null {
 /**
  * Resolve the repository URL from the git remote 'origin', without the user
  * name and password (or token) a CI checkout often writes into it: the URL is
- * published to the registry.
+ * published to the registry. An origin that is a path on this machine names
+ * no repository the registry can link to, so it yields no URL either.
  */
-function resolveRepoUrl(targetDir: string): string | null {
+function resolveRepoUrl(targetDir: string): { url: string | null; localPath: boolean } {
   try {
     const { execSync } = require('child_process');
     const url = execSync('git remote get-url origin', {
@@ -5087,9 +5101,10 @@ function resolveRepoUrl(targetDir: string): string | null {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
-    return url ? withoutUrlUserinfo(url, 'git') : null;
+    if (url && isLocalGitRemote(url)) return { url: null, localPath: true };
+    if (url) return { url: withoutUrlUserinfo(url, 'git'), localPath: false };
   } catch { /* ignore */ }
-  return null;
+  return { url: null, localPath: false };
 }
 
 /**
@@ -7005,10 +7020,15 @@ Change scope (--range, --staged):
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
           const packageName = resolvePackageName(displayDir) || resolvePackageNamePyproject(displayDir);
           const packageVersion = resolvePackageVersion(displayDir) || resolvePackageVersionPyproject(displayDir);
-          const repoUrl = resolveRepoUrl(targetDir);
+          const origin = resolveRepoUrl(targetDir);
+          const repoUrl = origin.url;
 
           if (!packageName) {
             console.error('\nCould not determine package name from package.json or pyproject.toml.');
+          } else if (origin.localPath) {
+            console.error('\nThe git remote origin is a local path, not a repository URL, so the CI scan result was not sent.');
+            console.error('Check it with: git remote get-url origin');
+            console.error('Set it to the repository URL: git remote set-url origin https://<host>/<org>/<repo>.git');
           } else if (!repoUrl) {
             console.error('\nCould not determine repo URL from git remote. Ensure a git remote is configured.');
           } else {

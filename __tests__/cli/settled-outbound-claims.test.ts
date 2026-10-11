@@ -29,7 +29,7 @@ beforeAll(assertDistFreshIfPresent);
 // unread-input cells below build their own fixtures and always run.
 const CORPUS = path.join(os.homedir(), '.opena2a', 'corpus', 'repo', 'buggy', 'leaky-env-example');
 const corpusAvailable = fs.existsSync(CORPUS);
-// validateRegistryUrl allows https and http://localhost only; port 9
+// validateRegistryUrl allows https and http to this machine only; port 9
 // (discard) refuses the connection, so an ATTEMPT fails as a network error.
 const DEAD_REGISTRY = 'http://localhost:9';
 

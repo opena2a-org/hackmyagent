@@ -22,7 +22,20 @@ const AUTHORITY_ENDS: Record<UrlReader, string> = {
   fetch: '/?#\\',
 };
 
-const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+/**
+ * A scheme as git reads it: a letter or a digit, then letters, digits, `+`,
+ * `-` and `.`. git accepts the leading digit for the remote helpers named by
+ * the scheme. The same characters followed by `::` name the helper of git's
+ * `<transport>::<address>` syntax, which hands it the address after the `::`,
+ * as in `https::https://gitlab.com/org/repo.git`.
+ */
+const SCHEME_NAME = '[a-z0-9][a-z0-9+.-]*';
+
+/** `scheme://` at the start, after any `<transport>::`. Group 1 is the `scheme://` alone. */
+const SCHEME = new RegExp(`^(?:${SCHEME_NAME}::)*(${SCHEME_NAME}:\\/\\/)`, 'i');
+
+/** `scheme://` or `<transport>::` at the start, which git does not read as a path. */
+const SCHEME_OR_TRANSPORT = new RegExp(`^${SCHEME_NAME}(?::\\/\\/|::)`, 'i');
 
 /** Put in place of a userinfo the reader of the URL does not end where it ends. */
 const MASK = '***';
@@ -35,11 +48,16 @@ function firstOf(s: string, chars: string, from = 0): number {
   return s.length;
 }
 
-/** Whether `<scheme>//<hostPort>/` names a host (and port) a URL parser accepts. */
+/**
+ * Whether `<scheme>//<hostPort>/` names a host (and port) a URL parser accepts.
+ * A URL parser accepts no scheme that starts with a digit, so such a scheme is
+ * read with a letter before it, by the host rules of any scheme that is not
+ * http, https, ws, wss or ftp.
+ */
 function isHostPort(scheme: string, hostPort: string): boolean {
   if (hostPort === '') return false;
   try {
-    new URL(`${scheme}${hostPort}/`);
+    new URL(`${/^\d/.test(scheme) ? 'x' : ''}${scheme}${hostPort}/`);
     return true;
   } catch {
     return false;
@@ -48,8 +66,11 @@ function isHostPort(scheme: string, hostPort: string): boolean {
 
 /**
  * `url` with the userinfo removed: `https://<user>:<token>@gitlab.com/org/repo.git`
- * becomes `https://gitlab.com/org/repo.git`. Every other character is kept,
- * and a string that is not `scheme://...` is returned as it is.
+ * becomes `https://gitlab.com/org/repo.git`, and
+ * `https::https://<user>:<token>@gitlab.com/org/repo.git` becomes
+ * `https::https://gitlab.com/org/repo.git`. Every other character is kept,
+ * and a string that is not `scheme://...`, with or without `<transport>::`
+ * before it, is returned as it is.
  *
  * The userinfo is everything up to the last `@` inside the authority, which
  * ends at the first of `reader`'s end characters after `//`. An `@` after the
@@ -78,18 +99,19 @@ function isHostPort(scheme: string, hostPort: string): boolean {
  * `http:///<user>:<pw>@gitlab.com/pkg.tgz` is kept.
  */
 export function withoutUrlUserinfo(url: string, reader: UrlReader = 'git'): string {
-  const scheme = SCHEME.exec(url)?.[0];
-  if (scheme === undefined) return url;
-  const start = scheme.length;
+  const match = SCHEME.exec(url);
+  if (match === null) return url;
+  const [prefix, scheme] = match;
+  const start = prefix.length;
   const end = firstOf(url, AUTHORITY_ENDS[reader], start);
   const at = url.lastIndexOf('@', end - 1);
   const hostStart = at >= start ? at + 1 : start;
   const slash = firstOf(url, '/', start);
   const lastAt = url.lastIndexOf('@', slash - 1);
   if (lastAt >= end && !isHostPort(scheme, url.slice(hostStart, end))) {
-    return scheme + MASK + url.slice(lastAt);
+    return prefix + MASK + url.slice(lastAt);
   }
-  return scheme + url.slice(hostStart);
+  return prefix + url.slice(hostStart);
 }
 
 /**
@@ -97,13 +119,31 @@ export function withoutUrlUserinfo(url: string, reader: UrlReader = 'git'): stri
  * after `scheme://` is dropped, so `https://host/v1/chat?api_key=k#x` becomes
  * `https://host/v1/chat`. A query is where a key is passed to an agent
  * endpoint, and the name a run sends to the registry must not carry it. A
- * string that is not `scheme://...` is returned as it is. Apply it after
- * `withoutUrlUserinfo`, whose masking reads the `?` and `#` of a password.
+ * string that is not `scheme://...`, as `withoutUrlUserinfo` reads one, is
+ * returned as it is. Apply it after `withoutUrlUserinfo`, whose masking reads
+ * the `?` and `#` of a password.
  */
 export function withoutUrlQueryAndFragment(url: string): string {
   const scheme = SCHEME.exec(url)?.[0];
   if (scheme === undefined) return url;
   return url.slice(0, firstOf(url, '?#', scheme.length));
+}
+
+/**
+ * Whether git reads a remote as a path on this machine rather than as a
+ * repository on another host: a `file://` URL, or a string that is neither
+ * `scheme://...` nor `<transport>::...` and that has no `:`, has a `/` before
+ * its first `:`, or starts with a Windows drive such as `C:\`. So
+ * `/srv/git/org/repo.git`, `../repo` and `file:///srv/git/org/repo.git` are
+ * local, and the scp-style `git@github.com:org/repo.git` is not.
+ */
+export function isLocalGitRemote(remote: string): boolean {
+  if (/^file:\/\//i.test(remote)) return true;
+  if (SCHEME_OR_TRANSPORT.test(remote)) return false;
+  if (/^[a-z]:[\\/]/i.test(remote)) return true;
+  const colon = remote.indexOf(':');
+  const slash = remote.indexOf('/');
+  return colon === -1 || (slash !== -1 && slash < colon);
 }
 
 /**
