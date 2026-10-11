@@ -4,6 +4,10 @@
 
 This document describes two critical changes to the ARP (Agent Runtime Protection) enforcement engine that eliminate classes of bypass vulnerabilities identified in OPENA2A-IB-007.
 
+### Where the code lives
+
+The ARP runtime engine is part of the AIM agent-side SDK, published as [`@opena2a/aim-sdk`](https://github.com/opena2a-org/agent-identity-management/tree/main/sdk/typescript) and imported from `@opena2a/aim-sdk/arp`. This repository keeps a re-export of it in `src/arp/index.ts`, so `hackmyagent/arp` exposes the same engine. The source files named below are in the SDK repository, under `sdk/typescript/`.
+
 ## CR-001: Parse-to-Deny Semantics
 
 **Principle:** All parse failures produce DENY. Unparseable input is never trusted.
@@ -16,25 +20,25 @@ Similarly, the L2 (LLM) assessment parser defaulted to `recommendation: 'allow'`
 
 ### Changes
 
-**Proxy layer** (`src/arp/proxy/server.ts`):
+**Proxy layer** ([`sdk/typescript/src/arp/proxy/server.ts`](https://github.com/opena2a-org/agent-identity-management/blob/main/sdk/typescript/src/arp/proxy/server.ts)):
 - All `catch` blocks in protocol inspectors (`inspectOpenAIRequest`, `inspectOpenAIResponse`, `inspectMCPRequest`, `inspectMCPResponse`, `inspectA2AResponse`, `inspectA2ARequest`) now return `true` (threat detected) instead of `false`.
 - Each parse failure emits a `POLICY_PARSE_FAILURE` event through the event engine with category `threat` and severity `high`.
 - No raw request body is included in telemetry (privacy). Only body length and protocol type are recorded.
 
-**L2 assessment parser** (`src/arp/intelligence/coordinator.ts`):
+**L2 assessment parser** ([`sdk/typescript/src/arp/intelligence/coordinator.ts`](https://github.com/opena2a-org/agent-identity-management/blob/main/sdk/typescript/src/arp/intelligence/coordinator.ts)):
 - Default recommendation changed from `'allow'` to `'alert'`.
 - Default `consistent` changed from `true` to `false`.
 - If no `ACTION:` line is found in LLM response, recommendation remains `'alert'`.
 - Unrecognized action strings default to `'alert'`, not `'allow'`.
 
-**Command complexity analysis** (`src/arp/interceptors/process.ts`):
+**Command complexity analysis** ([`sdk/typescript/src/arp/interceptors/process.ts`](https://github.com/opena2a-org/agent-identity-management/blob/main/sdk/typescript/src/arp/interceptors/process.ts)):
 - New `analyzeCommandComplexity()` function counts shell operators (pipes, semicolons, ampersands, command substitutions) in exec'd commands.
 - Commands exceeding `MAX_SUBCOMMANDS` (10) are classified as `threat` with `critical` severity.
 - This addresses the adversarial pipeline attack vector where an attacker generates commands with 50+ subcommands to overwhelm enforcement.
 
 ### Telemetry
 
-A new GTIN event type `policy_parse_failure` has been added to the telemetry pipeline (`src/arp/telemetry/gtin.ts`). Events with `data.policyParseFailure = true` are mapped to this type and forwarded to the Registry for community threat intelligence.
+A new GTIN event type `policy_parse_failure` has been added to the telemetry pipeline ([`sdk/typescript/src/arp/telemetry/gtin.ts`](https://github.com/opena2a-org/agent-identity-management/blob/main/sdk/typescript/src/arp/telemetry/gtin.ts)). Events with `data.policyParseFailure = true` are mapped to this type and forwarded to the Registry for community threat intelligence.
 
 ### tree-sitter-bash Evaluation
 
@@ -60,7 +64,7 @@ This created multiple bypass paths:
 
 ### Changes
 
-**Event engine** (`src/arp/engine/event-engine.ts`):
+**Event engine** ([`sdk/typescript/src/arp/engine/event-engine.ts`](https://github.com/opena2a-org/agent-identity-management/blob/main/sdk/typescript/src/arp/engine/event-engine.ts)):
 - `requireLlmConfirmation` no longer defers enforcement. The matched action executes immediately.
 - Events are tagged with `_llmReviewRequested: true` for L2 follow-up assessment.
 - L2 can still UPGRADE severity after assessment (e.g., alert -> kill), but the initial action always fires.
@@ -85,7 +89,7 @@ Request arrives
 
 ## Testing
 
-Enforcement hardening tests are in `src/arp/enforcement/enforcement-hardening.test.ts`:
+Enforcement hardening tests are in the SDK repository, in [`sdk/typescript/src/arp/enforcement/enforcement-hardening.test.ts`](https://github.com/opena2a-org/agent-identity-management/blob/main/sdk/typescript/src/arp/enforcement/enforcement-hardening.test.ts):
 
 - **CR-002 tests:** Verify that `requireLlmConfirmation` rules enforce immediately, that events are tagged but not deferred, and that multiple rules (with and without LLM confirmation) all fire.
 - **CR-001 adversarial pipeline tests:** 10 fuzz-style adversarial bash pipelines with 50+ subcommands, each verified to exceed the MAX_SUBCOMMANDS threshold and produce DENY.
