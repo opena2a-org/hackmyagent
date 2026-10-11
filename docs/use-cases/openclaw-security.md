@@ -25,7 +25,7 @@ HMA detects OpenClaw from an `openclaw.json`, a `SKILL.md` or `HEARTBEAT.md`, or
 Scanning .../insecure-openclaw...
 
 Discovering assembly components...
-NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
+NanoMind: 6 artifact(s) compiled, 11 semantic finding(s) added
 
   insecure-openclaw  openclaw · 6 files analyzed
   22 critical issues found
@@ -35,16 +35,16 @@ NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
   ── Observations ────────────────────────────────────────────
   Surfaces    openclaw · 6 semantic artifacts · 4 of 6 artifacts reached 0-2 of 7 analyzer families
   Checks      317 static declared · 63 of 63 check groups ran · 6 semantic (NanoMind AST, 0-7 of 7 analyzer families) · 6 files read by static checks
-  Coverage    16 of 25 categories examined · 9 unexamined (read no file) · 5 checks reported an absent mitigation (not shown)
-  Unexamined  A2A, capabilities, governance, identity, injection, lifecycle, MCP, memory + 1 more (--verbose)
+  Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 5 checks reported an absent mitigation (not shown)
+  Unexamined  A2A, governance, identity, injection, lifecycle, MCP, memory, sandbox-escape
   Artifacts   SKILL.md  skill · malicious · no inferred capabilities  (no declared constraints)
               skills/malicious-skill/SKILL.md  skill · malicious · no inferred capabilities  (no declared constraints)
-  Categories  credentials (1 critical) · network (5 critical) · prompt (6 high) · sandbox (1 high) · supply-chain (1 critical) · skill (7 critical) · CVE (1 medium) · heartbeat (6 critical) · config (1 critical) · git hygiene (1 critical) · 6 others clear
-  Verdict     Not safe to ship. .env Not Ignored in .env + 58 more. Fix before using in production.
+  Categories  credentials (1 critical, 3 high, 2 medium) · network (5 critical) · prompt (6 high) · sandbox (1 high) · capabilities (1 high) · supply-chain (1 critical, 6 medium) · skill (7 critical, 1 high, 11 medium) · CVE (1 medium) · heartbeat (6 critical, 2 high, 1 medium) · config (1 critical, 2 high) · git hygiene (1 critical, 1 low) · 6 others clear
+  Verdict     Not safe to ship. .env Not Ignored in .env + 59 more. Fix before using in production.
 
 
   ── Findings ────────────────────────────────────────────────
-  22 critical  15 high  21 medium  1 low
+  22 critical  16 high  21 medium  1 low
 
   │ skill                      7 crit, 1 high, 13 med  SKILL.md, skills
   │ heartbeat                  6 crit, 2 high, 1 med  HEARTBEAT.md
@@ -54,7 +54,7 @@ NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
   │ config                     1 crit, 2 high  openclaw.json
   │ Credential Protection      3 high  .env
   │ git                        1 crit, 1 low  .gitignore, .env
-  │ + 2 more categories
+  │ + 3 more categories
 
   ── Top Issues ──────────────────────────────────────────────
 
@@ -75,7 +75,7 @@ NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
   │ Verify: sed -n '15p' .../insecure-openclaw/skills/malicious-skill/SKILL.md
   │ Fix: Remove the curl|sh or wget|sh pattern from this file
 
-  Path forward: 0 -> 100 by fixing 22 critical + 15 high
+  Path forward: 0 -> 100 by fixing 22 critical + 16 high
 
   ── Next Steps ─────────────────────────────────────────────────
   Auto-fix governance:  hackmyagent harden-soul .
@@ -138,7 +138,7 @@ npx hackmyagent secure --fix --dry-run
 Scanning .../insecure-openclaw (dry-run)...
 
 Discovering assembly components...
-NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
+NanoMind: 6 artifact(s) compiled, 11 semantic finding(s) added
 
   insecure-openclaw  openclaw · 6 files analyzed
   22 critical issues found
@@ -147,7 +147,7 @@ NanoMind: 6 artifact(s) compiled, 8 semantic finding(s) added
 
   ...
 
-  Dry run complete: 12 issues auto-fixable. Run without --dry-run to apply.
+  Dry run complete: 8 issues auto-fixable. Run without --dry-run to apply.
   No changes were made.
 
   Scanned with hackmyagent v0.33.2
