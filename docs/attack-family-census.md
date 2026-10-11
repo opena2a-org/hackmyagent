@@ -1,6 +1,7 @@
 # Attack family census
 
-Measured 2026-10-10.
+The threat matrix and the Registry were measured 2026-10-10. The HackMyAgent
+taxonomy is read in the same commit as this file.
 
 HackMyAgent tags every check with an attack **family**, such as `MCP-EXPLOIT`
 or `SOUL-INJECT`. A family names the surface a check inspects. It is not an
@@ -15,7 +16,7 @@ disagree.
 
 | Register | What was read | Commit measured | Family codes |
 |---|---|---|---|
-| HackMyAgent taxonomy | `TAXONOMY_MAP` in `src/hardening/taxonomy.ts`, 362 check ids | hackmyagent `078c7617` | 75 |
+| HackMyAgent taxonomy | `TAXONOMY_MAP` in `src/hardening/taxonomy.ts`, 362 check ids | this file's commit | 72 |
 | Agent threat matrix | `attackClasses[].id` in `matrix.json`, 61 techniques | agent-threat-matrix `5ab8e70` | 40 |
 | OpenA2A Registry | every identifier seeded into the `attack_classes` table | opena2a-registry `9da08495` | 42 |
 
@@ -62,8 +63,8 @@ family, and both keys are empty strings.
 
 ## Census
 
-- **taxonomy.ts check ids**: the `TAXONOMY_MAP` keys that map to the code at
-  the measured commit. `PREFIX-001..004` is a run of consecutive ids.
+- **taxonomy.ts check ids**: the `TAXONOMY_MAP` keys that map to the code in
+  this file's commit. `PREFIX-001..004` is a run of consecutive ids.
 - **Matrix techniques**: the family's own `techniques` list. `absent` means
   the matrix has no family with that id.
 - **Registry**: `seeded` when a migration or the taxonomy seed script inserts
@@ -143,11 +144,11 @@ family, and both keys are empty strings.
 | `SOUL-ESCAPE-CLAUSE` | `policy_violation` | SOUL-ESCAPE-CLAUSE | absent | absent | keep; add to matrix and Registry |
 | `SOUL-FORK` | `policy_violation` | CONFIG-006, SOUL-AS-001, SOUL-AS-002, SOUL-HT-001, SOUL-HT-002 | T-5002 | seeded | keep |
 | `SOUL-GAP` | `policy_violation` | AST-GOV-001, AST-GOV-005 | absent | absent | keep; add to matrix and Registry |
-| `SOUL-HV` | `policy_violation` | absent | T-2001, T-2003 | absent | keep; takes SOUL-HV-001..004; Registry rows SOUL-HV-001..004 merge into it |
-| `SOUL-HV-001` | `policy_violation` | SOUL-HV-001 | absent | seeded | merge into SOUL-HV |
-| `SOUL-HV-002` | `policy_violation` | SOUL-HV-002 | absent | seeded | merge into SOUL-HV |
-| `SOUL-HV-003` | `policy_violation` | SOUL-HV-003 | absent | seeded | merge into SOUL-HV |
-| `SOUL-HV-004` | `policy_violation` | SOUL-HV-004 | absent | seeded | merge into SOUL-HV |
+| `SOUL-HV` | `policy_violation` | SOUL-HV-001..004 | T-2001, T-2003 | absent | keep; Registry rows SOUL-HV-001..004 merge into it |
+| `SOUL-HV-001` | `policy_violation` | absent | absent | seeded | merge into SOUL-HV |
+| `SOUL-HV-002` | `policy_violation` | absent | absent | seeded | merge into SOUL-HV |
+| `SOUL-HV-003` | `policy_violation` | absent | absent | seeded | merge into SOUL-HV |
+| `SOUL-HV-004` | `policy_violation` | absent | absent | seeded | merge into SOUL-HV |
 | `SOUL-IMPERSONATE` | `policy_violation` | SOUL-TH-005 | T-4002 | seeded | keep |
 | `SOUL-MISSING` | `policy_violation` | AST-GOV-003 | absent | absent | keep; add to matrix and Registry |
 | `SOUL-UNVERIFIABLE-CLAIM` | `policy_violation` | SOUL-UNVERIFIABLE-CLAIM | absent | absent | keep; add to matrix and Registry |
@@ -194,7 +195,8 @@ No family is dropped. A family missing from a register is added to it.
   check ids and an empty technique list until a technique is observed.
 - In the taxonomy and the matrix, not the Registry, 4 to add to the Registry:
   `ASSEMBLY-INJECT`, `FAKETOOL-INJECT`, `PARSER-DIFFERENTIAL`,
-  `PERSIST-STATE`.
+  `PERSIST-STATE`. `SOUL-HV` is in the taxonomy and the matrix too, and
+  reaches the Registry through the merge above.
 - In the taxonomy and the Registry, not the matrix, 2 to add to the matrix:
   `CRED-EXFIL`, `PRIV-ESCALATION`.
 - In the Registry only: `PRIV-DRIFT`. It stays, and goes into the matrix with
@@ -241,10 +243,12 @@ families while its field names one.
 ## Keeping this file current
 
 `__tests__/hardening/attack-family-census.test.ts` reads this file and fails
-when a family in `TAXONOMY_MAP` or `FAMILY_CLASS` has no row, when a row's
-class differs from what `getCanonicalClass` returns, when a fold row disagrees
-with `FAMILY_FOLDS`, when a listed check id maps to a different family, or
-when a family string set inline under `src/` is neither a row here nor listed
-in the inline table with the files that set it. The Matrix techniques and
-Registry columns are measurements at the commits named at the top; measure
-them again when either register moves.
+when the taxonomy's check id or family code count at the top differs from
+`TAXONOMY_MAP`, when a family in `TAXONOMY_MAP` or `FAMILY_CLASS` has no row,
+when a row's class differs from what `getCanonicalClass` returns, when a fold
+row disagrees with `FAMILY_FOLDS`, when a row's check ids are not exactly the
+`TAXONOMY_MAP` keys that map to its code, or when a family string set inline
+under `src/` is neither a row here nor listed in the inline table with the
+files that set it. The Matrix techniques and Registry columns are
+measurements at the commits named at the top; measure them again when either
+register moves.
