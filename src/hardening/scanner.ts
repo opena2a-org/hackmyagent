@@ -3487,6 +3487,33 @@ function removeFileFix(relativePath: string, why: string): string {
 }
 
 /**
+ * `xxd <file> | <filter>` for the steganography checks, or prose when the file
+ * name cannot be put into a command truthfully (#999).
+ *
+ * The name of a file that hides invisible code points may hide them too. The
+ * renderer escapes the `Fix:` line for display, so `xxd` + `shellEscape` over
+ * `benign<U+E0041>evil.js` printed `xxd 'benign\u{e0041}evil.js'`, which names
+ * a file that does not exist.
+ */
+function stegoHexDumpFix(relativePath: string, filter: string): string {
+  return commandNaming(relativePath, (q) => `xxd ${q} | ${filter}`)
+    ?? 'Inspect the file named in this finding with a hex editor. Its name contains characters that cannot be shown truthfully in a shell command, so no runnable citation is offered.';
+}
+
+/**
+ * The `node -e` body UNICODE-STEGO-003 cites: every code point above U+0200 in
+ * the file named by its first argument, in hex.
+ *
+ * The path is an argument rather than part of the script (#999). Spliced in
+ * with `JSON.stringify` inside a double-quoted `-e`, its quotes closed the
+ * shell's, and pasting the command for `hidden.js` failed with
+ * `ReferenceError: hidden is not defined`.
+ */
+const STEGO_CODEPOINT_LISTER =
+  'const s=require("fs").readFileSync(process.argv[1],"utf8");'
+  + ' console.log([...s].filter(c=>c.codePointAt(0)>0x200).map(c=>c.codePointAt(0).toString(16)))';
+
+/**
  * Detect whether a SKILL.md content has any of the malice signals listed in
  * issue #135. A skill that's just missing hygiene metadata (no version, no
  * publisher, no installed_hash) is a hygiene gap — MEDIUM. The same gap on
@@ -17081,7 +17108,7 @@ dist/
           file: relativePath,
           line: firstLine,
           fixable: false,
-          fix: 'xxd ' + shellEscape(relativePath) + ' | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"',
+          fix: stegoHexDumpFix(relativePath, 'grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"'),
           // #959 — the text channel renders `guidance`, not `message`, so the
           // detected types are named here too or the default output never says
           // which invisible characters were found.
@@ -17405,7 +17432,8 @@ dist/
             file: relativePath,
             line: evalLine,
             fixable: false,
-            fix: 'node -e "const fs=require(\'fs\'); const s=fs.readFileSync(' + JSON.stringify(relativePath) + ',\'utf8\'); console.log([...s].filter(c=>c.codePointAt(0)>0x200).map(c=>c.codePointAt(0).toString(16)))"',
+            fix: commandNaming(relativePath, (q) => `node -e ${shellEscape(STEGO_CODEPOINT_LISTER)} ${q}`)
+              ?? 'List the code points above U+0200 in the file named in this finding with a hex editor. Its name contains characters that cannot be shown truthfully in a shell command, so no runnable citation is offered.',
             guidance: 'eval() or Function() called with mostly invisible characters is a strong indicator of a GlassWorm payload. The string contains hidden Unicode characters encoding malicious code. Remove the eval/Function call and audit the file.',
           });
           break; // One finding per file
@@ -17447,7 +17475,7 @@ dist/
         if (!already001) {
           findings.push({
             checkId: 'UNICODE-STEGO-004',
-            name: 'Unicode Tag Character Block Detected',
+            name: 'Invisible Plane-14 Characters Detected',
             description: 'Source file contains Unicode Tags block, Variation Selectors Supplement or unassigned plane-14 characters (U+E0000-U+E01FF), which have no visible rendering and can be used to hide data',
             category: 'unicode-stego',
             severity: 'high',
@@ -17456,7 +17484,7 @@ dist/
             file: relativePath,
             line: tagBlockLine,
             fixable: false,
-            fix: 'xxd ' + shellEscape(relativePath) + ' | grep "f3a0"',
+            fix: stegoHexDumpFix(relativePath, 'grep "f3a0"'),
             guidance: 'Unicode Tags block, Variation Selectors Supplement and unassigned plane-14 characters (U+E0000-U+E01FF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all of these characters.',
           });
         }

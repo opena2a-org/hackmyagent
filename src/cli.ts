@@ -463,7 +463,7 @@ import { guidanceAfterDemotion } from './ui/demoted-guidance';
 import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand, rebaseOwnFileCitation } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
-import { initWithAutomationOptOut } from './telemetry/automation';
+import { automationOffReason, automationOptOut, initWithAutomationOptOut } from './telemetry/automation';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { runDeepSimulation, deepSimulationFailure, type DeepSimulationReport } from './simulation/deep-run';
 import { collapsedLocation } from './ui/collapse-label';
@@ -15833,9 +15833,13 @@ async function checkNpmPackage(
   // (sandboxed envs) so this never blocks startup.
   //
   // Under a CI or test-runner marker the session starts with telemetry off
-  // unless OPENA2A_TELEMETRY turns it on (#963): each such run starts from a
-  // fresh home and would register as a new install.
+  // unless OPENA2A_TELEMETRY turns it on (#963): an automated run is not
+  // usage, and each one would otherwise send an event.
   const tele = await import('@opena2a/telemetry');
+  // The state the user's own settings give, read before the marker turns the
+  // session off, so `--version` and `telemetry` can say which one is the
+  // reason (#999).
+  const telemetryEnabledOtherwise = tele.status().enabled;
   await initWithAutomationOptOut(() => tele.init({ tool: TELEMETRY_TOOL, version: VERSION }));
 
   try {
@@ -15918,9 +15922,13 @@ async function checkNpmPackage(
   // telemetry disclosure goes to stderr — `hackmyagent --version` stays a
   // clean, single, parseable line while the privacy disclosure still prints.
   const vparts = versionLineParts({ tool: 'hackmyagent', version: VERSION, telemetry: tele.status() });
+  const automationOff = automationOffReason(process.env, telemetryEnabledOtherwise);
+  const versionDisclosure = automationOff
+    ? `${colors.dim}Telemetry: off (${automationOff}  •  details: ${tele.status().policyURL.replace(/^https?:\/\//, '')})${RESET()}`
+    : vparts.stderr;
   const printVersionAndExit = (): never => {
     process.stdout.write(vparts.stdout + '\n');
-    if (vparts.stderr) process.stderr.write(vparts.stderr + '\n');
+    if (versionDisclosure) process.stderr.write(versionDisclosure + '\n');
     process.exit(0); // exit-no-event(pre-action/L002): runs before any command action arms telemetry
   };
   program.option('-v, --version', 'Output the version number');
@@ -16048,11 +16056,19 @@ async function checkNpmPackage(
     .command('telemetry [action]')
     .description('Inspect or toggle usage telemetry: on | off | status')
     .action((action: TelemetryAction | undefined) => {
-      console.log(runTelemetryCommand(action, {
+      // #999 — under a CI or test-runner marker `telemetry on` stores the
+      // choice, but this run and the next one under the marker still send
+      // nothing. The state printed is the one the run has, and the line after
+      // it says why, so `on` and the `status` after it agree.
+      const offForRun = automationOptOut(process.env) !== undefined;
+      const out = runTelemetryCommand(action, {
         tool: 'hackmyagent',
-        getStatus: tele.status,
+        getStatus: () => (offForRun ? { ...tele.status(), enabled: false } : tele.status()),
         setOptOut: tele.setOptOut,
-      }));
+      });
+      const storedOn = action === 'on' || ((action === undefined || action === 'status') && telemetryEnabledOtherwise);
+      const reason = storedOn ? automationOffReason(process.env, true) : undefined;
+      console.log(reason ? `${out}\n  why off:     ${reason}` : out);
     });
 
   if (process.argv.length <= 2) {

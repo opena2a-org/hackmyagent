@@ -75,20 +75,28 @@
  * U+E0080-U+E00FF and U+E01F0-U+E01FF. They render as nothing as well, so
  * `benign<U+E01F0>evil.js` printed as `benignevil.js`; the whole of
  * U+E0000-U+E00FF and U+E01F0-U+E01FF is named explicitly, so every code
- * point the two checks report is escaped after a plain letter; the exemption
- * below leaves U+E0100-U+E01EF unescaped after a pictograph. Unassigned
- * plane-14 code points above U+E01FF, which the checks do not report, are
- * not covered.
+ * point the two checks report is escaped.
  *
- * One deliberate exemption: a variation selector that FOLLOWS a pictograph is
- * emoji presentation, not concealment — the character it modifies is visible and
- * is what the reader sees. Escaping those would turn every `❤️` in a filename
- * into `❤️` for no gain. A variation selector after anything else has
- * nothing visible to modify, and is escaped.
+ * #999 — and the rest of plane 14 is named too. U+E0200-U+EFFFF is unassigned
+ * (`\p{Cn}`) and renders as nothing in the same way, so `a<U+E0200>b` printed
+ * as `ab`. The display escaper does not wait for a check to report a code
+ * point before showing it: the whole plane is invisible, so the whole plane is
+ * escaped.
+ *
+ * One deliberate exemption: U+FE0E or U+FE0F FOLLOWING a pictograph is text or
+ * emoji presentation, not concealment — the character it modifies is visible
+ * and is what the reader sees. Escaping those would turn every `❤️` in a
+ * filename into `❤️` for no gain. Those two are the only selectors that
+ * choose a pictograph's presentation (#999): the exemption used to cover every
+ * variation selector, so `❤` + U+E0100 + `evil.js`, a path UNICODE-STEGO-001
+ * reports, printed with the selector raw, and `🚀` + U+FE01 printed the first
+ * selector of a hidden run raw. Every other variation selector is escaped
+ * wherever it appears, and U+FE0E or U+FE0F after anything else has nothing
+ * visible to modify and is escaped as well.
  */
 const DISPLAY_HAZARD = new RegExp(
-  '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\u{115F}\\u{1160}\\u{3164}\\u{FFA0}\\u{E0000}-\\u{E00FF}\\u{E01F0}-\\u{E01FF}]'
-  + '|(?<!\\p{Extended_Pictographic})[\\u{FE00}-\\u{FE0F}\\u{E0100}-\\u{E01EF}]',
+  '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\u{115F}\\u{1160}\\u{3164}\\u{FFA0}\\u{FE00}-\\u{FE0D}\\u{E0000}-\\u{EFFFF}]'
+  + '|(?<!\\p{Extended_Pictographic})[\\u{FE0E}\\u{FE0F}]',
   'gu',
 );
 

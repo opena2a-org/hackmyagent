@@ -91,6 +91,61 @@ describe('check-docs-prose: dashes in prose', () => {
     expect(linesOf(`<!-- note --> then ${EM} prose`)).toEqual([1]);
     expect(linesOf('An odd ` backtick -- here.')).toEqual([1]);
   });
+
+  // #999 — a four-space indented code block was read as prose.
+  it('leaves an indented code block alone, and reads the prose around it', () => {
+    const doc = [
+      'Run this:',
+      '',
+      '    cmd -- arg',
+      `    echo "${EM}"`,
+      '',
+      '    more -- code after a blank line in the block',
+      'Back to prose -- here.',
+      '',
+      '# Heading',
+      '    code -- right after a heading',
+      '',
+      '\tcode -- indented with a tab',
+      '',
+      'A paragraph',
+      '    continued -- four columns in, still the paragraph.',
+    ].join('\n');
+    expect(linesOf(doc)).toEqual([7, 15]);
+  });
+
+  it('reads a list item\'s indented paragraph as prose and its deeper indent as code', () => {
+    const doc = [
+      '- Item',
+      '',
+      '    A paragraph of the item -- four columns in.',
+      '',
+      '      code in the item -- six columns in',
+      '',
+      '1. Numbered',
+      '',
+      '   Its paragraph -- three columns in.',
+      '',
+      '       code -- seven columns in',
+      '',
+      'After the list',
+      '',
+      '    code -- the list is closed',
+    ].join('\n');
+    expect(linesOf(doc)).toEqual([3, 9]);
+  });
+
+  // #999 — the delimiter-row expression backtracked quadratically: 2.8 s at
+  // 80,000 spaces after a hyphen, 45.6 s at 320,000.
+  it('reads a hyphen followed by a long run of spaces in linear time', () => {
+    const line = `-${' '.repeat(80_000)}x`;
+    const t0 = performance.now();
+    checkText(line);
+    const ms = performance.now() - t0;
+    expect(ms, `${ms.toFixed(0)} ms for one 80,001-character line`).toBeLessThan(500);
+    // The delimiter rows it recognised are still markup.
+    expect(checkText(['| a | b |', '|-|:-:|', '-|', '| --- |'].join('\n'))).toEqual([]);
+  });
 });
 
 describe('check-docs-prose: "Why this exists" sections', () => {
@@ -171,5 +226,15 @@ describe('check-docs-prose: command line', () => {
     expect(run.status).toBe(1);
     expect(run.stderr).toMatch(/page\.md:3: em dash/);
     expect(run.stderr).toMatch(/page\.md:5: heading or section named "Why this exists\/matters"/);
+  });
+
+  // #999 — a named file that does not exist was counted and passed.
+  it('exits 2 and names a file that does not exist', () => {
+    const dir = tempDir('hma-docs-prose-');
+    const missing = path.join(dir, 'no-such-file.md');
+    const run = spawnSync(process.execPath, [SCRIPT, missing], { cwd: REPO_ROOT, encoding: 'utf8' });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain(`${missing}: no such file`);
+    expect(run.stdout).toBe('');
   });
 });
