@@ -1,6 +1,8 @@
 /**
  * `secure --ci-publish` sends the `origin` remote URL to the registry as
- * `repoUrl`, without the user name and password (or token) in it.
+ * `repoUrl`. A URL that starts with `scheme://` is sent without the user name
+ * and password (or token) in it; a remote in another form, such as the
+ * scp-style `git@github.com:org/repo.git`, is sent as it is.
  *
  * A CI checkout often writes its job token into the remote, as in
  * `https://gitlab-ci-token:<token>@gitlab.com/org/repo.git`. Before this,
