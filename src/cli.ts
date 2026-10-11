@@ -510,12 +510,34 @@ const CATEGORY_COUNT = CHECK_COUNTS.totalCategories;
 // How long registry-cached scan data is considered fresh before `check` re-scans.
 const STALE_SCAN_DAYS = 3;
 
+// Set once a write to stdout has failed with EPIPE. Later writes through
+// `writeLargeStdout` are dropped, and a later `console.log` (the version
+// footer on exit, a status line after the report) fails asynchronously on the
+// same closed pipe, so its EPIPE is absorbed too instead of surfacing as an
+// unhandled 'error' event. Any other stdout error is rethrown as before.
+let stdoutReaderClosed = false;
+
+function markStdoutReaderClosed(): void {
+  if (stdoutReaderClosed) return;
+  stdoutReaderClosed = true;
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') return;
+    throw err;
+  });
+}
+
 // Write a string to stdout synchronously with retry for pipe backpressure.
 // process.stdout.write() is async and gets truncated when process.exit()
 // runs before the stream flushes. fs.writeFileSync(1, ...) can fail with
 // EAGAIN on non-blocking pipes when the buffer (64KB on macOS) fills up.
 // This function writes in chunks with retry to handle both cases.
+//
+// EPIPE means the reader closed its end (`hackmyagent check-metadata --json |
+// head -5`): nobody is left to read the rest, so the write stops there and the
+// command ends with the exit code it settles on, not with a stack trace and
+// exit 1 (#961).
 function writeLargeStdout(text: string): void {
+  if (stdoutReaderClosed) return;
   const fs = require('fs');
   const buf = Buffer.from(text);
   let offset = 0;
@@ -524,9 +546,14 @@ function writeLargeStdout(text: string): void {
       const written = fs.writeSync(1, buf, offset, buf.length - offset);
       offset += written;
     } catch (e: unknown) {
-      if (e && typeof e === 'object' && 'code' in e && (e as {code: string}).code === 'EAGAIN') {
+      const code = e && typeof e === 'object' && 'code' in e ? (e as {code: string}).code : undefined;
+      if (code === 'EAGAIN') {
         // Pipe buffer full -- spin-wait briefly then retry
         continue;
+      }
+      if (code === 'EPIPE') {
+        markStdoutReaderClosed();
+        return;
       }
       throw e;
     }
