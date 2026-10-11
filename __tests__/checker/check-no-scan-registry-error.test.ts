@@ -186,7 +186,11 @@ describe('check <npm-name> --no-scan --json against a local fake Registry', () =
           HOME: process.env.HOME ?? '',
           TMPDIR: process.env.TMPDIR ?? '',
           REGISTRY_URL: `http://localhost:${port}`,
-          HMA_TELEMETRY: '0',
+          // This object replaces the worker's environment, so the CLI sees
+          // no test-runner marker: usage telemetry is turned off here, and
+          // its endpoint pinned to a discard port, so no run posts an event.
+          OPENA2A_TELEMETRY: 'off',
+          OPENA2A_TELEMETRY_URL: 'http://127.0.0.1:9',
           NO_COLOR: '1',
           NO_PROXY: 'localhost,127.0.0.1,::1',
         },
