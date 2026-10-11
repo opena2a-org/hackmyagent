@@ -95,6 +95,31 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego001[0].message).toContain('tag characters');
     });
 
+    it('names a range that contains the tag character it found at U+E01F0-E01FF', async () => {
+      // The byte check matches F3 A0 84-87 with any fourth byte, so it reports
+      // U+E0100 through U+E01FF; the message range has to reach U+E01FF.
+      for (const [name, bytes, codepoint] of [
+        ['tag-e01f0.mjs', [0xF3, 0xA0, 0x87, 0xB0], 0xE01F0],
+        ['tag-e01ff.mjs', [0xF3, 0xA0, 0x87, 0xBF], 0xE01FF],
+      ] as const) {
+        await fs.writeFile(
+          path.join(tempDir, name),
+          Buffer.concat([Buffer.from('const x = "a'), Buffer.from(bytes), Buffer.from('b";\n')])
+        );
+
+        const findings = await scanForUnicodeStego();
+        const stego001 = findings.filter(
+          (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === name
+        );
+
+        expect(stego001.length).toBe(1);
+        const range = /tag characters \(U\+([0-9A-F]+)-([0-9A-F]+)\)/.exec(stego001[0].message);
+        expect(range).not.toBeNull();
+        expect(parseInt(range![1], 16)).toBeLessThanOrEqual(codepoint);
+        expect(parseInt(range![2], 16)).toBeGreaterThanOrEqual(codepoint);
+      }
+    });
+
     it('does not flag clean source files', async () => {
       await fs.writeFile(
         path.join(tempDir, 'clean.js'),
@@ -1467,6 +1492,25 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego004.length).toBe(1);
       expect(stego004[0].severity).toBe('high');
       expect(stego004[0].passed).toBe(false);
+    });
+
+    it('names the U+E0000-U+E01FF range its byte check covers', async () => {
+      // The byte check matches F3 A0 80-87 with any fourth byte: U+E0000 through U+E01FF.
+      const content = Buffer.concat([
+        Buffer.from('const z = "test'),
+        Buffer.from([0xF3, 0xA0, 0x80, 0x81]), // U+E0001
+        Buffer.from('";\n'),
+      ]);
+      await fs.writeFile(path.join(tempDir, 'tag-range.js'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego004 = findings.filter(
+        (f) => f.checkId === 'UNICODE-STEGO-004' && f.file === 'tag-range.js'
+      );
+
+      expect(stego004.length).toBe(1);
+      expect(stego004[0].description).toContain('(U+E0000-U+E01FF)');
+      expect(stego004[0].guidance).toContain('(U+E0000-U+E01FF)');
     });
 
     it('does not duplicate when 001 already flagged tag characters', async () => {

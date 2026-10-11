@@ -16902,7 +16902,7 @@ dist/
       // UNICODE-STEGO-001: Invisible Codepoint Detection
       // Scan for:
       //   - Variation selectors U+FE00-FE0F (UTF-8: EF B8 80-8F)
-      //   - Tag characters U+E0100-E01EF (UTF-8: F3 A0 84 80 - F3 A0 87 AF)
+      //   - Tag characters U+E0100-E01FF (UTF-8: F3 A0 84 80 - F3 A0 87 BF)
       //   - Zero-width chars: U+200B (E2 80 8B), U+200C (E2 80 8C), U+200D (E2 80 8D)
       //   - Mid-file BOM: U+FEFF (EF BB BF) -- skip offset 0
       //   - Bidi overrides: U+202A-202E (E2 80 AA-AE), U+2066-2069 (E2 81 A6-A9)
@@ -16974,7 +16974,7 @@ dist/
             variationSelectorLine = currentLine;
           }
         }
-        // Tag characters in U+E0100-E01EF: F3 A0 84 80 through F3 A0 87 AF
+        // Tag characters in U+E0100-E01FF: F3 A0 84 80 through F3 A0 87 BF
         if (
           rawBuffer[i] === 0xF3 &&
           i + 2 < rawBuffer.length &&
@@ -17050,7 +17050,7 @@ dist/
       if (hasAnyInvisible) {
         const detectedTypes: string[] = [];
         if (hasVariationSelectors) detectedTypes.push('variation selectors (U+FE00-FE0F)');
-        if (hasTagCharsIn001) detectedTypes.push('tag characters (U+E0100-E01EF)');
+        if (hasTagCharsIn001) detectedTypes.push('tag characters (U+E0100-E01FF)');
         if (hasZeroWidth) detectedTypes.push('zero-width characters (U+200B-200D)');
         if (hasMidFileBom) detectedTypes.push('mid-file BOM (U+FEFF)');
         if (hasBidiOverride) detectedTypes.push('bidi overrides (U+202A-202E, U+2066-2069)');
@@ -17406,8 +17406,8 @@ dist/
       }
 
       // UNICODE-STEGO-004: Tag Character Block Presence
-      // Scan for any U+E0000-U+E01EF characters (broader than 001, covers entire tag block)
-      // UTF-8 encoding: F3 A0 80 80 through F3 A0 87 AF
+      // Scan for any U+E0000-U+E01FF characters (broader than 001, covers entire tag block)
+      // UTF-8 encoding: F3 A0 80 80 through F3 A0 87 BF
       let hasTagBlock = false;
       let tagBlockLine = 1;
       currentLine = 1;
@@ -17432,7 +17432,7 @@ dist/
 
       if (hasTagBlock) {
         // Only add UNICODE-STEGO-004 if we did not already flag tag chars in 001
-        // (004 is broader - covers U+E0000-U+E01EF, 001 only covers U+E0100-E01EF)
+        // (004 is broader - covers U+E0000-U+E01FF, 001 only covers U+E0100-E01FF)
         const already001 = findings.some(
           (f) => f.checkId === 'UNICODE-STEGO-001' && f.file === relativePath
         );
@@ -17440,7 +17440,7 @@ dist/
           findings.push({
             checkId: 'UNICODE-STEGO-004',
             name: 'Unicode Tag Character Block Detected',
-            description: 'Source file contains characters from the Unicode Tag block (U+E0000-U+E01EF) which have no visible rendering and can be used to hide data',
+            description: 'Source file contains characters from the Unicode Tag block (U+E0000-U+E01FF) which have no visible rendering and can be used to hide data',
             category: 'unicode-stego',
             severity: 'high',
             passed: false,
@@ -17449,7 +17449,7 @@ dist/
             line: tagBlockLine,
             fixable: false,
             fix: 'xxd ' + shellEscape(relativePath) + ' | grep "f3a0"',
-            guidance: 'Unicode Tag block characters (U+E0000-U+E01EF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all tag block characters found.',
+            guidance: 'Unicode Tag block characters (U+E0000-U+E01FF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all tag block characters found.',
           });
         }
       }
