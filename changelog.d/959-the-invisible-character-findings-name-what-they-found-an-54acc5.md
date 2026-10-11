@@ -14,7 +14,8 @@ issue: 959
   Selectors Supplement (U+E0100-E01EF) and the unassigned code points beside
   them. Which files the checks report is unchanged.
 - A path or other scanned text containing an unassigned code point in
-  U+E0080-E00FF or U+E01F0-E01FF reached the terminal unescaped, so
-  `benign` + U+E01F0 + `evil.js` printed as `benignevil.js`. These code points
-  are now shown as `\u{e01f0}`, as the Tags block and the variation selectors
-  already were.
+  U+E0000-E01FF (U+E0000, U+E0002-E001F, U+E0080-E00FF or U+E01F0-E01FF)
+  reached the terminal unescaped, so `benign` + U+E01F0 + `evil.js` printed
+  as `benignevil.js`. These code points are now shown as `\u{e01f0}`, as the
+  assigned tag characters and the variation selectors already were, so every
+  code point in the range the two checks report prints escaped.

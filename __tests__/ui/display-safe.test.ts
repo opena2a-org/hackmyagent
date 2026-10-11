@@ -152,13 +152,15 @@ describe('escapeForDisplay', () => {
   });
 
   /**
-   * #959 — the unassigned plane-14 runs U+E0080-U+E00FF and U+E01F0-U+E01FF are
-   * `\p{Cn}`, so neither `\p{Cf}` nor the variation-selector class matched them,
-   * while the steganography checks report them. Measured before the fix:
-   * `benign` + U+E01F0 + `evil.js` came back unchanged.
+   * #959 — the unassigned plane-14 runs U+E0000, U+E0002-U+E001F,
+   * U+E0080-U+E00FF and U+E01F0-U+E01FF are `\p{Cn}`, so neither `\p{Cf}` nor
+   * the variation-selector class matched them, while the steganography checks
+   * report them. Measured before the fix: `benign` + U+E01F0 + `evil.js` came
+   * back unchanged; the first fix named only the last two runs, and
+   * U+E0000 and U+E0002 still came back unchanged.
    */
   it('escapes the unassigned plane-14 code points the steganography checks report', () => {
-    const covered = [0xe0080, 0xe00ff, 0xe01f0, 0xe01ff];
+    const covered = [0xe0000, 0xe0002, 0xe001f, 0xe0080, 0xe00ff, 0xe01f0, 0xe01ff];
     const pictograph = String.fromCodePoint(0x2764);
 
     for (const code of covered) {
@@ -173,5 +175,14 @@ describe('escapeForDisplay', () => {
     // the last supplementary variation selector.
     expect(escapeForDisplay(String.fromCodePoint(0xe007f))).toBe('\\u{e007f}');
     expect(escapeForDisplay(`a${String.fromCodePoint(0xe01ef)}`)).toBe('a\\u{e01ef}');
+  });
+
+  it('escapes every code point in U+E0000-U+E01FF after a plain letter (the range the checks report)', () => {
+    const unescaped: string[] = [];
+    for (let code = 0xe0000; code <= 0xe01ff; code++) {
+      const out = escapeForDisplay(`a${String.fromCodePoint(code)}b`);
+      if (out !== `a\\u{${code.toString(16)}}b`) unescaped.push(`U+${code.toString(16).toUpperCase()}`);
+    }
+    expect(unescaped).toEqual([]);
   });
 });
