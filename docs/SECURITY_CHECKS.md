@@ -377,13 +377,13 @@ Rows without "governance" are findings outside the governance categories; rows w
 ## Additional Categories
 
 ### GIT-001: Missing .gitignore
-- **Severity:** Medium
+- **Severity:** Low. High when a private key file, `secrets.json` or `credentials.json` is present in the project, or when the project tree is too large or deep to scan in full
 - **Fixable:** Yes
 - **Description:** No .gitignore file to prevent accidental commits of sensitive files
 - **Remediation:** Run `npx hackmyagent secure --fix` to create a .gitignore with standard security patterns. Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.
 
 ### GIT-002: Incomplete .gitignore
-- **Severity:** High
+- **Severity:** Low. High when a private key file, `secrets.json` or `credentials.json` is present and git would commit it, or when a pattern other than `.env` is missing and the project tree is too large or deep to scan in full
 - **Fixable:** Yes
 - **Description:** Critical patterns (.env, secrets.json, *.pem, *.key) are missing from .gitignore, allowing sensitive files to be accidentally committed
 - **Remediation:** Run `npx hackmyagent secure --fix` to add missing patterns to .gitignore. Missing patterns mean sensitive files could be accidentally committed and pushed to remote repositories.
