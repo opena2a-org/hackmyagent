@@ -9,14 +9,14 @@
  * invisible code point the printed command named a file that does not exist:
  * `xxd 'benign\u{e0041}evil.js'`.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import type { SecurityFinding } from '../../src/hardening/security-check';
 import { escapeForDisplay } from '../../src/ui/display-safe';
+import { tempDir } from '../helpers/temp-dir';
 
 const ZWSP = Buffer.from([0xe2, 0x80, 0x8b]); // U+200B
 const TAG_0001 = Buffer.from([0xf3, 0xa0, 0x80, 0x81]); // U+E0001
@@ -26,12 +26,8 @@ describe('UNICODE-STEGO Fix commands (#999)', () => {
   let dir: string;
 
   beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hma-stego-fix-'));
+    dir = tempDir('hma-stego-fix-');
     await fs.writeFile(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
-  });
-
-  afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
   });
 
   async function finding(checkId: string, file: string): Promise<SecurityFinding> {
