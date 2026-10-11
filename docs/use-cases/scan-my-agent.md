@@ -30,7 +30,7 @@ Discovering assembly components...
   Checks      317 static declared · 63 of 63 check groups ran · 3 semantic (NanoMind AST, 0-2 of 7 analyzer families) · 4 files read by static checks
   Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 36 checks reported an absent mitigation (not shown)
   Unexamined  A2A, capabilities, governance, heartbeat, lifecycle, MCP, prompt, skill
-  Categories  credentials (2 high) · sandbox (1 high) · supply-chain (1 medium) · git hygiene (1 critical) · 13 others clear
+  Categories  credentials (2 high) · sandbox (1 high) · supply-chain (1 medium) · git hygiene (1 critical, 1 low) · 13 others clear
   Verdict     Not safe to ship. .env Not Ignored in .env + 5 more. Fix before using in production.
 
 

@@ -37,9 +37,9 @@ Assembly scan complete: 0 findings from 1 components
 NanoMind: 3 artifact(s) compiled, 2 semantic finding(s) added
 
   insecure-mcp-server  v1.0.0 · mcp · 3 files analyzed
-  7 critical issues found
+  6 critical issues found
 
-  Security  ━━━━━━━━━━━━━━━━━━━━ 15/100
+  Security  ━━━━━━━━━━━━━━━━━━━━ 17/100
 
   ── Observations ────────────────────────────────────────────
   Surfaces    mcp · 3 semantic artifacts · all 3 artifacts reached 0-6 of 7 analyzer families
@@ -47,12 +47,12 @@ NanoMind: 3 artifact(s) compiled, 2 semantic finding(s) added
   Coverage    19 of 25 categories examined · 6 unexamined (read no file) · 37 checks reported an absent mitigation (not shown)
   Unexamined  A2A, capabilities, governance, heartbeat, prompt, skill
   Artifacts   mcp.json  mcp_config · malicious · no inferred capabilities  (no declared constraints)
-  Categories  credentials (5 critical) · MCP (2 critical) · sandbox (1 medium) · supply-chain (1 medium) · auth (1 high) · git hygiene (1 low) · 13 others clear
+  Categories  credentials (4 critical, 1 low) · MCP (2 critical, 4 high, 1 medium, 1 low) · sandbox (1 medium) · supply-chain (1 medium) · auth (1 high, 1 medium) · git hygiene (1 low) · 13 others clear
   Verdict     Not safe to ship. Exposed Credential in mcp.json:15 + 17 more. Fix before using in production.
 
 
   ── Findings ────────────────────────────────────────────────
-  7 critical  5 high  4 medium  2 low
+  6 critical  5 high  4 medium  3 low
 
   ...
 
@@ -82,9 +82,11 @@ NanoMind: 3 artifact(s) compiled, 2 semantic finding(s) added
   │ mcp.json
   │ Without request timeouts, a hung or malicious MCP server can block the agent indefinitely, causing denial-of-service and preventing other tools from executing.
 
-  + 8 more findings (Missing .gitignore, MCP Retry Limits)  (run with --verbose to see all)
+  ...
 
-  Path forward: 15 -> 100 by fixing 7 critical + 5 high
+  + 8 more findings (MCP Retry Limits, Placeholder or default password in URL)  (run with --verbose to see all)
+
+  Path forward: 17 -> 100 by fixing 6 critical + 5 high
 
   ── Next Steps ─────────────────────────────────────────────────
   Protect credentials:  npx opena2a-cli protect .
