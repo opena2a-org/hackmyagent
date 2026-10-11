@@ -162,10 +162,10 @@ function scan(
 }
 
 // Frozen per-file counts of lines matching the first expression, measured on
-// the delivered tree: 46 files, 114 lines. Line numbers are deliberately not
+// the delivered tree: 46 files, 97 lines. Line numbers are deliberately not
 // pinned — unrelated edits would shift them.
 const PATTERN_BASELINE: Record<string, number> = {
-  'CHANGELOG.md': 31,
+  'CHANGELOG.md': 17,
   '__tests__/checker/check-not-found-json.test.ts': 1,
   '__tests__/checker/check-secure-cross-analyzer-parity.test.ts': 2,
   '__tests__/cli/benchmark-empty-denominator.test.ts': 1,
@@ -207,18 +207,17 @@ const PATTERN_BASELINE: Record<string, number> = {
   '__tests__/soul/soul-corpus-direction.test.ts': 2,
   '__tests__/telemetry/exit-surface.test.ts': 1,
   '__tests__/ui/analyst-dissent.test.ts': 1,
-  'docs/design/redteam-nanomind-judge.md': 4,
+  'docs/design/redteam-nanomind-judge.md': 1,
   'docs/release-playbook.md': 11,
   'docs/testing/release-smoke.md': 2,
   'src/attack/payloads/capability-abuse.ts': 10,
 };
 
 // Frozen per-file counts of non-exempted lines matching the second expression,
-// measured on the delivered tree: 3 files, 8 lines.
+// measured on the delivered tree: 2 files, 6 lines.
 const VENDOR_BASELINE: Record<string, number> = {
   'src/nanomind-core/security/defense-in-depth.ts': 3,
   '__tests__/nanomind-core/defense-in-depth.test.ts': 3,
-  'CHANGELOG.md': 2,
 };
 
 const PATTERN_GUIDANCE =
@@ -428,7 +427,7 @@ describe('internal attribution stays off the public surfaces', () => {
 
   it('HMA-37.AC3 every public-surface file carries exactly the frozen number of lines matching the first expression', () => {
     expect(Object.keys(PATTERN_BASELINE)).toHaveLength(46);
-    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(114);
+    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(97);
     const { hits } = scan(REPO_ROOT, PATTERN);
     expect(compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE)).toEqual([]);
   });
@@ -467,7 +466,7 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC4 every public-surface file carries exactly the frozen number of non-exempted lines matching the second expression', () => {
-    expect(Object.values(VENDOR_BASELINE).reduce((a, b) => a + b, 0)).toBe(8);
+    expect(Object.values(VENDOR_BASELINE).reduce((a, b) => a + b, 0)).toBe(6);
     const { hits } = scan(REPO_ROOT, VENDOR);
     expect(compareToBaseline(hits, VENDOR_BASELINE, VENDOR_GUIDANCE)).toEqual([]);
   });
