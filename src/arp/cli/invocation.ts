@@ -60,8 +60,11 @@ export async function invocation(
  * The file Node loaded for a script path given without its extension:
  * `node dist/arp/cli` runs the directory's index.js and `node dist/arp/cli/index`
  * runs index.js beside it, while `process.argv[1]` keeps the path as typed.
- * Undefined when the path is itself a file, which is how a bin shim arrives,
- * or names nothing on disk.
+ * For a directory that is its index.js or index.ts; for any other path that is
+ * not a file, including one that names nothing on disk such as
+ * `dist/arp/cli/index`, the path with `.js` or `.ts` appended. Undefined when
+ * the path is itself a file, which is how a bin shim arrives, or when no such
+ * completed file exists.
  */
 async function completedEntry(script: string, p: path.PlatformPath): Promise<string | undefined> {
   const st = await statIfPresent(script);
@@ -79,9 +82,15 @@ function statIfPresent(file: string) {
 }
 
 /**
- * Quote a path only when the shell would split it: POSIX single quotes, or on
- * Windows double quotes, the form cmd.exe and PowerShell both accept and a
- * character no Windows path can contain.
+ * A path as one shell word. On POSIX it is printed bare when it holds only
+ * ASCII letters, digits and `_ @ % + = : , . / -`, and otherwise in single
+ * quotes, each embedded single quote closed, escaped and reopened. On Windows
+ * it is printed bare when it holds only ASCII letters, digits and
+ * `_ @ + = : , . \ / -`, and otherwise in double quotes, a character no
+ * Windows path can contain; so a space, `~`, `(` or a non-ASCII letter is
+ * quoted. Double quotes keep the path one word in cmd.exe and PowerShell, but
+ * PowerShell still expands `$` and the backtick inside them, and cmd.exe still
+ * expands `%NAME%`.
  */
 function shellWord(s: string, platform: NodeJS.Platform): string {
   if (platform === 'win32') return /^[\w@+=:,.\\/-]+$/.test(s) ? s : `"${s}"`;

@@ -38,6 +38,9 @@ const command = args[0];
 // no literal name runs this program (see ./invocation). Assigned once, at the
 // top of main() and so before anything is printed: finding it is asynchronous.
 let PROG: string;
+// How the structural-signature channel is turned on. The bundled SDK leaves it
+// off until one of these is set; an absent opt-out marker does not turn it on.
+const TURN_ON = 'AIM_TELEMETRY=1 (or signatureTelemetry.enabled: true)';
 
 async function main(): Promise<void> {
   PROG = await invocation();
@@ -317,14 +320,18 @@ async function telemetryCommand(): Promise<void> {
     }
     case 'opt-in': {
       clearOptOutMarker();
-      const stillOff = isOptedOut(tcfg);
       console.log('\n  Opt-out marker removed.');
-      if (stillOff) {
+      if (isOptedOut(tcfg)) {
         console.log('  NOTE: telemetry is still disabled by an env var or config');
-        console.log('  (OPENA2A_TELEMETRY_OPTOUT / ARP_TELEMETRY_DISABLED, or');
-        console.log('  signatureTelemetry.enabled: false). Clear those to re-enable.\n');
+        console.log('  (OPENA2A_TELEMETRY=off, OPENA2A_TELEMETRY_OPTOUT, ARP_TELEMETRY_DISABLED,');
+        console.log('  or signatureTelemetry.enabled: false). Clear those to re-enable.\n');
+      } else if (signatureTelemetryEnabled(tcfg)) {
+        console.log('  Structural signature telemetry is ON.\n');
       } else {
-        console.log('  Structural signature telemetry is ON (default).\n');
+        // Removing the marker clears an opt-out; it is not an opt-in. The
+        // bundled SDK runs this channel only when it is turned on.
+        console.log('  This channel stays OFF until you turn it on:');
+        console.log(`    ${TURN_ON}\n`);
       }
       break;
     }
@@ -340,14 +347,15 @@ async function telemetryCommand(): Promise<void> {
     disclosure    Print the full install-time disclosure
     opt-out       Disable ALL OpenA2A telemetry (also deletes already-sent
                   signatures from the registry; use --no-purge to skip that)
-    opt-in        Remove the local opt-out marker
+    opt-in        Remove the local opt-out marker (does not turn the channel on)
     purge         Ask the registry to delete already-sent signatures (right-to-delete)
 
   Every subcommand except register also runs from any directory, through the
   aim-arp program of the @opena2a/aim-sdk package this program is built on:
     npx --package @opena2a/aim-sdk@${VERSION} aim-arp telemetry <subcommand>
 
-  Structural signatures are DEFAULT-ON. Only the SHAPE of an anomalous
+  Structural signatures are OFF unless you turn them on with AIM_TELEMETRY=1
+  or signatureTelemetry.enabled: true. Only the SHAPE of an anomalous
   behavior is shared, never payloads. Every byte sent is recorded locally
   first — review it with: ${PROG} telemetry log
 `);
@@ -389,6 +397,9 @@ async function telemetryRegister(tcfg?: SignatureTelemetryConfig): Promise<void>
   if (isOptedOut(tcfg)) {
     console.log('  NOTE: telemetry is currently opted out, so no reports will be sent');
     console.log(`  even after approval. Re-enable with: ${PROG} telemetry opt-in`);
+  } else if (!signatureTelemetryEnabled(tcfg)) {
+    console.log('  NOTE: this channel is OFF until you turn it on, so no reports will be');
+    console.log(`  sent even after approval. Turn on with: ${TURN_ON}`);
   }
 
   const result = await enrollSensor(tcfg);
@@ -434,16 +445,21 @@ async function telemetryLog(): Promise<void> {
 }
 
 async function telemetryStatus(tcfg?: SignatureTelemetryConfig): Promise<void> {
+  // Off has two causes: an opt-out someone set, or nobody having turned the
+  // channel on, which is the bundled SDK's default.
   const enabled = signatureTelemetryEnabled(tcfg);
+  const optedOut = isOptedOut(tcfg);
   const records = await readAuditRecords(100000);
   const counts: Record<string, number> = {};
   for (const r of records) counts[r.phase] = (counts[r.phase] ?? 0) + 1;
 
   console.log('\n  OpenA2A structural signature telemetry');
   console.log('  ─────────────────────────────────────');
-  console.log(`  State:        ${enabled ? 'ON (default-on)' : 'OFF (opted out)'}`);
-  if (!enabled) {
+  console.log(`  State:        ${enabled ? 'ON' : optedOut ? 'OFF (opted out)' : 'OFF (not turned on)'}`);
+  if (optedOut) {
     console.log(`  Opted out by: ${optOutReason(tcfg)}`);
+  } else if (!enabled) {
+    console.log(`  Turn on with: ${TURN_ON}`);
   }
   console.log(`  Registry:     ${resolveRegistryUrl(tcfg)}`);
   try {
@@ -466,12 +482,28 @@ async function telemetryStatus(tcfg?: SignatureTelemetryConfig): Promise<void> {
   console.log('  Dropped:      ' + (counts['dropped'] ?? 0));
   console.log(`\n  Review payloads: ${PROG} telemetry log`);
   console.log(`  Disclosure:      ${PROG} telemetry disclosure`);
-  console.log(`  ${enabled ? `Opt out:         ${PROG} telemetry opt-out` : `Opt back in:     ${PROG} telemetry opt-in`}\n`);
+  const next = enabled
+    ? `Opt out:         ${PROG} telemetry opt-out`
+    : optedOut
+      ? `Opt back in:     ${PROG} telemetry opt-in`
+      : 'Turn on:         AIM_TELEMETRY=1';
+  console.log(`  ${next}\n`);
 }
 
+/**
+ * Which opt-out the bundled SDK's isOptedOut matched, read with the same
+ * spellings it accepts: the marker is named only when nothing else matched,
+ * and this is called only when isOptedOut is true.
+ */
 function optOutReason(tcfg?: SignatureTelemetryConfig): string {
   if (tcfg?.enabled === false) return 'config (signatureTelemetry.enabled: false)';
-  if (process.env.OPENA2A_TELEMETRY_OPTOUT || process.env.ARP_TELEMETRY_DISABLED) return 'environment variable';
+  const env = (name: string) => process.env[name]?.trim().toLowerCase() ?? '';
+  if (['off', '0', 'false', 'no'].includes(env('OPENA2A_TELEMETRY'))) {
+    return 'environment variable (OPENA2A_TELEMETRY; unset it to clear)';
+  }
+  for (const name of ['OPENA2A_TELEMETRY_OPTOUT', 'ARP_TELEMETRY_DISABLED']) {
+    if (['1', 'true', 'yes', 'on'].includes(env(name))) return `environment variable (${name}; unset it to clear)`;
+  }
   return `local opt-out marker (${PROG} telemetry opt-in to clear)`;
 }
 
