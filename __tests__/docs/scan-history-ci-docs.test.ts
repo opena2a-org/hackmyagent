@@ -10,10 +10,17 @@
  * recipe and the smoke step in place, and keeps the key shapes they list equal
  * to the patterns the pass runs.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { CREDENTIAL_PATTERNS } from '../../src/hardening/scanner';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+
+// The release-smoke step is matched on its `node dist/cli.js secure` lines,
+// which the spawn-suite census counts as a spawn. The suite reads the docs and
+// never runs the binary; the check is skipped when no build exists and
+// otherwise only confirms dist/ is newer than src/.
+beforeAll(assertDistFreshIfPresent);
 
 const ROOT = path.resolve(__dirname, '../..');
 const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
