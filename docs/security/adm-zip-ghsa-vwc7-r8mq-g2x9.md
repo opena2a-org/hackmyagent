@@ -1,4 +1,4 @@
-# GHSA-vwc7-r8mq-g2x9 (adm-zip) — known-open, with no patched version
+# GHSA-vwc7-r8mq-g2x9 (adm-zip): known-open, with no patched version
 
 **Verdict: not reachable through first-party code; reachable inside onnxruntime-node's postinstall under the stated conditions.**
 
@@ -13,7 +13,7 @@ anyone noticing, and the four lockfile readings at the bottom are re-checked on
 every `npm test` by `__tests__/supply-chain/adm-zip-advisory-record.test.ts`:
 when the lockfile stops matching them, that suite fails and names the field.
 This is the rule `scripts/audit-consumer-resolution.mjs` already applies to its
-own waivers — an entry that stops matching fails rather than rots — applied to
+own waivers (an entry that stops matching fails rather than rots), applied to
 a finding that instrument's severity floor cannot reach.
 
 ## The edge into this tree
@@ -44,8 +44,8 @@ No module under `src/` imports, requires, dynamically imports or calls
 `.tsx`, `.js`, `.mjs`, `.cjs` and `.jsx` file in the tree, prints the size of
 the set it walked, and fails naming the file and line if a call site appears.
 
-`hma check` does unpack archives it did not author — three of its arms
-download one — but it unpacks them through `src/hardening/extract-archive.ts`,
+`hma check` does unpack archives it did not author (three of its arms
+download one), but it unpacks them through `src/hardening/extract-archive.ts`,
 which is first-party and has no dependency on `adm-zip`.
 
 ## Where it IS reached
@@ -54,11 +54,11 @@ Inside `onnxruntime-node@1.27.0`'s postinstall, on every install:
 
 - `script/install.js:22` requires `install-utils.js` at module top, and
   `install-utils.js:11` requires `adm-zip` at module top. Both requires
-  therefore run before any early exit the script might take — the module is
+  therefore run before any early exit the script might take: the module is
   loaded whether or not the script goes on to download anything.
 - The extraction itself is `install-utils.js:156` (`new AdmZip(packageFilePath)`)
   and `install-utils.js:183`
-  (`extractEntryTo(zipEntry, extractDir, false, true)` — the fourth argument is
+  (`extractEntryTo(zipEntry, extractDir, false, true)`: the fourth argument is
   overwrite, and it is true), into a predictable `os.tmpdir()`-rooted path
   created by a recursive mkdir.
 - That extraction runs on a **default linux/x64 install**, because the cuda12
@@ -111,8 +111,8 @@ gh api /advisories/GHSA-vwc7-r8mq-g2x9 --jq '.vulnerabilities[]|select(.package.
 ```
 
 A non-null answer from that command reopens this entry: it means upstream has
-published a version to move to, and the decision recorded here — carry it,
-because there is nowhere to move — no longer holds. Until then `0.6.1` is not
+published a version to move to, and the decision recorded here (carry it,
+because there is nowhere to move) no longer holds. Until then `0.6.1` is not
 recorded as a remedy, only as what this tree resolves.
 
 The readings in this file follow the ruling of `2026-09-19T18:08:05Z`.

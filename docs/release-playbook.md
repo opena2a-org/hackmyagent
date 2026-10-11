@@ -1,8 +1,8 @@
-# `hackmyagent` real-world walkthrough — release playbook
+# `hackmyagent` real-world walkthrough: release playbook
 
 Run this playbook before every publish of `hackmyagent`.
 
-**Scope — v1 (this document):** `repo`, `skill`, and `mcp` surfaces, plus
+**Scope, v1 (this document):** `repo`, `skill`, and `mcp` surfaces, plus
 universal baselines (intentionally-vulnerable fixture, hardened SOUL.md,
 empty dir). **Deferred to v2:** `a2a`, `npm`, `pypi`, `github-repo`, `url`,
 and standalone `soul.md` surfaces. Bugs already known on those surfaces live
@@ -11,10 +11,17 @@ scenario)` tag.
 
 This playbook exists because per-finding review surfaces bugs that
 generic surface walkthroughs miss. A 2026-04-17 review of release
-candidate `6b788c4` (self-scan score 100/100, all surfaces "no crashes")
-produced 7 real bugs once we walked every finding against the 5-question
-rubric. Making the playbook non-skippable is how we stop re-discovering
-the same class of FP every publish.
+candidate `6b788c4` (1627 passing tests, self-scan score 100/100, all
+surfaces "no crashes") produced 7 real bugs once we walked every finding
+against the 5-question rubric, along with a detection-narrowing pattern
+(TOCTOU, DNA-002, DNA-003) that a generic fresh-user subagent would never
+have caught, because it does not know the difference between "compiled
+bundle contains scanner patterns" and "source code leaks credentials."
+Surface coverage and per-finding review are distinct gates: both run, and
+neither substitutes for the other. The playbook is the human eye; the
+benign FPR regression suite is the long-term memory; unit tests certify
+code shape. All three are required. Making the playbook non-skippable is
+how we stop re-discovering the same class of FP every publish.
 
 Background philosophy (test pyramid, per-finding rubric, adversarial review)
 lives in `CLAUDE.md`. This file only captures the scenario catalog and the
@@ -43,9 +50,9 @@ npm run build            # produces dist/cli.js — MUST rebuild per run
 
 Canonical real-world fixtures live at `/tmp/hma-real-world/`. They are
 intentionally representative of user-hit shapes. **Never run HMA against the
-canonical fixtures directly — copy first.** Some (e.g. `mega-mcp`) are
+canonical fixtures directly. Copy first.** Some (e.g. `mega-mcp`) are
 already polluted from prior runs; replace from source-of-truth in the
-workspace playground at `~/workspace/opena2a-org/test/hma/` (see below — it is
+workspace playground at `~/workspace/opena2a-org/test/hma/` (see below: it is
 NOT in this repo) or re-pull if needed.
 
 ```bash
@@ -62,9 +69,9 @@ findings.
 These three scenarios are not surface-specific. They verify detection health
 and must pass before touching the per-surface scenarios.
 
-### B1 — intentionally vulnerable baseline
+### B1: intentionally vulnerable baseline
 
-**Fixture.** `~/workspace/opena2a-org/test/hma/` — the **workspace-level**
+**Fixture.** `~/workspace/opena2a-org/test/hma/`, the **workspace-level**
 playground, NOT a path in this repo. A clean clone does not contain it, and
 `secure` on a missing directory exits 1 with `Error: Directory ... does not
 exist.`, which is indistinguishable by exit code alone from "found findings".
@@ -78,7 +85,7 @@ Confirm the directory exists before grading. Intentional: fake credentials in
 - MUST fire at least 36 CRITICAL and 49 HIGH findings (see
   `~/workspace/opena2a-org/test/hma/README.md` for the file → check-ID map).
 - Any regression where score exceeds 20 or CRITICALs drop below 30 means
-  detection was narrowed — investigate which rule weakened.
+  detection was narrowed. Investigate which rule weakened.
 
 **Baseline provenance (measured 2026-07-28, same fixture, `--json`, counting
 `!passed`).** The floors above are the 0.25.x measurement, not a target:
@@ -89,17 +96,17 @@ Confirm the directory exists before grading. Intentional: fake credentials in
 | 0.25.0 | 0 | 36 | 49 | 28 | 2 | 115 |
 | 0.25.1 | 0 | 36 | 49 | 28 | 2 | 115 |
 
-The floors previously read "34 CRITICAL and 55 HIGH". The 55 was stale — no
+The floors previously read "34 CRITICAL and 55 HIGH". The 55 was stale: no
 version in this table reaches it, and the trend across them is strictly
 upward, so it was an old baseline rather than evidence of narrowing. Re-measure
 and update this table on any release that moves the counts, and treat a
 *downward* move as a narrowing until proven otherwise.
 
 **Failure class.** CRITICAL. Detection-health regression on the canonical
-vulnerable fixture is the worst class of release bug — it ships a scanner
+vulnerable fixture is the worst class of release bug: it ships a scanner
 that does not scan.
 
-### B2 — hardened SOUL.md via scan-soul
+### B2: hardened SOUL.md via scan-soul
 
 **Command.** `node dist/cli.js scan-soul ~/workspace/opena2a-org/test/hma/SOUL.md`
 
@@ -112,7 +119,7 @@ that does not scan.
 stale in two ways.** Both are current correct behaviour, not regressions:
 
 1. The fixture's SOUL.md declares `<!-- soul:profile=conversational -->`, so
-   only 4 of 9 domains are evaluated — Trust Hierarchy, Capability Boundaries,
+   only 4 of 9 domains are evaluated. Trust Hierarchy, Capability Boundaries,
    Data Handling, Agentic Safety and Human Oversight are skipped. An
    unqualified "100/100" over a self-declared 4/9 scope is precisely the
    attacker-controllable-profile shape that #216 was filed against; the
@@ -121,10 +128,10 @@ stale in two ways.** Both are current correct behaviour, not regressions:
 
 **Failure class.** CRITICAL if the *scope and clamp disclosure disappears*, or
 if the score moves without a corresponding scanner change. A bare `100/100` on
-this fixture is now a FAILURE, not a pass — it would mean the profile scope or
+this fixture is now a FAILURE, not a pass. It would mean the profile scope or
 the clamp stopped being applied.
 
-### B3 — empty directory
+### B3: empty directory
 
 ```bash
 rm -rf /tmp/walk-empty && mkdir -p /tmp/walk-empty
@@ -156,7 +163,7 @@ node dist/cli.js secure /tmp/walk-empty --json \
 MEDIUM if the score moves without a scanner change, or a not-applicable record
 carries a severity, carries `passed`, or reaches the human output.
 
-### B3b — empty directory, benchmark mode
+### B3b: empty directory, benchmark mode
 
 ```bash
 node dist/cli.js secure /tmp/walk-empty -b oasb-1 --no-machine-posture; echo "exit: $?"
@@ -187,11 +194,11 @@ than `Not Assessed`, a numeric compliance, or exits 0. A tree from which one
 file was read (a lone `README.md` at default depth) is unaffected and still
 rates on its records.
 
-## Surface — `repo`
+## Surface: `repo`
 
 Scanning a real project directory with source, tests, and build output.
 
-### R1 — sibling tool: ai-trust (expected clean)
+### R1: sibling tool ai-trust (expected clean)
 
 **Command.** `node dist/cli.js secure ../ai-trust`
 
@@ -206,14 +213,14 @@ Scanning a real project directory with source, tests, and build output.
 **Failure class.** CRITICAL if score < 30 (known-good scored as known-bad).
 HIGH if > 2 FPs on `dist/` or test files (detection not path-aware).
 
-### R2 — sibling tool: secretless (currently broken — bugs #6, #7)
+### R2: sibling tool secretless (currently broken by bugs #6, #7)
 
 **Command.** `node dist/cli.js secure ../secretless`
 
 **Grade.**
 - Score MUST be `60-90`. Currently `30/100` with 3 CRITICAL.
 - 2 of the 3 CRITICALs are `WEBCRED-001` on `dist/patterns.js` and
-  `dist/scan.js` — the compiled bundle contains the scanner's own credential
+  `dist/scan.js`: the compiled bundle contains the scanner's own credential
   patterns. MUST be suppressed by default path-skip on `dist/`, `build/`,
   `out/`.
 - 19 HIGH findings on `*.test.ts` files are `NEMO-007` firing on test files
@@ -223,7 +230,7 @@ HIGH if > 2 FPs on `dist/` or test files (detection not path-aware).
 **Failure class.** HIGH. Tracked as bugs #6 (dist/) and #7 (tests) in
 `briefs/release-findings.md`.
 
-### R3 — nanomind training corpus (currently broken — bug #5)
+### R3: nanomind training corpus (currently broken by bug #5)
 
 **Command.** `node dist/cli.js secure ../nanomind`
 
@@ -231,7 +238,7 @@ HIGH if > 2 FPs on `dist/` or test files (detection not path-aware).
 - Score MUST reflect the actual governance posture of the repo, NOT be
   dragged to near-zero by `UNICODE-STEGO-001` firing 42 CRITICAL times on
   `training/corpus/pretrain/*.json`.
-- Training corpora contain adversarial Unicode intentionally — the model
+- Training corpora contain adversarial Unicode intentionally: the model
   learns from them. `**/training/corpus/**` and `**/datasets/**` paths MUST
   be exempt (or gated behind a `--corpus-mode` flag that the user opts
   into).
@@ -240,12 +247,12 @@ HIGH if > 2 FPs on `dist/` or test files (detection not path-aware).
 question: should HMA have a per-directory-role awareness (src vs corpus vs
 test) or is that out of scope? Chief decision pending.
 
-## Surface — `skill`
+## Surface: `skill`
 
 Scanning a Claude/Cursor/IDE skill directory (contains `SKILL.md` and
 supporting files).
 
-### SK1 — real Claude skill: anthropic example
+### SK1: real Claude skill (anthropic example)
 
 ```bash
 rm -rf /tmp/walk-skill-anthropic
@@ -263,7 +270,7 @@ node dist/cli.js secure /tmp/walk-skill-anthropic
 **Failure class.** HIGH if any CRITICAL fires on a pattern that the skill
 merely names in prose.
 
-### SK2 — real skill with pattern documentation (currently broken — bug #4)
+### SK2: real skill with pattern documentation (currently broken by bug #4)
 
 **Command.** `node dist/cli.js secure ~/workspace/claude-skills/skills/pre-push-review`
 
@@ -271,13 +278,13 @@ merely names in prose.
 - Score MUST be `70-95`. Currently `45/100`.
 - `SKILL-010` firing CRITICAL on the documentation line
   `Patterns: .env, .pem, .key, .p12…` is a false positive. The skill does
-  not READ these paths — it lists them as patterns to scan for.
+  not READ these paths. It lists them as patterns to scan for.
 - Rule MUST require actual access (`process.env.X`, `fs.readFile('*.env')`,
   shell `cat .env`), not keyword match.
 
 **Failure class.** HIGH. Tracked as bug #4 in `briefs/release-findings.md`.
 
-### SK3 — composio skill with markdown-embedded code
+### SK3: composio skill with markdown-embedded code
 
 ```bash
 rm -rf /tmp/walk-skill-composio
@@ -294,11 +301,11 @@ node dist/cli.js secure /tmp/walk-skill-composio
 **Failure class.** CRITICAL if detection misses the credential. HIGH if
 detected but Fix is generic.
 
-## Surface — `mcp`
+## Surface: `mcp`
 
 Scanning a local directory that contains `mcp.json` (MCP server config).
 
-### M1 — real MCP: ibm-mcp baseline
+### M1: real MCP (ibm-mcp baseline)
 
 ```bash
 rm -rf /tmp/walk-mcp-ibm
@@ -320,7 +327,7 @@ node dist/cli.js secure /tmp/walk-mcp-ibm
 **Failure class.** CRITICAL if credential miss. HIGH if scope findings
 revert to generic prose.
 
-### M2 — mega-mcp already-secure
+### M2: mega-mcp already-secure
 
 **Note.** `/tmp/hma-real-world/mega-mcp` is pre-polluted from prior runs.
 Restore from the `~/workspace/opena2a-org/test/hma/` pattern (workspace
@@ -329,12 +336,12 @@ playground, not this repo) or skip until a clean source-of-truth is re-pinned.
 **Grade (when re-pinned).**
 - Score MUST be `80-100`.
 - No credential findings (all values are `${VAR}` placeholders).
-- Output MUST tell the user what hardening WAS applied if any — no
+- Output MUST tell the user what hardening WAS applied if any. No
   silent-success dead ends.
 
 **Failure class.** HIGH. Currently DEFERRED until fixture is re-pinned.
 
-### M3 — ssh-mcp (path false-positive negative case)
+### M3: ssh-mcp (path false-positive negative case)
 
 ```bash
 rm -rf /tmp/walk-mcp-ssh
@@ -350,28 +357,28 @@ node dist/cli.js secure /tmp/walk-mcp-ssh
 **Failure class.** CRITICAL. Detection widening on a negative case is how
 tools become noisy and get ignored.
 
-## Surface coverage matrix — v1
+## Surface coverage matrix (v1)
 
 | Surface | Covered in v1? | Scenario IDs | Known bugs |
 |---|---|---|---|
 | Repo (local) | YES | R1, R2, R3 | #5, #6, #7 |
 | Skill | YES | SK1, SK2, SK3 | #4 |
-| MCP (local) | YES | M1, M2 (deferred fixture), M3 | — |
-| A2A | v2 | — | #2, #3 |
-| npm (`check <pkg>`) | v2 | — | — |
-| PyPI (`check pip:<pkg>`) | v2 | — | — |
-| GitHub repo (`check <org>/<repo>`) | v2 | — | bug #1 regression check only |
-| URL (`check <url>`) | v2 | — | — |
-| Standalone SOUL.md (`scan-soul`) | v1 baseline only | B2 | — |
+| MCP (local) | YES | M1, M2 (deferred fixture), M3 | none |
+| A2A | v2 | none | #2, #3 |
+| npm (`check <pkg>`) | v2 | none | none |
+| PyPI (`check pip:<pkg>`) | v2 | none | none |
+| GitHub repo (`check <org>/<repo>`) | v2 | none | bug #1 regression check only |
+| URL (`check <url>`) | v2 | none | none |
+| Standalone SOUL.md (`scan-soul`) | v1 baseline only | B2 | none |
 
 Score sanity rule (applies to every scenario): score < 30 on a known-good
-target or > 70 on a known-bad target means scoring is broken — investigate
+target or > 70 on a known-bad target means scoring is broken. Investigate
 before publish.
 
 ## Per-finding review protocol
 
 Apply the 5-question review from `CLAUDE.md` §Per-finding review protocol to
-EVERY finding surfaced by EVERY scenario above. Not "did the CLI crash" —
+EVERY finding surfaced by EVERY scenario above. Not "did the CLI crash", but
 per-finding verdicts.
 
 Compact format:
@@ -386,7 +393,7 @@ Failures:
   blocks release.
 - CISO test fail → HIGH.
 
-## Classification rule — what blocks publish
+## Classification rule: what blocks publish
 
 - **CRITICAL**: detection miss on B1/B2/M1 credential or scope case;
   detection widening on M3 negative case; score > 20 on B1 or < 90 on B2.
@@ -399,7 +406,7 @@ Failures:
   but generic. Does NOT block current release; fix before next.
 - **LOW**: polish. Batch.
 
-## Stub write-back — two steps, non-skippable
+## Stub write-back: two steps, non-skippable
 
 `mark-stub` is the terminus of the observation -> shipped-check loop: it is
 the only place a stub the release actually implemented gets recorded as
@@ -412,7 +419,7 @@ for that version.
 Both steps require `INTERNAL_API_KEY`. Neither is skippable, and neither runs
 against a fixture registry.
 
-**1. Before the tag is pushed — preview every stub the release claims.**
+**1. Before the tag is pushed, preview every stub the release claims.**
 
 Run a preview for each stub this release says it implemented. It runs every
 preflight and the reachability probe, prints the exact body that would be
@@ -425,11 +432,11 @@ node dist/cli.js mark-stub <stub-id> integrated --source-commit $(git rev-parse 
 ```
 
 Exit 0 means the transition would be recorded. Exit 1 is a refusal and blocks
-the tag push — read the `Fix:` line, it names the real remedy. Exit 2 means the
+the tag push. Read the `Fix:` line, it names the real remedy. Exit 2 means the
 registry could not be reached, so nothing was determined; resolve that and
 re-run rather than proceeding.
 
-**2. After publish — send it for real, from the RELEASED artifact.**
+**2. After publish, send it for real, from the RELEASED artifact.**
 
 Run the real send from the published package, not from the working tree. The
 evidence carries the version of the artifact that produced it, and the whole
@@ -443,11 +450,11 @@ Record the stub ids and the exit code of each send in `briefs/release-findings.m
 alongside the rest of the run. A stub that refuses at this step after passing
 step 1 is a finding: the published artifact and the working tree disagree.
 
-## Self-learning loop (MANDATORY — this is how the playbook grows)
+## Self-learning loop (MANDATORY: this is how the playbook grows)
 
 Five mechanisms, none optional:
 
-### 1. Baseline ledger — `.release/baselines.json`
+### 1. Baseline ledger: `.release/baselines.json`
 
 Every passing run writes measured scores and finding counts to
 `.release/baselines.json` keyed by scenario ID. Next run compares.
@@ -464,7 +471,7 @@ Drift > 10 points on any scenario → append `DRIFT` entry in
 `briefs/release-findings.md`, explain before publish. Drift > 20 points
 with fewer CRITICALs → §5 score-jump red flag.
 
-Add the file now — initial entries use the values in this playbook's Grade
+Add the file now. Initial entries use the values in this playbook's Grade
 blocks; subsequent runs update on PASS.
 
 ### 2. Findings → regression auto-link
@@ -483,7 +490,7 @@ is run. The regression home is `__tests__/nanomind-core/benign-fp-regression.tes
 (the `bNN` series) for FPs, and `__tests__/hardening/scanner.test.ts` for
 detection changes. Playbook = human eye; regression suite = long-term memory.
 
-### 3. Wild-fixture intake — `/tmp/hma-real-world/` as queue
+### 3. Wild-fixture intake: `/tmp/hma-real-world/` as queue
 
 Every fixture directory in `/tmp/hma-real-world/` that is NOT already
 referenced in a scenario above is a **candidate**. The session running this
@@ -497,13 +504,13 @@ playbook MUST:
    + baselines.json).
 
 As of 2026-04-17 the pool contains: anthropic-skill (SK1), coding-skill
-(CANDIDATE), composio-skill (SK3), ibm-mcp (M1), mega-mcp (M2 — deferred),
-rad-mcp (CANDIDATE), seedprod-soul (CANDIDATE — scan-soul surface),
-ssh-mcp (M3), template-soul (CANDIDATE — scan-soul surface).
+(CANDIDATE), composio-skill (SK3), ibm-mcp (M1), mega-mcp (M2, deferred),
+rad-mcp (CANDIDATE), seedprod-soul (CANDIDATE, scan-soul surface),
+ssh-mcp (M3), template-soul (CANDIDATE, scan-soul surface).
 
 Candidates never promoted in 3 releases = prune or flag surface scope.
 
-### 4. Post-release retro — RETRO entries in findings brief
+### 4. Post-release retro: RETRO entries in findings brief
 
 After every publish, the session walks:
 
@@ -524,15 +531,15 @@ For each non-trivial bug:
 Three consecutive retros with zero new scenarios = catalog is steady-state
 for current behavior. Milestone, not license to stop.
 
-### 5. Score-jump red flag — automatic adversarial review
+### 5. Score-jump red flag: automatic adversarial review
 
 If any scenario's score moves > 20 points in one release (up OR down), the
 release blocks until a `release-findings.md` entry classifies the fix:
 
-- **(a) preserved-detection FP-suppress** — clean; merge.
-- **(b) narrowed-detection** — suspicious; spawn adversarial subagent per
+- **(a) preserved-detection FP-suppress**: clean; merge.
+- **(b) narrowed-detection**: suspicious; spawn adversarial subagent per
   `~/workspace/claude-skills/skills/pre-push-review/SKILL.md` §Phase 4.5.
-- **(c) rename workaround** — suspicious; chief decision required.
+- **(c) rename workaround**: suspicious; chief decision required.
 
 This matters most when a release claims to fix 7 bugs and the score jumps
 from 45 to 100. That jump is a red flag until each fix is classified.
@@ -559,14 +566,14 @@ template:
 ```
 
 Ship-blocker findings MUST have a regression test land in the same PR as
-the fix. Benign FPR regression suite is the long-term home — add a fixture
+the fix. Benign FPR regression suite is the long-term home: add a fixture
 to `__tests__/nanomind-core/benign-fp-regression.test.ts` (the `bNN` series)
 matching the failing scenario, then fix.
 
-UX-only findings go into `briefs/hma-ux-roundtwo.md` for the next iteration
-— not silently deferred.
+UX-only findings go into `briefs/hma-ux-roundtwo.md` for the next iteration,
+not silently deferred.
 
-## CLAUDE.md snippet (already partially present — cross-reference this path)
+## CLAUDE.md snippet (already partially present, cross-reference this path)
 
 The HMA CLAUDE.md already documents surface coverage, per-finding review,
 and score-jump red flags. After landing this playbook, add one line near the
@@ -579,32 +586,16 @@ New findings append to `briefs/release-findings.md` with numbered entries.
 Ship-blocker classification in the playbook is binding.
 ```
 
-## v2 backlog — what to cover next session
+## v2 backlog: what to cover next session
 
-- A2A surface (scenarios for `../a2a-security-examples/examples/secure-agent-card`
-  — unblocks bugs #2 AST-CRED on `credentials:null`, #3 AIM-002 on
+- A2A surface (scenarios for `../a2a-security-examples/examples/secure-agent-card`,
+  which unblocks bugs #2 AST-CRED on `credentials:null`, #3 AIM-002 on
   bearer-auth example).
 - npm surface (`check express` expected 100; `check <known-vuln-pkg>`).
 - PyPI surface (`check pip:requests` expected ~93).
-- GitHub-repo surface (`check getsentry/sentry-mcp` — regression-proofs
+- GitHub-repo surface (`check getsentry/sentry-mcp`: regression-proofs
   bug #1 fix).
-- URL surface (skipped in session 1 for network risk — pick a stable target).
+- URL surface (skipped in session 1 for network risk; pick a stable target).
 - Standalone SOUL.md files (expand beyond B2's hardened case to include a
   known-weak SOUL).
 - Re-pin the `mega-mcp` canonical fixture so M2 can run.
-
-## Why this playbook exists
-
-On 2026-04-17, commit 6b788c4 shipped with 1627 passing tests and a
-self-scan score of 100/100. A surface walkthrough reported "score sane,
-no crashes." A subsequent per-finding review against the 5-question
-rubric surfaced 7 real bugs (1 fixed, 6 open) and a detection-narrowing
-pattern (TOCTOU, DNA-002, DNA-003) that a generic fresh-user subagent
-would never have caught — it does not know the difference between
-"compiled bundle contains scanner patterns" and "source code leaks
-credentials." The lesson: surface coverage and per-finding review are
-distinct gates. Both run, neither substitutes for the other.
-
-The playbook is the human eye; the benign FPR regression suite is the
-long-term memory; unit tests certify code shape. All three are required.
-This playbook is non-skippable.

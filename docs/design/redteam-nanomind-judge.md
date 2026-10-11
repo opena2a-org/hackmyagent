@@ -12,14 +12,14 @@ target-specific attacks, observes responses, adapts, and maps defenses."* The
 implementation does none of that with NanoMind:
 
 - `src/attack-engine/feedback-loop.ts: executeAttack()` constructs a
-  `SimulationEngine` and then **ignores it**, calling `evaluateAttackHeuristic()`
-  — a regex over the artifact's constraint text. No model, no NanoMind, no agent
+  `SimulationEngine` and then **ignores it**, calling `evaluateAttackHeuristic()`,
+  a regex over the artifact's constraint text. No model, no NanoMind, no agent
   execution.
 - The "observed behavior" it reports (`"Skill complied with social_engineering
   attack: ..."`) is **synthetic**. No agent ran; nothing complied. The string is
   a templated description of a heuristic guess presented as an observation.
 - Every run **auto-exported** these synthetic, self-labeled strings to
-  `~/.opena2a/training-data/labeled-pairs.jsonl` — a path the training pipeline
+  `~/.opena2a/training-data/labeled-pairs.jsonl`, a path the training pipeline
   docstring calls the SFT source. As of the audit the file held 1,405 pairs,
   1,001 (71%) of them the synthetic `"Skill complied/resisted ..."` form, none
   sanitized, all self-labeled.
@@ -48,7 +48,7 @@ engine intelligent. That is the work below.
   text-search fallback that used to stand in for a backend is gone (#446).
 - `src/simulation/index.ts` exposes a `SimulationEngine` with layered probes
   (NanoMind semantic ~8ms → targeted probes → full simulation).
-- `red-team` already builds a `SimulationEngine` instance — it just never calls
+- `red-team` already builds a `SimulationEngine` instance. It just never calls
   it.
 
 The gap is a few function calls, not a new subsystem.
@@ -58,7 +58,7 @@ The gap is a few function calls, not a new subsystem.
 Make NanoMind the **judge** of attack outcomes (phase 1), before making it the
 **author** of attack payloads (phase 2).
 
-### Phase 1 — NanoMind judges resistance (highest correctness win)
+### Phase 1: NanoMind judges resistance (highest correctness win)
 
 Route `executeAttack()` through the existing `SimulationEngine` /
 `executeProbeLLM()`:
@@ -72,7 +72,7 @@ Route `executeAttack()` through the existing `SimulationEngine` /
    is reachable, and label results produced by the fallback as `heuristic` so
    they are never mistaken for an observed run.~~
 
-   **AMENDED 2026-08-05 by #369 — the heuristic is deleted, not retained.**
+   **AMENDED 2026-08-05 by #369: the heuristic is deleted, not retained.**
    It was not an imprecise fallback, it was an inverted one: it scored resistance
    by counting modal-verb sentences, so on the shipped `0.25.1` a jailbreak
    document scored **100% resilient, "All defenses held"** and a benign control
@@ -87,9 +87,9 @@ Route `executeAttack()` through the existing `SimulationEngine` /
    values; only the key separates them) applied to this engine, where the
    structure carrying the polarity is whether an agent actually ran.
 
-   **The no-backend path therefore reports no outcome at all** —
+   **The no-backend path therefore reports no outcome at all**:
    `evaluation.mode: 'not_executed'`, `resilienceScore: null`, no vulnerabilities,
-   exit 2 — per the rule already in `src/ui/artifact-intent.ts`: where a layer
+   exit 2, per the rule already in `src/ui/artifact-intent.ts`: where a layer
    reaches no verdict it says so, and never reports the reassuring end of a scale
    it did not measure. When phase 1 lands, `executed` is the only other mode; do
    not reintroduce a third.
@@ -100,7 +100,7 @@ Acceptance: with the NanoMind daemon up, `red-team <malicious skill>` outcomes
 are decided by the model; with it down, the command still runs and clearly says
 the result is heuristic.
 
-### Phase 2 — NanoMind co-authors payloads (later)
+### Phase 2: NanoMind co-authors payloads (later)
 
 `generateInitialPayloads` / `generateAdaptedPayload` are template-driven today.
 A later phase can have NanoMind propose target-specific payloads from the
@@ -117,7 +117,7 @@ socket-only, add an HTTP shim or a socket backend.
 
 **Confirmed still blocking, measured 2026-08-05:** `analm status` reports the
 daemon `running (ready)` on `/tmp/nanomind-guard.sock` (uptime 344h), and
-`curl --max-time 3 http://127.0.0.1:47200/v1/infer` returns `000` — nothing is
+`curl --max-time 3 http://127.0.0.1:47200/v1/infer` returns `000`: nothing is
 listening on the HTTP port. `NanoMindBackend` cannot reach the shipped daemon.
 The daemon is socket-only, so this needs a socket backend or an HTTP shim; it is
 the first task of phase 1, not a detail inside it.
@@ -145,7 +145,7 @@ Only after phase 1 may export be considered for default-on, and only with:
 - the training **sanitizer** applied (the same one the runbook requires),
 - provenance recorded (`source: attack_session`, backend used, model version),
 - labels treated as **weak/silver**, never as eval ground truth (Red Team only
-  does label-preserving mutations of oracle samples — binding rule).
+  does label-preserving mutations of oracle samples, a binding rule).
 
 Until then, export stays behind `--export-training` and is marked UNSANITIZED.
 
@@ -156,12 +156,12 @@ Until then, export stays behind `--export-training` and is marked UNSANITIZED.
   adaptive engine; the heuristic is a labeled fallback, not the headline.
   RATIONALE: a security tool that fabricates "the agent complied" erodes the
   trust the tool exists to build. ALTERNATIVE REJECTED: keep the heuristic and
-  only soften the wording — leaves a dead, mislabeled feature.
+  only soften the wording, which leaves a dead, mislabeled feature.
 - **[CHIEF-CDS] DECISION:** No `red-team` output reaches the training corpus
   without the sanitizer and real-artifact input. The default path writes
   nothing. RATIONALE: the audit found 1,001 synthetic self-labeled rows already
   accumulated; one pipeline that trusts the docstring would have ingested them.
-  ALTERNATIVE REJECTED: keep auto-export with a warning — warnings do not
+  ALTERNATIVE REJECTED: keep auto-export with a warning. Warnings do not
   un-poison a corpus.
 
 ## Out of scope / tracked separately
@@ -173,8 +173,8 @@ all PRE-EXISTING (before this change every single-file scan scored ~98), now
 narrower but not closed:
 
 - `secure SOUL.md` governance domains (SoulScanner path).
-- Static `HardeningScanner` checks with their own enumerators (e.g. LIFECYCLE-*)
-  — a >1 MB malicious mcp.json scanned as a file still scores higher than the
+- Static `HardeningScanner` checks with their own enumerators (e.g. LIFECYCLE-*):
+  a >1 MB malicious mcp.json scanned as a file still scores higher than the
   same file in a directory (98 vs 80 in testing) because those static checks
   and the scanner-bridge 1 MB AST size limit skip the oversized lone file.
 - The correct end-state is one normalization at the `secure` entry point ("if

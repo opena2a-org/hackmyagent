@@ -110,7 +110,7 @@ Then re-run the scan to confirm the CVEs are resolved.
 
 ## Step 3: ClawHavoc IOC scanning
 
-HMA checks for indicators of compromise (IOCs) associated with the ClawHavoc campaign -- a set of attacks targeting OpenClaw installations discovered in early 2026.
+HMA checks for indicators of compromise (IOCs) associated with the ClawHavoc campaign, a set of attacks targeting OpenClaw installations discovered in early 2026.
 
 IOCs checked:
 
@@ -185,8 +185,8 @@ After upgrading OpenClaw and applying fixes, a clean scan exits with code `0`.
 
 ## Related resources
 
-- [Securing OpenClaw: 6 PRs Merged Upstream](https://opena2a.org/blogs/securing-openclaw-6-prs-merged) -- details on the security improvements contributed to OpenClaw
-- [CVE-2026-25253: OpenClaw WebSocket RCE](https://opena2a.org/blogs/cve-2026-25253-openclaw-rce) -- full disclosure and technical analysis
+- [Securing OpenClaw: 6 PRs Merged Upstream](https://opena2a.org/blogs/securing-openclaw-6-prs-merged): details on the security improvements contributed to OpenClaw
+- [CVE-2026-25253: OpenClaw WebSocket RCE](https://opena2a.org/blogs/cve-2026-25253-openclaw-rce): full disclosure and technical analysis
 
 ## Next steps
 

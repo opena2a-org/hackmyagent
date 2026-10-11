@@ -117,8 +117,8 @@ interface PluginInitOptions {
 
 ### ProjectStore
 
-Private material a plugin writes on a project's behalf — a signing identity,
-a key — never lives inside the project. `fix-all` resolves one `ProjectStore`
+Private material a plugin writes on a project's behalf (a signing identity,
+a key) never lives inside the project. `fix-all` resolves one `ProjectStore`
 per run at `$OPENA2A_HOME/projects/<key>/` (default root `~/.opena2a`; `key`
 is `sha256(realpath(project))[:16]`) and hands it to every plugin through
 `PluginInitOptions.store`. A plugin reads paths from it (`store.aimDir`,
@@ -126,7 +126,7 @@ is `sha256(realpath(project))[:16]`) and hands it to every plugin through
 `agentDir`. Callers that predate the field may omit it; a plugin then resolves
 the store itself with `resolveProjectStore(agentDir)`, exported from
 `hackmyagent`. Everything a plugin does write under `<project>/.opena2a/` is
-public material that is correct to commit — today `signcrypt/signatures.json`
+public material that is correct to commit: today `signcrypt/signatures.json`
 and `skillguard/pins.json`.
 
 ## Registry Functions
