@@ -31,12 +31,15 @@ Artifact → Secure Ingestion → NanoMind Compiler → Signed AST → Analyzers
 ### Analyzers (`analyzers/`)
 | Analyzer | Checks | What It Detects |
 |----------|--------|-----------------|
-| `capability-analyzer.ts` | AST-CAP, AST-EXFIL, AST-INJECT, AST-HEARTBEAT, AST-CRED, AST-PERSIST, AST-GOVERN, AST-MANIP, AST-SCOPE | 10 capability and risk checks |
+| `capability-analyzer.ts` | AST-CAP-001 to 002, AST-EXFIL-001, AST-INJECT-001, AST-HEARTBEAT-001, AST-CRED-001, AST-PERSIST-001, AST-MANIP-001, AST-SCOPE-001 | Undeclared and unconstrained capabilities, exfiltration, injection surfaces, remote instruction fetch, credential harvesting, persistence, NanoMind manipulation, capability-purpose mismatch |
 | `credential-analyzer.ts` | AST-CRED-001 to 003 | Credential exposure, forwarding, hardcoded secrets |
 | `governance-analyzer.ts` | AST-GOV-001 to 005 | Governance gaps, weak constraints, override resistance |
-| `scope-analyzer.ts` | AST-SCOPE-001 to 003 | Wildcard access, undeclared permissions, scope mismatch |
+| `scope-analyzer.ts` | AST-SCOPE-001 to 004 | Wildcard access and unbounded skill permissions, undeclared permissions, scope mismatch, adversarial configuration directives |
 | `prompt-analyzer.ts` | AST-PROMPT-001 to 004 | Jailbreak susceptibility, capability creep, authority confusion |
 | `code-analyzer.ts` | AST-CODE-001 to 003 | Command injection, unsafe deserialization, path traversal |
+| `stego-analyzer.ts` | UNICODE-STEGO-001, UNICODE-STEGO-004 to 005 | Hidden Unicode (variation selectors, zero-width and bidi characters, tag characters, homoglyphs); separates emoji and i18n use from payload encoding |
+
+AST-CRED-001 and AST-SCOPE-001 are emitted by both the capability analyzer and the credential or scope analyzer. Weak or missing constraints are reported by the governance analyzer (AST-GOV-002, AST-GOV-003), not the capability analyzer.
 
 ### Security (`security/`)
 - `defense-in-depth.ts`: 7 rules (severity floor, benign consensus, secret redaction, AST integrity, training provenance, audit logging)
@@ -60,7 +63,8 @@ const govFindings = analyzeGovernance(ast, compiler.verifyAST.bind(compiler));
 
 ## Tests
 
-172 tests across 7 test files. Run with:
+Tests live in `__tests__/nanomind-core/`. Count the test files with
+`find __tests__/nanomind-core -name '*.test.ts' | wc -l`, and run them with:
 ```bash
 npx vitest run __tests__/nanomind-core/
 ```
