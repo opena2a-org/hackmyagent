@@ -12,9 +12,8 @@ issue: 1004
   words is reported as missing the control. `scan-soul` says so under
   `Detection` and prints a clause that satisfies the match under `By hand:`.
   Appending that clause to the fixture's SOUL.md takes `scan-soul` to exit 0
-  (Level PARTIAL ESSENTIAL, 18/100, read as the `conversational` profile with
-  4 of 9 domains evaluated) and leaves `secure` at 98/100; that is the
-  measured workaround. Present in 0.33.2, where `scan-soul` prints the same
-  score, level and exit code and `secure` exits 0 at 93/100; the `scan-soul`
-  half is listed under the 0.30.0 Known issues. Target 0.35.0
+  and leaves `secure` at 98/100; that is the measured workaround. Present in
+  0.33.2, where `scan-soul` prints the same score, level and exit code and
+  `secure` exits 0 at 93/100; the `scan-soul` half is listed under the 0.30.0
+  Known issues. Target 0.35.0
   ([#1004](https://github.com/opena2a-org/hackmyagent/issues/1004)).
