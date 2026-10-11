@@ -101,9 +101,11 @@ describe('README front door', () => {
   it('has a Telemetry section naming what --version prints and the opt-out the CLI help names', () => {
     const telemetry = section('## Telemetry');
     expect(telemetry).toMatch(/`Telemetry: on/);
-    // The variable the CLI's own --help text tells a user to set.
+    // The variable the CLI's own --help text tells a user to set. The help
+    // line is one branch of a quoted on/off choice (#986), so only the
+    // NAME=value is taken, not the quote and brace after it.
     const cli = readFileSync(path.join(ROOT, 'src', 'cli.ts'), 'utf8');
-    const optOut = /Usage telemetry is on[^\n]*Disable: (\S+)/.exec(cli);
+    const optOut = /Usage telemetry is on[^\n]*Disable: ([A-Z0-9_]+=\w+)/.exec(cli);
     expect(optOut, 'src/cli.ts no longer states the usage-telemetry opt-out').not.toBeNull();
     expect(telemetry).toContain(optOut![1]);
     expect(telemetry).toContain('hackmyagent telemetry off');

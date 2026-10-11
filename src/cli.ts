@@ -114,6 +114,12 @@ let currentCommandName: string | undefined;
 let telemetryTracked = false;
 /** Installed by the telemetry wiring, which is where `tele` is in scope. */
 let postTelemetry: ((name: string, startedAt: number, exitCode: number, reason?: ExitReason) => Promise<void>) | undefined;
+/**
+ * Live usage-telemetry state for the root `--help` footer. Set by the telemetry
+ * wiring from the same status object the `--version` line prints, before
+ * Commander parses, so the two never disagree (#986).
+ */
+let usageTelemetryEnabled: boolean | undefined;
 
 /**
  * Post the command event, at most once, waiting no longer than the flush bound.
@@ -728,10 +734,14 @@ Quick start:
 
 // Two-bucket telemetry disclosure (scan-result telemetry policy §7).
 // Surfaces both consent rails on --help so
-// users see the boundary without reading the privacy policy.
-program.addHelpText('after', `
+// users see the boundary without reading the privacy policy. A function, not a
+// string: the usage-telemetry line states the live on/off state, which is only
+// known once main() has loaded the telemetry config (#986).
+program.addHelpText('after', () => `
 Telemetry:
-  Usage telemetry is on and each event carries a persistent install ID. Disable: OPENA2A_TELEMETRY=off
+  ${usageTelemetryEnabled === false
+    ? 'Usage telemetry is off, so no usage events are sent. When on, each event carries a persistent install ID.'
+    : 'Usage telemetry is on and each event carries a persistent install ID. Disable: OPENA2A_TELEMETRY=off'}
   It is off under CI and test runners (CI, GITHUB_ACTIONS, VITEST, JEST_WORKER_ID, ...) unless OPENA2A_TELEMETRY=on.
   Local scans may contribute to the OpenA2A Registry once you have opted in. Disable: --no-contribute,
   or set contribute.enabled to false in ~/.opena2a/config.json. '${CLI_PREFIX} telemetry off' covers usage telemetry only.
@@ -16009,10 +16019,12 @@ async function checkNpmPackage(
   // writes everything to stdout) so the bare version goes to stdout and the
   // telemetry disclosure goes to stderr — `hackmyagent --version` stays a
   // clean, single, parseable line while the privacy disclosure still prints.
-  const vparts = versionLineParts({ tool: 'hackmyagent', version: VERSION, telemetry: tele.status() });
+  const telemetryStatus = tele.status();
+  usageTelemetryEnabled = telemetryStatus.enabled;
+  const vparts = versionLineParts({ tool: 'hackmyagent', version: VERSION, telemetry: telemetryStatus });
   const automationOff = automationOffReason(process.env, telemetryEnabledOtherwise);
   const versionDisclosure = automationOff
-    ? `${colors.dim}Telemetry: off (${automationOff}  •  details: ${tele.status().policyURL.replace(/^https?:\/\//, '')})${RESET()}`
+    ? `${colors.dim}Telemetry: off (${automationOff}  •  details: ${telemetryStatus.policyURL.replace(/^https?:\/\//, '')})${RESET()}`
     : vparts.stderr;
   const printVersionAndExit = (): never => {
     process.stdout.write(vparts.stdout + '\n');
