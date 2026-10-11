@@ -379,7 +379,7 @@ import {
   type ReadFailureRecord,
 } from './check/verdict';
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
-import { scanNameWithoutUserinfo, withoutUrlUserinfo } from './check/url-userinfo';
+import { scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from './check/url-userinfo';
 import { FIX_LINES } from './hardening/fix-lines';
 import {
   summarizeCoverage,
@@ -8658,14 +8658,15 @@ Examples:
       if (!report.verdict.measured && (options.versionId || options.registryReport) && format === 'text') {
         console.log('\nRegistry: not reported — this run measured nothing about the target.');
       }
-      // The registry gets the target URL without its userinfo, the same name
-      // on every path, in the report's `target` too.
-      const registryTargetName = withoutUrlUserinfo(target.url || targetUrl || 'unknown', 'fetch');
+      // The registry gets the target URL without its userinfo, query string
+      // and fragment (a key passed to the endpoint lives in the query), the
+      // same name on every path, in the report's `target` too.
+      const registryTargetName = withoutUrlQueryAndFragment(withoutUrlUserinfo(target.url || targetUrl || 'unknown', 'fetch'));
       if (shouldReport) {
         try {
           const core = await import('./index');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const registryReport = { ...report, target: withoutUrlUserinfo(report.target, 'fetch') };
+          const registryReport = { ...report, target: withoutUrlQueryAndFragment(withoutUrlUserinfo(report.target, 'fetch')) };
 
           if (options.versionId) {
             // Authenticated path: existing behavior (version-id + API key)

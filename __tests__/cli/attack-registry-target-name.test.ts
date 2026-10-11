@@ -61,8 +61,12 @@ let base = '';
 let stub: ChildProcess | undefined;
 let backslashRun: Run;
 let emptyUserinfoRun: Run;
+let queryRun: Run;
 let backslashTarget = '';
 let emptyUserinfoTarget = '';
+let queryTarget = '';
+/** The key-shaped query a target URL may carry; built so that no line spells a key. */
+const QUERY_KEY = ['FAKE', 'PLACEHOLDER', '123'].join('-');
 
 function captured(): CapturedRequest[] {
   const raw = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, 'utf8') : '';
@@ -130,7 +134,9 @@ beforeAll(async () => {
   emptyUserinfoTarget = `http://@localhost:${port}/v1/chat/completions`;
   backslashRun = attack('backslash', backslashTarget, ['--publish']);
   emptyUserinfoRun = attack('empty-userinfo', emptyUserinfoTarget, ['--registry-report', '--publish']);
-}, 400_000);
+  queryTarget = `${base}/v1/chat/completions?api_key=${QUERY_KEY}#frag`;
+  queryRun = attack('query', queryTarget, ['--registry-report', '--publish']);
+}, 600_000);
 
 afterAll(() => {
   stub?.kill();
@@ -156,6 +162,28 @@ describe('attack sends the registry one name for a target URL', () => {
     expect(published[0].name).toBe(backslashTarget);
     expect(posts(backslashRun, '/api/v1/registry/community/request-scan-token').map((b) => b.packageName))
       .toEqual([backslashTarget]);
+  });
+
+  it('--registry-report and --publish send the name without the query string and fragment, so a key in the query stays out of the registry', () => {
+    const expected = `http://localhost:${new URL(base).port}/v1/chat/completions`;
+    // The target itself was reached with its query, as typed.
+    expect(queryRun.requests.some((q) => q.url === `/v1/chat/completions?api_key=${QUERY_KEY}`), queryRun.out).toBe(true);
+    const tokenNames = posts(queryRun, '/api/v1/registry/community/request-scan-token').map((b) => b.packageName);
+    const reports = posts(queryRun, '/api/v1/registry/community/scan-result');
+    const published = posts(queryRun, '/api/v1/trust/publish');
+    expect(tokenNames, queryRun.out).toEqual([expected, expected]);
+    expect(reports.map((b) => b.packageName), queryRun.out).toEqual([expected]);
+    expect(reports[0].rawReport.target).toBe(expected);
+    expect(published.map((b) => b.name), queryRun.out).toEqual([expected]);
+    // The name is in every registry request, and the key in none of them.
+    for (const q of queryRun.requests.filter((r) => r.url.startsWith('/api/'))) {
+      expect(q.body, `${q.method} ${q.url}`).not.toContain(QUERY_KEY);
+    }
+    // The printed profile link is built from the same name.
+    const profile = queryRun.out.split('\n').filter((l) => l.includes('Profile:'));
+    expect(profile, queryRun.out).toHaveLength(1);
+    expect(profile[0]).toContain(`/agents/${expected}`);
+    expect(profile[0]).not.toContain(QUERY_KEY);
   });
 
   it('--publish on a URL target sends no treeHash (it hashed the working directory before)', () => {

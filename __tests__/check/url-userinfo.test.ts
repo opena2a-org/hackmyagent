@@ -8,7 +8,7 @@
  * part and the rest, so no line of this file spells a credential-bearing URL.
  */
 import { describe, it, expect } from 'vitest';
-import { scanNameWithoutUserinfo, withoutUrlUserinfo } from '../../src/check/url-userinfo';
+import { scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from '../../src/check/url-userinfo';
 
 const SECRET = ['FAKE', 'secret', '123'].join('');
 
@@ -207,6 +207,34 @@ describe('scanNameWithoutUserinfo', () => {
     expect(scanNameWithoutUserinfo(name)).toBe(name);
     expect(scanNameWithoutUserinfo(name + '/x')).toBe('/x');
     expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
+describe('withoutUrlQueryAndFragment', () => {
+  it('drops the query string, where a key passed to an endpoint lives', () => {
+    expect(withoutUrlQueryAndFragment(`https://agent.example/v1/chat/completions?api_key=${SECRET}`))
+      .toBe('https://agent.example/v1/chat/completions');
+  });
+
+  it('drops the fragment, with or without a query', () => {
+    expect(withoutUrlQueryAndFragment('https://agent.example/v1/chat#frag')).toBe('https://agent.example/v1/chat');
+    expect(withoutUrlQueryAndFragment(`https://agent.example/v1/chat?k=${SECRET}#frag`)).toBe('https://agent.example/v1/chat');
+  });
+
+  it('cuts at the first `?` or `#`, whichever comes first', () => {
+    expect(withoutUrlQueryAndFragment('https://agent.example/a#b?c')).toBe('https://agent.example/a');
+    expect(withoutUrlQueryAndFragment('https://agent.example/a?b#c')).toBe('https://agent.example/a');
+  });
+
+  it('keeps a URL with no query or fragment, and a string that is not a URL', () => {
+    expect(withoutUrlQueryAndFragment('http://localhost:8080/v1/chat/completions')).toBe('http://localhost:8080/v1/chat/completions');
+    expect(withoutUrlQueryAndFragment('unknown')).toBe('unknown');
+    expect(withoutUrlQueryAndFragment('what?#')).toBe('what?#');
+  });
+
+  it('after withoutUrlUserinfo, a masked userinfo with a `?` in its password is gone before the cut', () => {
+    const typed = withUserinfo('https', `alice:pa?ss${SECRET}`, 'agent.example/v1/chat?api_key=k');
+    expect(withoutUrlQueryAndFragment(withoutUrlUserinfo(typed, 'fetch'))).toBe('https://***@agent.example/v1/chat');
   });
 });
 
