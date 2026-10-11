@@ -40,14 +40,17 @@ export const ORACLE_LABELS = [
 
 export type OracleLabel = typeof ORACLE_LABELS[number];
 
-export type OracleSurface =
-  | 'skill'
-  | 'soul'
-  | 'mcp'
-  | 'arp-input'
-  | 'training-sample'
-  | 'veil-payload'
-  | 'aiis-signature';
+export const ORACLE_SURFACES = [
+  'skill',
+  'soul',
+  'mcp',
+  'arp-input',
+  'training-sample',
+  'veil-payload',
+  'aiis-signature',
+] as const;
+
+export type OracleSurface = typeof ORACLE_SURFACES[number];
 
 /** Surfaces that get a row of their own in the report and a line in the release gate. */
 export const REPORTED_SURFACES: readonly OracleSurface[] = ['skill', 'soul', 'mcp', 'arp-input'];
@@ -433,10 +436,14 @@ export async function runOracleEval(oracleDir: string): Promise<OracleEvalReport
 
 /** Comma-separated `items`, wrapped to `width` columns with every line behind `indent`. */
 function wrapList(items: readonly string[], indent: string, width = 80): string[] {
+  return wrapWords(items.map((item, i) => (i < items.length - 1 ? `${item},` : item)), indent, width);
+}
+
+/** `pieces` joined by spaces, wrapped to `width` columns with every line behind `indent`. */
+function wrapWords(pieces: readonly string[], indent: string, width = 80): string[] {
   const lines: string[] = [];
   let line = '';
-  items.forEach((item, i) => {
-    const piece = i < items.length - 1 ? `${item},` : item;
+  pieces.forEach((piece) => {
     if (line && indent.length + line.length + 1 + piece.length > width) {
       lines.push(indent + line);
       line = '';
@@ -455,8 +462,16 @@ function wrapList(items: readonly string[], indent: string, width = 80): string[
  */
 export function oracleFormatHelp(): string {
   const pct = (n: number) => (n * 100).toFixed(1) + '%';
-  const surfaces = `${REPORTED_SURFACES.slice(0, -1).join(', ')} or ${REPORTED_SURFACES[REPORTED_SURFACES.length - 1]}`;
+  const orList = (items: readonly string[]) => `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`;
   const valueIndent = ' '.repeat(22);
+  // Every surface a label.json can carry: the reported ones get a row of
+  // their own, the rest are scanned and counted in the overall row only.
+  const unreported = ORACLE_SURFACES.filter(s => !REPORTED_SURFACES.includes(s));
+  const surfaceRow = wrapWords(
+    `${orList(REPORTED_SURFACES)}, each reported on a row of its own; ${orList(unreported)}, counted only in the overall row`.split(' '),
+    valueIndent,
+  );
+  surfaceRow[0] = `    surface           ${surfaceRow[0].trimStart()}`;
   return [
     '',
     'Fixture format:',
@@ -464,7 +479,7 @@ export function oracleFormatHelp(): string {
     '  A directory without one is searched for fixtures further down.',
     '',
     '  label.json fields:',
-    `    surface           ${surfaces}`,
+    ...surfaceRow,
     '    expectedLabel     benign, or the attack class the fixture carries:',
     ...wrapList(ORACLE_LABELS.filter(l => l !== 'benign'), valueIndent),
     '    expectedSeverity  critical, high, medium, low, info or none',

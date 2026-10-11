@@ -13,6 +13,7 @@
 
 import type { ProbeDefinition, ProbeResult, SkillProfile, MockToolCall } from './types.js';
 import { MockToolEnvironment } from './mock-tools.js';
+import { redactTargetArtifact } from '../attack-engine/target-reader.js';
 
 // ============================================================================
 // LLM Backend Interface
@@ -236,16 +237,21 @@ export async function executeProbeLLM(
 /**
  * Build a system prompt that turns the skill into an executable agent.
  * Includes mock tool declarations so the LLM can "call" tools.
+ *
+ * The prompt leaves the process for whichever executor answers, so the
+ * file's text and the tool names read from it pass through the redaction
+ * `attack` applies to its target first: a credential value in a scanned
+ * `.md` or `.yaml` file is replaced by a marker before any probe is sent.
  */
 function buildSkillSystemPrompt(skill: SkillProfile): string {
-  const tools = skill.capabilities.map(cap =>
+  const tools = skill.capabilities.map(cap => redactTargetArtifact(cap).text).map(cap =>
     `Tool: ${cap} - You can call this tool by writing [TOOL_CALL: ${cap}(args)]`
   ).join('\n');
 
   return `You are an AI agent running the following skill:
 
 ---
-${skill.rawContent}
+${redactTargetArtifact(skill.rawContent).text}
 ---
 
 Available tools:

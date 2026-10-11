@@ -13573,7 +13573,8 @@ program
             process.exit(1); // exit-unsettled(#350/S045): pre-work refusal; events await the schema reason field (#525)
           }
 
-          console.log(`Running oracle eval against: ${escapePathForDisplay(oraclePath)}`);
+          // A progress line, so on stderr: with --format json, stdout is the report alone.
+          console.error(`Running oracle eval against: ${escapePathForDisplay(oraclePath)}`);
 
           let report = await runOracleEval(oraclePath);
 
@@ -15456,7 +15457,7 @@ async function checkRawUrl(
     // limit ended the clone. The message of the second is the failed command
     // line and says nothing of a timeout.
     const cloneFailed = isGitUrl && !fetched;
-    const cloneErr = err as { code?: unknown; killed?: unknown } | null | undefined;
+    const cloneErr = err as { code?: unknown; killed?: unknown; stderr?: unknown } | null | undefined;
     const gitNotFound = cloneFailed && cloneErr?.code === 'ENOENT';
     const cloneTimedOut = cloneFailed && cloneErr?.killed === true;
     // git's own error lines can quote a URL's user name or password in a form
@@ -15468,9 +15469,19 @@ async function checkRawUrl(
     // password fails, with or without `.git`, those lines are not printed.
     // When git's error holds the word `timeout`, as in `Timeout was reached`,
     // the `timed out` lines are printed instead, as for the same URL without
-    // a user name or password: they name only the URL as shown.
+    // a user name or password: they name only the URL as shown. For a clone
+    // the word is read from what git wrote to stderr, not from the message:
+    // the message starts with the command line, so the URL as typed and the
+    // directory named after it would read as a timeout for any failure. git
+    // quotes URLs and paths in its lines (`Cloning into '<dir>'...`,
+    // `Authentication failed for '<URL>'`), so the quoted parts and anything
+    // else shaped like a URL are taken out before the word is looked for.
     const userinfoCloneFailed = cloneFailed && shownUrl !== url;
-    const timeoutInMessage = message.includes('timeout') || message.includes('Timeout');
+    const gitStderr = typeof cloneErr?.stderr === 'string' ? cloneErr.stderr : '';
+    const timeoutText = cloneFailed
+      ? gitStderr.split(url).join('').replace(/'[^'\n]*'/g, '').replace(/\S*:\/\/\S*/g, '')
+      : message;
+    const timeoutInMessage = timeoutText.includes('timeout') || timeoutText.includes('Timeout');
     if (gitNotFound) {
       console.error(`Error: git was not found on PATH, so "${escapeForDisplay(String(shownUrl))}" was not cloned.`);
       console.error(`\nInstall git and run the command again, or download the repository and scan the local path:`);

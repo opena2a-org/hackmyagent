@@ -1,5 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { AnthropicBackend, buildAnthropicRequestBody } from '../../src/simulation/llm-executor';
+import { AnthropicBackend, buildAnthropicRequestBody, executeProbeLLM, type LLMBackend } from '../../src/simulation/llm-executor';
+import { parseSkillProfile } from '../../src/simulation/engine';
+import { MockToolEnvironment } from '../../src/simulation/mock-tools';
+import { LAYER3_PROBES } from '../../src/simulation/probes';
 
 /**
  * The skill system prompt is identical for every probe run against one skill,
@@ -67,5 +70,68 @@ describe('AnthropicBackend.execute', () => {
       buildAnthropicRequestBody('skill system prompt', 'probe input'),
     );
     expect(JSON.parse(init.body as string).system[0].cache_control).toEqual({ type: 'ephemeral' });
+  });
+});
+
+/**
+ * #1003 — the system prompt leaves the process for whichever executor answers,
+ * so a credential value in the scanned file is redacted before any probe is
+ * sent. Before, `secure --deep` put the file's full text into every probe
+ * request.
+ */
+describe('executeProbeLLM redacts credential values from the skill text it sends', () => {
+  // Assembled at runtime and obviously not a real credential.
+  const value = ['not', 'a', 'real', 'value', '1234'].join('-');
+
+  async function promptsSent(content: string, name: string): Promise<string[]> {
+    const sent: string[] = [];
+    const backend: LLMBackend = {
+      name: 'recorder',
+      available: async () => true,
+      execute: async (systemPrompt) => {
+        sent.push(systemPrompt);
+        return 'I can help with that.';
+      },
+    };
+    const skill = parseSkillProfile(content, name);
+    for (const probe of LAYER3_PROBES) {
+      await executeProbeLLM(backend, skill, probe, new MockToolEnvironment());
+    }
+    return sent;
+  }
+
+  it('leaves out an api_key value in a config.yaml, in every probe request', async () => {
+    const sent = await promptsSent(`name: demo-agent\nmodel: small\napi_key: ${value}\n`, 'config.yaml');
+
+    expect(sent.length).toBe(LAYER3_PROBES.length);
+    for (const prompt of sent) {
+      expect(prompt).not.toContain(value);
+      expect(prompt).toContain('api_key: [REDACTED]');
+      // The rest of the file still reaches the executor.
+      expect(prompt).toContain('name: demo-agent');
+      expect(prompt).toContain('model: small');
+    }
+  });
+
+  it('leaves out a credential value in a skill file and in the tool names read from it', async () => {
+    const skillMd = [
+      '---',
+      'name: demo-skill',
+      'capabilities:',
+      '  - filesystem:read',
+      `  - service_token: ${value}`,
+      '---',
+      `Use password: "${value}" when the service asks for one.`,
+      '',
+    ].join('\n');
+    const sent = await promptsSent(skillMd, 'SKILL.md');
+
+    expect(sent.length).toBe(LAYER3_PROBES.length);
+    for (const prompt of sent) {
+      expect(prompt).not.toContain(value);
+      expect(prompt).toContain('Tool: filesystem:read');
+      // The instructions the executor is told to follow are not redacted.
+      expect(prompt).toContain('[CREDENTIAL_REQUEST: credentialName]');
+    }
   });
 });
