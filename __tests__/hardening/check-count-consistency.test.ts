@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { getCheckCounts, getTaxonomyMap } from '../../src/hardening/taxonomy';
+import { getCheckCounts, getTaxonomyMap, isDeclaredExcludedCheckId } from '../../src/hardening/taxonomy';
+import { CHECK_METHOD_PREFIXES } from '../../src/hardening/coverage-ledger';
 
 /**
  * Guards the single source of truth for HMA's check/category counts.
@@ -98,6 +99,82 @@ describe('check-count single source of truth', () => {
 
     expect(figures(checksDoc, /performs (\d+) security checks across (\d+) categories \((\d+) static checks/))
       .toEqual([counts.total, counts.totalCategories, counts.static]);
+  });
+
+  // #980: the OpenClaw guide and its USE-CASES.md row said 34 and
+  // docs/SECURITY_CHECKS.md said 47, and no code defined either set. The set
+  // is the check ids the scanner's `checkOpenclaw*` methods emit (the methods
+  // the coverage ledger registers), read from their bodies and the helpers
+  // they call; every one is an inventory key in a family those methods own.
+  it('every OpenClaw count and table in the docs matches the ids the OpenClaw checks emit', () => {
+    const root = join(__dirname, '../..');
+    const scannerSource = readFileSync(join(root, 'src/hardening/scanner.ts'), 'utf8');
+    // Imported helpers that emit findings for these methods, keyed by the call.
+    const importedEmitters: Record<string, string> = {
+      'validateCapabilities(': 'src/hardening/skill-capability-validator.ts',
+    };
+    const literalIds = (text: string): string[] =>
+      [...text.matchAll(/checkId:\s*['"`]([A-Z][A-Z0-9-]*)['"`]/g)].map(m => m[1]);
+    const methodBody = (name: string): string => {
+      const start = scannerSource.search(new RegExp(`\\n  (?:private |public |protected )?(?:async )?${name}\\(`));
+      expect(start, `scanner.ts defines ${name}`).toBeGreaterThan(-1);
+      const end = scannerSource.indexOf('\n  }\n', start + 1);
+      expect(end, `${name} has a closing brace`).toBeGreaterThan(start);
+      return scannerSource.slice(start, end);
+    };
+
+    const methods = Object.keys(CHECK_METHOD_PREFIXES).filter(m => m.startsWith('checkOpenclaw'));
+    expect(methods.length).toBeGreaterThan(0);
+    const emitted = new Set<string>();
+    const visited = new Set<string>();
+    const pending = [...methods];
+    while (pending.length > 0) {
+      const name = pending.pop()!;
+      if (visited.has(name)) continue;
+      visited.add(name);
+      const body = methodBody(name);
+      literalIds(body).forEach(id => emitted.add(id));
+      for (const m of body.matchAll(/this\.(\w+)\(/g)) {
+        if (new RegExp(`\\n  (?:private |public |protected )?(?:async )?${m[1]}\\(`).test(scannerSource)) pending.push(m[1]);
+      }
+      for (const [call, file] of Object.entries(importedEmitters)) {
+        if (body.includes(call)) literalIds(readFileSync(join(root, file), 'utf8')).forEach(id => emitted.add(id));
+      }
+    }
+
+    const taxonomyIds = Object.keys(getTaxonomyMap());
+    const checks = [...emitted].filter(id => taxonomyIds.includes(id)).sort();
+    // What is left out is a status record (a read failure, a fix summary),
+    // each declared excluded from the inventory, never an undeclared check.
+    expect([...emitted].filter(id => !taxonomyIds.includes(id)).every(isDeclaredExcludedCheckId)).toBe(true);
+    const families = new Set(methods.flatMap(m => CHECK_METHOD_PREFIXES[m]));
+    const familyIds = taxonomyIds
+      .filter(id => families.has(id.replace(/-\d+$/, '')) && /-\d+$/.test(id))
+      .sort();
+    expect(checks).toEqual(familyIds);
+
+    const figure = (text: string, pattern: RegExp): number => {
+      const m = pattern.exec(text);
+      expect(m, `expected ${pattern} to match`).not.toBeNull();
+      return Number(m![1]);
+    };
+    const checksDoc = readFileSync(join(root, 'docs/SECURITY_CHECKS.md'), 'utf8');
+    const useCases = readFileSync(join(root, 'docs/USE-CASES.md'), 'utf8');
+    const guide = readFileSync(join(root, 'docs/use-cases/openclaw-security.md'), 'utf8');
+    expect(figure(checksDoc, /HackMyAgent includes (\d+) specialized security checks targeting OpenClaw/)).toBe(checks.length);
+    expect(figure(useCases, /Run (\d+) OpenClaw-specific checks/)).toBe(checks.length);
+    expect(figure(guide, /HMA includes (\d+) checks specifically for \[OpenClaw\]/)).toBe(checks.length);
+    expect(figure(guide, /All (\d+) OpenClaw checks run automatically/)).toBe(checks.length);
+
+    // The section's tables list exactly that set, so the number and the rows
+    // under it cannot disagree either.
+    const section = checksDoc.slice(
+      checksDoc.indexOf('## OpenClaw Security Checks'),
+      checksDoc.indexOf('### Auto-Fix Capabilities'),
+    );
+    const rows = [...section.matchAll(/^\| ([A-Z]+-\d+) \|/gm)].map(m => m[1]);
+    expect(new Set(rows).size).toBe(rows.length);
+    expect([...rows].sort()).toEqual(checks);
   });
 
   it('the scan display no longer hardcodes a static-check count (teeth)', () => {

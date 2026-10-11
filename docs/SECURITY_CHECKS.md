@@ -401,7 +401,7 @@ HackMyAgent performs 362 security checks across 86 categories (317 static checks
 
 ## OpenClaw Security Checks
 
-OpenClaw (Moltbot) is a popular AI agent framework. HackMyAgent includes 47 specialized security checks targeting OpenClaw-specific attack vectors, including the ClawHavoc malware campaign, CVE-2026-25253, and related vulnerabilities.
+OpenClaw (Moltbot) is a popular AI agent framework. HackMyAgent includes 56 specialized security checks targeting OpenClaw-specific attack vectors, including the ClawHavoc malware campaign, CVE-2026-25253, and related vulnerabilities.
 
 ### Usage
 
@@ -417,7 +417,7 @@ With no directory argument the command scans a real directory in your home folde
 there rewrites real files (skill files included). Name the directory and preview with
 `--dry-run` first.
 
-### SKILL Checks (SKILL-001 to SKILL-012)
+### SKILL Checks (SKILL-001 to SKILL-012, SKILL-018 to SKILL-025)
 
 Detects malicious skills, including patterns from the ClawHavoc campaign.
 
@@ -435,12 +435,20 @@ Detects malicious skills, including patterns from the ClawHavoc campaign.
 | SKILL-010 | Medium | No | Untrusted publisher: skill from unverified publisher |
 | SKILL-011 | High | No | Persistence mechanism: skill installs cron/launchd/systemd entries |
 | SKILL-012 | Critical | No | ClawHavoc signature: matches known ClawHavoc malware patterns |
+| SKILL-018 | Medium | No | Undeclared capability: skill uses a capability not declared in its frontmatter |
+| SKILL-019 | Medium | Yes | Stale skill signature: skill content changed after it was signed (signature hash mismatch) |
+| SKILL-020 | Medium (High with a malice signal) | No | Missing or incomplete frontmatter: skill lacks a YAML frontmatter block with name, version and capabilities |
+| SKILL-021 | High | No | Overprivileged permissions: skill declares a capability combination that enables exfiltration |
+| SKILL-022 | Critical | No | Environment variable exfiltration risk: skill reads environment variables and has outbound network capability |
+| SKILL-023 | High | No | Obfuscated code pattern: skill contains obfuscated code that may hide its behavior |
+| SKILL-024 | Medium | No | Unbounded tool chaining: skill declares tool:chain without maxIterations or iterationLimit |
+| SKILL-025 | Critical | No | Hardcoded credential in skill: skill file contains a credential value |
 
 **ClawHavoc Campaign:** A malware campaign targeting OpenClaw users through malicious skills distributed via unofficial channels. Skills contain reverse shells, credential stealers, and persistence mechanisms.
 
 **ClickFix Attacks:** Social engineering technique where malicious skills manipulate clipboard contents to trick users into executing harmful commands.
 
-### HEARTBEAT Checks (HEARTBEAT-001 to HEARTBEAT-006)
+### HEARTBEAT Checks (HEARTBEAT-001 to HEARTBEAT-007)
 
 Detects heartbeat/cron abuse and persistence mechanisms.
 
@@ -452,6 +460,7 @@ Detects heartbeat/cron abuse and persistence mechanisms.
 | HEARTBEAT-004 | Medium | Yes | Missing heartbeat auth: heartbeat endpoint lacks authentication |
 | HEARTBEAT-005 | High | No | Heartbeat data exfil: heartbeat payload contains sensitive data |
 | HEARTBEAT-006 | Critical | No | Cron backdoor: heartbeat registered malicious cron entries |
+| HEARTBEAT-007 | High | Yes | Expired heartbeat: skill signature passed its expires_at date and needs renewal |
 
 ### GATEWAY Checks (GATEWAY-001 to GATEWAY-008)
 
@@ -519,8 +528,10 @@ The following OpenClaw checks can be automatically fixed:
 | Check ID | Auto-Fix Action |
 |----------|-----------------|
 | SKILL-009 | Reduce skill permissions to minimum required |
+| SKILL-019 | Recompute the hash and rewrite the skill's signature block |
 | HEARTBEAT-001 | Remove unauthorized heartbeat configuration |
 | HEARTBEAT-004 | Add authentication to heartbeat endpoint |
+| HEARTBEAT-007 | Renew the skill signature with a 7-day expiry |
 | GATEWAY-001 | Patch GHSA-g8p2 vulnerability |
 | GATEWAY-002 | Bind gateway to 127.0.0.1 |
 | GATEWAY-003 | Enable API key authentication |
