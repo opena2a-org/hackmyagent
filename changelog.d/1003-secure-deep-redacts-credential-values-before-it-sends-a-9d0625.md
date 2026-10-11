@@ -8,8 +8,18 @@ issue: 1003
   file into the system prompt of every probe request, so a credential value in
   that file, such as an `api_key:` line in `config.yaml`, reached the probe
   executor. The text and the tool names read from it now pass through the
-  redaction `attack` applies to its target, and the value is sent as
-  `[REDACTED]`. This holds for every output format.
+  redaction `attack` applies to its target, so a value in a shape it
+  recognises is sent as a marker: a known key or token format, a password in
+  a URL, or a value of 8 or more characters with no space in it after a
+  credential-named key, as in `api_key: <value>`. A shorter value or a
+  credential written in prose is still sent as written. This holds for every
+  output format.
+- A scanned file over 1 MiB is now sent no probe by `secure --deep`. The
+  redaction withholds content over that size whole, so the probes would have
+  seen only the withheld marker. The file is listed with the reason under
+  `notSimulated` in the `simulation` block of `--json` and on a `NOT
+  SIMULATED` line on stderr, and the block's `status` is `measured` only when
+  a probe ran (`not-measured` when every file reached is over the limit).
 - `check <git URL>` printed `Error: Fetching "<URL>" timed out.` for a clone
   that failed for another reason, such as an authentication failure, when the
   user name, password or path of the URL held the word `timeout` or `Timeout`.

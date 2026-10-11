@@ -15476,10 +15476,15 @@ async function checkRawUrl(
     // quotes URLs and paths in its lines (`Cloning into '<dir>'...`,
     // `Authentication failed for '<URL>'`), so the quoted parts and anything
     // else shaped like a URL are taken out before the word is looked for.
+    // The stderr is the remote server's to fill (git prints an HTTP error
+    // body as `remote:` lines, up to the 1 MiB buffer), so every pass over it
+    // is linear: a URL is dropped as a whole whitespace-delimited word that
+    // holds `://`. A pattern that backtracks on a long word without `://`
+    // took minutes on a 1 MiB line.
     const userinfoCloneFailed = cloneFailed && shownUrl !== url;
     const gitStderr = typeof cloneErr?.stderr === 'string' ? cloneErr.stderr : '';
     const timeoutText = cloneFailed
-      ? gitStderr.split(url).join('').replace(/'[^'\n]*'/g, '').replace(/\S*:\/\/\S*/g, '')
+      ? gitStderr.split(url).join('').replace(/'[^'\n]*'/g, '').replace(/\S+/g, (word) => (word.includes('://') ? '' : word))
       : message;
     const timeoutInMessage = timeoutText.includes('timeout') || timeoutText.includes('Timeout');
     if (gitNotFound) {

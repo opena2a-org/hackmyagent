@@ -53,15 +53,43 @@ printf "fatal: unable to access '%s/': Failed to connect to gitlab.com port 443 
 exit 128
 `;
 
+// Stands in for a git that follows a redirect before the clone is refused: the
+// `redirecting to` line names a URL that holds `timeout`, unquoted, as git
+// prints it.
+const GIT_REDIRECT_THEN_AUTH_FAILS = `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in https://*) url="$arg" ;; esac
+done
+printf "warning: redirecting to https://gitlab.com/example-org/timeout-repo.git/\\n" >&2
+printf "fatal: Authentication failed for '%s'\\n" "$url" >&2
+exit 128
+`;
+
+// Under the 1 MiB stderr buffer `execFile` gives git.
+const LONG_LINE_BYTES = 1_000_000;
+
+// Stands in for a git whose remote answers with a long error body: git prints
+// it as one `remote:` line with no space in it, then the failure.
+const GIT_LONG_REMOTE_LINE = `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in https://*) url="$arg" ;; esac
+done
+printf "remote: " >&2
+head -c ${LONG_LINE_BYTES} /dev/zero | tr '\\0' a >&2
+printf "\\nfatal: unable to access '%s/': The requested URL returned error: 404\\n" "$url" >&2
+exit 128
+`;
+
 interface Run {
   status: number | null;
   stdout: string;
   stderr: string;
+  elapsedMs: number;
 }
 
 let scratch = '';
 
-function run(label: string, gitScript: string, typedUrl: string): Run {
+function run(label: string, gitScript: string, typedUrl: string, timeoutMs = 120_000): Run {
   const dir = path.join(scratch, label);
   const bin = path.join(dir, 'bin');
   const home = path.join(dir, 'home');
@@ -75,9 +103,12 @@ function run(label: string, gitScript: string, typedUrl: string): Run {
   for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NODE_USE_ENV_PROXY']) {
     delete env[name];
   }
+  const started = Date.now();
   const r = spawnSync(process.execPath, [CLI, 'check', typedUrl, '--offline'], {
     encoding: 'utf8',
-    timeout: 120_000,
+    timeout: timeoutMs,
+    // A CLI busy in one synchronous call never reaches a SIGTERM handler.
+    killSignal: 'SIGKILL',
     env: {
       ...env,
       NO_COLOR: '1',
@@ -88,7 +119,7 @@ function run(label: string, gitScript: string, typedUrl: string): Run {
       NODE_OPTIONS: [env.NODE_OPTIONS, `--require "${LOOPBACK_ONLY}"`].filter(Boolean).join(' '),
     },
   });
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '', elapsedMs: Date.now() - started };
 }
 
 /** URLs whose password or path holds the word, as typed and as shown. */
@@ -100,6 +131,14 @@ const URLS = [
 
 const authRuns: Run[] = [];
 const timeoutRuns: Run[] = [];
+let redirectRun: Run;
+let longLineRun: Run;
+
+// A bound on one run with a 1 MB `remote:` line. The run takes seconds; the
+// backtracking URL pattern this replaces took about 9 s on 128 KB and grew
+// with the square of the line, minutes on 1 MB. The CLI is stopped at the
+// spawn timeout, so a regression fails here instead of hanging the file.
+const LONG_LINE_BOUND_MS = 30_000;
 
 beforeAll(() => {
   // Removed when this file finishes.
@@ -108,6 +147,8 @@ beforeAll(() => {
     authRuns.push(run(`auth-${i}`, GIT_AUTH_FAILS, typed));
     timeoutRuns.push(run(`timeout-${i}`, GIT_SAYS_TIMEOUT, typed));
   });
+  redirectRun = run('redirect', GIT_REDIRECT_THEN_AUTH_FAILS, URLS[0].typed);
+  longLineRun = run('long-line', GIT_LONG_REMOTE_LINE, URLS[0].typed, 2 * LONG_LINE_BOUND_MS);
 }, 600_000);
 
 describe('#1003 check <git URL> whose clone git refused does not say that it timed out', () => {
@@ -137,5 +178,26 @@ describe('#1003 check <git URL> whose git error says `Timeout was reached` still
     expect(r.stderr).not.toContain('Could not clone repository');
     expect(r.stderr).not.toContain('fatal:');
     expect(output).not.toContain(SECRET);
+  });
+});
+
+describe('#1003 check <git URL> takes the URLs out of git stderr before it looks for `timeout`', () => {
+  it('an unquoted URL that holds `timeout` in a `redirecting to` line does not read as a timeout', () => {
+    const { shown } = URLS[0];
+    const r = redirectRun;
+    expect(r.status, r.stderr).toBe(2);
+    expect(r.stderr).not.toContain('timed out');
+    expect(r.stderr).toContain(`Error: Could not clone repository from "${shown}".`);
+    expect(r.stdout + r.stderr).not.toContain(SECRET);
+  });
+
+  it('a 1 MB `remote:` line with no space in it is read in bounded time', () => {
+    const { shown } = URLS[0];
+    const r = longLineRun;
+    // A null status is the spawn timeout stopping the CLI.
+    expect(r.status, `elapsed ${r.elapsedMs} ms`).toBe(2);
+    expect(r.elapsedMs).toBeLessThan(LONG_LINE_BOUND_MS);
+    expect(r.stderr).not.toContain('timed out');
+    expect(r.stderr).toContain(`${shown} could not be fetched, so nothing was scanned.`);
   });
 });
