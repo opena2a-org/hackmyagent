@@ -40,6 +40,21 @@
  * filesystem that reports no birth time gives 0, and there the device and inode
  * number alone decide.
  *
+ * The birth time a filesystem reports for a directory can change (#1049). On
+ * macOS (APFS) it moves back when the directory's modification time is set
+ * earlier, as `touch -t`, `rsync -a`, `tar -x` and `cp -p` do. Where Node has
+ * no `statx` it reports the change time, which moves forward whenever an entry
+ * is created or removed in the directory. The directory's key then names no
+ * store, while the store written under the key it had before is still there.
+ * `findOtherBirthStores` lists the stores under the same device and inode
+ * number and another birth time, so `rollback` names them and does not report
+ * that the directory has no backup. They are named and never used: a directory
+ * that took a removed directory's inode number reaches the same lookup. One
+ * case can be told apart. A filesystem gives an inode number to a new
+ * directory only after the old one is removed, so the new directory has the
+ * later birth time. A target that reports an earlier birth time than a store's
+ * key is therefore not a later directory: that store was written for it.
+ *
  * The store root is created 0700, each target's store 0700, and `target.json`
  * 0600; the scanner creates each run directory 0700 and each copy 0600. The
  * copies are plaintext, and the files they were taken from could hold a
@@ -146,6 +161,34 @@ export type ArchiveStoreLookup =
   | { kind: 'none' }
   | { kind: 'other-directory'; dir: string; lastKnownPath?: string }
   | { kind: 'unknown'; dir?: string; reason: string };
+
+/**
+ * A store under the target's device and inode number whose key carries another
+ * birth time (#1049). It is never used as the target's store and never removed.
+ */
+export interface OtherBirthStore {
+  dir: string;
+  /** Where its target was when a `--fix` run last wrote there, when its record says. */
+  lastKnownPath?: string;
+  /**
+   * The target reports an earlier birth time than the one this store is keyed
+   * by. A directory that took a removed directory's inode number was created
+   * after it, so this store was written for the target, whose reported birth
+   * time has moved back since. False when either birth time is 0.
+   */
+  targetBornEarlier: boolean;
+}
+
+/** What a search for such stores found. `unknown`: the filesystem would not say, with the reason. */
+export type OtherBirthLookup =
+  | { kind: 'listed'; stores: OtherBirthStore[] }
+  | { kind: 'unknown'; dir?: string; reason: string };
+
+/** What such a store may be and what to do about it, as `rollback` says it after naming one. */
+export const OTHER_BIRTH_STORE_MEANING =
+  'Such a store is this directory\'s if the creation time the filesystem reports for it changed after its last '
+  + '--fix, and another directory\'s if this one took a removed directory\'s inode number. If it is this '
+  + 'directory\'s, copy the files back by hand from the run directories inside it.';
 
 function storeError(code: ArchiveStoreErrorCode, dir: string, message: string): NodeJS.ErrnoException {
   const err = new Error(message) as NodeJS.ErrnoException;
@@ -320,11 +363,13 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
   return fsSync.realpathSync.native(dir);
 }
 
-/**
- * The store for `targetDir`, without creating anything. Never throws: a
- * question the filesystem would not answer is `unknown`, with the reason.
- */
-export async function findArchiveStore(targetDir: string): Promise<ArchiveStoreLookup> {
+type StoreKeyLookup =
+  | { kind: 'key'; id: TargetIdentity; dir: string }
+  | { kind: 'none' }
+  | { kind: 'unknown'; reason: string };
+
+/** `targetDir`'s identity and the store directory its key names. Reads the target only, and never throws. */
+async function storeKeyOf(targetDir: string): Promise<StoreKeyLookup> {
   let id: TargetIdentity;
   try {
     id = await targetIdentity(fsSync.realpathSync.native(targetDir));
@@ -333,14 +378,23 @@ export async function findArchiveStore(targetDir: string): Promise<ArchiveStoreL
       ? { kind: 'none' }
       : { kind: 'unknown', reason: 'the directory could not be identified on the filesystem' };
   }
-  let dir: string;
   try {
-    dir = storeDirFor(id);
+    return { kind: 'key', id, dir: storeDirFor(id) };
   } catch (err) {
     return (err as NodeJS.ErrnoException)?.code === 'HMA-BACKUP-RELATIVE-ROOT'
       ? { kind: 'unknown', reason: relativeRootReason(backupStoreRootVariable()) }
       : { kind: 'unknown', reason: 'the backup store location could not be resolved' };
   }
+}
+
+/**
+ * The store for `targetDir`, without creating anything. Never throws: a
+ * question the filesystem would not answer is `unknown`, with the reason.
+ */
+export async function findArchiveStore(targetDir: string): Promise<ArchiveStoreLookup> {
+  const key = await storeKeyOf(targetDir);
+  if (key.kind !== 'key') return key;
+  const { id, dir } = key;
   try {
     const st = await fs.lstat(dir);
     if (st.isSymbolicLink() || !st.isDirectory()) {
@@ -374,6 +428,61 @@ export async function findArchiveStore(targetDir: string): Promise<ArchiveStoreL
 export async function listArchiveRuns(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   return entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name);
+}
+
+/** Both birth times are known and `current` is the earlier. A zero is a birth time the filesystem did not give. */
+function bornEarlier(current: string, keyed: string): boolean {
+  return current !== '0' && keyed !== '0' && BigInt(current) < BigInt(keyed);
+}
+
+/**
+ * The stores under `targetDir`'s device and inode number whose key carries
+ * another birth time (#1049), for a caller that found no run under the
+ * target's own key. Creates nothing and never throws.
+ *
+ * A store that is proven to hold no run is left out: there is nothing in it to
+ * name. One whose runs could not be counted is listed, since a failed read does
+ * not prove it empty. A store moved aside as `<key>.replaced-...` is not
+ * under a key and is not listed.
+ */
+export async function findOtherBirthStores(targetDir: string): Promise<OtherBirthLookup> {
+  const key = await storeKeyOf(targetDir);
+  if (key.kind === 'none') return { kind: 'listed', stores: [] };
+  if (key.kind === 'unknown') return key;
+  const { id } = key;
+  const root = path.dirname(key.dir);
+  let names: string[];
+  try {
+    names = await fs.readdir(root);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'listed', stores: [] }
+      : { kind: 'unknown', dir: root, reason: 'it could not be listed' };
+  }
+  const prefix = `${id.dev}-${id.ino}-`;
+  const stores: OtherBirthStore[] = [];
+  for (const name of names.sort()) {
+    if (!name.startsWith(prefix)) continue;
+    const birth = name.slice(prefix.length);
+    if (!/^-?\d+$/.test(birth) || birth === id.birthtimeNs) continue;
+    const dir = path.join(root, name);
+    let runs: number | undefined;
+    try {
+      const st = await fs.lstat(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) continue;
+      runs = (await listArchiveRuns(dir)).length;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
+    }
+    if (runs === 0) continue;
+    let lastKnownPath: string | undefined;
+    try {
+      const found = await readRecord(dir);
+      if (found.kind === 'record') lastKnownPath = found.record.lastKnownPath || undefined;
+    } catch { /* named without the path its record would have given */ }
+    stores.push({ dir, lastKnownPath, targetBornEarlier: bornEarlier(id.birthtimeNs, birth) });
+  }
+  return { kind: 'listed', stores };
 }
 
 /**
