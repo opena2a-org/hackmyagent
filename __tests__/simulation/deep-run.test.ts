@@ -67,6 +67,15 @@ class RecordingBackend extends FakeBackend {
   }
 }
 
+/** The engine, counting the artifacts it was asked to probe. */
+class CountingEngine extends SimulationEngine {
+  layer3Calls = 0;
+  async runLayer3(...args: Parameters<SimulationEngine['runLayer3']>) {
+    this.layer3Calls++;
+    return super.runLayer3(...args);
+  }
+}
+
 /** Drive one run over in-memory artifacts and collect what it wrote. */
 async function run(
   artifacts: Record<string, string>,
@@ -128,12 +137,13 @@ describe('runDeepSimulation', () => {
     expect(measured).toEqual([BENIGN, EXFILTRATING]);
   });
 
-  it('with no executor: sends no probe, says NOT MEASURED once, and stops after the first artifact', async () => {
+  it('with no executor: sends no probe, says NOT MEASURED once, and asks the engine only for the first artifact', async () => {
     // The default engine detects no executor unless asked to, so this run
     // reaches no network.
+    const engine = new CountingEngine();
     const { report, out, reads, measured } = await run(
       { 'SKILL.md': BENIGN, 'SOUL.md': BENIGN },
-      { engine: new SimulationEngine() },
+      { engine },
     );
 
     expect(report.status).toBe('not-measured');
@@ -142,10 +152,49 @@ describe('runDeepSimulation', () => {
     expect(report.artifactsFound).toBe(2);
     expect(report.artifactsSimulated).toBe(0);
     expect(report.artifacts).toEqual([]);
-    expect(reads).toHaveLength(1);
+    expect(report.notSimulated).toBeUndefined();
+    expect(engine.layer3Calls).toBe(1);
+    // Each artifact is still read, for the size check.
+    expect(reads).toHaveLength(2);
     expect(measured).toEqual([]);
     expect(out.match(/NOT MEASURED/g)).toHaveLength(1);
     expect(out).toContain('the Findings block is the verdict');
+  });
+
+  it('with no executor: a file over the size limit after the first artifact is named not simulated in the same run', async () => {
+    // #1041: the run stopped at the first artifact it could not measure, so a
+    // later file over the limit was named only once an executor existed.
+    const padded = BENIGN + '\n' + '<!-- padding -->\n'.repeat(Math.ceil(1_100_000 / 17));
+    expect(Buffer.byteLength(padded, 'utf-8')).toBeGreaterThan(MAX_REDACTION_INPUT_BYTES);
+    const overLimit = `over the ${MAX_REDACTION_INPUT_BYTES}-byte limit the credential redaction reads, so no probe was sent`;
+
+    // The default engine detects no executor unless asked to, so this run
+    // reaches no network.
+    const engine = new CountingEngine();
+    const { report, out, measured } = await run(
+      {
+        [path.join('a', 'SKILL.md')]: BENIGN,
+        [path.join('b', 'SKILL.md')]: padded,
+        [path.join('c', 'SKILL.md')]: BENIGN,
+      },
+      { engine },
+    );
+
+    expect(report.status).toBe('not-measured');
+    expect(report.executor).toBeNull();
+    expect(report.reason).toBe('no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_API_KEY)');
+    expect(report.notSimulated).toEqual([{ file: 'b/SKILL.md', reason: overLimit }]);
+    expect(report.artifactsSimulated).toBe(0);
+    expect(report.artifacts).toEqual([]);
+    expect(measured).toEqual([]);
+    // No artifact after the first unmeasured one is sent to the engine.
+    expect(engine.layer3Calls).toBe(1);
+    expect(out.match(/NOT SIMULATED/g)).toHaveLength(1);
+    // The line names the file by its basename or by its path under the
+    // target; this test pins that the line is written, not its label.
+    expect(out).toMatch(/ {2}\[Simulation\] (?:b\/)?SKILL\.md — NOT SIMULATED: over the 1048576-byte limit/);
+    expect(out.match(/NOT MEASURED/g)).toHaveLength(1);
+    expect(out).toContain('[Simulation] Complete.');
   });
 
   it('with nothing to simulate: says so and runs no executor', async () => {
