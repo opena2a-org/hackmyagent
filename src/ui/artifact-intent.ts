@@ -138,17 +138,20 @@ export function reconcileArtifactIntents<T extends { path: string; intent: Artif
 }
 
 /**
- * The `--verbose` disclosure lines for withheld labels. Every line names the
- * model's failure mode inline, so the raw class can never be read as a
- * verdict even when it is shown. Returns an empty array when nothing was
+ * The `--verbose` disclosure lines for withheld labels. The heading says the
+ * raw class is advisory, and every line says why its label was withheld, so
+ * the raw class can never be read as a verdict even when it is shown. The
+ * model's over-flagging is named on the line of a withheld concerning label,
+ * not in the heading: above a withheld `benign` label it described the
+ * opposite of what happened (#1024). Returns an empty array when nothing was
  * withheld, so callers can print unconditionally.
  */
 export function rawIntentDisclosureLines(suppressed: readonly SuppressedIntent[]): string[] {
   if (suppressed.length === 0) return [];
   return [
-    'raw NanoMind classifier affinity (over-flags benign input — advisory, not a verdict):',
+    'raw NanoMind classifier affinity (advisory, not a verdict):',
     ...suppressed.map(s => (s.contradictedBy
       ? `  ${s.path} -> ${s.rawIntent}, contradicted by ${s.contradictedBy} high/critical finding${s.contradictedBy === 1 ? '' : 's'} on this artifact`
-      : `  ${s.path} -> ${s.rawIntent}, not corroborated by any high/critical finding`)),
+      : `  ${s.path} -> ${s.rawIntent}, not corroborated by any high/critical finding (the classifier over-flags benign input)`)),
   ];
 }

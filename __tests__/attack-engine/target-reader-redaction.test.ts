@@ -165,3 +165,86 @@ describe('red-team target reader redaction: shapes the shared boundary does not 
     }
   });
 });
+
+/**
+ * #1024: lines `secure --deep` sent to the probe executor as written, each
+ * measured on the build before this change. Values are assembled at runtime
+ * and are obviously not credentials.
+ */
+describe('red-team target reader redaction: values the local rules cut short or missed (#1024)', () => {
+  const VALUE = ['not', 'a', 'real', 'value'].join('-');
+  const TAIL = ['tail', 'part'].join('-');
+  const SHORT = ['abcd', 'efgh'].join('');
+  const CASES: ReadonlyArray<[string, string, string[]]> = [
+    // A quoted value ended at its first quote character, whichever quote opened it.
+    ['a double-quoted value holding a single quote', `password: "it's-${VALUE}"\n`, [VALUE]],
+    ['a JSON value holding an escaped quote', `{ "password": "ab\\"${VALUE}" }\n`, [VALUE]],
+    ['a value the shared rule cut at an inner quote', `secret = "${VALUE}'${TAIL}"\n`, [VALUE, TAIL]],
+    // `pass` and `auth` as an unquoted name.
+    ['an unquoted DB_PASS assignment', `DB_PASS=${VALUE}\n`, [VALUE]],
+    ['an unquoted SMTP_PASS YAML value', `SMTP_PASS: ${VALUE}\n`, [VALUE]],
+    ['an unquoted AUTH assignment', `AUTH=${VALUE}\n`, [VALUE]],
+    // The value is not on the key's line, or not after `:` or `=`.
+    ['a YAML block scalar', `name: demo\npassword: |\n  ${VALUE}\n  ${TAIL}\nmodel: small\n`, [VALUE, TAIL]],
+    ['a PHP array entry', `$config = ['password' => '${VALUE}', 'host' => 'db'];\n`, [VALUE]],
+    ['a space-separated flag', `Run sync --password ${VALUE} --host db nightly.\n`, [VALUE]],
+    // An unquoted value holding `;` or a quote character.
+    ['an unquoted value with a ; inside', `db_password: p;${VALUE}\n`, [VALUE]],
+    ['an unquoted value with a ; within its first 8 characters', `password=h;${TAIL}\n`, [TAIL]],
+    ['an unquoted value with a quote inside', `db_password: ab'${VALUE}\n`, [VALUE]],
+    // A quoted password under 8 characters, and a short Authorization header value.
+    ['a short quoted password', 'PASSWORD="abc"\n', ['"abc"']],
+    ['a short Authorization header value', `Authorization: Bearer ${SHORT}\n`, [SHORT]],
+  ];
+
+  it.each(CASES)('%s: the value is replaced', (_label, text, planted) => {
+    const out = redactTargetArtifact(text);
+    for (const value of planted) expect(out.text).not.toContain(value);
+    expect(out.text).toContain('[REDACTED');
+    expect(out.redaction.status).toBe('applied');
+  });
+
+  it('keeps the rest of each line: the key, the other entries and the next YAML key', () => {
+    expect(redactTargetArtifact('PASSWORD="abc"\n').text).toBe('PASSWORD="[REDACTED]"\n');
+    expect(redactTargetArtifact(`DB_PASS=${VALUE}\n`).text).toBe('DB_PASS=[REDACTED]\n');
+    expect(redactTargetArtifact(`$c = ['password' => '${VALUE}', 'host' => 'db'];\n`).text)
+      .toBe(`$c = ['password' => '[REDACTED]', 'host' => 'db'];\n`);
+    expect(redactTargetArtifact(`name: demo\npassword: |\n  ${VALUE}\n  ${TAIL}\nmodel: small\n`).text)
+      .toBe('name: demo\npassword: |\n  [REDACTED]\nmodel: small\n');
+    expect(redactTargetArtifact(`Run sync --password ${VALUE} --host db nightly.\n`).text)
+      .toBe('Run sync --password [REDACTED] --host db nightly.\n');
+    expect(redactTargetArtifact(`Authorization: Bearer ${SHORT}\n`).text).toBe('Authorization: Bearer [REDACTED_AUTH_TOKEN]\n');
+    expect(redactTargetArtifact(`"args": ["--db", "password=${VALUE}"],\n`).text).toBe('"args": ["--db", "password=[REDACTED]"],\n');
+    // A DSN still ends the value at the `;` before the next key.
+    expect(redactTargetArtifact('Server=db;User Id=sa;Password=abc;Database=ledger\n').text)
+      .toBe('Server=db;User Id=sa;Password=[REDACTED];Database=ledger\n');
+  });
+
+  it('leaves prose whose key only contains pass or auth inside a longer word', () => {
+    const text = [
+      'authentication: required-for-every-tool',
+      'author: someone-with-a-long-name',
+      'bypass_mode: disabled-always',
+      'passthrough: enabled-always',
+      'description: >',
+      '  Summarises the ledger every night.',
+      'Run it with --max-tokens 4096 and --retries 3.',
+      '',
+    ].join('\n');
+    const out = redactTargetArtifact(text);
+    expect(out.text).toBe(text);
+    expect(out.redaction).toEqual({ status: 'clean', shapes: [] });
+  });
+
+  it('stays linear on the shapes the new rules read, at the largest input the shared gate lets through', () => {
+    // Same budget and best-of-three as the HMA-44 case above.
+    for (const unit of [`password:"a'`, 'DB_PASS=a;b', '--password ', 'password: |\n ']) {
+      const full = unit.repeat(Math.floor(1_048_576 / unit.length));
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const t = performance.now(); redactTargetArtifact(full); best = Math.min(best, performance.now() - t);
+      }
+      expect(best, `1 MiB of ${JSON.stringify(unit)} took ${best.toFixed(0)} ms at best (budget 5000)`).toBeLessThan(5000);
+    }
+  });
+});

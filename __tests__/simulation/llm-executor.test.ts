@@ -141,6 +141,40 @@ describe('executeProbeLLM redacts credential values from the skill text it sends
       expect(prompt).toContain('[CREDENTIAL_REQUEST: credentialName]');
     }
   });
+
+  // #1024: each of these lines reached every probe request as written.
+  it('leaves out values the redaction cut short or missed, in every probe request', async () => {
+    const tail = ['tail', 'part'].join('-');
+    const short = ['abcd', 'efgh'].join('');
+    const config = [
+      'name: demo-agent',
+      `password: "it's-${value}"`,
+      `"api_password": "ab\\"${value}"`,
+      `secret = "${value}'${tail}"`,
+      `DB_PASS=${value}`,
+      `SMTP_PASS: ${value}`,
+      `AUTH=${value}`,
+      'ssh_key: |',
+      `  ${value}`,
+      `db_password: p;${value}`,
+      `admin_password=h;${tail}`,
+      'PASSWORD="abc"',
+      `Authorization: Bearer ${short}`,
+      'model: small',
+      '',
+    ].join('\n');
+    const sent = await promptsSent(config, 'config.yaml');
+
+    expect(sent.length).toBe(LAYER3_PROBES.length);
+    for (const prompt of sent) {
+      expect(prompt).not.toContain(value);
+      expect(prompt).not.toContain(tail);
+      expect(prompt).not.toContain('"abc"');
+      expect(prompt).not.toContain(short);
+      expect(prompt).toContain('name: demo-agent');
+      expect(prompt).toContain('model: small');
+    }
+  });
 });
 
 /**

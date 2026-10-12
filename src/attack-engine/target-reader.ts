@@ -17,7 +17,7 @@
 
 import { basename } from 'node:path';
 import type { SemanticTargetProfile, VulnerabilitySurfaceEntry, AttackCategory } from './types.js';
-import { redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth.js';
+import { MAX_REDACTION_INPUT_BYTES, redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth.js';
 
 /**
  * The artifact type `red-team` reports for a target file, from its NAME.
@@ -51,28 +51,164 @@ export function artifactTypeForTargetPath(filePath: string): 'soul' | 'mcp_tool'
  * and a `Password=...;` DSN.
  *
  * Only the URL rule names a shape, because it resolves one from the VALUE.
- * The other three fire on a NAME or a POSITION and, per C9, contribute no
+ * The others fire on a NAME or a POSITION and, per C9, contribute no
  * shape id: `status: 'applied'` with no shape is the honest record for them.
  *
  * Every quantifier that has to backtrack to find a trailing anchor is bounded
- * (`{0,31}` on the scheme, `{0,256}`, `{0,64}`); the shared boundary's 1 MiB gate runs
- * first, so the worst case here is linear in that bound times the input.
+ * (`{0,31}` on the scheme, `{0,256}`, `{0,64}`), except a quoted value's run,
+ * whose characters can never be its closing quote, so a failed start gives
+ * back only its own run. The shared boundary's 1 MiB gate runs first, so the
+ * worst case here is linear in that bound times the input.
+ *
+ * Measured gaps of these rules, closed in #1024: a quoted value ended at its
+ * first quote character whichever quote opened it (`password: "it's-a-secret-123"`
+ * was sent as written), a quoted password under 8 characters (`PASSWORD="abc"`),
+ * `pass` and `auth` as an unquoted name (`DB_PASS=...`, `AUTH=...`), an unquoted
+ * value cut at a `;` or a quote (`password=h;unter2` kept `;unter2`), a YAML
+ * block scalar, a `'password' => '...'` entry, a `--password <value>` flag and
+ * an `Authorization` header value shorter than the 16 characters the Bearer
+ * rule needs.
  */
-const LOCAL_RULES: ReadonlyArray<{ shape?: string; pattern: RegExp; replacement: string }> = [
+
+/**
+ * Names a quoted value is redacted under at 8 or more characters. Matched
+ * anywhere in the key, as before #1024, so no key this rule covered is dropped.
+ */
+const QUOTED_CREDENTIAL_NAME = 'password|passwd|pwd|pass|secret|token|key|credential|auth';
+/**
+ * Names whose quoted value is a password at any length: `PASSWORD="abc"` is a
+ * password, while `token: "none"` is not a token. `pass` counts only as a whole
+ * name segment (`DB_PASS`, `pass`), so `bypass: "no"` keeps its value.
+ */
+const PASSWORD_NAME = 'password|passwd|passphrase|pwd|(?<![a-z0-9])pass(?![a-z])';
+/**
+ * Names an unquoted value or a YAML block scalar is redacted under. `pass` and
+ * `auth` count only as a whole name segment (`DB_PASS`, `SMTP_PASS`, `AUTH`,
+ * `X-Auth-Token`), so `bypass`, `passthrough`, `author` and `authentication`
+ * stay prose.
+ */
+const CREDENTIAL_NAME = 'password|passwd|passphrase|pwd|secret|token|key|credential|(?<![a-z0-9])(?:pass|auth)(?![a-z])';
+
+/**
+ * One more character of an unquoted value. A value runs to whitespace: a quote
+ * character inside it is part of it unless it closes the string the assignment
+ * sits in (`"KEY=abcdefgh",`), and a `;` is part of it unless a DSN key follows
+ * (`Password=abc;User Id=sa`).
+ */
+const UNQUOTED_VALUE_CONTINUES = String.raw`[^\s;'"]|["'](?=[^\s;'",)\]}])|;(?![A-Za-z][\w.-]{0,63}(?: [A-Za-z][\w.-]{0,31}){0,2}=)(?=[^\s;])`;
+
+/**
+ * A quoted value after a credential-named key, `:`, `=` or `=>`. The value ends
+ * at the quote character that opened it, so it may hold the other quote
+ * character, a backslash escape (`\"`) or a doubled single quote (`''`).
+ * Group 1 is the key and separator, 2 a double-quoted value, 3 a single-quoted one.
+ */
+function quotedValuePattern(names: string): RegExp {
+  return new RegExp(
+    String.raw`((?:${names})[a-z0-9_-]{0,64}["']?\s*(?:=>|[:=])\s*)(?:"(?!\[)((?:[^"\\\s]|\\\S)+)"|'(?!\[)((?:[^'\\\s]|\\\S|'')+)')`,
+    'gi',
+  );
+}
+
+const QUOTED_RULES: ReadonlyArray<{ pattern: RegExp; minLength: number }> = [
+  { pattern: quotedValuePattern(QUOTED_CREDENTIAL_NAME), minLength: 8 },
+  { pattern: quotedValuePattern(PASSWORD_NAME), minLength: 1 },
+];
+
+type Replacer = (match: string, ...groups: any[]) => string;
+
+/**
+ * The marker in place of a quoted value of at least `minLength` characters,
+ * quotes kept. With `onlyWithInnerQuote`, only a value holding a quote
+ * character or a backslash is replaced: that is the pass run BEFORE the shared
+ * boundary, whose name-gated rule ends a value at its first quote of either
+ * kind and leaves the rest in the text (`secret = "abcdefgh'ijklmn"` came out
+ * as `secret =[REDACTED]ijklmn"`).
+ */
+function quotedValueReplacer(minLength: number, onlyWithInnerQuote: boolean): Replacer {
+  return (match: string, prefix: string, doubleQuoted?: string, singleQuoted?: string) => {
+    const value = doubleQuoted ?? singleQuoted ?? '';
+    if (value.length < minLength) return match;
+    if (onlyWithInnerQuote && !/["'\\]/.test(value)) return match;
+    const quote = doubleQuoted !== undefined ? '"' : "'";
+    return `${prefix}${quote}[REDACTED]${quote}`;
+  };
+}
+
+function redactQuotedValuesWithInnerQuote(text: string): string {
+  let out = text;
+  for (const rule of QUOTED_RULES) out = out.replace(rule.pattern, quotedValueReplacer(rule.minLength, true));
+  return out;
+}
+
+/** A YAML key line that opens a block scalar (`password: |`, `ssh_key: >-`) under a credential name. */
+const BLOCK_SCALAR_KEY = new RegExp(
+  String.raw`^([ \t]*)(?:-[ \t]+)?["']?[a-z0-9_.-]{0,64}?(?:${CREDENTIAL_NAME})[a-z0-9_.-]{0,64}["']?[ \t]*:[ \t]*[|>][0-9+-]{0,2}[ \t]*(?:#.*)?\r?$`,
+  'i',
+);
+
+/**
+ * Replace the content lines of a YAML block scalar under a credential-named
+ * key with one marker line. The value is on the lines below the key, which no
+ * same-line rule reads. Line by line, so linear in the input.
+ */
+function redactBlockScalars(text: string): string {
+  if (!/:[ \t]*[|>]/.test(text)) return text;
+  const lines = text.split('\n');
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    out.push(lines[i]);
+    const key = BLOCK_SCALAR_KEY.exec(lines[i]);
+    if (!key) continue;
+    const keyIndent = key[1].length;
+    let contentIndent: string | undefined;
+    let lastContent = i;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() === '') continue;
+      const indent = /^[ \t]*/.exec(lines[j])![0];
+      if (indent.length <= keyIndent) break;
+      contentIndent ??= indent;
+      lastContent = j;
+    }
+    if (contentIndent === undefined) continue;
+    out.push(`${contentIndent}[REDACTED]`);
+    i = lastContent;
+  }
+  return out.join('\n');
+}
+
+const LOCAL_RULES: ReadonlyArray<{ shape?: string; pattern: RegExp; replacement: string | Replacer }> = [
   // `scheme://user:PLACEHOLDER@host`, any scheme; the password may carry `/` or `@`.
   // A bare port (`host:8080/`) is not a password, so a later `@` on the line (a mail address)
   // does not turn the real host into userinfo.
   { shape: 'url-credential', pattern: /([a-z][a-z0-9+.-]{0,31}:\/\/)([^\s'"@/:]{0,256}(?::(?!\d{1,5}(?:[/?#\s]|$))[^\s'"]{0,256})?)@/gi, replacement: '$1[REDACTED_URL_CREDENTIAL]@' },
-  // A quoted value assigned to a credential-named key, JSON spelling included.
+  // A quoted value assigned to a credential-named key, JSON and PHP (`=>`) spellings included,
+  // ended at the quote that opened it (see `quotedValueReplacer`).
+  ...QUOTED_RULES.map(rule => ({ pattern: rule.pattern, replacement: quotedValueReplacer(rule.minLength, false) })),
+  // The rule before #1024, kept for a value whose closing quote is not the one that opened it.
   { pattern: /((?:password|passwd|pwd|pass|secret|token|key|credential|auth)[a-z0-9_-]{0,64}["']?\s*[:=]\s*["'])([^"'\s]{8,})(["'])/gi, replacement: '$1[REDACTED]$3' },
   // HTTP auth header values.
   { pattern: /(\b(?:bearer|basic)\s+)([A-Za-z0-9._~+/=-]{16,})/gi, replacement: '$1[REDACTED_AUTH_TOKEN]' },
+  // An `Authorization` header value at any length, the scheme word kept. A value already
+  // replaced by the rule above starts with `[` and is left as it is.
+  {
+    pattern: /(\b(?:proxy-)?authorization["']?[ \t]*[:=][ \t]*["']?)(?:(bearer|basic|digest|token|negotiate)([ \t]+))?([^\s'"]+)/gi,
+    replacement: ((match: string, prefix: string, scheme: string | undefined, space: string | undefined, value: string) =>
+      (value.startsWith('[') ? match : `${prefix}${scheme ? `${scheme}${space}` : ''}[REDACTED_AUTH_TOKEN]`)) as Replacer,
+  },
   // An unquoted value after a credential-named key: `export DB_PASSWORD=...`, `PGPASSWORD=... psql`,
-  // YAML `password: ...`, a header line `X-Api-Key: ...`, `CLIENT_SECRET=...`. No leading `\b`: the
-  // name is usually prefixed (`PG`, `DB_`, `X-Api-`). `(?!\[)` skips a marker already placed.
-  { pattern: /((?:password|passwd|passphrase|pwd|secret|token|key|credential)[a-z0-9_-]{0,64}\s*[=:]\s*)(?!\[)([^;\s'"]{8,})/gi, replacement: '$1[REDACTED]' },
+  // YAML `password: ...`, a header line `X-Api-Key: ...`, `CLIENT_SECRET=...`, `DB_PASS=...`. No
+  // leading `\b`: the name is usually prefixed (`PG`, `DB_`, `X-Api-`). `(?!\[)` skips a marker
+  // already placed, and a value that opens with a quote is the quoted rules' to read.
+  { pattern: new RegExp(String.raw`((?:${CREDENTIAL_NAME})[a-z0-9_-]{0,64}\s*[=:]\s*)(?!\[)([^\s;'"](?:${UNQUOTED_VALUE_CONTINUES}){7,})`, 'gi'), replacement: '$1[REDACTED]' },
   // `Password=...;` in a key=value DSN, any length.
-  { pattern: /(\b(?:password|passwd|pwd)\s*=\s*)(?!\[)([^;\s'"]+)/gi, replacement: '$1[REDACTED]' },
+  { pattern: new RegExp(String.raw`(\b(?:password|passwd|pwd)\s*=\s*)(?!\[)([^\s;'"](?:${UNQUOTED_VALUE_CONTINUES})*)`, 'gi'), replacement: '$1[REDACTED]' },
+  // The value after a space-separated flag: `--password <value>`, `--db-password "<value>"`,
+  // `--api-key <value>`. Each part of the flag name is matched whole, so `--max-tokens 4096` stays.
+  {
+    pattern: /((?<![\w-])--(?:[a-z0-9]{1,32}-){0,4}(?:password|passwd|passphrase|pwd|pass|secret|token|key|apikey|credentials?|auth)(?:-[a-z0-9]{1,32}){0,4}[ \t]+)(?:"(?!\[)[^"\n]{1,256}"|'(?!\[)[^'\n]{1,256}'|(?![-[])[^\s'"]+)/gi,
+    replacement: '$1[REDACTED]',
+  },
 ];
 
 /**
@@ -85,16 +221,24 @@ const LOCAL_RULES: ReadonlyArray<{ shape?: string; pattern: RegExp; replacement:
  * reader treats the artifact as flat text, so every field it returns
  * (`declaredPurpose`, `capabilities`, `modalStatements`, the surface map) and
  * every payload built from them is downstream of this one call.
+ *
+ * One local pass runs BEFORE the shared boundary: a quoted value holding a
+ * quote character, which that boundary would cut short (#1024). It is skipped
+ * for content over the boundary's size limit, which the boundary withholds whole.
  */
 export function redactTargetArtifact(content: string): { text: string; redaction: NonNullable<SemanticTargetProfile['redaction']> } {
-  const report = redactSecretsForReportReporting(content);
+  const withinLimit = Buffer.byteLength(content, 'utf-8') <= MAX_REDACTION_INPUT_BYTES;
+  const report = redactSecretsForReportReporting(withinLimit ? redactQuotedValuesWithInnerQuote(content) : content);
   let text = report.text;
   const shapes = new Set<string>(report.shapes);
   for (const rule of LOCAL_RULES) {
     const before = text;
-    text = text.replace(rule.pattern, rule.replacement);
+    text = typeof rule.replacement === 'string'
+      ? text.replace(rule.pattern, rule.replacement)
+      : text.replace(rule.pattern, rule.replacement);
     if (text !== before && rule.shape) shapes.add(rule.shape);
   }
+  text = redactBlockScalars(text);
   return {
     text,
     redaction: { status: text === content ? 'clean' : 'applied', shapes: [...shapes].sort() },

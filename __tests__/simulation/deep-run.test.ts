@@ -212,6 +212,22 @@ describe('runDeepSimulation', () => {
     expect(out).toMatch(/\[INFO\] x\\(e|x1b)\[2J\.md — /);
   });
 
+  it('names each file on its progress line by its path under the target, as the report does (#1024)', async () => {
+    // Two files named SKILL.md: by basename the lines read the same, while
+    // `--json` names `big/SKILL.md` and `small/SKILL.md`.
+    const padded = BENIGN + '\n' + '<!-- padding -->\n'.repeat(Math.ceil(1_100_000 / 17));
+    const { report, out } = await run({
+      [path.join('big', 'SKILL.md')]: padded,
+      [path.join('small', 'SKILL.md')]: BENIGN,
+    });
+
+    expect(report.notSimulated?.map((a) => a.file)).toEqual(['big/SKILL.md']);
+    expect(report.artifacts.map((a) => a.file)).toEqual(['small/SKILL.md']);
+    expect(out).toContain('  [Simulation] big/SKILL.md — NOT SIMULATED: over the 1048576-byte limit');
+    expect(out).toContain(`  [INFO] small/SKILL.md — 0/${LAYER3_PROBES.length} probes flagged (advisory, not scored)\n`);
+    expect(out).not.toMatch(/\] SKILL\.md — /);
+  });
+
   it('a file over the redaction size limit is sent no probe and is reported not simulated, never measured', async () => {
     // #1003: the prompt carries the file through the credential redaction,
     // which withholds content over its size limit whole. Probing it sent 20

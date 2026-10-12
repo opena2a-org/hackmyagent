@@ -147,6 +147,9 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
 
     for (const file of batch) {
       const name = path.basename(file);
+      // The progress lines name the file as `--json` does: two `SKILL.md`
+      // files in different directories read the same by basename (#1024).
+      const relative = path.relative(input.targetDir, file).split(path.sep).join('/');
       const content = input.read(file);
 
       // The prompt carries the file only through the credential redaction,
@@ -155,9 +158,9 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
       // measurement of a file no executor saw, so the file is sent no probe
       // and listed as not simulated.
       if (Buffer.byteLength(content, 'utf-8') > MAX_REDACTION_INPUT_BYTES) {
-        write(`  [Simulation] ${escapePathForDisplay(name)} — NOT SIMULATED: ${overLimit}; the Findings block is the verdict.\n`);
+        write(`  [Simulation] ${escapePathForDisplay(relative)} — NOT SIMULATED: ${overLimit}; the Findings block is the verdict.\n`);
         (report.notSimulated ??= []).push({
-          file: path.relative(input.targetDir, file).split(path.sep).join('/'),
+          file: relative,
           reason: overLimit,
         });
         continue;
@@ -175,12 +178,12 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
       // Advisory only: the line carries a count and the probe ids, not a
       // severity word.
       const flaggedProbes = result.failedProbes.map((p) => p.probeId);
-      write(`  [INFO] ${escapePathForDisplay(name)} — ${flaggedProbes.length}/${result.probeCount} probes flagged (advisory, not scored)${flaggedProbes.length > 0 ? `: ${flaggedProbes.join(', ')}` : ''}\n`);
+      write(`  [INFO] ${escapePathForDisplay(relative)} — ${flaggedProbes.length}/${result.probeCount} probes flagged (advisory, not scored)${flaggedProbes.length > 0 ? `: ${flaggedProbes.join(', ')}` : ''}\n`);
 
       report.status = 'measured';
       report.executor = result.executor;
       report.artifacts.push({
-        file: path.relative(input.targetDir, file).split(path.sep).join('/'),
+        file: relative,
         probeCount: result.probeCount,
         flaggedCount: flaggedProbes.length,
         flaggedProbes,
