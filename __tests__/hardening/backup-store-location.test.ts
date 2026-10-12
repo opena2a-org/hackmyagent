@@ -470,6 +470,52 @@ describe('#376 every secure text report says what the store holds for the direct
     expect(lines[0]).toContain(`rm -rf ${store}`);
   }, 180_000);
 
+  /**
+   * What the store holds is every backup candidate present, not only what a
+   * fix changed. Measured before the words said so: a `.env` no fix touched
+   * was copied into every run with its token, while the notice said the
+   * backup held "the pre-fix copies of the files this run changed" and the
+   * line said the copies "can include a credential a fix removed".
+   */
+  it('says the backups hold every file a run backed up, .env included, and that they outlive the directory', async () => {
+    const target = fixableTree();
+    const env = `GITHUB_TOKEN=${FAKE_GH_TOKEN}\n`;
+    writeFileSync(path.join(target, '.env'), env);
+    chmodSync(path.join(target, '.env'), 0o600); // already private, so no fix touches it
+    const home = tempDir('hma-376-home-');
+    const noFixRemoved = /credential (?:a fix|it|the run) removed/;
+
+    const first = hma(['secure', target, '--fix', '--static-only', '--no-machine-posture'], home, sameStore(home));
+
+    const store = await storeDirOf(target);
+    const run = await latestStoreRun(target);
+    expect(readFileSync(path.join(target, '.env'), 'utf-8'), 'a fix changed .env; this cell measures nothing').toBe(env);
+    expect(readFileSync(path.join(run, '.env'), 'utf-8'), 'the run did not copy .env').toBe(env);
+    expect(mode(path.join(run, '.env')).toString(8)).toBe('600');
+
+    expect(first.stdout).toContain('Backup created:');
+    expect(first.stdout).toContain(
+      '  It holds a copy of every file this run backed up, whether or not a fix changed it, so it can hold a credential '
+      + 'that is still in use, such as one in `.env`. It is outside the scanned directory, so later scans do not report it, '
+      + 'and deleting the scanned directory does not delete it. It stays until you delete it or `hackmyagent rollback` '
+      + 'restores from it.\n',
+    );
+    expect(backupsLines(first.stdout)).toEqual([
+      `Backups: 1 --fix backup of this directory is kept outside it at ${store}. It holds a copy of every file that run `
+      + 'backed up, including files no fix changed, such as `.env`, so it can hold a credential that is still in use, and '
+      + `it stays after this directory is deleted. Delete it once you no longer need \`hackmyagent rollback\`: rm -rf ${store}`,
+    ]);
+    expect(first.stdout).not.toMatch(noFixRemoved);
+
+    const second = hma(['secure', target, '--fix', '--static-only', '--no-machine-posture'], home, sameStore(home));
+    expect(backupsLines(second.stdout)).toEqual([
+      `Backups: 2 --fix backups of this directory are kept outside it at ${store}. Each holds a copy of every file its run `
+      + 'backed up, including files no fix changed, such as `.env`, so they can hold a credential that is still in use, and '
+      + `they stay after this directory is deleted. Delete them once you no longer need \`hackmyagent rollback\`: rm -rf ${store}`,
+    ]);
+    expect(second.stdout).not.toMatch(noFixRemoved);
+  }, 240_000);
+
   it('prints no Backups line for a directory the store holds nothing for', () => {
     const target = fixableTree();
     const home = tempDir('hma-376-home-');
