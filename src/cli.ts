@@ -13018,6 +13018,10 @@ Injection surfaces detected:
   html-comment, invisible-span, json-ld, meta-tag, http-header,
   aria-label, image-alt, unicode-stego
 
+unicode-stego is text hidden in characters that render as nothing:
+Unicode tag characters, or zero-width characters of two kinds read as
+binary. It is reported only when the decoded text reads as a payload.
+
 Also tests: robots.txt, llms.txt, sitemap.xml for embedded payloads
 
 Examples:
@@ -13137,6 +13141,21 @@ function printWildReport(report: WildScanReport): void {
   const surfaces = Object.entries(report.summary.bySurface).sort((a, b) => b[1] - a[1]);
   for (const [surface, count] of surfaces) {
     console.log(`  ${surface}: ${count}`);
+  }
+
+  // #988: hidden text is invisible on the page, so the report shows what it
+  // decoded to and where. The URL comes from the target's sitemap and is page
+  // data like the decoded text; both are escaped.
+  const hidden = report.pages.flatMap((page) =>
+    page.injectionSurfaces
+      .filter((s) => s.type === 'unicode-stego')
+      .map((s) => ({ url: page.url, content: s.content })));
+  if (hidden.length > 0) {
+    console.log(`\n${colors.dim}Hidden Unicode Text (decoded)${colors.reset}`);
+    for (const h of hidden) {
+      console.log(`  ${escapeForDisplay(h.url)}`);
+      console.log(`    ${escapeForDisplay(h.content)}`);
+    }
   }
 
   // Score
