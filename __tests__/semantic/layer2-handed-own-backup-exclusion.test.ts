@@ -14,11 +14,17 @@
  * So the observation is made where "wired" and "not wired" actually differ:
  * the options object the fixing scanner passes to `analyze`. A prototype spy
  * (the `__tests__/mcp/scan-layer1-confinement` shape) records the FIRST call's
- * options and delegates to the original, so the run itself is unchanged. A
- * `--fix` run at default depth makes two `analyze` calls: the fixing scanner's
- * (backup context set) and then the verify scanner's (a fresh instance, no
- * context, whose predicate answers `false` for everything). The first is the
- * one under test.
+ * options and delegates to the original, so the run itself is unchanged. The
+ * first call is the fixing scanner's, with the backup context set, and it is
+ * the one under test.
+ *
+ * #376 — the archive `createBackup` makes is in the backup store, outside the
+ * scanned tree, and the verify scan and the adoption loop of #374 are retired.
+ * The wiring is kept: the predicate still names this run's backup by
+ * filesystem identity, wherever it is, and nothing by name. So AC1 probes it
+ * with the run in the store, and AC2 adds the directory that now carries the
+ * backup name in a tree: the one an earlier version wrote, which is not this
+ * run's and is walked and reported.
  *
  * Three properties, one per criterion:
  *   AC1  the predicate answers `true` for the backup THIS RUN created;
@@ -41,6 +47,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { StructuralAnalyzer } from '../../src/semantic/structural';
+import { latestStoreRun, storeRuns } from '../helpers/backup-store';
 
 type AnalyzeOptions = NonNullable<Parameters<StructuralAnalyzer['analyze']>[1]>;
 
@@ -87,15 +94,16 @@ describe('#382 the fixing scan hands Layer 2 the own-backup exclusion', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  /** The one backup this run created, as an absolute path. Fails loudly if there is not exactly one. */
+  /**
+   * The one backup this run created, as an absolute path. Fails loudly if there
+   * is not exactly one. #376 — it is in the backup store, outside the tree.
+   */
   async function ownBackupStamp(): Promise<string> {
-    const backupRoot = path.join(dir, '.hackmyagent-backup');
-    const stamps = await readdir(backupRoot).catch(() => [] as string[]);
     expect(
-      stamps,
+      await storeRuns(dir),
       'expected exactly one backup stamp — the one this run created — so the exclusion was exercised exactly once',
     ).toHaveLength(1);
-    return path.join(backupRoot, stamps[0]);
+    return latestStoreRun(dir);
   }
 
   it('HMA-74.AC1 the first Layer-2 call carries a predicate that is true for this run\'s own backup', async () => {
@@ -122,6 +130,10 @@ describe('#382 the fixing scan hands Layer 2 the own-backup exclusion', () => {
     // report under it.
     const foreign = path.join(dir, 'vendor', '.hackmyagent-backup', '2026-01-01-000000');
     await plantArtifacts(foreign);
+    // #376 — and the shape earlier versions wrote at the scan root itself: this
+    // tree's own backup directory, holding a run that is not this run's.
+    const earlier = path.join(dir, '.hackmyagent-backup', '2026-01-01-000000');
+    await plantArtifacts(earlier);
 
     const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
 
@@ -136,9 +148,10 @@ describe('#382 the fixing scan hands Layer 2 the own-backup exclusion', () => {
       foreign,
       path.join(dir, 'vendor', '.hackmyagent-backup'),
       path.join(dir, 'vendor'),
-      // The base directory: its other stamps belong to earlier runs, which are
-      // not this run's own and are reported like any other archive.
+      // The base directory earlier versions wrote to, and a run inside it:
+      // neither is this run's own, and both are reported like any other archive.
       path.join(dir, '.hackmyagent-backup'),
+      earlier,
     ];
     for (const candidate of notOurs) {
       expect(
@@ -154,13 +167,32 @@ describe('#382 the fixing scan hands Layer 2 the own-backup exclusion', () => {
       inForeign.map((f) => `${f.checkId} ${f.file}`),
       'Layer 2 reported nothing under the foreign archive, so it was excluded rather than walked',
     ).not.toHaveLength(0);
+
+    const earlierPrefix = `.hackmyagent-backup${path.sep}`;
+    const inEarlier = result.findings.filter(isSemantic).filter((f) => (f.file ?? '').startsWith(earlierPrefix));
+    expect(
+      inEarlier.map((f) => `${f.checkId} ${f.file}`),
+      'Layer 2 reported nothing under the backup directory an earlier version left, so it was excluded rather than walked',
+    ).not.toHaveLength(0);
+    expect(
+      await readdir(path.join(dir, '.hackmyagent-backup')),
+      'this run wrote a backup into the tree beside the earlier one',
+    ).toEqual(['2026-01-01-000000']);
   });
 
   it('HMA-74.AC4 the reported Layer-2 count is the number of live-tree semantic findings', async () => {
     const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
 
-    const liveTree = result.findings.filter(isSemantic).filter((f) => f.inOwnArchive !== true);
+    // #376 — every semantic finding of this run is in the live tree: its own
+    // archive copies are in the store and none is reported. The filter on the
+    // removed `inOwnArchive` flag that stood here matched every finding.
+    const liveTree = result.findings.filter(isSemantic);
     expect(liveTree.length, 'the semantic layer produced nothing in the live tree, so there is nothing to count').toBeGreaterThan(0);
+    await ownBackupStamp();
+    expect(
+      liveTree.filter((f) => (f.file ?? '').split(path.sep).includes('.hackmyagent-backup')).map((f) => `${f.checkId} ${f.file}`),
+      'a semantic finding is attributed to a backup directory inside the scanned tree',
+    ).toEqual([]);
     expect(
       result.semanticAnalysis?.layer2Findings,
       'semanticAnalysis.layer2Findings counts this run\'s own archive copies alongside the live tree (#382)',
