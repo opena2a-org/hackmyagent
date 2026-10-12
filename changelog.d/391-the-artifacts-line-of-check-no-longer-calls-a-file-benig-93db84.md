@@ -2,7 +2,7 @@
 type: fixed
 issue: 391
 ---
-#### The `Artifacts` line of `check` no longer calls a file `benign` above a HIGH finding on it (#391)
+#### The `Artifacts` line of `check` and `secure` no longer calls a file `benign` above a HIGH finding on it (#391)
 
 - `hackmyagent check --nanomind` on a `SOUL.md` that tells the agent to do
   whatever a user asks, to hide adjustments it makes to the numbers and to
@@ -13,5 +13,6 @@ issue: 391
   names the withheld label and the count: `SOUL.md -> benign, contradicted
   by 4 high/critical findings on this artifact`. This is the counterpart of
   the rule that already withholds a `malicious` or `suspicious` label no
-  HIGH or CRITICAL finding corroborates. Findings, severities, scores,
-  verdicts and exit codes are unchanged.
+  HIGH or CRITICAL finding corroborates. `hackmyagent secure` prints the
+  same `Artifacts` line and changes the same way. Findings, severities,
+  scores, verdicts and exit codes are unchanged.

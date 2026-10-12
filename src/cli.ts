@@ -2904,9 +2904,9 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       for (const extraLine of artifactLines.slice(1)) {
         console.log(`  ${colors.dim}${contIndent}${RESET()}${extraLine}`);
       }
-      // Withheld raw classifier labels, verbose only (#252). Dim, and every
-      // line carries the over-flag qualifier so the raw class cannot be
-      // mistaken for a verdict even here.
+      // Withheld raw classifier labels, verbose only (#252). Dim, under a
+      // heading that calls them advisory, and every line says why its label
+      // was withheld, so the raw class cannot be mistaken for a verdict even here.
       if (verbose) {
         for (const disclosure of rawIntentDisclosureLines(suppressedIntents)) {
           console.log(`  ${colors.dim}${contIndent}${disclosure}${RESET()}`);

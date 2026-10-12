@@ -209,6 +209,22 @@ describe('artifact intent reconciliation (deterministic — #252 contract gate)'
     expect(text).toContain('malicious');
   });
 
+  // #1024: the heading said the classifier over-flags benign input above a
+  // `benign` label withheld because findings contradicted it.
+  it('names over-flagging only on the line of a withheld concerning label', () => {
+    const contradicted = rawIntentDisclosureLines([{ path: 'SOUL.md', rawIntent: 'benign', contradictedBy: 4 }]);
+    expect(contradicted.join('\n')).not.toMatch(/over-flags/i);
+    expect(contradicted[0]).toMatch(/not a verdict/i);
+
+    const both = rawIntentDisclosureLines([
+      { path: 'SOUL.md', rawIntent: 'benign', contradictedBy: 1 },
+      { path: 'SKILL.md', rawIntent: 'malicious' },
+    ]);
+    expect(both[0]).not.toMatch(/over-flags/i);
+    expect(both[1]).not.toMatch(/over-flags/i);
+    expect(both[2]).toBe('  SKILL.md -> malicious, not corroborated by any high/critical finding (the classifier over-flags benign input)');
+  });
+
   it('emits no disclosure when nothing was withheld', () => {
     expect(rawIntentDisclosureLines([])).toEqual([]);
   });
