@@ -147,6 +147,86 @@ describe('#438 CoverageLedger records inputs discovered but not read', () => {
     expect(ledger.unreadableInputs.count).toBe(1);
   });
 
+  describe('every failing reader is kept (#510): one reader\'s retry clears only its own failure', () => {
+    // Before #510 each path kept only its FIRST failing reader, so that
+    // reader's successful retry cleared the path while a second reader that
+    // never got the bytes went unrecorded. Each ordering below counted 0.
+    it('check B fails, check C fails, B re-reads: C is still blind, count 1', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      const file = inside('secrets.js');
+      await ledger.run('checkCredentialExposure', async () => { ledger.noteReadFailure(file, 'EACCES'); });
+      await ledger.run('checkClaudeMd', async () => { ledger.noteReadFailure(file, 'EACCES'); });
+      await ledger.run('checkCredentialExposure', async () => { ledger.noteRead(file); });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: file, code: 'EACCES', kind: 'file' }]);
+    });
+
+    it('B fails, a failure outside any check follows, B re-reads: the unattributed failure stands, count 1', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      const file = inside('secrets.js');
+      await ledger.run('checkCredentialExposure', async () => { ledger.noteReadFailure(file, 'EACCES'); });
+      ledger.noteReadFailure(file, 'EACCES');
+      await ledger.run('checkCredentialExposure', async () => { ledger.noteRead(file); });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
+    });
+
+    it('a listing fails under walker W1 then W2, W1 re-lists: W2 is still blind, count 1 as a directory', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      const dir = inside('cfg');
+      await ledger.run('checkFilePermissions', async () => { ledger.noteListFailure(dir, 'EACCES'); });
+      await ledger.run('checkMcpConfig', async () => { ledger.noteListFailure(dir, 'EACCES'); });
+      await ledger.run('checkFilePermissions', async () => { ledger.noteListed(dir); });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 1 });
+      expect(ledger.unreadablePaths()).toEqual([{ path: dir, code: 'EACCES', kind: 'directory' }]);
+    });
+
+    it('a failure outside any check is not cleared by a framed read of the same path', async () => {
+      // `note()` drops a success raised outside every frame, so the
+      // unattributed reader has no success of its own to subtract against.
+      const ledger = new CoverageLedger(TARGET);
+      const file = inside('semantic-only.js');
+      ledger.noteReadFailure(file, 'EACCES');
+      await ledger.run('checkCredentialExposure', async () => { ledger.noteRead(file); });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
+    });
+
+    it('a reader keeps its first errno, and the path reports the first counting errno among readers still failing', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      const file = inside('secrets.js');
+      await ledger.run('checkCredentialExposure', async () => {
+        ledger.noteReadFailure(file, 'EACCES');
+        ledger.noteReadFailure(file, 'EIO'); // a second errno from the same reader is not kept
+      });
+      await ledger.run('checkClaudeMd', async () => { ledger.noteReadFailure(file, 'EPERM'); });
+      expect(ledger.unreadablePaths()).toEqual([{ path: file, code: 'EACCES', kind: 'file' }]);
+      await ledger.run('checkCredentialExposure', async () => { ledger.noteRead(file); });
+      expect(ledger.unreadablePaths()).toEqual([{ path: file, code: 'EPERM', kind: 'file' }]);
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EPERM: 1 }, directories: 0 });
+    });
+
+    it('a reader whose only failure does not count leaves the path to the reader whose failure does', async () => {
+      // ENOENT from one probe and EACCES from another on one path: the EACCES
+      // reader never got the bytes, whatever the first reader saw.
+      const ledger = new CoverageLedger(TARGET);
+      const file = inside('secrets.js');
+      await ledger.run('checkGitSecurity', async () => { ledger.noteReadFailure(file, 'ENOENT'); });
+      await ledger.run('checkCredentialExposure', async () => { ledger.noteReadFailure(file, 'EACCES'); });
+      expect(ledger.unreadableInputs).toEqual({ count: 1, codes: { EACCES: 1 }, directories: 0 });
+    });
+
+    it('every failing reader that re-reads clears the path, count 0', async () => {
+      const ledger = new CoverageLedger(TARGET);
+      const file = inside('secrets.js');
+      for (const method of ['checkCredentialExposure', 'checkClaudeMd']) {
+        await ledger.run(method, async () => { ledger.noteReadFailure(file, 'EACCES'); });
+      }
+      for (const method of ['checkClaudeMd', 'checkCredentialExposure']) {
+        await ledger.run(method, async () => { ledger.noteRead(file); });
+      }
+      expect(ledger.unreadableInputs).toEqual({ count: 0, codes: {}, directories: 0 });
+    });
+  });
+
   describe('directory case (#588): a listing that failed is a lost input of the directory kind', () => {
     it('records a readdir EACCES inside the target as one unreadable input, counted in `count` and in `directories`', async () => {
       const ledger = new CoverageLedger(TARGET);
