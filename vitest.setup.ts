@@ -1,5 +1,9 @@
 import { afterAll } from 'vitest';
-import { removeTempDirs, tempDir } from './__tests__/helpers/temp-dir';
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { removeTempDirs } from './__tests__/helpers/temp-dir';
 
 // Test-harness hermeticity: a scan in this suite must not read the developer's
 // home directory.
@@ -92,12 +96,23 @@ for (const v of [
 // tree (#376), by default under ~/.opena2a/backups. A suite that runs `--fix`
 // hundreds of times must not fill the developer's home with plaintext copies of
 // its fixtures, and a store left by an earlier run must not be what a rollback
-// test finds. Each test file gets its own store, removed when the file finishes
-// (it is a `tempDir` created outside any test). Set unconditionally: a value
-// inherited from the shell would be shared by every file and never removed.
-// A spawn test that passes `{ ...process.env }` inherits it; one that builds
-// its environment from scratch keeps its own HOME or OPENA2A_HOME.
-process.env.HMA_BACKUP_HOME = tempDir('hma-backup-home-');
+// test finds. Each test file gets its own store, removed when the file
+// finishes. Set unconditionally: a value inherited from the shell would be
+// shared by every file and never removed. A spawn test that passes
+// `{ ...process.env }` inherits it; one that builds its environment from
+// scratch keeps its own HOME or OPENA2A_HOME.
+//
+// The path is reserved here and the directory is not created. `vitest list`
+// loads this file for every test file and runs no hook, so a directory made at
+// module scope is left in TMPDIR by collection alone, one per file
+// (__tests__/harness/collection-starts-no-scan.test.ts). `--fix` creates the
+// store root when it is absent, so only a file that takes a backup ever has
+// one. A removal that fails throws, and fails that file's `afterAll`.
+const backupHome = path.join(os.tmpdir(), `hma-backup-home-${crypto.randomBytes(8).toString('hex')}`);
+process.env.HMA_BACKUP_HOME = backupHome;
+afterAll(() => {
+  fs.rmSync(backupHome, { recursive: true, force: true });
+});
 
 // Fifth: a test file leaves nothing in the temporary directory. `tempDir` in
 // __tests__/helpers/temp-dir.ts removes what it creates when the creating test
