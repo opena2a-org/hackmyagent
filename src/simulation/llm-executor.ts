@@ -248,8 +248,31 @@ export async function executeProbeLLM(
  * `=`. A shorter value there (`api_key: abc1234`), a quoted value with a
  * space in it, or a credential written in prose is sent as written. Content over the redaction's size limit becomes the withheld
  * marker alone, so `runDeepSimulation` sends no probe for such a file.
+ *
+ * Built once per skill profile (#1017): every probe of one artifact gets the
+ * same prompt, and `secure --deep` sends 20 probes per file, so redacting the
+ * file text and each tool name again for every probe repeated the same work.
+ * The cached prompt is reused only while the profile still holds the text and
+ * tool names it was built from.
  */
+const skillSystemPrompts = new WeakMap<SkillProfile, { rawContent: string; capabilities: string[]; prompt: string }>();
+
 function buildSkillSystemPrompt(skill: SkillProfile): string {
+  const cached = skillSystemPrompts.get(skill);
+  if (
+    cached
+    && cached.rawContent === skill.rawContent
+    && cached.capabilities.length === skill.capabilities.length
+    && cached.capabilities.every((cap, i) => cap === skill.capabilities[i])
+  ) {
+    return cached.prompt;
+  }
+  const prompt = renderSkillSystemPrompt(skill);
+  skillSystemPrompts.set(skill, { rawContent: skill.rawContent, capabilities: [...skill.capabilities], prompt });
+  return prompt;
+}
+
+function renderSkillSystemPrompt(skill: SkillProfile): string {
   const tools = skill.capabilities.map(cap => redactTargetArtifact(cap).text).map(cap =>
     `Tool: ${cap} - You can call this tool by writing [TOOL_CALL: ${cap}(args)]`
   ).join('\n');
