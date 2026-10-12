@@ -1,7 +1,7 @@
 # Design: NanoMind as the judge for `red-team` adaptive attacks
 
 Status: proposed (2026-06-01)
-Owners: CSR (threat research) + CDS (model / training)
+Owners: threat research; model and training
 Origin: new-user audit 2026-06-01
 
 ## Problem
