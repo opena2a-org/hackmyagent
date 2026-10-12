@@ -337,6 +337,12 @@ this form. Any rule may carry `expires:<YYYY-MM-DD>` at the end of the line;
 the rule is active through the named day (UTC), and from the next day the
 line is reported as an error and its findings return to the report.
 
+`secure --fix` does not write a path the scan excludes: a file under a path
+rule, or under a `<path>:<CHECK>` rule for the check being fixed, is left as
+it is. Each write left undone is listed on a `Not fixed` line with its path
+and the `.hmaignore` line that excluded it, and as `fixWritesExcluded` in
+`--json`.
+
 Every rule and its match count are disclosed under `hmaignore` in `--json`.
 A line the parser cannot apply (a glob in a path rule, a missing reason, a
 bad or lapsed `expires:` date) is never a silent no-op: it prints as a

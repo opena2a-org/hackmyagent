@@ -16,7 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
 import { execFile } from 'child_process';
-import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure, SkippedDirectoryRecord } from './security-check';
+import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure, SkippedDirectoryRecord, ExcludedFixWrite } from './security-check';
 import { isScopeChannel } from './security-check';
 import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
@@ -3444,6 +3444,36 @@ export function matchHmaIgnore(
 }
 
 /**
+ * #1033 — the `.hmaignore` rule that forbids a `--fix` write, or undefined
+ * when none does. A scope rule takes a path out of the scan, so a fix for a
+ * finding the report never shows has no business rewriting that path:
+ * `secure --fix` rewrote `fixtures/config.json` under a `fixtures/` rule.
+ *
+ * `relPaths` are every target-relative spelling the write can be known by
+ * (the path as requested and the destination it resolves to), so a link from
+ * an in-scope name into an excluded directory is refused like the file
+ * itself. `checkIds` are the checks whose fix the written content carries; a
+ * `<path>:<CHECK>` rule refuses the write when its pattern matches any of
+ * them. A `!<CHECK>` rule is presentational and never refuses a write.
+ * Whole-path rules are consulted first, matching `matchHmaIgnore`'s tiers.
+ */
+export function hmaIgnoreRuleExcludingFixWrite(
+  relPaths: readonly string[],
+  checkIds: readonly string[],
+  parsed: Pick<ParsedHmaIgnore, 'rules'> | undefined,
+): HmaIgnoreRule | undefined {
+  if (!parsed || parsed.rules.length === 0) return undefined;
+  const paths = relPaths.filter((p) => p.length > 0);
+  const covers = (r: HmaIgnoreRule) => paths.some((p) => isPathIgnored(p, [r.path as string]));
+  return parsed.rules.find((r) => r.channel === WHOLE_PATH_CHANNEL && covers(r))
+    ?? parsed.rules.find(
+      (r) => r.channel === PATH_CHECK_CHANNEL
+        && checkIds.some((id) => matchesCheckPattern(id, r.checkId as string))
+        && covers(r),
+    );
+}
+
+/**
  * Project a parsed file plus per-line match counts into the disclosure the
  * CLI carries. `matchedByLine` must be counted over EXACTLY the
  * findings the `suppressed`/`outOfScope` Rows count — that identity is the
@@ -4473,6 +4503,18 @@ interface ScanRun {
    */
   fixWritesIntoForeignArchive: string[];
   /**
+   * The `.hmaignore` this run honours, read once by `scanInner`. The fix-write
+   * gate consults it so `--fix` never rewrites a path the scan excluded
+   * (#1033). Undefined until the scan loads it.
+   */
+  hmaIgnore: ParsedHmaIgnore | undefined;
+  /**
+   * Fix writes an `.hmaignore` rule refused this run (#1033). Not a failure:
+   * the path is out of scope at the user's request, so it is disclosed with
+   * the rule line rather than scored as FIX-WRITE-FAILED.
+   */
+  fixWritesExcluded: ExcludedFixWrite[];
+  /**
    * Every path a fix write actually landed on this run.
    *
    * `recordCreatedFiles` used to derive its candidates from the findings —
@@ -4548,6 +4590,8 @@ function newScanRun(coverage: CoverageLedger): ScanRun {
     coverage,
     fixWriteFailures: [],
     fixWritesIntoForeignArchive: [],
+    hmaIgnore: undefined,
+    fixWritesExcluded: [],
     fixWritePaths: [],
     backupContext: undefined,
     archiveBases: new Map(),
@@ -4596,6 +4640,7 @@ export class HardeningScanner {
   private get coverage(): CoverageLedger { return this.currentRun.coverage; }
   private get fixWriteFailures(): ScanRun['fixWriteFailures'] { return this.currentRun.fixWriteFailures; }
   private get fixWritesIntoForeignArchive(): string[] { return this.currentRun.fixWritesIntoForeignArchive; }
+  private get fixWritesExcluded(): ExcludedFixWrite[] { return this.currentRun.fixWritesExcluded; }
   private get fixWritePaths(): string[] { return this.currentRun.fixWritePaths; }
   private get backupContext(): ScanRun['backupContext'] { return this.currentRun.backupContext; }
   private set backupContext(v: ScanRun['backupContext']) { this.currentRun.backupContext = v; }
@@ -4983,6 +5028,9 @@ export class HardeningScanner {
     // `!CHECK-ID` suppressions, through the one parser — unless the target is
     // not the operator's tree (#455)
     const hmaIgnore = await loadOperatorHmaIgnore(targetDir, options.readHmaIgnore);
+    // The fix-write gate reads the same rules, so `--fix` never rewrites a
+    // path this scan excludes (#1033).
+    this.currentRun.hmaIgnore = hmaIgnore;
     // Merge whole-path rules with any programmatic ignorePaths
     const allIgnoredPaths = [
       ...hmaIgnore.rules.filter((r) => r.channel === WHOLE_PATH_CHANNEL).map((r) => r.path as string),
@@ -6311,6 +6359,11 @@ export class HardeningScanner {
       // byte-identical to one from before this key existed. CLI-local:
       // `secure --json` spreads `...result`; no wire builder reads it.
       hmaignore: hmaignoreDisclosure,
+      // #1033 — fix writes an `.hmaignore` rule refused, each with its rule
+      // line. Absent when none was, so an unchanged run is an unchanged document.
+      ...(this.fixWritesExcluded.length > 0
+        ? { fixWritesExcluded: this.fixWritesExcluded.map((e) => ({ ...e, checkIds: [...e.checkIds] })) }
+        : {}),
       semanticAnalysis: (layer2Count > 0 || layer3Count > 0) ? {
         layer2Findings: layer2Count,
         layer3Findings: layer3Count,
@@ -6709,6 +6762,11 @@ export class HardeningScanner {
         const originalLines = [...lines];
         let fileModified = false;
         const keysFoundInFile: Array<{ name: string; line: number }> = [];
+        // #1033 — the variables this file's fix references reach
+        // `.env.example` only once the fix lands. A write an `.hmaignore` rule
+        // refused (or one that failed) references nothing, and declaring its
+        // variables would be a write caused by a file the scan excluded.
+        const fileEnvVars = new Set<string>();
 
         // #292 — basename, not the whole relative path: `filename` is now
         // `sub/.env` for a nested hit, and a raw `startsWith` would classify it
@@ -6764,7 +6822,7 @@ export class HardeningScanner {
                 // `${` with the next `}` and destroyed unrelated config data.
                 lines[i] = replaceCredentialWithEnvRef(lines[i], pattern, envVar);
                 fileModified = true;
-                envVarsToAdd.add(envVar);
+                fileEnvVars.add(envVar);
               }
             }
           }
@@ -6777,8 +6835,11 @@ export class HardeningScanner {
 
           if (fileModified) {
             const credContent = lines.join('\n');
-            fileModified = await this.applyFixWrite(filePath, credContent);
-            if (fileModified) content = credContent;
+            fileModified = await this.applyFixWrite(filePath, credContent, ['CRED-001']);
+            if (fileModified) {
+              content = credContent;
+              for (const envVar of fileEnvVars) envVarsToAdd.add(envVar);
+            }
           }
 
           // #326 — HackMyAgent no longer claims to know who created a
@@ -6864,7 +6925,7 @@ export class HardeningScanner {
         for (const envVar of envVarsToAdd) {
           envExampleContent += `${envVar}=\n`;
         }
-        await this.applyFixWrite(envExamplePath, envExampleContent);
+        await this.applyFixWrite(envExamplePath, envExampleContent, ['CRED-001']);
       } else {
         const existing = existingBytes.toString('utf-8');
         const declared = new Set<string>();
@@ -6880,6 +6941,7 @@ export class HardeningScanner {
           await this.applyFixWrite(
             envExamplePath,
             Buffer.concat([existingBytes, Buffer.from(appended, 'utf-8')]),
+            ['CRED-001'],
           );
         }
       }
@@ -7019,7 +7081,7 @@ export class HardeningScanner {
       // otherwise the finding reports `passed: true` for a config still
       // scoped at `/` on disk.
       if (mcp001Fixed) {
-        mcp001Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(config, null, 2));
+        mcp001Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(config, null, 2), ['MCP-001']);
       }
 
       // Only report if there's an issue
@@ -7603,12 +7665,19 @@ export class HardeningScanner {
    * `ensureBackupCovers` refuses it below under BACKUP-UNCOVERED. That is the
    * pre-existing behaviour for that case and this must not quietly restate it
    * as a containment failure.
+   *
+   * #1033 — `checkIds` names the checks whose fix this write carries. A path
+   * an `.hmaignore` rule excludes (whole-path, or `<path>:<CHECK>` for one of
+   * those checks) is refused here, under its spelling and again under the
+   * destination it resolves to, and recorded with the rule line in
+   * `fixWritesExcluded` rather than as a failure.
    */
-  private async resolveFixWriteTarget(requestedPath: string): Promise<string | null> {
+  private async resolveFixWriteTarget(requestedPath: string, checkIds: readonly string[]): Promise<string | null> {
     const ctx = this.backupContext;
     if (!ctx) return requestedPath;
 
     const rel = this.toTargetRelativePath(requestedPath, ctx.targetDir);
+    if (rel !== null && this.refuseExcludedFixWrite([rel], checkIds) !== undefined) return null;
     if (rel === null) {
       this.fixWriteFailures.push({
         file: requestedPath,
@@ -7659,7 +7728,51 @@ export class HardeningScanner {
     // name the same directory, so the two spellings name the same file. This
     // returns where to write, not whether to.
     const relFromReal = path.relative(targetReal, dest.path);
+    // #1033 — the resolved destination as well: an in-scope name linked into
+    // an excluded directory would otherwise rewrite the excluded file.
+    if (relFromReal && this.refuseExcludedFixWrite([relFromReal], checkIds) !== undefined) return null;
     return relFromReal ? path.join(ctx.targetDir, relFromReal) : ctx.targetDir;
+  }
+
+  /**
+   * #1033 — the refusal when an `.hmaignore` rule of this run forbids writing
+   * any of `relPaths` for `checkIds`, else undefined. Recorded once per path
+   * and rule, with every check whose fix it held back.
+   */
+  private refuseExcludedFixWrite(relPaths: readonly string[], checkIds: readonly string[]): ExcludedFixWrite | undefined {
+    const rule = hmaIgnoreRuleExcludingFixWrite(relPaths, checkIds, this.currentRun.hmaIgnore);
+    if (!rule) return undefined;
+    const file = relPaths.find((p) => isPathIgnored(p, [rule.path as string])) ?? relPaths[0];
+    const prior = this.fixWritesExcluded.find((e) => e.file === file && e.line === rule.line);
+    if (prior) {
+      for (const id of checkIds) if (!prior.checkIds.includes(id)) prior.checkIds.push(id);
+      return prior;
+    }
+    const entry: ExcludedFixWrite = { file, line: rule.line, rule: rule.rule, checkIds: [...new Set(checkIds)] };
+    this.fixWritesExcluded.push(entry);
+    return entry;
+  }
+
+  /**
+   * #1033 — the `.hmaignore` refusal for a governance write made after `scan()`
+   * returned (`secure --fix` runs harden-soul then), recorded in this run's
+   * list like an in-scan refusal. Judges the path as spelled and the
+   * destination it resolves to. Undefined when no rule forbids the write.
+   */
+  async excludeGovernanceWrite(
+    targetDir: string,
+    relPath: string,
+    checkIds: readonly string[],
+  ): Promise<ExcludedFixWrite | undefined> {
+    const rels = [relPath];
+    try {
+      const targetReal = await fs.realpath(targetDir);
+      const dest = await containResolveInsideTree(targetReal, relPath, { followLeafLink: true });
+      if (dest.ok) rels.push(path.relative(targetReal, dest.path));
+    } catch {
+      // Containment is harden-soul's own gate; the spelled path is still judged.
+    }
+    return this.refuseExcludedFixWrite(rels, checkIds);
   }
 
   /**
@@ -7680,7 +7793,12 @@ export class HardeningScanner {
    * fix and lets the check report what is actually true: the issue is still
    * there, and the fix did not land.
    */
-  private async applyFixWrite(requestedPath: string, content: string | Buffer): Promise<boolean> {
+  private async applyFixWrite(
+    requestedPath: string,
+    content: string | Buffer,
+    /** The checks whose fix `content` carries; an `.hmaignore` rule for one refuses the write (#1033). */
+    checkIds: readonly string[],
+  ): Promise<boolean> {
     // #270 — CONTAIN THE DESTINATION FIRST, and act on what comes back.
     //
     // Everything below this block — the archive identity probes, the backup
@@ -7704,7 +7822,7 @@ export class HardeningScanner {
     // see the destination, not the spelling. Resolving after would re-open
     // #304's defect (the guard protected a path that was not the one written) in
     // a new place.
-    const filePath = await this.resolveFixWriteTarget(requestedPath);
+    const filePath = await this.resolveFixWriteTarget(requestedPath, checkIds);
     if (filePath === null) return false;
 
     // #314 — never rewrite a backup archive, HMA's own or a previous run's.
@@ -7845,7 +7963,7 @@ export class HardeningScanner {
             // fix writes and it is not reached through `applyFixWrite`, so the
             // sweep has to name it explicitly rather than assume the chokepoint
             // covers everything that mutates the filesystem.
-            const modePath = await this.resolveFixWriteTarget(filePath);
+            const modePath = await this.resolveFixWriteTarget(filePath, ['PERM-001']);
             if (modePath !== null) {
               try {
                 await fs.chmod(modePath, 0o600);
@@ -7968,7 +8086,7 @@ dist/
 
     let git001Fixed = false;
     if (!gitignoreExists && autoFix) {
-      git001Fixed = await this.applyFixWrite(gitignorePath, defaultGitignore);
+      git001Fixed = await this.applyFixWrite(gitignorePath, defaultGitignore, ['GIT-001']);
       if (git001Fixed) {
         gitignoreContent = defaultGitignore;
         gitignoreExists = true;
@@ -8034,7 +8152,7 @@ dist/
       if (missingPatterns.length > 0 && autoFix) {
         const patternsToAdd = '\n# Security patterns (auto-added)\n' + missingPatterns.join('\n') + '\n';
         const git002Content = gitignoreContent + patternsToAdd;
-        git002Fixed = await this.applyFixWrite(gitignorePath, git002Content);
+        git002Fixed = await this.applyFixWrite(gitignorePath, git002Content, ['GIT-002']);
         if (git002Fixed) gitignoreContent = git002Content;
       }
 
@@ -8120,7 +8238,7 @@ dist/
     let git003Fixed = false;
     if (envAtRisk && autoFix) {
       const git003Content = gitignoreContent + '\n.env\n';
-      git003Fixed = await this.applyFixWrite(gitignorePath, git003Content);
+      git003Fixed = await this.applyFixWrite(gitignorePath, git003Content, ['GIT-003']);
       if (git003Fixed) gitignoreContent = git003Content;
     }
 
@@ -8192,7 +8310,7 @@ dist/
       if (boundToAllInterfaces && autoFix) {
         // Replace 0.0.0.0 with 127.0.0.1 in the file
         const fixedContent = cfg.content.replace(/0\.0\.0\.0/g, '127.0.0.1');
-        net001Fixed = await this.applyFixWrite(cfg.path, fixedContent);
+        net001Fixed = await this.applyFixWrite(cfg.path, fixedContent, ['NET-001']);
       }
 
       // Only report if bound to 0.0.0.0
@@ -8310,7 +8428,7 @@ dist/
 
         // Save fixed config
         if (mcp003Fixed) {
-          mcp003Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(mcpConfig, null, 2));
+          mcp003Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(mcpConfig, null, 2), ['MCP-003']);
         }
       }
 
@@ -13809,7 +13927,7 @@ dist/
             .replace(/filesystem:\s*~\//gi, 'filesystem:./data/');
         }
         const skill004Content = skill004Current.join('\n');
-        skill004FileModified = await this.applyFixWrite(skillFile, skill004Content);
+        skill004FileModified = await this.applyFixWrite(skillFile, skill004Content, ['SKILL-004']);
         if (skill004FileModified) {
           content = skill004Content;
         } else {
@@ -14106,7 +14224,7 @@ dist/
               : '';
             const newSigBlock = `<!-- opena2a-guard hash="sha256:${newHash}" signed="${newDate}"${expiresAt} -->`;
             const skill019Content = content.replace(signatureBlock, newSigBlock);
-            skill019Fixed = await this.applyFixWrite(skillFile, skill019Content);
+            skill019Fixed = await this.applyFixWrite(skillFile, skill019Content, ['SKILL-019']);
             if (skill019Fixed) content = skill019Content;
           }
 
@@ -14142,7 +14260,7 @@ dist/
               const newExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
               const newSigBlock = `<!-- opena2a-guard hash="sha256:${newHash}" signed="${newDate}" expires_at="${newExpiry}" -->`;
               const hb007Content = content.replace(signatureMatch[0], newSigBlock);
-              hb007Fixed = await this.applyFixWrite(skillFile, hb007Content);
+              hb007Fixed = await this.applyFixWrite(skillFile, hb007Content, ['HEARTBEAT-007']);
               if (hb007Fixed) content = hb007Content;
             }
 
@@ -15234,6 +15352,10 @@ dist/
         const gatewayWritten = await this.applyFixWrite(
           configFile,
           JSON.stringify(config, null, 2) + '\n',
+          // Every gateway check whose fix this one write carries (#1033).
+          findings
+            .filter((f) => f.category === 'gateway' && f.fixed && f.file === relativePath)
+            .map((f) => f.checkId),
         );
         if (gatewayWritten) {
           // Add a summary finding about what was fixed
@@ -18461,8 +18583,12 @@ dist/
                   lines[i] = lines[i].replace(check.fixPattern, check.fixReplacement);
                   if (lines[i] !== original) {
                     const llmContent = lines.join('\n');
-                    fixed = await this.applyFixWrite(filePath, llmContent);
+                    fixed = await this.applyFixWrite(filePath, llmContent, [check.id]);
                     if (fixed) content = llmContent;
+                    // #1033 — an unwritten fix leaves the working copy too, or
+                    // the next check's write on this file would carry it (a
+                    // `<path>:<CHECK>` rule refuses one check, not the file).
+                    else lines[i] = original;
                   }
                 }
 
@@ -18623,6 +18749,7 @@ dist/
 
                   let fixed = false;
                   if (autoFix && fixTransforms) {
+                    const original = lines[i];
                     for (const ft of fixTransforms) {
                       if (ft.match.test(lines[i])) {
                         lines[i] = lines[i].replace(ft.match, ft.replace);
@@ -18631,8 +18758,11 @@ dist/
                     }
                     if (fixed) {
                       const aiToolContent = lines.join('\n');
-                      fixed = await this.applyFixWrite(filePath, aiToolContent);
+                      fixed = await this.applyFixWrite(filePath, aiToolContent, [check.id]);
                       if (fixed) content = aiToolContent;
+                      // #1033 — as in the LLM-exposure loop: an unwritten fix
+                      // must not ride along with the next check's write.
+                      else lines[i] = original;
                     }
                   }
 
@@ -18991,7 +19121,7 @@ dist/
 
           if (fileModified) {
             const webCredContent = lines.join('\n');
-            fileModified = await this.applyFixWrite(filePath, webCredContent);
+            fileModified = await this.applyFixWrite(filePath, webCredContent, ['WEBCRED-001']);
             if (fileModified) {
               content = webCredContent;
             } else {

@@ -1506,6 +1506,11 @@ interface UnifiedCheckDisplayOptions {
    * NEVER change the exit code.
    */
   hmaignore?: ScanResult['hmaignore'];
+  /**
+   * #1033 — `--fix` writes an `.hmaignore` rule refused. Each prints with its
+   * path and the rule line, beside the ignore-file lines.
+   */
+  fixWritesExcluded?: ScanResult['fixWritesExcluded'];
   /** #536 — what `secure --scan-history` read; absent when it was not asked for. */
   history?: ScanResult['history'];
   artifactSummaries?: Array<{
@@ -2816,6 +2821,24 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       console.log(
         `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}` +
         `${inert} Errors never change the exit code.${RESET()}`,
+      );
+    }
+
+    // #1033 — every `--fix` write an `.hmaignore` rule refused, with the path
+    // and the rule line, so a file the fix left alone is never a silent gap.
+    const excludedWrites = opts.fixWritesExcluded ?? [];
+    if (excludedWrites.length > 0) {
+      const labelPad = 'Not fixed'.padEnd(LABEL_WIDTH, ' ');
+      excludedWrites.forEach((e, i) => {
+        console.log(
+          `  ${colors.dim}${i === 0 ? labelPad : ''.padEnd(LABEL_WIDTH, ' ')}${RESET()}` +
+          `${escapePathForDisplay(e.file)}: excluded by .hmaignore:${e.line} ` +
+          `\`${escapeForDisplay(e.rule)}\` (${e.checkIds.join(', ')})`,
+        );
+      });
+      console.log(
+        `  ${colors.dim}${''.padEnd(LABEL_WIDTH, ' ')}` +
+        `--fix does not write a path .hmaignore excludes. Narrow or remove the rule to let it.${RESET()}`,
       );
     }
 
@@ -6765,7 +6788,24 @@ Change scope (--range, --staged):
             // The governance write is gated by the same recoverability rule as
             // every fix write inside the scan (#271). `scanner` still holds this
             // run's backup context — harden-soul runs after `scan()` returns.
-            writeGuard: (rel: string) => scanner.ensureGovernanceBackup(targetDir, rel),
+            // #1033 — and by the same `.hmaignore` rules: a governance file the
+            // scan excludes is not rewritten, and the refusal is listed with
+            // the in-scan ones.
+            writeGuard: async (rel: string) => {
+              const excluded = await scanner.excludeGovernanceWrite(
+                targetDir,
+                rel,
+                govFindings.map((f: SecurityFinding) => f.checkId),
+              );
+              if (excluded) {
+                const listed = (result.fixWritesExcluded ??= []);
+                if (!listed.some((e) => e.file === excluded.file && e.line === excluded.line)) {
+                  listed.push(excluded);
+                }
+                return { refused: `excluded by .hmaignore:${excluded.line} \`${excluded.rule}\`` };
+              }
+              return scanner.ensureGovernanceBackup(targetDir, rel);
+            },
           });
           if (hardenResult.writeRefused) {
             // Never silent. A refused write with a composed section list is the
@@ -6857,6 +6897,7 @@ Change scope (--range, --staged):
         suppressed: result.suppressed,
         suppressedLocations,
         hmaignore: result.hmaignore,
+        fixWritesExcluded: result.fixWritesExcluded,
         localScan: {
           score: result.score,
           rawScore: result.rawScore,
