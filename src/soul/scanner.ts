@@ -324,9 +324,10 @@ export interface HardenResult {
  *
  * Supplied by `secure --fix`, which has a backup context and can answer "is
  * there a recoverable copy of this path". Takes the target-relative path and
- * returns false when the write must not happen.
+ * returns false when the write must not happen, or `{ refused }` with the
+ * reason when that reason is not the backup (an `.hmaignore` rule, #1033).
  */
-export type GovernanceWriteGuard = (relPath: string) => Promise<boolean>;
+export type GovernanceWriteGuard = (relPath: string) => Promise<boolean | { refused: string }>;
 
 // ---------------------------------------------------------------------------
 // Governance file search order
@@ -2721,6 +2722,7 @@ Edit the marker in ${fileName}, or re-run without --tier.`;
 
     // Apply or preview
     let writeRefused: { path: string; reason: string } | undefined;
+    let guard: boolean | { refused: string } = true;
     if (!dryRun && newContent.length > 0) {
       // #270/#271 — the two writes below were the only mutations in the product
       // that reached the filesystem with no containment and no backup guarantee.
@@ -2748,10 +2750,12 @@ Edit the marker in ${fileName}, or re-run without --tier.`;
           path: outputFile,
           reason: describeResolveRefusal(contained.cause),
         };
-      } else if (options?.writeGuard && !(await options.writeGuard(outputFile))) {
+      } else if (options?.writeGuard && (guard = await options.writeGuard(outputFile)) !== true) {
         writeRefused = {
           path: outputFile,
-          reason: 'no recoverable backup copy could be made for it, so `rollback` could not undo this',
+          reason: typeof guard === 'object'
+            ? guard.refused
+            : 'no recoverable backup copy could be made for it, so `rollback` could not undo this',
         };
       } else {
         try {

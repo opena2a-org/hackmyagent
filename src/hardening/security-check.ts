@@ -98,6 +98,23 @@ export interface HmaIgnoreDisclosure {
   errors: Array<{ line: number; rule: string; error: string }>;
 }
 
+/**
+ * #1033 — one `--fix` write that an `.hmaignore` rule refused: a whole-path
+ * rule covering the file, or a `<path>:<CHECK>` rule for a check the fix
+ * carries. CLI-local like `HmaIgnoreDisclosure`: it carries a path and the
+ * rule text, so no wire builder reads it.
+ */
+export interface ExcludedFixWrite {
+  /** The path the fix would have written, relative to the target. */
+  file: string;
+  /** 1-based `.hmaignore` line of the rule that excluded it. */
+  line: number;
+  /** That line as written. */
+  rule: string;
+  /** The checks whose fix was not written to this path. */
+  checkIds: string[];
+}
+
 export interface SecurityCheck {
   id: string;
   name: string;
@@ -456,6 +473,12 @@ export interface ScanResult {
    * `settled-outcome.ts` are the guards.
    */
   hmaignore?: HmaIgnoreDisclosure;
+  /**
+   * #1033 — `--fix` writes an `.hmaignore` rule refused, each with the rule
+   * line. Absent (not empty) when no write was refused, so a run without one
+   * produces an unchanged document. Never on a wire, like `hmaignore`.
+   */
+  fixWritesExcluded?: ExcludedFixWrite[];
   /** Semantic analysis summary (Layer 2 + Layer 3) */
   semanticAnalysis?: {
     layer2Findings: number;
