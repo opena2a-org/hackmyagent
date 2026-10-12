@@ -235,12 +235,19 @@ export function assertNoSplitLines(out: string, label: string): void {
  * (`storeDirs` below); only then is `-rf` followed by exactly that directory
  * accepted, and the directory is still put through every shell like any other
  * citation. Anywhere else, `-rf` is still the finding.
+ *
+ * `toLineEnd` is the same operand read to the end of its line. A citation inside
+ * backticks ends at the next backtick, but the store-deletion command is the
+ * last thing on its line and is not inside backticks, and a store root the user
+ * named can itself hold a backtick: cut there, a correctly quoted operand
+ * reached the shell as half a quote.
  */
-function rmArguments(out: string): Array<{ arg: string; line: string }> {
-  const found: Array<{ arg: string; line: string }> = [];
+function rmArguments(out: string): Array<{ arg: string; toLineEnd: string; line: string }> {
+  const found: Array<{ arg: string; toLineEnd: string; line: string }> = [];
   for (const line of out.split('\n')) {
     for (const m of line.matchAll(/\brm\s+([^`]+)/g)) {
-      found.push({ arg: m[1].trim(), line });
+      const start = (m.index ?? 0) + m[0].length - m[1].length;
+      found.push({ arg: m[1].trim(), toLineEnd: line.slice(start).trim(), line });
     }
   }
   return found;
@@ -269,7 +276,7 @@ export function assertCitationsQuoted(
     // The operand that follows is judged against the store directories alone,
     // so a tree path can never ride in behind the flag.
     if (storeDirs.length > 0 && arg.startsWith('-rf ')) {
-      arg = arg.slice('-rf '.length).trim();
+      arg = rm.toLineEnd.slice('-rf '.length).trim();
       allowed = storeDirs;
     }
     // Property 3. A word beginning with `-` is read as options by every command
