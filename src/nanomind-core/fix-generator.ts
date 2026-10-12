@@ -16,10 +16,11 @@
  * and a VERIFY command. No dead ends.
  */
 
-import { citationTarget } from '../ui/shell-quote.js';
+import { citationTarget, commandNaming } from '../ui/shell-quote.js';
 import type { SecurityAST, ArtifactType, Capability, Constraint } from './types.js';
 import { purposeRedactionProvenance, type ASTFinding } from './analyzers/capability-analyzer.js';
 import { FIX_LINES } from '../hardening/fix-lines.js';
+import { CREDENTIAL_SHAPES, shapeAlternation } from '../types/credential-format.js';
 
 // ============================================================================
 // Public API
@@ -31,16 +32,26 @@ import { FIX_LINES } from '../hardening/fix-lines.js';
  * based on the SecurityAST context.
  *
  * The original finding is not mutated; returns new finding objects.
+ *
+ * `artifactContent` is the content the analyzers were handed, the bytes the
+ * compiler's risk-surface offsets index. With it, a fix can name the shape of
+ * the credential a finding was raised on (#1045); without it, every
+ * hardcoded-secret finding gets the shape-independent fix.
  */
 export function enrichFindings(
   findings: ASTFinding[],
   ast: SecurityAST,
   projectConstraints?: Constraint[],
+  artifactContent?: string,
 ): ASTFinding[] {
+  const bytes =
+    artifactContent !== undefined && findings.some(f => !f.passed && f.attackClass === 'CRED-HARDCODED')
+      ? readPrivateKeys(ast, artifactContent)
+      : undefined;
   return findings.map(f => {
     if (f.passed) return f;
 
-    const contextualFix = generateFix(f, ast, projectConstraints);
+    const contextualFix = generateFix(f, ast, projectConstraints, bytes);
     const contextualGuidance = generateGuidance(f, ast, projectConstraints);
 
     return {
@@ -89,7 +100,12 @@ function verbatim(fix: string): GeneratedFix {
   return { fix };
 }
 
-function generateFix(finding: ASTFinding, ast: SecurityAST, projectConstraints?: Constraint[]): GeneratedFix {
+function generateFix(
+  finding: ASTFinding,
+  ast: SecurityAST,
+  projectConstraints?: Constraint[],
+  bytes?: PrivateKeyBytes,
+): GeneratedFix {
   const attackClass = finding.attackClass ?? finding.checkId;
 
   // Dispatch by attack class for domain-specific fixes
@@ -101,7 +117,7 @@ function generateFix(finding: ASTFinding, ast: SecurityAST, projectConstraints?:
     case 'CRED-EXFIL':
     case 'CRED-HARVEST':
     case 'CRED-HARDCODED':
-      return composed(fixCredentialIssue(finding, ast));
+      return composed(fixCredentialIssue(finding, ast, bytes));
 
     case 'SKILL-EXFIL':
     case 'DATA-EXFIL':
@@ -221,9 +237,18 @@ function fixCapabilityIssue(finding: ASTFinding, ast: SecurityAST, projectConstr
 // Credential Fixes
 // ============================================================================
 
-function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string[] {
+function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST, bytes?: PrivateKeyBytes): string[] {
   const parts: string[] = [];
   const file = finding.file ?? ast.artifactPath ?? 'the artifact';
+
+  if (
+    finding.attackClass === 'CRED-HARDCODED' &&
+    bytes !== undefined &&
+    finding.line !== undefined &&
+    bytes.locations.has(privateKeyLocation(finding.line, finding.evidence))
+  ) {
+    return fixPrivateKeyInFile(finding, ast, bytes.keyOnly);
+  }
 
   if (finding.attackClass === 'CRED-HARDCODED') {
     parts.push('opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.');
@@ -267,6 +292,141 @@ function fixCredentialIssue(finding: ASTFinding, ast: SecurityAST): string[] {
     parts.push('If the artifact needs authentication, direct users to the official auth flow rather than asking for credentials directly.');
   }
 
+  parts.push('');
+  parts.push(verifyCommand(ast));
+  return parts;
+}
+
+// ============================================================================
+// Private keys found inside a file (#1045)
+// ============================================================================
+
+/**
+ * The PEM private-key entry of the shared credential registry, found by id:
+ * a shape's label is display-only and never an identity.
+ */
+const PEM_PRIVATE_KEY_SHAPE = CREDENTIAL_SHAPES.find(s => s.id === 'pem-private-key');
+
+/**
+ * The shape's own pattern, sticky, so it answers for the bytes at one offset
+ * and nowhere else.
+ */
+const PEM_PRIVATE_KEY_AT =
+  PEM_PRIVATE_KEY_SHAPE !== undefined ? new RegExp(shapeAlternation(PEM_PRIVATE_KEY_SHAPE), 'y') : undefined;
+
+/** The lines of a PEM private key block, each matched trimmed: BEGIN, END, body, header. */
+const PEM_PRIVATE_KEY_BEGIN_LINE =
+  PEM_PRIVATE_KEY_SHAPE !== undefined ? new RegExp(`^${shapeAlternation(PEM_PRIVATE_KEY_SHAPE)}$`) : undefined;
+const PEM_KEY_END_LINE = /^-----END [A-Z ]*KEY-----$/;
+const PEM_BODY_LINE = /^[A-Za-z0-9+/=]+$/;
+/** RFC 1421 headers of a legacy encrypted key: `Proc-Type: 4,ENCRYPTED`, `DEK-Info: ...`. */
+const PEM_HEADER_LINE = /^[A-Za-z-]+: [ -~]*$/;
+
+/** What the credential fixes read from the artifact's bytes. */
+interface PrivateKeyBytes {
+  /** `privateKeyLocation` of every risk surface raised on a PEM private key. */
+  readonly locations: ReadonlySet<string>;
+  /** True when the file holds nothing but private key blocks and whitespace. */
+  readonly keyOnly: boolean;
+}
+
+/**
+ * A finding's join key to the risk surface it was raised on, built the way the
+ * credential analyzer builds the finding: its `line` is the line of the
+ * surface's offset and its `evidence` is the surface's evidence.
+ */
+function privateKeyLocation(line: number, evidence: string | undefined): string {
+  return `${line}\u0000${evidence ?? ''}`;
+}
+
+/**
+ * Which hardcoded-secret findings were raised on a PEM private key.
+ *
+ * The shape is read from the artifact's own bytes: the registry's PEM
+ * private-key pattern, tested at the offset the canonical credential scan
+ * recorded for each surface. Never from the finding's message or label, which
+ * are display text. Offsets are walked once in order, so a file with many keys
+ * costs one pass over its bytes rather than one pass per finding.
+ */
+function readPrivateKeys(ast: SecurityAST, content: string): PrivateKeyBytes | undefined {
+  const pattern = PEM_PRIVATE_KEY_AT;
+  if (pattern === undefined) return undefined;
+  const surfaces = ast.inferredRiskSurface
+    .filter(
+      (r): r is typeof r & { offset: number } =>
+        r.attackClass === 'CRED-HARVEST' &&
+        typeof r.offset === 'number' &&
+        r.offset >= 0 &&
+        r.offset < content.length,
+    )
+    .filter(r => {
+      pattern.lastIndex = r.offset;
+      return pattern.test(content);
+    })
+    .sort((a, b) => a.offset - b.offset);
+  if (surfaces.length === 0) return undefined;
+
+  const locations = new Set<string>();
+  // Same numbering as `lineFromOffset`, which the analyzer used: 1 plus the
+  // newlines before the offset.
+  let line = 1;
+  let pos = 0;
+  for (const r of surfaces) {
+    for (; pos < r.offset; pos++) {
+      if (content.charCodeAt(pos) === 10) line++;
+    }
+    locations.add(privateKeyLocation(line, r.evidence));
+  }
+  return { locations, keyOnly: holdsOnlyPrivateKeys(content) };
+}
+
+/**
+ * True when every non-blank line of `content` belongs to a complete PEM
+ * private key block. Only then does `git rm --cached <file>` untrack the key
+ * and nothing else; for a key inside a README.md or an app.py it would untrack
+ * the whole file.
+ */
+function holdsOnlyPrivateKeys(content: string): boolean {
+  const begin = PEM_PRIVATE_KEY_BEGIN_LINE;
+  if (begin === undefined) return false;
+  let inKey = false;
+  let sawKey = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (line === '') continue;
+    if (!inKey) {
+      if (!begin.test(line)) return false;
+      inKey = true;
+      sawKey = true;
+    } else if (PEM_KEY_END_LINE.test(line)) {
+      inKey = false;
+    } else if (!PEM_BODY_LINE.test(line) && !PEM_HEADER_LINE.test(line)) {
+      return false;
+    }
+  }
+  return sawKey && !inKey;
+}
+
+/**
+ * The Fix for a PEM private key found inside a file. Vaulting is not the
+ * remedy for key material: the key pair is replaced and the old key revoked,
+ * which holds wherever the key was found. So this cites no vault command, and
+ * it names `git rm --cached` only for a file that holds nothing but the key.
+ */
+function fixPrivateKeyInFile(finding: ASTFinding, ast: SecurityAST, keyOnly: boolean): string[] {
+  const parts: string[] = [];
+  const file = finding.file ?? ast.artifactPath;
+  parts.push('Remove the private key block, from its BEGIN line through its END line, from this file.');
+  parts.push('Generate a new key pair, install the new public key wherever the old one was authorized, and revoke the old key.');
+  parts.push('Keep the new private key outside the repository: in a file only its owner can read (mode 600) or in a secrets manager.');
+  parts.push('If this file was ever committed, the old key stays in git history and is exposed whatever is removed later.');
+  if (keyOnly && file !== undefined) {
+    parts.push(
+      'The file holds nothing but the key, so stop tracking it: '
+        + (commandNaming(file, (q) => `git rm --cached ${q}`)
+          ?? 'git rm --cached on the file named above (its name cannot be shown truthfully in a command).'),
+    );
+  }
   parts.push('');
   parts.push(verifyCommand(ast));
   return parts;

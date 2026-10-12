@@ -973,7 +973,7 @@ function runAllAnalyzers(
   findings.push(...analyzeSteganography(ast));
 
   // Enrich all findings with context-aware fix suggestions
-  return enrichFindings(findings, ast, projectConstraints);
+  return enrichFindings(findings, ast, projectConstraints, artifactContent);
 }
 
 /**
@@ -992,7 +992,7 @@ function runNonAgentAnalyzers(
   findings.push(...analyzeCredentials(ast, verifier, undefined, artifactContent));
   findings.push(...analyzeCode(ast, verifier));
   findings.push(...analyzeSteganography(ast));
-  return enrichFindings(findings, ast, undefined);
+  return enrichFindings(findings, ast, undefined, artifactContent);
 }
 
 /**
@@ -1009,7 +1009,7 @@ function runCodeAnalyzers(
   const findings: ASTFinding[] = [];
   findings.push(...analyzeCredentials(ast, verifier, undefined, artifactContent));
   findings.push(...analyzeCode(ast, verifier));
-  return enrichFindings(findings, ast, undefined);
+  return enrichFindings(findings, ast, undefined, artifactContent);
 }
 
 // ============================================================================
