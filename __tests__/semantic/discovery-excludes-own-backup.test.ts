@@ -1,8 +1,9 @@
 /**
  * #298 — a `--fix` run must not report the backup it just made.
  *
- * `createBackup` runs before Layer 2 and copies `CLAUDE.md`, `config.json` and
- * `.claude/settings.json` for `rollback`. While those copies were written to
+ * `createBackup` ran before Layer 2 and copied `CLAUDE.md`, `config.json` and
+ * `.claude/settings.json` for `rollback` (since #1039 a run copies only the
+ * files a fix changes, here `config.json`). While those copies were written to
  * `<target>/.hackmyagent-backup/<stamp>/`, they were ordinary discoverable
  * artifacts once discovery reached below the scan root, so every semantic
  * finding was reported twice: once for the live file and once for HMA's own
@@ -90,10 +91,14 @@ describe('#298 the semantic walk skips this run\'s own backup', () => {
       (await storeRuns(dir)).length,
       'no backup was created, so this run had no copy to keep out of the report',
     ).toBeGreaterThan(0);
+    // #1039 — a run copies only what a fix changed: here `config.json`, whose
+    // copy still holds the credential the fix removed. `CLAUDE.md` and
+    // `.claude/settings.json` are no longer copied, since no fix in `scan()`
+    // writes them.
     expect(
       (await readdir(await latestStoreRun(dir))).sort(),
-      'the backup does not hold the artifacts Layer 2 reports, so keeping it out proves nothing',
-    ).toEqual(expect.arrayContaining(['CLAUDE.md', 'config.json']));
+      'the backup holds no copy of a file a check reports, so keeping it out proves nothing',
+    ).toEqual(['.manifest.json', 'config.json']);
 
     const semantic = result.findings.filter((f) => /^SEM-/.test(f.checkId) && !f.passed);
     expect(semantic.length, 'the semantic layer produced nothing to double-count').toBeGreaterThan(0);

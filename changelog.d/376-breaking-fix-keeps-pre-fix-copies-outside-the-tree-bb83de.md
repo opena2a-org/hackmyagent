@@ -30,9 +30,9 @@ breaking: true
   `HMA_BACKUP_HOME` or `OPENA2A_HOME`. With a relative path `rollback` exits
   non-zero and names the variable.
 - `--fix` prints the absolute path of the backup it wrote and says that it
-  holds a copy of every file the run backed up, whether or not a fix changed
-  it, that it can therefore hold a credential still in use, and that it stays
-  after the directory is deleted. Every `secure` text report for that
+  holds a copy of each file a fix changed, that it can therefore hold a
+  credential a fix removed, and that it stays after the directory is deleted.
+  Every `secure` text report for that
   directory, the `--fix` run itself and `-b oasb-1` and `-b oasb-2` included,
   prints one `Backups:` line with the number of backups, the path
   and the `rm -rf` command that deletes them. The line is not a finding and
