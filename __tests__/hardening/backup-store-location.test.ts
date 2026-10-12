@@ -404,6 +404,36 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
 );
 
 /**
+ * `~/.opena2a` on a fresh home, with neither override set. Measured before the
+ * store setup created it 0700: a first `secure --fix` left it `drwxr-xr-x` at
+ * umask 022 and `drwxrwxrwx` at umask 000, because the store setup created it
+ * before the OpenA2A user config, which creates it 0700 and leaves an existing
+ * one as it is.
+ */
+describe.skipIf(process.platform === 'win32')('#376 the user store a first --fix creates is private', () => {
+  beforeAll(assertDistFresh);
+
+  it.each(['000', '022'])('leaves $HOME/.opena2a drwx------ at umask %s', (umask) => {
+    const target = fixableTree();
+    const home = tempDir('hma-376-freshhome-');
+    const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1', HOME: home };
+    delete env.HMA_BACKUP_HOME;
+    delete env.OPENA2A_HOME;
+    const res = spawnSync(
+      '/bin/sh',
+      ['-c', `umask ${umask} && exec "$@"`, 'sh', process.execPath, CLI, 'secure', target, '--fix', '--json', '--static-only', '--no-machine-posture'],
+      { encoding: 'utf8', timeout: 120_000, cwd: home, env },
+    );
+
+    const result = JSON.parse(res.stdout) as FixJson;
+    expect(result.backupPath, 'the run took no backup; this cell measures nothing').toBeDefined();
+    expect(realpathSync.native(result.backupPath as string).startsWith(realDir(path.join(home, '.opena2a', 'backups')) + path.sep)).toBe(true);
+    expect(liveConfig(target)).toContain('${GITHUB_TOKEN}');
+    expect(mode(path.join(home, '.opena2a')).toString(8), 'the run created the user store open to others').toBe('700');
+  }, 180_000);
+});
+
+/**
  * RULE 4(b) of the #376 ruling: every later `secure` of a target with backups
  * in the store prints one line with their count, the path and the command that
  * deletes them. Measured before the benchmark paths printed it: 1 line on

@@ -258,9 +258,16 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
   // private. A root the user named with HMA_BACKUP_HOME and that already
   // exists keeps its mode: a shared or group-readable directory they chose is
   // not ours to close. `<user store>/backups` is ours, and stays 0700.
+  //
+  // The one exception is `~/.opena2a` when neither override is set: the
+  // OpenA2A user config creates it 0700, and a `--fix` that runs first used to
+  // create it at the default mode instead (`drwxrwxrwx` under umask 000). It
+  // is created 0700 when absent, as the user config does; an existing one keeps
+  // the mode it has.
   const root = path.dirname(dir);
-  await fs.mkdir(path.dirname(root), { recursive: true });
-  await ensurePrivateDir(root, { keepExistingMode: backupStoreRootVariable() === 'HMA_BACKUP_HOME' });
+  const variable = backupStoreRootVariable();
+  await fs.mkdir(path.dirname(root), variable === 'HOME' ? { recursive: true, mode: 0o700 } : { recursive: true });
+  await ensurePrivateDir(root, { keepExistingMode: variable === 'HMA_BACKUP_HOME' });
   await ensurePrivateDir(dir);
 
   let found = await readRecord(dir);
