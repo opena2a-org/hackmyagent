@@ -445,7 +445,7 @@ import {
   TEXT_PAYLOAD_DESCRIPTION,
   type TextSurface,
 } from './hardening/text-payload-scan';
-import { buildJsonStdoutDocument } from './output/json-stdout';
+import { buildJsonStdoutDocument, stringifyJsonOutput } from './output/json-stdout';
 import { compareFindingsByTier } from './ui/finding-tier';
 import {
   scoreLineLabel,
@@ -6293,7 +6293,7 @@ Change scope (--range, --staged):
           // This arm bypasses writeJsonStdout (writeFileSync(1, ...) below),
           // so it carries its own boundary read.
           assertRedactionProvenance(compositePayload, 'benchmark-composite-json');
-          const jsonOutput = JSON.stringify(compositePayload, null, 2);
+          const jsonOutput = stringifyJsonOutput(compositePayload, 2);
           if (options.output) {
             require('fs').writeFileSync(options.output, jsonOutput);
             console.error(`Report written to ${options.output}`);
@@ -6437,7 +6437,7 @@ Change scope (--range, --staged):
           case 'json':
             // #514 — the record that explains an exit-2 run rides beside the
             // rating, in the same shape `secure --json` carries.
-            output = JSON.stringify(
+            output = stringifyJsonOutput(
               {
                 ...benchmarkResult,
                 ...(result.coverage?.unreadableInputs
@@ -6456,7 +6456,6 @@ Change scope (--range, --staged):
                 // The `--deep` simulation, on the key `secure --json` uses.
                 ...(simulationReport ? { simulation: simulationReport } : {}),
               },
-              null,
               2,
             );
             break;
@@ -6664,7 +6663,7 @@ Change scope (--range, --staged):
         // buildJsonStdoutDocument — a read is idempotent).
         assertRedactionProvenance(jsonOutput, 'secure-json');
         if (options.output) {
-          require('fs').writeFileSync(options.output, JSON.stringify(jsonOutput, null, 2) + '\n');
+          require('fs').writeFileSync(options.output, stringifyJsonOutput(jsonOutput, 2) + '\n');
           console.error(`Report written to ${options.output}`);
         } else {
           writeJsonStdout(jsonOutput);
@@ -7105,7 +7104,7 @@ Change scope (--range, --staged):
               console.log();
             } else if (format === 'json') {
               // Append publish result to JSON output in a separate log
-              console.error(JSON.stringify({ publish: publishResult }, null, 2));
+              console.error(stringifyJsonOutput({ publish: publishResult }, 2));
             }
 
             // Best-effort: emit PackageNarrative for skill / mcp artifacts.
@@ -7225,7 +7224,7 @@ Change scope (--range, --staged):
               console.log(`  Valid: ${ciResult.valid}`);
               console.log(`  Trust impact: ${ciResult.trustImpact}\n`);
             } else if (format === 'json') {
-              console.error(JSON.stringify({ ciPublish: { scanId, ...ciResult } }, null, 2));
+              console.error(stringifyJsonOutput({ ciPublish: { scanId, ...ciResult } }, 2));
             }
           }
         } catch (ciErr: unknown) {
@@ -8818,7 +8817,7 @@ Examples:
           // was the odd one out: a consumer had to read `riskRating` for the
           // string 'unmeasured', and the pre-existing `riskScore: 0` beside it
           // reads as a clean result.
-          output = JSON.stringify({ ...report, coverage: coverageJson(report.verdict) }, null, 2);
+          output = stringifyJsonOutput({ ...report, coverage: coverageJson(report.verdict) }, 2);
           break;
         case 'sarif':
           output = generateAttackSarif(report);
@@ -12986,7 +12985,7 @@ Examples:
       const report = await scanner.scan();
 
       if (options.json) {
-        const output = JSON.stringify(report, null, 2);
+        const output = stringifyJsonOutput(report, 2);
         if (options.output) {
           const fs = await import('fs');
           fs.writeFileSync(options.output, output);
@@ -12998,7 +12997,7 @@ Examples:
         printWildReport(report);
         if (options.output) {
           const fs = await import('fs');
-          fs.writeFileSync(options.output, JSON.stringify(report, null, 2));
+          fs.writeFileSync(options.output, stringifyJsonOutput(report, 2));
           console.log(`\nJSON report written to ${options.output}`);
         }
       }
@@ -13795,13 +13794,13 @@ program
           }
 
           if (opts.format === 'json') {
-            const json = JSON.stringify(report, null, 2);
+            const json = stringifyJsonOutput(report, 2);
             console.log(json);
             if (opts.output) fsSync.writeFileSync(opts.output, json, 'utf8');
           } else {
             printOracleReport(report);
             if (opts.output) {
-              fsSync.writeFileSync(opts.output, JSON.stringify(report, null, 2), 'utf8');
+              fsSync.writeFileSync(opts.output, stringifyJsonOutput(report, 2), 'utf8');
               console.log(`Results written to: ${opts.output}`);
             }
           }

@@ -18,7 +18,7 @@ import type { SoulScanResult } from '../soul';
 import { clampScoreToVerdictBand, clampDisclosure, isFailDirection } from '../ui/verdict-band';
 import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-quote';
 import { credentialValueMarker } from '../types/credential-format';
-import { escapePathForDisplay, escapeForDisplay } from '../ui/display-safe';
+import { escapePathForDisplay, escapeForDisplay, escapeJsonDisplayHazards } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
 import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
 import { readStaysInsideTree } from '../hardening/contain';
@@ -2499,14 +2499,14 @@ async function detectWorkspace(
   }
 
   if (options.format === 'json') {
-    process.stdout.write(JSON.stringify({
+    process.stdout.write(escapeJsonDisplayHazards(JSON.stringify({
       ...ws,
       projects: scans.map((s) => ({
         ...s.result,
         ...(s.withheldLinks.length > 0 ? { withheldLinks: s.withheldLinks } : {}),
       })),
       coverage: coverageJson(verdict),
-    }, null, 2) + '\n');
+    }, null, 2)) + '\n');
   } else {
     process.stdout.write(formatWorkspaceText(ws, options.verbose ?? false, root) + '\n');
     for (const s of scans) {
@@ -2644,14 +2644,14 @@ export async function detect(options: DetectOptions): Promise<number> {
     // from, so a consumer never has to infer it from the finding count.
     // `withheldLinks` only when a link was withheld: the key is additive and
     // a linkless tree's document is byte-identical to before.
-    process.stdout.write(JSON.stringify({
+    process.stdout.write(escapeJsonDisplayHazards(JSON.stringify({
       ...result,
       coverage: coverageJson(verdict),
       ...(withheldLinks.length > 0 ? { withheldLinks } : {}),
       // Additive: the agent projects below a target that is itself one. The
       // reader asks for their reports with `--workspace`.
       ...(nested.length > 0 ? { nestedProjects: nested } : {}),
-    }, null, 2) + '\n');
+    }, null, 2)) + '\n');
   } else {
     process.stdout.write(formatText(result, options.verbose ?? false, dir, nested) + '\n');
     for (const line of withheldLinkLines(withheldLinks)) {

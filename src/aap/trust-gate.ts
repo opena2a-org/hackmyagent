@@ -5,7 +5,7 @@
  * non-zero to abort.
  */
 import * as fs from 'node:fs';
-import { escapePathForDisplay, escapeForDisplay } from './../ui/display-safe';
+import { escapePathForDisplay, escapeForDisplay, escapeJsonDisplayHazards } from './../ui/display-safe';
 
 import {
   BrokerClient,
@@ -120,12 +120,12 @@ export async function trustAapGate(options: TrustAapGateOptions): Promise<number
   } catch (err) {
     if (err instanceof GrantDeniedError) {
       if (isJson) {
-        process.stdout.write(JSON.stringify({
+        process.stdout.write(escapeJsonDisplayHazards(JSON.stringify({
           status: 'aap-denied',
           grant: options.grant,
           packageName: options.packageName,
           remediation: `Verify your broker policy binds ${options.grant} to your agent's trust class.`,
-        }) + '\n');
+        })) + '\n');
       } else {
         process.stderr.write(`AAP broker denied ${grant}\n`);
         process.stderr.write('\n');
