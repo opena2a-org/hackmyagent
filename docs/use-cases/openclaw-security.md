@@ -17,7 +17,7 @@ From your OpenClaw project directory:
 npx hackmyagent secure
 ```
 
-HMA detects OpenClaw from an `openclaw.json`, a `SKILL.md` or `HEARTBEAT.md`, or a `.openclaw`, `.moltbot` or `.clawdbot` directory. All 56 OpenClaw checks run automatically; they are part of the 317 static checks, not added to them.
+HMA detects OpenClaw from an `openclaw.json`, a `SKILL.md` or `HEARTBEAT.md`, or a `.openclaw`, `.moltbot` or `.clawdbot` directory. All 56 OpenClaw checks run automatically; they are part of the 261 static checks, not added to them.
 
 **Output** from this repository's `test-fixtures/insecure-openclaw` (your findings depend on your installation):
 
@@ -34,7 +34,7 @@ NanoMind: 6 artifact(s) compiled, 11 semantic finding(s) added
 
   ── Observations ────────────────────────────────────────────
   Surfaces    openclaw · 6 semantic artifacts · 4 of 6 artifacts reached 0-2 of 7 analyzer families
-  Checks      317 static declared · 63 of 63 check groups ran · 6 semantic (NanoMind AST, 0-7 of 7 analyzer families) · 6 files read by static checks
+  Checks      261 static declared · 63 of 63 check groups ran · 6 semantic (NanoMind AST, 0-7 of 7 analyzer families) · 6 files read by static checks
   Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 5 checks reported an absent mitigation (not shown)
   Unexamined  A2A, governance, identity, injection, lifecycle, MCP, memory, sandbox-escape
   Artifacts   SKILL.md  skill · malicious · no inferred capabilities  (no declared constraints)

@@ -701,6 +701,76 @@ export function isDeclaredExcludedCheckId(checkId: string): boolean {
 }
 
 /**
+ * Inventory keys that no command can report, so no count includes them.
+ * They stay TAXONOMY_MAP keys because the map is also the attack-family
+ * register: the HMA-NMC entries classify what the exported NemoClawScanner
+ * class emits for a library caller, and the attack-family census reads every
+ * family the map holds. Every user-facing count reads getCheckCounts(), which
+ * leaves these out, and `check-metadata --json` publishes this list as
+ * `notCounted`. The reverse census
+ * (`__tests__/hardening/counted-check-emitters.test.ts`) holds the list to the
+ * source: an id here that gains an emitter on a command path, or a not-wired
+ * class that some code starts constructing, fails it until the entry goes and
+ * the count rises.
+ */
+export interface NotCountedCheckIds {
+  /** Family prefix the ids share. */
+  family: string;
+  /** Exact ids, each a TAXONOMY_MAP key. */
+  ids: string[];
+  /** The class that emits these ids when one exists but nothing constructs it. */
+  notWiredEmitter?: string;
+  /** Why these ids are not counted. */
+  reason: string;
+}
+
+function numberedIds(family: string, from: number, to: number): string[] {
+  const ids: string[] = [];
+  for (let n = from; n <= to; n++) ids.push(`${family}-${String(n).padStart(3, '0')}`);
+  return ids;
+}
+
+const NOT_COUNTED: readonly NotCountedCheckIds[] = [
+  {
+    family: 'ASKILL',
+    ids: ['ASKILL-002'],
+    reason: 'No detector emits this id. It is kept as an attack-family mapping only.',
+  },
+  {
+    family: 'FAKETOOL',
+    ids: numberedIds('FAKETOOL', 1, 10),
+    reason: 'No detector emits these ids. The fake-tool family exists as `attack` payloads (ATK-FAKETOOL-001..010), which are requests sent to a live endpoint, not checks a scan reports.',
+  },
+  {
+    family: 'HMA-NMC',
+    ids: Object.keys(TAXONOMY_MAP).filter((id) => id.startsWith('HMA-NMC-')),
+    notWiredEmitter: 'NemoClawScanner',
+    reason: 'Emitted only by the NemoClawScanner class, which no command runs: `secure` and `secure-nemoclaw` run the general checks, the NEMO-* NemoClaw checks among them. These ids are counted once a command runs that class.',
+  },
+  {
+    family: 'PARSE',
+    ids: numberedIds('PARSE', 1, 10),
+    reason: 'No detector emits these ids. The parser-differential family exists as `attack` payloads (ATK-PARSE-001..010), which are requests sent to a live endpoint, not checks a scan reports.',
+  },
+  {
+    family: 'PERSIST',
+    ids: numberedIds('PERSIST', 4, 10),
+    reason: 'No detector emits these ids; PERSIST-001..003 are emitted and counted. The persistent-agent family exists as `attack` payloads (ATK-PERSIST-001..010), which are requests sent to a live endpoint, not checks a scan reports.',
+  },
+];
+const NOT_COUNTED_IDS: ReadonlySet<string> = new Set(NOT_COUNTED.flatMap((e) => e.ids));
+
+/** The inventory keys no command can report, each family with its reason. */
+export function getNotCountedCheckIds(): NotCountedCheckIds[] {
+  return NOT_COUNTED.map((e) => ({ ...e, ids: [...e.ids] }));
+}
+
+/** The inventory keys every count is taken over: TAXONOMY_MAP minus getNotCountedCheckIds(). */
+export function getCountedCheckIds(): string[] {
+  return Object.keys(TAXONOMY_MAP).filter((id) => !NOT_COUNTED_IDS.has(id));
+}
+
+/**
  * Default severity by check ID prefix. Based on the security impact
  * of each category. Individual checks may override via SEVERITY_OVERRIDES.
  */
@@ -1004,6 +1074,8 @@ export interface CheckCounts {
  * The single source of truth for every user-facing check/category count.
  * Derived from TAXONOMY_MAP so `--help`, command descriptions, the scan
  * Observations block, `check-metadata`, README and docs cannot drift apart.
+ * Taken over getCountedCheckIds(), so an inventory key no command can report
+ * (getNotCountedCheckIds) is not counted as a check.
  * Before this existed the scan display hardcoded "209 static / 44 categories"
  * while --help derived 323/74 from the same map — a self-contradiction a user
  * running the CLI could see. Keep the golden values in
@@ -1011,7 +1083,7 @@ export interface CheckCounts {
  * taxonomy changes; that test fails on drift by design.
  */
 export function getCheckCounts(): CheckCounts {
-  const ids = Object.keys(TAXONOMY_MAP);
+  const ids = getCountedCheckIds();
   const staticIds = ids.filter(id => !isSemanticCheckId(id));
   const semanticIds = ids.filter(isSemanticCheckId);
   return {

@@ -73,7 +73,7 @@ You draft release notes from merged pull requests. You read the repository and w
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 5 semantic artifacts · all 5 artifacts reached 0-6 of 7 analyzer families
-  Checks      317 static declared · 63 of 63 check groups ran · 5 semantic (NanoMind AST, 0-6 of 7 analyzer families) · 5 files read by static checks
+  Checks      261 static declared · 63 of 63 check groups ran · 5 semantic (NanoMind AST, 0-6 of 7 analyzer families) · 5 files read by static checks
   Coverage    21 of 25 categories examined · 4 unexamined (read no file) · 43 checks reported an absent mitigation (not shown)
   Unexamined  A2A, capabilities, heartbeat, skill
   Unresolved  auth

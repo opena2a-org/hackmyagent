@@ -29,7 +29,7 @@ npx hackmyagent secure
 
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 5 semantic artifacts · all 5 artifacts reached 0-6 of 7 analyzer families
-  Checks      317 static declared · 63 of 63 check groups ran · 5 semantic (NanoMind AST, 0-6 of 7 analyzer families) · 5 files read by static checks
+  Checks      261 static declared · 63 of 63 check groups ran · 5 semantic (NanoMind AST, 0-6 of 7 analyzer families) · 5 files read by static checks
   [...]
   Verdict     Not safe to ship. Overprivileged MCP server scope in .mcp.json:5 + 8 more. Fix before using in production.
 
@@ -73,7 +73,7 @@ Both captures: hackmyagent 0.33.2 built from this repository, run on 2026-10-10 
 ## What it finds
 
 - **Shadow AI.** `detect` lists the AI assistants running or installed on a machine (Claude Code, Cursor, Copilot and similar), project and machine-wide MCP servers, AI config files with credential references or broad permission grants, and agents with no governance file, one row per agent project. `--export-csv` writes the same inventory for a CMDB.
-- **317 static checks across 71 categories** (362 checks across 86 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
+- **261 static checks across 67 categories** (306 checks across 82 categories including the NanoMind semantic layer). Credentials, MCP configs, OpenClaw and NemoClaw, Unicode steganography, CVEs, governance, supply chain, memory and RAG poisoning, agent identity, sandbox escape. Run `hackmyagent check-metadata` for the live list.
 - **29 NanoMind semantic checks.** Every artifact (skill, MCP config, SOUL.md, system prompt) compiles into an Abstract Security Tree. The seven AST analyzers run against the tree: `capability`, `credential`, `governance`, `scope`, `prompt`, `code`, `stego`. Pattern matching misses undeclared capabilities, constraint weakness, scope mismatches, and scanner-evasion attempts. AST queries catch them. (This 29 is the fixed catalog of check ids the seven analyzers emit. `hackmyagent check-metadata` reports `semanticChecks: 45`, a different count: every `AST-` and `SEM-` id in the check taxonomy, which adds the structural layer's 19 `SEM-` checks and leaves out the 3 `UNICODE-STEGO` ids the stego analyzer shares with the static catalog. The `Checks` line in scan output, `5 semantic (NanoMind AST, ...)` in the Quick start above, reports the number of artifacts compiled in that particular run, not this catalog size.)
 - **164 adversarial payloads across 16 categories.** Prompt injection, jailbreak, data exfiltration, capability abuse, context manipulation, MCP and A2A exploitation, memory weaponisation, context window, supply chain, tool shadow, parser differential, persistent agent, fake tool, context lifecycle, policy enforcement integrity.
 - **20-probe behavioural simulation** under `--deep`, in every output format, when a probe executor is present (NanoMind daemon, Ollama or `ANTHROPIC_API_KEY`). A model is given each skill, SOUL or config file as its instructions and sent the probes; its replies are checked for the behaviour each probe targets. That shows how a model following the text responds, not what the skill does inside a running agent. Advisory: it never changes the score or the exit code, covers the first 10 `.md`, `.yaml` and `.yml` files found, and `--json` reports it as the `simulation` block. Without an executor it reports `NOT MEASURED` instead of a verdict.
@@ -132,7 +132,7 @@ npm view hackmyagent dist.attestations --json
 
 | Surface | Command | What gets scanned |
 |---|---|---|
-| Your own project | `hackmyagent secure` | 317 static checks + NanoMind on current directory |
+| Your own project | `hackmyagent secure` | 261 static checks + NanoMind on current directory |
 | A local directory | `hackmyagent check ./my-agent/` | tree + auto-detected artifacts |
 | An npm package | `hackmyagent check express` | downloads tarball, scans before you install |
 | A PyPI package | `hackmyagent check pip:requests` | downloads sdist, scans before you install |

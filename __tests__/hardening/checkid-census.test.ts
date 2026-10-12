@@ -41,6 +41,8 @@ import { assertDistFresh, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import {
   getTaxonomyMap,
   getCheckCounts,
+  getCountedCheckIds,
+  getNotCountedCheckIds,
   getCheckSeverity,
   getAttackClass,
   getDeclaredCheckIdExclusions,
@@ -458,8 +460,14 @@ describe('the inventory covers, or declares its exclusion of, every emitted fami
       expect(inventory.has(id), `${id} must be a TAXONOMY_MAP key`).toBe(true);
     }
     // totalChecks is derived from the map, so the additions are reflected in
-    // what check-metadata advertises.
-    expect(getCheckCounts().total).toBe(inventory.size);
+    // what check-metadata advertises; the keys no command can report are
+    // declared and left out of it (#970).
+    for (const id of [...baselineAst, ...baselineSoul]) {
+      expect(getCountedCheckIds(), `${id} must be counted`).toContain(id);
+    }
+    expect(getCheckCounts().total).toBe(
+      inventory.size - getNotCountedCheckIds().flatMap((e) => e.ids).length,
+    );
     expect(inventory.size).toBeGreaterThanOrEqual(324 + baselineAst.length + baselineSoul.length);
   });
 
@@ -509,6 +517,17 @@ describe('check-metadata carries the coverage and the exclusions (spawn)', () =>
     expect(payload.checks['AST-CRED-001']).toBeDefined();
     expect(payload.checks['SOUL-CONTRADICTION']).toBeDefined();
     expect(payload.checks['SEM-MCP-001']).toBeDefined();
+
+    // #970: `checks` lists what totalChecks counts, and the taxonomy keys no
+    // command can report are published under `notCounted` with a reason.
+    expect(Object.keys(payload.checks).sort()).toEqual([...getCountedCheckIds()].sort());
+    expect(payload.notCounted).toEqual(getNotCountedCheckIds());
+    const notCountedIds: string[] = payload.notCounted.flatMap((e: { ids: string[] }) => e.ids);
+    for (const id of ['PARSE-001', 'FAKETOOL-010', 'PERSIST-004', 'ASKILL-002', 'HMA-NMC-001']) {
+      expect(notCountedIds).toContain(id);
+      expect(payload.checks[id], `${id} is not a check any command reports`).toBeUndefined();
+    }
+    expect(payload.checks['PERSIST-001']).toBeDefined();
 
     expect(Array.isArray(payload.exclusions)).toBe(true);
     const byFamily = new Map<string, { family: string; ids: string[]; pattern?: string; reason: string }>(

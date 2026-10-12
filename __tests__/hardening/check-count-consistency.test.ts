@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { getCheckCounts, getTaxonomyMap, isDeclaredExcludedCheckId } from '../../src/hardening/taxonomy';
+import { getCheckCounts, getNotCountedCheckIds, getTaxonomyMap, isDeclaredExcludedCheckId } from '../../src/hardening/taxonomy';
 import { CHECK_METHOD_PREFIXES } from '../../src/hardening/coverage-ledger';
 
 /**
@@ -18,8 +18,12 @@ import { CHECK_METHOD_PREFIXES } from '../../src/hardening/coverage-ledger';
 describe('check-count single source of truth', () => {
   const counts = getCheckCounts();
 
-  it('total equals the taxonomy map size', () => {
-    expect(counts.total).toBe(Object.keys(getTaxonomyMap()).length);
+  // #970: the map minus the keys no command can report, which are declared
+  // with their reason rather than counted.
+  it('total equals the taxonomy map size less the declared not-counted keys', () => {
+    const notCounted = getNotCountedCheckIds().flatMap(e => e.ids);
+    expect(notCounted.length).toBeGreaterThan(0);
+    expect(counts.total).toBe(Object.keys(getTaxonomyMap()).length - notCounted.length);
   });
 
   it('static + semantic partition the total exactly', () => {
@@ -52,11 +56,60 @@ describe('check-count single source of truth', () => {
     // -007 (which do not match every form they did), and are deleted. Each
     // was the only id in its prefix, so the three `codeinj`, `tmppath` and
     // `envleak` categories go with them.
-    expect(counts.total).toBe(362);
-    expect(counts.static).toBe(317);
+    //
+    // 362/317/86/71 → 306/261/82/67 (#970): 56 counted ids could not be
+    // reported by any command. PARSE-001..010, FAKETOOL-001..010,
+    // PERSIST-004..010 and ASKILL-002 had no emitter, and the 28 HMA-NMC ids
+    // are emitted only by NemoClawScanner, which no command constructs. They
+    // stay taxonomy keys, declared in getNotCountedCheckIds(), and the reverse
+    // census (counted-check-emitters.test.ts) holds every counted id to an
+    // emitter a command reaches. The parse, faketool, askill and hma-nmc
+    // categories held only those ids.
+    expect(counts.total).toBe(306);
+    expect(counts.static).toBe(261);
     expect(counts.semantic).toBe(45);
-    expect(counts.totalCategories).toBe(86);
-    expect(counts.staticCategories).toBe(71);
+    expect(counts.totalCategories).toBe(82);
+    expect(counts.staticCategories).toBe(67);
+  });
+
+  // #970: README and docs carried the static count in eight more places than
+  // the two sentences pinned below, sample captures of the scan Observations
+  // line among them, and each was a literal. Every "N static checks" and
+  // "N static declared" in README.md and docs/ states the derived count.
+  it('every static-check count in README.md and docs/ is the derived count', () => {
+    const root = join(__dirname, '../..');
+    const files = ['README.md'];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+        const rel = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) walk(rel);
+        else if (/\.(md|txt)$/.test(entry.name)) files.push(rel);
+      }
+    };
+    walk('docs');
+    const stated: string[] = [];
+    for (const file of files) {
+      const text = readFileSync(join(root, file), 'utf8');
+      for (const m of text.matchAll(/\b(\d+) static (?:checks|declared)\b/g)) {
+        stated.push(`${file}: ${m[1]}`);
+      }
+    }
+    // README (3), SECURITY_CHECKS, quick-start-capture, USE-CASES,
+    // scan-my-agent (3), openclaw-security (2), red-team-mcp.
+    expect(stated.length).toBeGreaterThanOrEqual(12);
+    expect(stated.filter(s => !s.endsWith(`: ${counts.static}`))).toEqual([]);
+  });
+
+  it('the --help and MCP tool descriptions read the derived counts', () => {
+    const root = join(__dirname, '../..');
+    const cliSource = readFileSync(join(root, 'src/cli.ts'), 'utf8');
+    const mcpSource = readFileSync(join(root, 'src/mcp-server.ts'), 'utf8');
+    expect(cliSource).toMatch(/const CHECK_COUNTS = getCheckCounts\(\);/);
+    expect(mcpSource).toMatch(/const MCP_CHECK_COUNTS = getCheckCounts\(\);/);
+    expect(mcpSource).toMatch(/Runs \$\{MCP_CHECK_COUNTS\.total\} security checks across \$\{MCP_CHECK_COUNTS\.totalCategories\} categories/);
+    for (const source of [cliSource, mcpSource]) {
+      expect(source).not.toMatch(/\b\d{3} (?:static |security )?checks across \d+ categories/);
+    }
   });
 
   // #482: the golden values above are pinned to the taxonomy, but the README

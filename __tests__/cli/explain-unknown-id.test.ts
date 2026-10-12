@@ -288,14 +288,20 @@ describe('the sweep population is independent of the predicate (spawn)', () => {
   // A sweep filtered by isKnownExplainId — the predicate under test —
   // could not fail, so this population does not use it. It comes from
   // `check-metadata --json`, the inventory the CLI advertises to users,
-  // and every id is pushed through a real `explain` spawn.
+  // and every id is pushed through a real `explain` spawn. That is the
+  // counted `checks` plus the taxonomy keys published under `notCounted`
+  // (#970), which `explain` still answers.
   it('every check-metadata --json check id explains with exit 0', async () => {
     const meta = spawnSync(process.execPath, [CLI, 'check-metadata', '--json'], {
       encoding: 'utf-8',
       env: { ...process.env, NO_COLOR: '1' },
     });
     expect(meta.status).toBe(0);
-    const ids: string[] = Object.keys(JSON.parse(meta.stdout).checks);
+    const payload = JSON.parse(meta.stdout);
+    const ids: string[] = [
+      ...Object.keys(payload.checks),
+      ...payload.notCounted.flatMap((e: { ids: string[] }) => e.ids),
+    ];
     expect(ids.length).toBeGreaterThan(350);
     expect(ids).toContain('AST-CRED-001');
     expect(ids).toContain('SEM-MCP-001');
