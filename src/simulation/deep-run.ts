@@ -144,6 +144,10 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
     const { MAX_REDACTION_INPUT_BYTES } = await import('../nanomind-core/security/defense-in-depth.js');
     const engine = input.engine ?? new SimulationEngine({ useLLM: true });
     const overLimit = `over the ${MAX_REDACTION_INPUT_BYTES}-byte limit the credential redaction reads, so no probe was sent`;
+    // Set at the first artifact the engine could not measure. No later
+    // artifact is probed, but each still gets the size check, so a file over
+    // the limit is named in this run and not only once an executor exists.
+    let noExecutor = false;
 
     for (const file of batch) {
       const name = path.basename(file);
@@ -165,6 +169,7 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
         });
         continue;
       }
+      if (noExecutor) continue;
 
       const result = await engine.runLayer3(parseSkillProfile(content, name));
 
@@ -172,7 +177,8 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
         write(`  [Simulation] NOT MEASURED — ${NO_EXECUTOR}; the Findings block is the verdict.\n`);
         report.status = 'not-measured';
         report.reason = NO_EXECUTOR;
-        break;
+        noExecutor = true;
+        continue;
       }
 
       // Advisory only: the line carries a count and the probe ids, not a
