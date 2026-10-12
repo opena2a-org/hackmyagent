@@ -26,11 +26,12 @@
  * never written as literals, so nothing here trips a secret scanner.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, access, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import type { BackupManifest } from '../../src/hardening/scanner';
+import { latestStoreRun } from '../helpers/backup-store';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'d'.repeat(36)}`;
@@ -57,11 +58,9 @@ async function readAll(dir: string, rels: string[]): Promise<Record<string, stri
   return out;
 }
 
+/** #376 — the newest run directory is in the per-user backup store, not the tree. */
 async function latestManifest(dir: string): Promise<BackupManifest> {
-  const base = path.join(dir, '.hackmyagent-backup');
-  const { readdir } = await import('node:fs/promises');
-  const stamps = (await readdir(base)).sort();
-  const raw = await readFile(path.join(base, stamps[stamps.length - 1], '.manifest.json'), 'utf-8');
+  const raw = await readFile(path.join(await latestStoreRun(dir), '.manifest.json'), 'utf-8');
   return JSON.parse(raw) as BackupManifest;
 }
 
@@ -343,10 +342,8 @@ describe('#304 coverage is keyed on the path being written', () => {
     async function armed(dir: string) {
       const scanner = new HardeningScanner();
       await scanner.scan({ targetDir: dir, autoFix: true });
-      const base = path.join(dir, '.hackmyagent-backup');
-      const stamps = (await readdir(base)).sort();
       return {
-        backupPath: path.join(base, stamps[stamps.length - 1]),
+        backupPath: await latestStoreRun(dir),
         applyFixWrite: (f: string, c: string) => (scanner as unknown as {
           applyFixWrite(f: string, c: string): Promise<boolean>;
         }).applyFixWrite(f, c),

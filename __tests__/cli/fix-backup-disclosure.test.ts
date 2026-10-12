@@ -15,20 +15,24 @@
  *
  * The rule each case asserts: if a backup run directory exists after the run
  * that did not exist before it, the run's output names it.
+ *
+ * #376 — the run directories live in the per-user backup store now, not under
+ * the target, so `runs` reads the target's store. `hma` spreads `process.env`,
+ * so the CLI writes to the store vitest.setup.ts gave this file.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
+import { storeRuns } from '../helpers/backup-store';
 
 const CLI = path.resolve(__dirname, '..', '..', 'dist', 'cli.js');
 
-function runs(dir: string): string[] {
-  const base = path.join(dir, '.hackmyagent-backup');
-  return existsSync(base) ? readdirSync(base).filter((e) => !e.startsWith('.')) : [];
+function runs(dir: string): Promise<string[]> {
+  return storeRuns(dir);
 }
 
 function hma(args: string[]): { stdout: string; stderr: string; status: number | null } {
@@ -57,11 +61,11 @@ function skillTree(): string {
 describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix run that wrote a backup says so', () => {
   beforeAll(assertDistFreshIfPresent);
 
-  it('secure-openclaw --fix, unmeasured arm: names the backup it wrote', () => {
+  it('secure-openclaw --fix, unmeasured arm: names the backup it wrote', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hma-610-empty-'));
     try {
       const out = hma(['secure-openclaw', '--fix', dir]);
-      const written = runs(dir);
+      const written = await runs(dir);
       expect(out.status).toBe(2);
       expect(`${out.stdout}${out.stderr}`).toMatch(/NOT MEASURED/);
       expect(written).toHaveLength(1);
@@ -73,12 +77,12 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
     }
   });
 
-  it('secure-openclaw --fix --json: carries backupPath when a backup was written', () => {
+  it('secure-openclaw --fix --json: carries backupPath when a backup was written', async () => {
     const dir = skillTree();
     try {
       const out = hma(['secure-openclaw', '--fix', '--json', dir]);
       const doc = JSON.parse(out.stdout) as { backupPath?: string };
-      const written = runs(dir);
+      const written = await runs(dir);
       expect(written).toHaveLength(1);
       expect(typeof doc.backupPath).toBe('string');
       expect(doc.backupPath).toContain(written[0]);
@@ -90,12 +94,12 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
   // #862 — both benchmark arms of `secure` returned above the disclosure, so
   // a `-b oasb-1 --fix` run wrote `.gitignore` and a backup run directory and
   // named neither.
-  it.each(['oasb-1', 'oasb-2'])('secure -b %s --fix, text report: names the backup it wrote', (benchmark) => {
+  it.each(['oasb-1', 'oasb-2'])('secure -b %s --fix, text report: names the backup it wrote', async (benchmark) => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hma-862-'));
     try {
       writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
       const out = hma(['secure', dir, '-b', benchmark, '--fix']);
-      const written = runs(dir);
+      const written = await runs(dir);
       expect(written).toHaveLength(1);
       expect(out.stdout).toContain('Backup created:');
       expect(out.stdout).toContain(written[0]);
@@ -107,13 +111,13 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
 
   // #885 — the machine-readable benchmark formats wrote the same backup and
   // named it nowhere: no `backupPath` in the document, nothing on stderr.
-  it.each(['oasb-1', 'oasb-2'])('secure -b %s --fix --format json: carries backupPath', (benchmark) => {
+  it.each(['oasb-1', 'oasb-2'])('secure -b %s --fix --format json: carries backupPath', async (benchmark) => {
     const dir = tempDir('hma-885-');
     try {
       writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
       const out = hma(['secure', dir, '-b', benchmark, '--fix', '--format', 'json']);
       const doc = JSON.parse(out.stdout) as { backupPath?: string };
-      const written = runs(dir);
+      const written = await runs(dir);
       expect(written).toHaveLength(1);
       expect(typeof doc.backupPath).toBe('string');
       expect(doc.backupPath).toContain(written[0]);
@@ -122,12 +126,12 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
     }
   });
 
-  it.each(['sarif', 'html', 'asp'])('secure -b oasb-1 --fix --format %s: names the backup on stderr', (format) => {
+  it.each(['sarif', 'html', 'asp'])('secure -b oasb-1 --fix --format %s: names the backup on stderr', async (format) => {
     const dir = tempDir('hma-885-');
     try {
       writeFileSync(path.join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}\n');
       const out = hma(['secure', dir, '-b', 'oasb-1', '--fix', '--format', format]);
-      const written = runs(dir);
+      const written = await runs(dir);
       expect(written).toHaveLength(1);
       expect(out.stderr).toContain('Backup created:');
       expect(out.stderr).toContain(written[0]);
@@ -139,13 +143,13 @@ describe.skipIf(process.platform === 'win32' || !existsSync(CLI))('#610 a --fix 
     }
   });
 
-  it('secure --fix that attempted nothing: names the run directory it added', () => {
+  it('secure --fix that attempted nothing: names the run directory it added', async () => {
     const dir = skillTree();
     try {
       hma(['secure', '--fix', dir]);
-      const before = runs(dir);
+      const before = await runs(dir);
       const out = hma(['secure', '--fix', dir]);
-      const added = runs(dir).filter((r) => !before.includes(r));
+      const added = (await runs(dir)).filter((r) => !before.includes(r));
       expect(added).toHaveLength(1);
       expect(out.stdout).toContain('Backup created:');
       expect(out.stdout).toContain(added[0]);

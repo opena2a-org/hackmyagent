@@ -31,10 +31,10 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { storeDirOf, storeRuns } from '../helpers/backup-store';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
@@ -62,8 +62,9 @@ describe('#313 backup classification proves absence, never infers it', () => {
 
   const runFix = async (): Promise<Manifest> => {
     await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
-    const backupRoot = join(dir, '.hackmyagent-backup');
-    const stamps = readdirSync(backupRoot);
+    // #376 — the run directory is in the per-user backup store, not the tree.
+    const backupRoot = await storeDirOf(dir);
+    const stamps = await storeRuns(dir);
     expect(stamps.length, 'no backup directory was created; the run made no fixes').toBe(1);
     return JSON.parse(
       readFileSync(join(backupRoot, stamps[0], '.manifest.json'), 'utf8'),

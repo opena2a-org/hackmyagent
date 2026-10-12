@@ -24,6 +24,7 @@ import * as os from 'node:os';
 import path from 'node:path';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
 import { CANARY } from '../helpers/out-of-tree-link-fixture';
+import { storeDirOf, storeRuns } from '../helpers/backup-store';
 
 const SPAWN_TIMEOUT = 600_000;
 const TEST_TIMEOUT = 900_000;
@@ -100,13 +101,15 @@ function canaryCountUnder(dir: string): { count: number; hits: string[] } {
   return { count, hits };
 }
 
-/** The single `<stamp>/` run directory the backup created under the tree. */
-function backupRunDir(tree: string): string {
-  const root = path.join(tree, BACKUP_DIR_NAME);
-  expect(fs.existsSync(root), `${BACKUP_DIR_NAME} missing under ${tree}`).toBe(true);
-  const stamps = fs.readdirSync(root).filter((n) => fs.statSync(path.join(root, n)).isDirectory());
+/**
+ * The single `<stamp>/` run directory the backup created for the tree: in the
+ * per-user backup store since #376, and never under the tree itself.
+ */
+async function backupRunDir(tree: string): Promise<string> {
+  expect(fs.existsSync(path.join(tree, BACKUP_DIR_NAME)), `a backup was written under ${tree}`).toBe(false);
+  const stamps = await storeRuns(tree);
   expect(stamps.length, `expected one backup run dir, saw: ${stamps.join(', ')}`).toBe(1);
-  return path.join(root, stamps[0]);
+  return path.join(await storeDirOf(tree), stamps[0]);
 }
 
 function readManifest(runDir: string): { existingFiles: string[]; absentAtBackup: string[] } {
@@ -137,7 +140,7 @@ describe('harden-soul backup confinement (HMA-42)', () => {
     }
   }, TEST_TIMEOUT);
 
-  it('HMA-42.AC2 the out-of-tree candidate is withheld — no backup file, no manifest existingFiles entry, exactly one withheldLinks disclosure with rel and resolved', () => {
+  it('HMA-42.AC2 the out-of-tree candidate is withheld — no backup file, no manifest existingFiles entry, exactly one withheldLinks disclosure with rel and resolved', async () => {
     const { base, tree, outside } = makeFixture();
     try {
       const resolved = path.join(outside, 'SOUL.md');
@@ -148,7 +151,7 @@ describe('harden-soul backup confinement (HMA-42)', () => {
       expect(soulRecords.length, JSON.stringify(out.withheldLinks)).toBe(1);
       expect(soulRecords[0].resolved).toBe(resolved);
 
-      const runDir = backupRunDir(tree);
+      const runDir = await backupRunDir(tree);
       expect(fs.existsSync(path.join(runDir, 'SOUL.md')), 'a file was created for the withheld candidate').toBe(false);
       const manifest = readManifest(runDir);
       expect(manifest.existingFiles).not.toContain('SOUL.md');
@@ -173,7 +176,7 @@ describe('harden-soul backup confinement (HMA-42)', () => {
     }
   }, TEST_TIMEOUT);
 
-  it('HMA-42.AC3 an ordinary in-tree SOUL.md is still backed up byte-identical, with its manifest entry, and nothing is withheld', () => {
+  it('HMA-42.AC3 an ordinary in-tree SOUL.md is still backed up byte-identical, with its manifest entry, and nothing is withheld', async () => {
     const { base, tree } = makeFixture();
     try {
       const content = '# SOUL\n\nOrdinary in-tree governance body.\n';
@@ -183,7 +186,7 @@ describe('harden-soul backup confinement (HMA-42)', () => {
       expect(out.writeRefused).toBeUndefined();
       expect(out.withheldLinks).toEqual([]);
 
-      const runDir = backupRunDir(tree);
+      const runDir = await backupRunDir(tree);
       expect(sha256(fs.readFileSync(path.join(runDir, 'SOUL.md')))).toBe(sha256(content));
       expect(readManifest(runDir).existingFiles).toContain('SOUL.md');
     } finally {
@@ -191,7 +194,7 @@ describe('harden-soul backup confinement (HMA-42)', () => {
     }
   }, TEST_TIMEOUT);
 
-  it('HMA-42.AC3 a governance name linked INSIDE the tree (SOUL.md -> docs/SOUL.md) is still backed up byte-identical and not withheld', () => {
+  it('HMA-42.AC3 a governance name linked INSIDE the tree (SOUL.md -> docs/SOUL.md) is still backed up byte-identical and not withheld', async () => {
     const { base, tree } = makeFixture();
     try {
       const content = '# SOUL\n\nShared in-tree governance body.\n';
@@ -202,7 +205,7 @@ describe('harden-soul backup confinement (HMA-42)', () => {
       expect(out.writeRefused).toBeUndefined();
       expect(out.withheldLinks).toEqual([]);
 
-      const runDir = backupRunDir(tree);
+      const runDir = await backupRunDir(tree);
       expect(sha256(fs.readFileSync(path.join(runDir, 'SOUL.md')))).toBe(sha256(content));
       expect(readManifest(runDir).existingFiles).toContain('SOUL.md');
     } finally {
@@ -210,13 +213,14 @@ describe('harden-soul backup confinement (HMA-42)', () => {
     }
   }, TEST_TIMEOUT);
 
-  it('HMA-42.AC3 harden-soul --dry-run creates no backup directory at all', () => {
+  it('HMA-42.AC3 harden-soul --dry-run creates no backup directory at all', async () => {
     const { base, tree, outside } = makeFixture();
     try {
       fs.symlinkSync(path.join(outside, 'SOUL.md'), path.join(tree, 'SOUL.md'));
       const { status, stderr } = runHardenSoul(tree, ['--dry-run']);
       expect(status, `harden-soul crashed: ${stderr.slice(0, 500)}`).not.toBeNull();
       expect(fs.existsSync(path.join(tree, BACKUP_DIR_NAME)), 'a preview took a backup').toBe(false);
+      expect(await storeRuns(tree), 'a preview took a backup').toEqual([]);
     } finally {
       fs.rmSync(base, { recursive: true, force: true });
     }

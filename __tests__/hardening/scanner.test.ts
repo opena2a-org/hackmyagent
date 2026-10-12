@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
 import { initThrowawayRepo } from '../helpers/throwaway-repo';
+import { storeDirOf, storeRuns } from '../helpers/backup-store';
 import { signcryptSigned } from '../helpers/signcrypt-signed';
 
 /**
@@ -1433,17 +1434,17 @@ describe('Backup and rollback', () => {
     // Run with auto-fix
     const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
 
-    // Check backup was created
-    const backupDir = path.join(tempDir, '.hackmyagent-backup');
-    const backupExists = await fs
-      .access(backupDir)
+    // Check backup was created — in the per-user backup store, never inside
+    // the scanned tree (#376).
+    const backupDir = await storeDirOf(tempDir);
+    const backups = await storeRuns(tempDir);
+    expect(backups.length).toBeGreaterThan(0);
+    expect(result.backupPath).toBe(path.join(backupDir, backups[0]));
+    const inTree = await fs
+      .access(path.join(tempDir, '.hackmyagent-backup'))
       .then(() => true)
       .catch(() => false);
-    expect(backupExists).toBe(true);
-
-    // Check backup contains the original file
-    const backups = await fs.readdir(backupDir);
-    expect(backups.length).toBeGreaterThan(0);
+    expect(inTree).toBe(false);
 
     // Read the backup and verify it has original content
     const backupContent = await fs.readFile(
@@ -1477,8 +1478,7 @@ describe('Backup and rollback', () => {
 
     await scanner.scan({ targetDir: tempDir, autoFix: true });
 
-    const backupDir = path.join(tempDir, '.hackmyagent-backup');
-    const backups = await fs.readdir(backupDir);
+    const backups = await storeRuns(tempDir);
 
     // #332 — the stamp carries milliseconds and a fixed-width ordering sequence
     // now, because seconds could not separate two runs measured 2-6ms apart and
@@ -1606,7 +1606,8 @@ describe('Backup and rollback', () => {
     const result = await scanner.scan({ targetDir: tempDir, autoFix: true });
 
     expect(result.backupPath).toBeDefined();
-    expect(result.backupPath).toContain('.hackmyagent-backup');
+    // #376 — the target's directory in the per-user backup store.
+    expect(path.dirname(result.backupPath!)).toBe(await storeDirOf(tempDir));
   });
 
   it('does not create backup when autoFix is false', async () => {

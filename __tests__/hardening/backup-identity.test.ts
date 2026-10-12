@@ -36,12 +36,20 @@
  *
  * `identity survives a scan root that is a symlink` below is the case that does
  * reach it, on any filesystem, by making the two spellings differ.
+ *
+ * #376 — `--fix` writes its backup to the per-user store, outside the tree, so
+ * nothing the tree pre-creates under `.hackmyagent-backup` — a case variant, a
+ * symlink, a seeded stamp — is written to or adopted any more. The cases that
+ * planted those now assert that, plus where the copy went and that it holds the
+ * original bytes. The refusals moved with the location: they are asserted
+ * against the store's own directory, the one place a backup is now written.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { latestStoreRun, storeDirOf, storeRuns } from '../helpers/backup-store';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
@@ -113,25 +121,21 @@ describe('backup directory identity', () => {
     ).not.toContain(FAKE_GH_TOKEN);
     expect(result.findings.some((f) => f.checkId === 'CRED-001')).toBe(true);
 
-    const copies = (await walkFiles(dir)).filter(
-      (f) => path.basename(f) === 'config.json' && f !== 'config.json',
-    );
-    expect(copies.length, 'no backup copy of config.json was made at all').toBeGreaterThan(0);
-    for (const copy of copies) {
-      expect(
-        await readFile(path.join(dir, copy), 'utf-8'),
-        `${copy} was redacted, so the original credential bytes are unrecoverable`,
-      ).toContain(FAKE_GH_TOKEN);
-    }
-
-    if (folds) {
-      // Where the filesystem folds case, prove the mechanism was exercised: the
-      // adopted directory is the pre-existing UPPERCASE one.
-      expect(
-        copies.some((c) => c.startsWith('.HACKMYAGENT-BACKUP' + path.sep)),
-        'the case-variant directory was not adopted, so the #317 mechanism was not reached',
-      ).toBe(true);
-    }
+    // #376 — the copy is in the store, and nothing was written into the tree,
+    // so the case-variant directory is no longer adopted on any filesystem.
+    expect(
+      (await walkFiles(dir)).filter((f) => path.basename(f) === 'config.json' && f !== 'config.json'),
+      'a backup copy was written into the scanned tree',
+    ).toEqual([]);
+    expect(
+      await readdir(path.join(dir, folds ? '.hackmyagent-backup' : '.HACKMYAGENT-BACKUP')),
+      'the pre-existing case-variant directory was written to',
+    ).toEqual([]);
+    const copy = path.join(await latestStoreRun(dir), 'config.json');
+    expect(
+      await readFile(copy, 'utf-8'),
+      'the backup copy was redacted, so the original credential bytes are unrecoverable',
+    ).toContain(FAKE_GH_TOKEN);
   });
 
   /**
@@ -159,14 +163,16 @@ describe('backup directory identity', () => {
   });
 
   /**
-   * The same defect as #317 reached without case folding, so it bites on every
+   * The same defect as #317 reached without case folding, so it bit on every
    * filesystem: `.hackmyagent-backup` symlinked to a sibling directory inside
    * the tree. Before the fix, `mkdir -p` and `copyFile` followed the link, the
    * copies landed under a path the guard was not comparing against, and `--fix`
-   * rewrote them. Now the base is refused outright — wherever it points — and no
-   * fix lands without a backup.
+   * rewrote them.
+   *
+   * #376 — the tree no longer decides where a backup goes. The link is never
+   * followed or written through, and the fix lands with its copy in the store.
    */
-  it('refuses a backup base symlinked to a sibling inside the tree', async () => {
+  it('writes nothing through a backup base the tree symlinked to a sibling', async () => {
     await mkdir(path.join(dir, 'real-backup'));
     await symlink(path.join(dir, 'real-backup'), path.join(dir, BACKUP));
     await writeFile(path.join(dir, 'config.json'), BODY);
@@ -174,37 +180,59 @@ describe('backup directory identity', () => {
     const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
 
     expect(
-      await readFile(path.join(dir, 'config.json'), 'utf-8'),
-      'the fix landed even though the backup base was a symlink',
-    ).toBe(BODY);
-    expect(result.findings.some((f) => f.checkId === 'FIX-BACKUP-FAILED')).toBe(true);
-    expect(
       (await walkFiles(path.join(dir, 'real-backup'))).length,
       'copies were written through the symlink',
     ).toBe(0);
+    expect(result.findings.some((f) => f.checkId === 'FIX-BACKUP-FAILED')).toBe(false);
+    expect(
+      await readFile(path.join(dir, 'config.json'), 'utf-8'),
+      'the fix did not land, so where its backup went was never exercised',
+    ).not.toContain(FAKE_GH_TOKEN);
+    expect(await readFile(path.join(await latestStoreRun(dir), 'config.json'), 'utf-8')).toBe(BODY);
   });
 
   /**
-   * #321 — the same refusal, pointed out of the tree. Measured before the fix:
+   * #321 — the same link, pointed out of the tree. Measured before the fix:
    * `.env` bytes, credential included, landed in `/attacker/drop`.
    */
-  it('refuses a backup base symlinked out of the tree, and writes nothing there', async () => {
+  it('writes nothing through a backup base the tree symlinked out of the tree', async () => {
     const drop = await mkdtemp(path.join(tmpdir(), 'hma-identity-drop-'));
     try {
       await symlink(drop, path.join(dir, BACKUP));
       await writeFile(path.join(dir, '.env'), `GITHUB_TOKEN=${FAKE_GH_TOKEN}\n`);
       await writeFile(path.join(dir, 'config.json'), BODY);
 
-      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
 
       expect((await walkFiles(drop)).length, 'backup copies were exfiltrated out of the tree').toBe(0);
+      expect(await readFile(path.join(await latestStoreRun(dir), 'config.json'), 'utf-8')).toBe(BODY);
+    } finally {
+      await rm(drop, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * #321 carried over to the store (#376): the target's store directory is the
+   * one place a backup is written, so a link there is refused outright,
+   * wherever it points, and no fix lands without a backup.
+   */
+  it('refuses a store directory that is a symlink, and writes nothing through it', async () => {
+    const drop = await mkdtemp(path.join(tmpdir(), 'hma-identity-store-drop-'));
+    try {
+      const store = await storeDirOf(dir);
+      await mkdir(path.dirname(store), { recursive: true });
+      await symlink(drop, store);
+      await writeFile(path.join(dir, 'config.json'), BODY);
+
+      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+      expect((await walkFiles(drop)).length, 'backup copies were written through the link').toBe(0);
       expect(
         await readFile(path.join(dir, 'config.json'), 'utf-8'),
         'a fix landed with no recoverable backup',
       ).toBe(BODY);
-      // The user is told why, rather than left with a silent detect-only run.
-      const failed = result.findings.find((f) => f.checkId === 'FIX-BACKUP-FAILED');
-      expect(failed, 'the run degraded to detect-only without saying so').toBeDefined();
+      expect(result.findings.find((f) => f.checkId === 'FIX-BACKUP-FAILED'), 'the run degraded to detect-only without saying so').toBeDefined();
+      await rm(store, { force: true });
     } finally {
       await rm(drop, { recursive: true, force: true });
     }
@@ -220,10 +248,12 @@ describe('backup directory identity', () => {
    * symlink writable changes nothing — the user is sent to look at the wrong
    * thing while their fixes stay unapplied.
    */
-  it('tells the user the backup base is a symlink, not that the tree is read-only', async () => {
+  it('tells the user the store directory is a symlink, not that something is read-only', async () => {
     const drop = await mkdtemp(path.join(tmpdir(), 'hma-identity-cause-'));
     try {
-      await symlink(drop, path.join(dir, BACKUP));
+      const store = await storeDirOf(dir);
+      await mkdir(path.dirname(store), { recursive: true });
+      await symlink(drop, store);
       await writeFile(path.join(dir, 'config.json'), BODY);
 
       const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
@@ -234,14 +264,15 @@ describe('backup directory identity', () => {
       expect(text, 'the finding never mentions the actual cause').toContain('symbolic link');
       expect(
         failed!.fix ?? '',
-        'the fix line tells the user to make the target writable, which does not fix a symlink',
+        'the fix line tells the user to make something writable, which does not fix a symlink',
       ).not.toContain('writable');
       expect(
         failed!.guidance ?? '',
-        'the guidance blames a read-only mount for a cause that has nothing to do with permissions',
-      ).not.toContain('read-only mount');
+        'the guidance blames a read-only directory for a cause that has nothing to do with permissions',
+      ).not.toContain('read-only');
       // Names the thing to act on, literally.
-      expect(failed!.fix ?? '').toContain(BACKUP);
+      expect(failed!.fix ?? '').toContain(store);
+      await rm(store, { force: true });
     } finally {
       await rm(drop, { recursive: true, force: true });
     }
@@ -282,14 +313,11 @@ describe('backup directory identity', () => {
       const { cp } = await import('node:fs/promises');
       await cp(dir, fixDir, { recursive: true });
       const fixed = await new HardeningScanner().scan({ targetDir: fixDir, autoFix: true });
-      // #374 — this run reports the copy in its OWN archive too, so the count is
-      // taken over everything that is not that. Excluding by the flag, not by
-      // subtracting one: if a pre-seeded stamp were adopted, its credential would
-      // vanish from this same list, which is the defect being measured. A count
-      // that allowed one extra finding would hide an adoption by one.
-      const fixCount = fixed.findings.filter(
-        (f) => f.checkId === 'CRED-001' && !f.inOwnArchive,
-      ).length;
+      // #376 — this run's own copy is in the store, outside the tree, so it is
+      // not in this list at all and the count needs no exclusion: if a
+      // pre-seeded stamp were adopted, its credential would vanish from the
+      // list, which is the defect being measured.
+      const fixCount = fixed.findings.filter((f) => f.checkId === 'CRED-001').length;
 
       expect(
         fixCount,
@@ -297,13 +325,12 @@ describe('backup directory identity', () => {
         + 'credential was silently dropped under --fix',
       ).toBe(detectCount);
 
-      // Non-vacuity for the exclusion above: this run really did archive a copy
-      // and really did attribute it to itself. Without this, a build where
-      // `inOwnArchive` is never set would satisfy the count for the wrong reason.
+      // Non-vacuity: this run really did archive a copy, and not into the tree.
       expect(
-        fixed.findings.filter((f) => f.checkId === 'CRED-001' && f.inOwnArchive).length,
-        'this run\'s own archive was never attributed, so the filter above excluded nothing',
-      ).toBeGreaterThan(0);
+        await readFile(path.join(await latestStoreRun(fixDir), 'config.json'), 'utf-8'),
+        'this run made no backup, so nothing could have been adopted',
+      ).toBe(BODY);
+      expect((await readdir(path.join(fixDir, BACKUP))).sort()).toEqual([...seeded].sort());
 
       // And every seeded copy still holds its original bytes.
       for (const stamp of seeded) {
@@ -361,60 +388,31 @@ describe('backup directory identity', () => {
         'the live file was not redacted, so no backup copy was made to recognise',
       ).not.toContain(FAKE_GH_TOKEN);
 
-      const copies = (await walkFiles(dir)).filter(
-        (f) => path.basename(f) === 'config.json' && f !== 'config.json',
-      );
-      expect(copies.length, 'no backup copy was made at all').toBeGreaterThan(0);
-
-      // #374 CHANGED THE OBSERVABLE HERE, and the property is unchanged.
-      //
-      // This used to assert `cred.length === 1`: the copy `--fix` had just made
-      // must not be reported, because recognising it is what identity is for.
-      // Since #374 the copy IS reported — every later scan of that tree reports
-      // it, and the `--fix` run exempting itself is what made it announce a score
-      // its own next scan contradicted.
-      //
-      // So "did identity resolve?" needs an observable that survives the copy
-      // being reported, and there is a better one than a count: the copy is
-      // ATTRIBUTED to this run. That attribution runs through
-      // `isInsideOwnBackup` -> `sameIdentity`, and on this fixture the lexical
-      // shortcut cannot fire — the walk spells paths with the link while
-      // `backupContext.backupDir` is spelled with the real path — so the flag is
-      // reachable ONLY via `dev`+`ino`. Replacing `sameIdentity` with
-      // `return false` turns this assertion red, which is the exact mutation the
-      // docstring above says every other suite in this file survives.
-      const archived = cred.filter((f) => f.inOwnArchive);
-      const live = cred.filter((f) => !f.inOwnArchive);
-
+      // #376 CHANGED THE OBSERVABLE HERE AGAIN. The copy is in the store, keyed
+      // by the target's `dev`+`ino`, so identity is what decides WHICH store a
+      // run reached through a link writes to, and which one `rollback` through
+      // the real path reads. One store for both spellings is the property.
+      expect(await storeDirOf(link), 'the link and the real path keyed two different stores').toBe(await storeDirOf(dir));
       expect(
-        archived.length,
-        'the copy `--fix` had just made was reported WITHOUT being recognised as '
-        + 'this run\'s own: the run did not identify its own backup through a path '
-        + 'spelled differently, which is what filesystem identity is for',
-      ).toBeGreaterThan(0);
-      for (const f of archived) {
-        // Case-folded deliberately: this fixture pre-creates the archive base as
-        // `.HACKMYAGENT-BACKUP` so a case-insensitive filesystem adopts it at
-        // that spelling. Asserting the lowercase form here would fail for the
-        // very reason the fixture exists, and asserting a spelling at all is the
-        // habit this whole file replaced with identity — so this is a sanity
-        // check on the flag's target, not the identity assertion itself.
-        expect(
-          (f.file ?? '').toLowerCase(),
-          'a finding was attributed to the archive but is not in it',
-        ).toContain('.hackmyagent-backup');
-      }
+        await readFile(path.join(await latestStoreRun(dir), 'config.json'), 'utf-8'),
+        'the run through the link left no copy where the real path looks for it',
+      ).toBe(BODY);
+      expect(
+        (await walkFiles(dir)).filter((f) => path.basename(f) === 'config.json' && f !== 'config.json'),
+        'a backup copy was written into the scanned tree',
+      ).toEqual([]);
 
-      // And the live file is still reported exactly once, on its own path — the
-      // half of the original assertion that is unaffected.
+      // And the live file is reported exactly once, on its own path: nothing in
+      // the tree is a copy to report twice.
+      expect(cred.length, 'the live file\'s credential is not reported exactly once').toBe(1);
       expect(
-        live.length,
-        'the live file\'s credential is no longer reported exactly once',
-      ).toBe(1);
-      expect(
-        live[0].file,
-        'the reported credential is the backup copy rather than the live file',
+        cred[0].file,
+        'the reported credential is a backup copy rather than the live file',
       ).toBe('config.json');
+
+      const report = await new HardeningScanner().rollback(dir);
+      expect(report.restored).toContain('config.json');
+      expect(await readFile(path.join(dir, 'config.json'), 'utf-8')).toBe(BODY);
     } finally {
       await rm(link, { force: true });
     }

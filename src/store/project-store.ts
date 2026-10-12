@@ -87,9 +87,10 @@ export function projectKey(realPath: string): string {
  * The real path of `p`'s deepest existing ancestor, with the rest appended:
  * the store root usually does not exist yet, and a symlinked prefix (macOS's
  * `/var` -> `/private/var`) would otherwise make the inside-target comparison
- * below compare two spellings of one directory.
+ * below compare two spellings of one directory. Shared with the backup store
+ * (`archive-store.ts`), which asks the same inside-target question.
  */
-function realpathOfExistingPrefix(p: string): string {
+export function realpathOfExistingPrefix(p: string): string {
   let cur = path.resolve(p);
   const tail: string[] = [];
   while (!fs.existsSync(cur)) {

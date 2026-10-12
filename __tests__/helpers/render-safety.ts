@@ -225,8 +225,16 @@ export function assertNoSplitLines(out: string, label: string): void {
  * `(?:\s+-[A-Za-z]+)*` as "flags" before capturing, so `rm -rf/x.txt` — a file
  * literally named `-rf` — was read as the flags `-rf` plus an argument
  * `/x.txt`, and the citation that IS the defect was parsed away before it could
- * be judged. Nothing HackMyAgent emits carries `rm` flags any more (#326
- * removed the only `rm -rf`), so a flag-looking word here is the finding.
+ * be judged. #326 removed the only `rm -rf` that named a path in the scanned
+ * tree, and no tree path is ever cited with a flag again, so a flag-looking word
+ * here is the finding.
+ *
+ * #376 added one `rm -rf`, and it names no tree path: the line `secure` prints
+ * about this target's directory in the per-user backup store. A caller that
+ * expects that line passes the store directory it derived independently
+ * (`storeDirs` below); only then is `-rf` followed by exactly that directory
+ * accepted, and the directory is still put through every shell like any other
+ * citation. Anywhere else, `-rf` is still the finding.
  */
 function rmArguments(out: string): Array<{ arg: string; line: string }> {
   const found: Array<{ arg: string; line: string }> = [];
@@ -251,8 +259,19 @@ export function assertCitationsQuoted(
   out: string,
   label: string,
   plantedPaths: readonly string[],
+  storeDirs: readonly string[] = [],
 ): void {
-  for (const { arg, line } of rmArguments(out)) {
+  for (const rm of rmArguments(out)) {
+    const { line } = rm;
+    let { arg } = rm;
+    let allowed = plantedPaths;
+    // #376 — the store-deletion line, and only when the caller expects it.
+    // The operand that follows is judged against the store directories alone,
+    // so a tree path can never ride in behind the flag.
+    if (storeDirs.length > 0 && arg.startsWith('-rf ')) {
+      arg = arg.slice('-rf '.length).trim();
+      allowed = storeDirs;
+    }
     // Property 3. A word beginning with `-` is read as options by every command
     // that takes them, whatever the quoting: the shell strips quotes before the
     // command sees the word, so `rm '-rf'` still passes `-rf` as a flag.
@@ -280,7 +299,7 @@ export function assertCitationsQuoted(
           `${label}: ${shell} could not even parse the emitted citation: ${JSON.stringify(line)}`,
         );
       }
-      assertOneWord(expanded, `${label} [${shell}]`, line, plantedPaths);
+      assertOneWord(expanded, `${label} [${shell}]`, line, allowed);
     }
   }
 }
@@ -343,13 +362,18 @@ export const SHELLS_TESTED = SHELLS;
  */
 export const ZSH_AVAILABLE = SHELLS.includes('zsh');
 
-/** All of it, for one command's output. */
+/**
+ * All of it, for one command's output. `storeDirs` names the backup-store
+ * directories a `secure` report on this target may cite for deletion (#376);
+ * see `rmArguments`.
+ */
 export function assertRenderSafe(
   out: string,
   label: string,
   plantedPaths: readonly string[] = [],
+  storeDirs: readonly string[] = [],
 ): void {
   assertNoRawControlBytes(out, label);
   assertNoSplitLines(out, label);
-  assertCitationsQuoted(out, label, plantedPaths);
+  assertCitationsQuoted(out, label, plantedPaths, storeDirs);
 }

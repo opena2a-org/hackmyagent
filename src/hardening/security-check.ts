@@ -178,34 +178,17 @@ export interface SecurityFinding {
   /** Set in dry-run mode to indicate this would be fixed */
   wouldFix?: boolean;
   /**
-   * This finding sits inside the archive THIS `--fix` run created
-   * (`.hackmyagent-backup/<stamp>/`), proven by `dev`+`ino` identity.
+   * This finding sits inside the archive base an earlier version of
+   * HackMyAgent wrote into the target (`<target>/.hackmyagent-backup/`,
+   * resolved by identity like every other archive question). `--fix` stores
+   * its backups outside the scanned tree since #376, so only archives written
+   * before that are found here.
    *
-   * #374 — it counts against the score exactly like any other finding, because
-   * the archive really does hold a plaintext copy of the credential and every
-   * later scan will report it (that inclusion is the deliberate #305/#309/#341
-   * decision, restated at `scanner.ts:4769`). The flag exists so the report can
-   * ATTRIBUTE the difference between the score and the score the tree would
-   * have without the archive — not to exempt anything.
-   *
-   * Set only for the current run's own archive. A pre-existing archive, or a
-   * directory elsewhere in the tree merely named `.hackmyagent-backup`, is an
-   * ordinary finding and is never flagged. (A pre-existing archive at the
-   * target's own archive base carries `inArchive` instead.)
-   */
-  inOwnArchive?: boolean;
-  /**
-   * This finding sits inside the target's archive base
-   * (`<target>/.hackmyagent-backup/`, resolved by identity like every other
-   * archive question), whichever run wrote the copy — this one or an earlier
-   * one. Every finding with `inOwnArchive` also carries this.
-   *
-   * #383 — attribution only, like `inOwnArchive`: the finding counts against
-   * the score and the verdict unchanged, and no second score is derived from
-   * it. It exists so a second `--fix` run, whose own archive holds only
-   * redacted copies, can still say why its score sits where it does, and so the
-   * next steps do not point at `secure --fix`, `fix-all` or `protect` for
-   * findings those commands never edit.
+   * #383 — attribution only: the finding counts against the score and the
+   * verdict unchanged, and no second score is derived from it. It exists so the
+   * report can say why the score sits where it does, and so the next steps do
+   * not point at `secure --fix`, `fix-all` or `protect` for findings those
+   * commands never edit.
    *
    * A directory merely named `.hackmyagent-backup` anywhere else in the tree is
    * not the archive base and is never flagged.
@@ -423,29 +406,10 @@ export interface ScanResult {
   /** True when `score < rawScore` because the verdict is fail-direction (#259). */
   scoreClamped?: boolean;
   /**
-   * What `score` would be if the archive this `--fix` run just created were not
-   * there — i.e. the score of the user's live tree.
-   *
-   * #374 — `--fix` used to announce a score computed with its own archive
-   * excluded, while every later scan computed one including it. Measured on a
-   * three-file fixture: `--fix` announced 69 and the immediate rescan said 59,
-   * with nothing changed in between. The two numbers described different trees
-   * and could not agree, and the one the user saw again was never the one they
-   * were told.
-   *
-   * `score` is now always the number the next scan will produce, so this field
-   * carries the OTHER number rather than replacing it: the report headlines
-   * `score` and names this one as what the tree is worth once the archived copy
-   * is rotated and deleted. Present only on a run that created a non-empty
-   * archive AND whose archive contributed at least one finding; `undefined`
-   * otherwise, so `undefined` never has to be read as "same as score".
-   *
-   * Derived from the same findings array `score` is, at every one of the eight
-   * points the CLI re-settles the score (`applyScore`), so the two can never be
-   * computed off different evidence.
+   * Path to this run's backup directory (only set when autoFix is true and not
+   * dryRun). It is under the per-user backup store, outside the scanned tree
+   * (#376), so no later scan of the tree reports its copies.
    */
-  scoreExcludingOwnArchive?: number;
-  /** Path to backup directory (only set when autoFix is true and not dryRun) */
   backupPath?: string;
   /** True if this was a dry-run (no changes made) */
   dryRun?: boolean;
