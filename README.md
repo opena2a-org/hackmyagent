@@ -356,7 +356,7 @@ Exit 2 is non-zero on purpose. A CI job that asked for a security verdict and go
 
 ## Auto-fix catalogue
 
-`hackmyagent secure --fix` remediates the checks listed in [`docs/SECURITY_CHECKS.md`](docs/SECURITY_CHECKS.md); `--dry-run` previews the changes, backups live in `.hackmyagent-backup/`, and `hackmyagent rollback` reverts them.
+`hackmyagent secure --fix` remediates the checks listed in [`docs/SECURITY_CHECKS.md`](docs/SECURITY_CHECKS.md); `--dry-run` previews the changes and `hackmyagent rollback` reverts them. Before fixing, each run copies the files a fix may change, `.env` included and whether or not a fix then changes them, into a per-user backup store outside the project: `$HMA_BACKUP_HOME` if set, else `$OPENA2A_HOME/backups`, else `~/.opena2a/backups`. One set of copies is kept per run until you delete it or `rollback` restores from it; deleting or re-creating the project, or moving it to another filesystem, does not delete its backups. Every `secure` report prints the directory holding that project's backups and the command that deletes it; deleting the store root deletes every project's backups.
 
 ## Telemetry
 
