@@ -3489,12 +3489,15 @@ function printFixBackupDisclosure(
 /**
  * #376 — what a `--fix` backup holds, said wherever one is created. The
  * backup is outside the scanned tree, so no later scan reports it; that makes
- * this sentence the only place the user learns that a plaintext copy of a
- * credential the run removed is still on disk.
+ * this sentence the only place the user learns that it holds a plaintext copy
+ * of every file the run backed up, changed or not (`.env` among them), and
+ * that it outlives the scanned directory.
  */
 function backupContentsNotice(): string {
-  return 'It holds the pre-fix copies of the files this run changed, including any credential it removed from them. '
-    + 'It is outside the scanned directory, so later scans do not report it.';
+  return 'It holds a copy of every file this run backed up, whether or not a fix changed it, so it can hold a credential '
+    + 'that is still in use, such as one in `.env`. It is outside the scanned directory, so later scans do not report it, '
+    + 'and deleting the scanned directory does not delete it. '
+    + `It stays until you delete it or \`${CLI_PREFIX} rollback\` restores from it.`;
 }
 
 /**
@@ -3517,8 +3520,13 @@ async function printArchiveStoreNotice(directory: string): Promise<void> {
   const n = store.runs;
   const remove = commandNaming(store.dir, (cited) => `rm -rf ${cited}`);
   console.log(
-    `${colors.dim}Backups: ${n} --fix backup${n === 1 ? '' : 's'} of this directory, holding pre-fix copies that can include `
-    + `a credential a fix removed, ${n === 1 ? 'is' : 'are'} kept outside it at ${escapePathForDisplay(store.dir)}. `
+    `${colors.dim}Backups: ${n} --fix backup${n === 1 ? '' : 's'} of this directory ${n === 1 ? 'is' : 'are'} kept outside it `
+    + `at ${escapePathForDisplay(store.dir)}. `
+    + (n === 1
+      ? 'It holds a copy of every file that run backed up, including files no fix changed, such as `.env`, so it can hold '
+        + 'a credential that is still in use, and it stays after this directory is deleted. '
+      : 'Each holds a copy of every file its run backed up, including files no fix changed, such as `.env`, so they can '
+        + 'hold a credential that is still in use, and they stay after this directory is deleted. ')
     + (remove
       ? `Delete ${n === 1 ? 'it' : 'them'} once you no longer need \`${CLI_PREFIX} rollback\`: ${remove}`
       : `Delete that directory once you no longer need \`${CLI_PREFIX} rollback\`.`)
