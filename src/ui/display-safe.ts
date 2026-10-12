@@ -144,6 +144,32 @@ export function hasDisplayHazard(text: string): boolean {
 }
 
 /**
+ * The same class, escaped inside a serialized JSON document as `\uXXXX` (#1046).
+ *
+ * `JSON.stringify` escapes C0 and leaves DEL, C1, the bidi controls and the
+ * Unicode line separators raw, so a `--json` document printed to a terminal
+ * carried them straight from a path. A `\uXXXX` escape is lossless: any JSON
+ * parser reads the real bytes, which is what a `--json` consumer needs, and the
+ * terminal receives no code point it would act on or hide.
+ *
+ * Applied to the serialized text, not the value. Outside a string literal a
+ * `JSON.stringify` document holds only ASCII, so every match outside C0 lies
+ * inside a string, and no escape sequence there contains one. A raw C0 match is
+ * the document's own indentation newline, which is structure and stays as it
+ * is. An astral code point becomes its surrogate pair, the only form JSON has.
+ */
+export function escapeJsonDisplayHazards(json: string): string {
+  return json.replace(DISPLAY_HAZARD, (ch) => {
+    if (ch.charCodeAt(0) < 0x20) return ch;
+    let escaped = '';
+    for (let i = 0; i < ch.length; i++) {
+      escaped += `\\u${ch.charCodeAt(i).toString(16).padStart(4, '0')}`;
+    }
+    return escaped;
+  });
+}
+
+/**
  * The same escaping for a BARE path, and injective (#334).
  *
  * `escapeForDisplay` is not one-to-one: a directory literally named `dir\nx` —

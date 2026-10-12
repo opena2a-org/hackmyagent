@@ -116,9 +116,13 @@ describe('cli.ts JSON-serialization tripwire', () => {
   // publish-boundary read has nothing to cover on either. The `--json`
   // envelope, which is the finding-adjacent channel, does go through
   // `writeJsonStdout`.
+  // #1046: ten of these sites, the `--json` arms that serialize outside
+  // `writeJsonStdout`, now call `stringifyJsonOutput` so display hazards are
+  // escaped. They are the same sites with the same boundary reads, so both
+  // names are counted: a new `stringifyJsonOutput` call is a new channel too.
   it('the number of JSON.stringify sites in cli.ts is accounted for', () => {
     const cli = readFileSync(join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
-    const count = (cli.match(/JSON\.stringify\(/g) ?? []).length;
+    const count = (cli.match(/\b(?:JSON\.stringify|stringifyJsonOutput)\(/g) ?? []).length;
     expect(
       count,
       'cli.ts gained or lost a JSON.stringify site — classify it against the publish-boundary read (unit 2) before updating this pin',

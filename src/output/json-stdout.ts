@@ -9,6 +9,20 @@
  * flow through this one function.
  */
 import { assertRedactionProvenance } from '../hardening/finding-emit';
+import { escapeJsonDisplayHazards } from '../ui/display-safe';
+
+/**
+ * `JSON.stringify` for a `--json` document a terminal may print (#1046): DEL,
+ * C1, bidi, format and line-separator code points taken from a path are written
+ * as `\uXXXX` escapes, which every JSON parser reads back as the real bytes.
+ * Emitters that do not go through `buildJsonStdoutDocument` (a `--output` file,
+ * a `--format json` arm with its own writer) serialize through this instead.
+ */
+export function stringifyJsonOutput(value: unknown, space?: number): string {
+  // `JSON.stringify(undefined)` is undefined at runtime despite its type.
+  const json = JSON.stringify(value, null, space);
+  return typeof json === 'string' ? escapeJsonDisplayHazards(json) : json;
+}
 
 /**
  * Assert redaction provenance over the payload, stamp the producing version,
@@ -26,5 +40,5 @@ export function buildJsonStdoutDocument(data: unknown, version: string): string 
     data && typeof data === 'object' && !Array.isArray(data)
       ? { hackmyagentVersion: version, ...(data as Record<string, unknown>) }
       : data;
-  return JSON.stringify(stamped, null, 2) + '\n';
+  return stringifyJsonOutput(stamped, 2) + '\n';
 }
