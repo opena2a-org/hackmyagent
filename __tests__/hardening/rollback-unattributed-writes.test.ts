@@ -26,11 +26,12 @@
 import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
-  mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync,
+  mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { latestStoreRun } from '../helpers/backup-store';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -63,14 +64,13 @@ function run(dir: string, args: string[]) {
   });
 }
 
-function manifestOf(dir: string): { createdFiles: { path: string }[]; absentAtBackup: string[] } {
-  const backupRoot = join(dir, '.hackmyagent-backup');
-  const stamp = readdirSync(backupRoot)[0];
-  return JSON.parse(readFileSync(join(backupRoot, stamp, '.manifest.json'), 'utf8'));
+/** The manifest of the run `--fix` just wrote, read from the backup store (#376): no archive is in the tree. */
+async function manifestOf(dir: string): Promise<{ createdFiles: { path: string }[]; absentAtBackup: string[] }> {
+  return JSON.parse(readFileSync(join(await latestStoreRun(dir), '.manifest.json'), 'utf8'));
 }
 
 describe('rollback covers fix writes no finding names', { timeout: 240_000 }, () => {
-  it('records and removes a generated `.env.example`', () => {
+  it('records and removes a generated `.env.example`', async () => {
     if (!existsSync(CLI)) return;
     const dir = makeFixture();
 
@@ -79,7 +79,7 @@ describe('rollback covers fix writes no finding names', { timeout: 240_000 }, ()
     // Precondition: the fix really did generate it, and the backup really did
     // observe it missing. Without both the assertion below passes vacuously.
     expect(existsSync(join(dir, '.env.example'))).toBe(true);
-    const manifest = manifestOf(dir);
+    const manifest = await manifestOf(dir);
     expect(manifest.absentAtBackup).toContain('.env.example');
 
     // The contract. Pre-fix `createdFiles` held only `.gitignore`.

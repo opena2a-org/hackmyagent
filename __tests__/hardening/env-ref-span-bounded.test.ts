@@ -142,14 +142,12 @@ describe('#310 second harm: a fix must not hide another pattern\'s credential', 
     // rotates AWS and leaves the GitHub token live.
     const { after, cred } = await scanWith(`{"token": "\${${AKIA}_${GH}}"}\n`);
 
-    // #374 — the `--fix` run also reports the copy it archived, which holds the
-    // pre-fix line and fires the same check. This assertion is about the LIVE
-    // file's finding, so the archived one is excluded by the flag rather than by
-    // subtracting one from the expected count.
-    const live = cred.filter((f) => !f.inOwnArchive);
-    expect(live).toHaveLength(1);
-    expect(live[0].message).toContain('AWS Access Key');
-    expect(live[0].message).toContain('GitHub Token');
+    // #376 — the copy `--fix` archives is outside the scanned tree, so the run
+    // reports the live file's finding and nothing else. Until then the archived
+    // copy held the pre-fix line and fired the same check a second time (#374).
+    expect(cred).toHaveLength(1);
+    expect(cred[0].message).toContain('AWS Access Key');
+    expect(cred[0].message).toContain('GitHub Token');
     // And neither secret survives in the file.
     expect(after).not.toContain(AKIA);
     expect(after).not.toContain(GH);
@@ -168,11 +166,10 @@ describe('#310 second harm: a fix must not hide another pattern\'s credential', 
     const detectOnly = report.findings.filter((f) => f.checkId === 'CRED-001');
 
     expect(detectOnly).toHaveLength(1);
-    // #374 — pick the LIVE finding explicitly. `cred[0]` happened to be it
-    // (adopted archive findings are appended last), but relying on that makes
-    // this assertion depend on append order rather than on which file it means.
-    const fixedLive = fixedRun.cred.filter((f) => !f.inOwnArchive);
-    expect(detectOnly[0].message).toBe(fixedLive[0].message);
+    // #376 — one finding on each side: the fixing run no longer reports a copy
+    // in its own archive, so there is no second record to pick the live one from.
+    expect(fixedRun.cred).toHaveLength(1);
+    expect(detectOnly[0].message).toBe(fixedRun.cred[0].message);
   });
 
   it('does not destroy data or emit invalid JSON end to end', async () => {
@@ -182,8 +179,8 @@ describe('#310 second harm: a fix must not hide another pattern\'s credential', 
     const parsed = JSON.parse(after);
     expect(parsed.keep).toBe('DO_NOT_LOSE_ME');
     expect(parsed.port).toBe(8080);
-    // #374 — the live file's finding, not whichever the array happens to hold
-    // first; the archived copy is never `fixed`.
-    expect(cred.filter((f) => !f.inOwnArchive)[0].fixed).toBe(true);
+    // #376 — the only CRED-001 record is the live file's, and the fix landed.
+    expect(cred).toHaveLength(1);
+    expect(cred[0].fixed).toBe(true);
   });
 });

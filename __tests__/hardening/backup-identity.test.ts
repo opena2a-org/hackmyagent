@@ -50,6 +50,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { latestStoreRun, storeDirOf, storeRuns } from '../helpers/backup-store';
+import { tempDir } from '../helpers/temp-dir';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
@@ -217,25 +218,21 @@ describe('backup directory identity', () => {
    * wherever it points, and no fix lands without a backup.
    */
   it('refuses a store directory that is a symlink, and writes nothing through it', async () => {
-    const drop = await mkdtemp(path.join(tmpdir(), 'hma-identity-store-drop-'));
-    try {
-      const store = await storeDirOf(dir);
-      await mkdir(path.dirname(store), { recursive: true });
-      await symlink(drop, store);
-      await writeFile(path.join(dir, 'config.json'), BODY);
+    const drop = tempDir('hma-identity-store-drop-');
+    const store = await storeDirOf(dir);
+    await mkdir(path.dirname(store), { recursive: true });
+    await symlink(drop, store);
+    await writeFile(path.join(dir, 'config.json'), BODY);
 
-      const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
 
-      expect((await walkFiles(drop)).length, 'backup copies were written through the link').toBe(0);
-      expect(
-        await readFile(path.join(dir, 'config.json'), 'utf-8'),
-        'a fix landed with no recoverable backup',
-      ).toBe(BODY);
-      expect(result.findings.find((f) => f.checkId === 'FIX-BACKUP-FAILED'), 'the run degraded to detect-only without saying so').toBeDefined();
-      await rm(store, { force: true });
-    } finally {
-      await rm(drop, { recursive: true, force: true });
-    }
+    expect((await walkFiles(drop)).length, 'backup copies were written through the link').toBe(0);
+    expect(
+      await readFile(path.join(dir, 'config.json'), 'utf-8'),
+      'a fix landed with no recoverable backup',
+    ).toBe(BODY);
+    expect(result.findings.find((f) => f.checkId === 'FIX-BACKUP-FAILED'), 'the run degraded to detect-only without saying so').toBeDefined();
+    await rm(store, { force: true });
   });
 
   /**
