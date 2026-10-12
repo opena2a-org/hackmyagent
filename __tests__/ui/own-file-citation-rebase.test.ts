@@ -47,6 +47,22 @@ describe('#524 rebaseOwnFileCitation', () => {
     expect(rebaseOwnFileCitation('hackmyagent check /abs/SKILL.md', '/abs/SKILL.md', ROOT)).toBe('hackmyagent check /abs/SKILL.md');
   });
 
+  it('#1017 rebases the xxd and node -e citations of the steganography checks', () => {
+    expect(rebaseOwnFileCitation('xxd tags.js | grep "f3a0"', 'tags.js', ROOT))
+      .toBe('xxd /work/skill-out/tags.js | grep "f3a0"');
+    expect(rebaseOwnFileCitation(`xxd 'my tags.js' | grep "f3a0"`, 'my tags.js', ROOT))
+      .toBe(`xxd '/work/skill-out/my tags.js' | grep "f3a0"`);
+    const script = `'const s=require("fs").readFileSync(process.argv[1],"utf8"); console.log(s)'`;
+    expect(rebaseOwnFileCitation(`node -e ${script} lib/eval.js`, 'lib/eval.js', ROOT))
+      .toBe(`node -e ${script} /work/skill-out/lib/eval.js`);
+  });
+
+  it('#1017 leaves an xxd or node -e of another file as authored', () => {
+    for (const text of ['xxd other.js | grep "f3a0"', 'xxd tags.js.bak', `node -e 'x' other.js`, 'node tags.js']) {
+      expect(rebaseOwnFileCitation(text, 'tags.js', ROOT)).toBe(text);
+    }
+  });
+
   it('leaves the text unchanged when the own path cannot be named', () => {
     const invisible = 'SKI‍LL.md';
     const text = `hackmyagent check ${invisible}`;

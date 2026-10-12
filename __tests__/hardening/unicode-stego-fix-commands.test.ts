@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import type { SecurityFinding } from '../../src/hardening/security-check';
 import { escapeForDisplay } from '../../src/ui/display-safe';
+import { rebaseOwnFileCitation } from '../../src/ui/verify-command';
 import { tempDir } from '../helpers/temp-dir';
 
 const ZWSP = Buffer.from([0xe2, 0x80, 0x8b]); // U+200B
@@ -82,6 +83,33 @@ describe('UNICODE-STEGO Fix commands (#999)', () => {
     expect(printed).not.toMatch(/xxd/);
     expect(printed).not.toContain('\\u{e0041}');
     expect(printed).toMatch(/cannot be shown truthfully/);
+  });
+
+  // #1017 — the text output rebases the cited file onto the scan root, as the
+  // `Verify:` line does, so the command runs from any directory.
+  it('UNICODE-STEGO-004 and -003: the printed commands run from the parent of the target', async () => {
+    const parent = path.dirname(dir);
+    await fs.writeFile(path.join(dir, 'tags.js'), Buffer.concat([Buffer.from('const z = "t'), Buffer.from(String.fromCodePoint(0xe0041)), Buffer.from('";\n')]));
+    const tags = await finding('UNICODE-STEGO-004', 'tags.js');
+    const xxd = escapeForDisplay(rebaseOwnFileCitation(tags.fix ?? '', tags.file, dir));
+    expect(xxd).toMatch(/^xxd /);
+    const xxdRun = spawnSync('/bin/sh', ['-c', xxd], { cwd: parent, encoding: 'utf8' });
+    expect(xxdRun.stderr).not.toMatch(/No such file/);
+    expect(xxdRun.status, xxdRun.stderr).toBe(0);
+    expect(xxdRun.stdout).toContain('f3a0');
+
+    const payload = Buffer.concat(Array.from({ length: 40 }, () => Buffer.from([0xef, 0xb8, 0x80])));
+    await fs.writeFile(path.join(dir, 'eval-hidden.js'), Buffer.concat([Buffer.from("eval('"), payload, Buffer.from("');\n")]));
+    const evalHit = await finding('UNICODE-STEGO-003', 'eval-hidden.js');
+    const node = escapeForDisplay(rebaseOwnFileCitation(evalHit.fix ?? '', evalHit.file, dir));
+    expect(node).toMatch(/^node -e '/);
+    const nodeRun = spawnSync('/bin/sh', ['-c', node], {
+      cwd: parent,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ''}` },
+    });
+    expect(nodeRun.status, nodeRun.stderr).toBe(0);
+    expect(nodeRun.stdout).toContain("'fe00'");
   });
 
   it('UNICODE-STEGO-004: the title names what the check reports, and a hidden name gets no command', async () => {

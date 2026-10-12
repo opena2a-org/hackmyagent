@@ -183,11 +183,16 @@ function historyVerifyCommand(
  * the same join for the one operand whose meaning is certain: the exact token
  * the emit site produced from `f.file`.
  *
- * Narrow on purpose. Only `hackmyagent <verb> <own file>` is rewritten, and
- * only when the operand is the whole token; any other operand (a package name,
- * `.`, a different path) is left exactly as authored, and a root or path that
- * cannot be named truthfully leaves the text unchanged. Text channels only:
- * JSON `fix` fields stay target-relative, like every other JSON fix.
+ * Narrow on purpose. Only `hackmyagent <verb> <own file>` is rewritten, along
+ * with the two commands the steganography checks cite (#1017): `xxd <own file>`
+ * (UNICODE-STEGO-001 and -004) and `node -e '<script>' <own file>`
+ * (UNICODE-STEGO-003). Pasted from the parent of the target, `xxd tags.js`
+ * answered `tags.js: No such file or directory` while the `Verify:` line of the
+ * same finding named the file in full. The operand must be the whole token;
+ * any other operand (a package name, `.`, a different path) is left exactly as
+ * authored, and a root or path that cannot be named truthfully leaves the text
+ * unchanged. Text channels only: JSON `fix` fields stay target-relative, like
+ * every other JSON fix.
  */
 export function rebaseOwnFileCitation(
   text: string,
@@ -200,7 +205,7 @@ export function rebaseOwnFileCitation(
   const rebased = citationPath(join(scanRoot, file));
   if (rebased === null || rebased === own) return text;
   const escaped = own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(\\bhackmyagent [a-z][a-z0-9-]* )${escaped}(?=$|\\s|\`)`, 'g');
+  const re = new RegExp(`(\\b(?:hackmyagent [a-z][a-z0-9-]*|xxd|node -e '[^']*') )${escaped}(?=$|\\s|\`)`, 'g');
   // A replacer FUNCTION: `rebased` is a path, and `$&` or `$1` inside a
   // replacement STRING would be read as a pattern (#600).
   return text.replace(re, (_m, head: string) => head + rebased);

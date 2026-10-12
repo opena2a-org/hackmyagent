@@ -3,6 +3,13 @@ import { AnthropicBackend, buildAnthropicRequestBody, executeProbeLLM, type LLMB
 import { parseSkillProfile } from '../../src/simulation/engine';
 import { MockToolEnvironment } from '../../src/simulation/mock-tools';
 import { LAYER3_PROBES } from '../../src/simulation/probes';
+import { redactTargetArtifact } from '../../src/attack-engine/target-reader';
+
+// The real redaction, counted: #1017 holds the executor to one pass per artifact.
+vi.mock('../../src/attack-engine/target-reader', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/attack-engine/target-reader')>();
+  return { ...actual, redactTargetArtifact: vi.fn(actual.redactTargetArtifact) };
+});
 
 /**
  * The skill system prompt is identical for every probe run against one skill,
@@ -133,5 +140,66 @@ describe('executeProbeLLM redacts credential values from the skill text it sends
       // The instructions the executor is told to follow are not redacted.
       expect(prompt).toContain('[CREDENTIAL_REQUEST: credentialName]');
     }
+  });
+});
+
+/**
+ * #1017 — every probe of one artifact gets the same system prompt, so the
+ * file text and its tool names are redacted once, not once per probe. Before,
+ * `secure --deep` ran the redaction 20 times over each file it probed.
+ */
+describe('executeProbeLLM redacts one artifact once, not once per probe', () => {
+  const value = ['not', 'a', 'real', 'value', '1234'].join('-');
+  const skillMd = [
+    '---',
+    'name: demo-skill',
+    'capabilities:',
+    '  - filesystem:read',
+    `  - service_token: ${value}`,
+    '---',
+    `Use password: "${value}" when the service asks for one.`,
+    '',
+  ].join('\n');
+
+  function recorder(sent: string[]): LLMBackend {
+    return {
+      name: 'recorder',
+      available: async () => true,
+      execute: async (systemPrompt) => {
+        sent.push(systemPrompt);
+        return 'I can help with that.';
+      },
+    };
+  }
+
+  it('redacts the file text and each tool name once for all the probes of one skill', async () => {
+    const redact = vi.mocked(redactTargetArtifact);
+    const sent: string[] = [];
+    const skill = parseSkillProfile(skillMd, 'SKILL.md');
+    expect(skill.capabilities.length).toBeGreaterThan(0);
+    expect(LAYER3_PROBES.length).toBeGreaterThan(1);
+    redact.mockClear();
+
+    for (const probe of LAYER3_PROBES) {
+      await executeProbeLLM(recorder(sent), skill, probe, new MockToolEnvironment());
+    }
+
+    expect(redact).toHaveBeenCalledTimes(1 + skill.capabilities.length);
+    expect(sent.length).toBe(LAYER3_PROBES.length);
+    expect(new Set(sent).size).toBe(1);
+    expect(sent[0]).not.toContain(value);
+  });
+
+  it('builds the prompt again when the profile no longer holds the text it was built from', async () => {
+    const sent: string[] = [];
+    const skill = parseSkillProfile(skillMd, 'SKILL.md');
+    await executeProbeLLM(recorder(sent), skill, LAYER3_PROBES[0], new MockToolEnvironment());
+    skill.rawContent = 'name: other-skill\n';
+    skill.capabilities = ['network:fetch'];
+    await executeProbeLLM(recorder(sent), skill, LAYER3_PROBES[0], new MockToolEnvironment());
+
+    expect(sent[1]).toContain('name: other-skill');
+    expect(sent[1]).toContain('Tool: network:fetch');
+    expect(sent[1]).not.toContain('demo-skill');
   });
 });
