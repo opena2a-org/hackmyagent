@@ -26,13 +26,14 @@
 //     fix, so the unverified-fix branch was unreachable for all of them —
 //     only `PERM-001`'s shape was ever covered.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { execSync } from 'node:child_process';
 import { initThrowawayRepo } from '../helpers/throwaway-repo';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { tempDir } from '../helpers/temp-dir';
 import { countsAgainstScore } from '../../src/ui/verdict-band';
 
 const ROOT_SCOPED_MCP =
@@ -169,15 +170,11 @@ describe.runIf(darwin)('the whole fix-write class, not just one check', { timeou
 
       expect(readFileSync(target, 'utf8'), 'the fixture became writable').toBe(c.body);
 
-      // #374 — the `--fix` run also reports what it archived, and the archive
-      // holds a copy of this same unwritable file, so it fires the same check.
-      // The property here is "the LIVE file's finding survived a failed write",
-      // so the archived copy is excluded by its flag rather than by loosening
-      // the comparison to `toBeGreaterThanOrEqual`, which would also pass if the
-      // live finding were erased and only the archived one remained.
-      const hitAfter = after.findings.filter(
-        f => f.checkId.startsWith(c.expect) && !f.inOwnArchive,
-      );
+      // #376 — the copy this run archived is in the backup store, outside the
+      // tree, so the run reports the live file's finding and no second record
+      // for the copy. The comparison is an equality on every record: a filter
+      // on the removed `inOwnArchive` flag matched all of them and said nothing.
+      const hitAfter = after.findings.filter(f => f.checkId.startsWith(c.expect));
       expect(hitAfter.length, `${c.name} was erased by a failed fix write`).toBe(hitBefore.length);
       expect(hitAfter.every(f => !f.passed), `${c.name} claims passed for an unwritten fix`).toBe(true);
       expect(after.score, `${c.name}: failed --fix scored better than no --fix`)
@@ -357,20 +354,38 @@ describe('GATEWAY-003 does not flag its own remedy', () => {
 });
 
 describe.runIf(darwin)('a backup that cannot be taken degrades, it does not abort', { timeout: 120_000 }, () => {
-  it('still scans, still reports, and says fixes were skipped', async () => {
-    // `createBackup` mkdirs into the target. On a read-only tree it threw out
-    // of scan() before a single check ran: raw EACCES, exit 1, and an empty
-    // body under --format json.
-    const dir = mkdtempSync(join(tmpdir(), 'hma-nobackup-'));
+  const tokenFile = '{"anthropic":"' + ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') + '"}';
+  let savedStore: string | undefined;
+
+  beforeEach(() => { savedStore = process.env.HMA_BACKUP_HOME; });
+  afterEach(() => {
+    if (savedStore === undefined) delete process.env.HMA_BACKUP_HOME; else process.env.HMA_BACKUP_HOME = savedStore;
+  });
+
+  function tree(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
     dirs.push(dir);
     writeFileSync(join(dir, 'package.json'), '{"name":"t","version":"1.0.0"}');
-    writeFileSync(join(dir, 'config.json'),
-      '{"anthropic":"' + ['sk', '-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('') + '"}');
+    writeFileSync(join(dir, 'config.json'), tokenFile);
+    return dir;
+  }
+
+  it('still scans, still reports, and says fixes were skipped', async () => {
+    // `createBackup` used to mkdir into the target. On a read-only tree it
+    // threw out of scan() before a single check ran: raw EACCES, exit 1, and an
+    // empty body under --format json.
+    //
+    // #376 — the backup is taken in the per-user store now, so what makes one
+    // impossible is a store that cannot be created: a read-only or container
+    // home directory. The run has to degrade the same way it did for the tree.
+    const dir = tree('hma-nobackup-');
 
     const before = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
     expect(before.findings.some(f => f.checkId === 'CRED-001')).toBe(true);
 
-    execSync(`chmod 555 ${JSON.stringify(dir)}`);
+    const readOnlyHome = tempDir('hma-nobackup-home-');
+    process.env.HMA_BACKUP_HOME = join(readOnlyHome, 'backups');
+    execSync(`chmod 555 ${JSON.stringify(readOnlyHome)}`);
     try {
       // Pre-fix this rejected instead of resolving.
       const after = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
@@ -379,8 +394,37 @@ describe.runIf(darwin)('a backup that cannot be taken degrades, it does not abor
       expect(after.findings.some(f => f.checkId === 'FIX-BACKUP-FAILED'),
         'the skipped-fix disclosure is missing').toBe(true);
       expect(after.score).toBeLessThanOrEqual(before.score);
+      expect(after.backupPath, 'a run that took no backup reported one').toBeUndefined();
+      expect(readFileSync(join(dir, 'config.json'), 'utf8'), 'a fix landed with no backup to roll back to').toBe(tokenFile);
+      expect(existsSync(join(dir, '.hackmyagent-backup')), 'the run fell back to a backup inside the tree').toBe(false);
+    } finally {
+      execSync(`chmod 755 ${JSON.stringify(readOnlyHome)}`);
+    }
+  });
+
+  it('takes the backup for a read-only tree outside it, and reports the writes that did not land', async () => {
+    // The tree this suite used to make read-only to stop the backup. It no
+    // longer stops it: the copies go to the store, the run resolves, and the
+    // writes the read-only directory refused are disclosed, not absorbed.
+    const dir = tree('hma-rotree-');
+
+    execSync(`chmod 555 ${JSON.stringify(dir)}`);
+    let after;
+    try {
+      after = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
     } finally {
       execSync(`chmod 755 ${JSON.stringify(dir)}`);
     }
+
+    expect(after.findings.some(f => f.checkId === 'FIX-BACKUP-FAILED'), 'a read-only tree still stopped the backup').toBe(false);
+    expect(after.backupPath, 'no backup was taken').toBeDefined();
+    expect(readFileSync(join(after.backupPath as string, 'config.json'), 'utf8')).toBe(tokenFile);
+    expect(existsSync(join(dir, '.hackmyagent-backup')), 'a backup was written into the read-only tree').toBe(false);
+    expect(after.findings.some(f => f.checkId === 'FIX-WRITE-FAILED' && !f.passed),
+      'a write the read-only directory refused went unreported').toBe(true);
+
+    // What did land is recoverable: the copy in the store goes back byte for byte.
+    await new HardeningScanner().rollback(dir);
+    expect(readFileSync(join(dir, 'config.json'), 'utf8')).toBe(tokenFile);
   });
 });

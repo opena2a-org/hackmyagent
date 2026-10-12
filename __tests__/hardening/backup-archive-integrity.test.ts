@@ -31,6 +31,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, tmpdir as tmpdirSync } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { latestStoreRun, storeRuns } from '../helpers/backup-store';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 /**
@@ -126,12 +127,15 @@ describe('#314 backup archives are never rewritten', () => {
     await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
 
     const { readdir } = await import('node:fs/promises');
-    const stamps = (await readdir(path.join(dir, '.hackmyagent-backup'))).filter(
-      (s) => s !== ARCHIVE_STAMP,
-    );
-    expect(stamps.length, 'this run created no backup of its own').toBe(1);
+    // #376 — this run's backup is in the store, and the tree holds the earlier
+    // archive and nothing new.
+    expect((await storeRuns(dir)).length, 'this run created no backup of its own').toBe(1);
+    expect(
+      await readdir(path.join(dir, '.hackmyagent-backup')),
+      'this run wrote a backup into the tree beside the earlier archive',
+    ).toEqual([ARCHIVE_STAMP]);
 
-    const nested = path.join(dir, '.hackmyagent-backup', stamps[0], '.hackmyagent-backup');
+    const nested = path.join(await latestStoreRun(dir), '.hackmyagent-backup');
     let nestedExists = true;
     try {
       await readdir(nested);

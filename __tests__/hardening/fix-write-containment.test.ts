@@ -33,11 +33,12 @@ import { describe, it, expect, afterEach, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
   mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync,
-  symlinkSync, statSync, readdirSync,
+  symlinkSync, statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { latestStoreRun, storeRuns } from '../helpers/backup-store';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -84,12 +85,11 @@ function sandbox(prefix: string): { home: string; root: string } {
   return { home, root };
 }
 
-function manifestOf(dir: string): {
+/** The manifest of the run just written, read from the backup store (#376): no archive is in the tree. */
+async function manifestOf(dir: string): Promise<{
   existingFiles: string[]; absentAtBackup: string[]; absentAtFixWrite?: string[];
-} {
-  const backupRoot = join(dir, '.hackmyagent-backup');
-  const stamp = readdirSync(backupRoot)[0];
-  return JSON.parse(readFileSync(join(backupRoot, stamp, '.manifest.json'), 'utf8'));
+}> {
+  return JSON.parse(readFileSync(join(await latestStoreRun(dir), '.manifest.json'), 'utf8'));
 }
 
 describe('fix writes are contained to the scanned tree (#270)', { timeout: 300_000 }, () => {
@@ -181,7 +181,7 @@ describe('harden-soul writes are backed up (#271)', { timeout: 300_000 }, () => 
     return { home, repo, gov };
   }
 
-  it('backs up the governance file it actually targets, and rollback restores it', () => {
+  it('backs up the governance file it actually targets, and rollback restores it', async () => {
     const { home, repo, gov } = cursorRepo('hma-harden-cursor-');
     const before = readFileSync(gov, 'utf8');
 
@@ -194,7 +194,7 @@ describe('harden-soul writes are backed up (#271)', { timeout: 300_000 }, () => 
 
     // The manifest must know about the file that changed. On merged main it
     // held `package.json` and nothing else, so there was nothing to restore.
-    const manifest = manifestOf(repo);
+    const manifest = await manifestOf(repo);
     expect(
       [...manifest.existingFiles, ...(manifest.absentAtFixWrite ?? [])],
     ).toContain('.cursorrules');
@@ -232,13 +232,15 @@ describe('harden-soul writes are backed up (#271)', { timeout: 300_000 }, () => 
     expect(res.stdout + res.stderr).toMatch(/did NOT modify|points outside/i);
   });
 
-  it('does not create a backup directory for a dry run', () => {
+  it('does not create a backup directory for a dry run', async () => {
     const { home, repo } = cursorRepo('hma-harden-dry-');
     const before = readFileSync(join(repo, '.cursorrules'), 'utf8');
 
     run(repo, home, ['harden-soul', repo, '--dry-run']);
 
-    // A preview must not have side effects — including HMA's own.
+    // A preview must not have side effects — including HMA's own. #376 — the
+    // backup a real run takes is in the store, so that is where one would show.
+    expect(await storeRuns(repo), 'a dry run wrote a backup to the store').toEqual([]);
     expect(existsSync(join(repo, '.hackmyagent-backup'))).toBe(false);
     expect(readFileSync(join(repo, '.cursorrules'), 'utf8')).toBe(before);
   });
