@@ -98,6 +98,25 @@ export function backupStoreRoot(): string {
   return root;
 }
 
+/**
+ * The store root as a lookup searches it (#1043): its real path, with whatever
+ * part does not exist yet appended as spelled. This is the prefix a
+ * `Backup created:` path starts with. Throws as `backupStoreRoot` does.
+ */
+export function searchedBackupStoreRoot(): string {
+  return realpathOfExistingPrefix(backupStoreRoot());
+}
+
+/**
+ * How the store root was chosen, in the words a report prints beside it
+ * (#1043). One helper, so every line that names the root says the same thing
+ * about where it came from.
+ */
+export function backupStoreRootSource(): string {
+  const variable = backupStoreRootVariable();
+  return variable === 'HOME' ? 'the default, under your home directory' : `set by ${variable}`;
+}
+
 interface TargetIdentity {
   dev: string;
   ino: string;
@@ -143,7 +162,7 @@ async function targetIdentity(targetReal: string): Promise<TargetIdentity> {
 
 /** `<dev>-<ino>-<birth>`: the birth time keeps a directory that reuses a removed one's inode number out of its store. */
 function storeDirFor(id: TargetIdentity): string {
-  return path.join(realpathOfExistingPrefix(backupStoreRoot()), `${id.dev}-${id.ino}-${id.birthtimeNs}`);
+  return path.join(searchedBackupStoreRoot(), `${id.dev}-${id.ino}-${id.birthtimeNs}`);
 }
 
 /**
