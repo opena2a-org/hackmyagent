@@ -55,6 +55,7 @@ const ALLOWLIST: Record<string, string> = {
   'telemetry/contribute.ts': 'HMA\'s own queue files under the home directory',
   'telemetry/opt-in.ts': 'HMA\'s own opt-in record under the home directory',
   'store/project-store.ts': 'HMA\'s own project store under the home directory',
+  'store/archive-store.ts': 'HMA\'s own backup store (#376): reads HackMyAgent\'s own state outside the scanned tree, and no scanned content passes through it',
   'hardening/nemoclaw-scanner.ts': 'not constructed anywhere in src/ (0 `new NemoClawScanner` sites); off the scan path',
   'cli-prefix.ts': 'existsSync only, on the two candidate spellings of one Verify-citation operand (#491); reads no content, and a candidate that leaves the scan target lexically or through a link (isPathWithinDirectory + readStaysInsideTree) is not re-based',
   'change-scope.ts': 'secure --range / --staged (#537): materializes the base and head trees of a change into a mkdtemp of its own through git checkout-index with a throwaway index, so like extract-archive.ts it CREATES scan targets rather than reading one; its only content reads are re-reads, after the scan has finished, of lines the scan already cited under those temp roots, which must stay off the coverage ledger (see the module docblock)',
