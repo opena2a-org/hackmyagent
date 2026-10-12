@@ -59,6 +59,7 @@ import { lineOfJsonValue } from '../scanner/json-locate';
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
+import { prepareArchiveStore, findArchiveStore, listArchiveRuns } from '../store/archive-store';
 import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import { scanGitHistory, shortCommit, type HistoryCredentialHit, type HistoryScanPlan } from './git-history-scan';
 import { verifySigncryptSignature, describeUnsigned } from '../plugins/signcrypt-block';
@@ -876,6 +877,16 @@ export interface RollbackReport {
   /** Which backup directory under the base this run actually used. */
   backupUsed?: string;
   /**
+   * Where that base is (#376). `store` is the per-user backup store `--fix`
+   * writes to; `in-tree` is a `.hackmyagent-backup` an earlier version wrote
+   * inside the target, used only when the store holds no run for it. The
+   * report names the in-tree case, because restoring from a directory the
+   * scanned tree could have written is worth knowing about.
+   */
+  backupSource?: 'store' | 'in-tree';
+  /** The resolved base directory the run directory was taken from. */
+  backupBase?: string;
+  /**
    * The backup this run finished with and could not delete.
    *
    * Its own channel, not `backupRetainedAt`: that one means "kept on purpose,
@@ -1405,7 +1416,7 @@ const ARCHIVED_CREDENTIAL_FIX = 'Rotate the credential, then remove this plainte
 
 function archivedCredentialGuidance(cliName: string): string {
   return 'Rotate the credential: it has been on disk in plaintext. Clearing the copy is yours to do — this file sits '
-    + `inside \`${BACKUP_DIR_NAME}\`, the directory HackMyAgent stores this tree's backups in, which it never `
+    + `inside \`${BACKUP_DIR_NAME}\`, the directory earlier versions of HackMyAgent stored this tree's backups in, which it never `
     + 'auto-edits (rewriting a backup would destroy what `rollback` restores from) and never offers to delete, '
     + 'because it cannot tell which run wrote a given copy. Check the live file first: '
     + `\`${cliName} secure\` should report no credential outside this directory.`;
@@ -1497,10 +1508,12 @@ function identityOrUndefined(probe: IdentityProbe): FsIdentity | undefined {
  * permission causes and a fix line saying "make the target writable". For a
  * symlinked backup base that advice is wrong: making it writable changes nothing.
  * The code lets the finding name the real cause and the matching remedy.
+ *
+ * The refusals about the store directory itself (`HMA-BACKUP-SYMLINK`,
+ * `HMA-BACKUP-NOT-DIR`, `HMA-BACKUP-INSIDE-TREE`) are raised by
+ * `src/store/archive-store.ts` with the same `code` field (#376).
  */
-type BackupSetupCode = 'HMA-BACKUP-SYMLINK' | 'HMA-BACKUP-NOT-DIR'
-  | 'HMA-BACKUP-OUTSIDE-TREE' | 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED'
-  | 'HMA-BACKUP-UNIDENTIFIED';
+type BackupSetupCode = 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED' | 'HMA-BACKUP-UNIDENTIFIED';
 
 function backupSetupError(code: BackupSetupCode, message: string): NodeJS.ErrnoException {
   const err = new Error(message) as NodeJS.ErrnoException;
@@ -1850,34 +1863,6 @@ export function calculateSecurityScore(findings: Array<{ passed?: boolean; fixed
     : Math.round(100 * Math.exp(-weightedSum / DECAY_CONSTANT));
 
   return { score, maxScore: 100 };
-}
-
-/**
- * The composite this findings set would produce if the archive the current
- * `--fix` run created were not in the tree — the score of the live tree.
- *
- * #374. `undefined` when no finding is flagged `inOwnArchive`, which is the
- * normal case: a detect-only scan, a `--dry-run`, a `--fix` whose archive
- * turned out to hold nothing scoreable. Returning `undefined` rather than the
- * unchanged score keeps "there is no second number" distinguishable from "the
- * second number happens to be equal", so the report cannot print a delta line
- * claiming a 0-point archive.
- *
- * Takes the SAME array the headline score is computed from and applies the same
- * clamp, so the pair is always two views of one evidence set. Subtracting a
- * finding can only lower `weightedSum`, so this is >= the headline score.
- */
-export function scoreExcludingOwnArchive(
-  findings: SecurityFindingDraft[],
-): number | undefined {
-  if (!findings.some(f => f.inOwnArchive)) return undefined;
-  const liveTree = findings.filter(f => !f.inOwnArchive);
-  const { score: raw } = calculateSecurityScore(liveTree);
-  // Clamped through the same #259 band as the headline. Without this a live
-  // tree with one surviving HIGH would advertise an unclamped 89 next to a
-  // clamped headline, and the delta would read as the archive's cost when 20
-  // of it was the clamp coming off.
-  return clampScoreToVerdictBand(raw, liveTree).score;
 }
 
 /**
@@ -4895,19 +4880,20 @@ export class HardeningScanner {
     // Create backup before auto-fix (not in dry-run mode).
     //
     // Guarded, and a failure degrades the run to a detect-only scan rather
-    // than aborting it. `createBackup` mkdirs `.hackmyagent-backup/` and
-    // writes a manifest; on a read-only tree — a read-only mount, a container
-    // volume, a restricted CI checkout — both throw, and because this call
-    // sat unguarded the exception escaped `scan()` before a single check had
-    // run. `secure --fix` printed a raw `EACCES` and exited 1 with an empty
-    // body under `--format json`, indistinguishable from a crash, on a tree
-    // that `secure` alone scans perfectly well.
+    // than aborting it. `createBackup` mkdirs the target's directory in the
+    // per-user backup store and writes a manifest; under a read-only or
+    // container HOME both throw (#376), as they did on a read-only tree when
+    // the archive lived inside it, and because this call sat unguarded the
+    // exception escaped `scan()` before a single check had run. `secure --fix`
+    // printed a raw `EACCES` and exited 1 with an empty body under
+    // `--format json`, indistinguishable from a crash, on a tree that `secure`
+    // alone scans perfectly well.
     //
     // Fixing without a backup is not an option either: every fix write would
     // be unrevertable. So the run keeps its detection and drops its fixes,
     // and says so.
     let backupPath: string | undefined;
-    let backupFailure: { code: string; message: string } | undefined;
+    let backupFailure: { code: string; message: string; path?: string } | undefined;
     if (shouldFix) {
       try {
         backupPath = await this.createBackup(targetDir);
@@ -4932,6 +4918,7 @@ export class HardeningScanner {
         backupFailure = {
           code: e?.code || (err instanceof Error ? err.name : 'UnknownError'),
           message: err instanceof Error ? err.message : String(err),
+          ...(typeof e?.path === 'string' ? { path: e.path } : {}),
         };
         shouldFix = false;
       }
@@ -5369,30 +5356,34 @@ export class HardeningScanner {
       // wrong for a backup base HMA refused on its own: making a symlink writable
       // changes nothing, and the sentence sends the user to look at the wrong
       // thing. `backupSetupError` carries the reason so this can dispatch on it.
-      const basePath = path.join(targetDir, BACKUP_DIR_NAME);
+      // The store directory the refusal is about, as the store reported it. It
+      // is derived from HOME or `HMA_BACKUP_HOME` and the target's identity, not
+      // from the tree, but it is still quoted wherever it is cited.
+      const storePath = backupFailure.path ?? 'the backup store directory';
+      const quotedStore = backupFailure.path ? shellQuote(backupFailure.path) : storePath;
       const rerun = `${this.cliName} secure ${shellQuote(targetDir)} --fix`;
       const CAUSES: Record<string, { fix: string; guidance: string }> = {
         'HMA-BACKUP-SYMLINK': {
-          fix: `Replace ${shellQuote(basePath)} with a real directory, or remove it, then re-run: ${rerun}`,
+          fix: `Remove ${quotedStore}, then re-run: ${rerun}`,
           guidance:
-            `${BACKUP_DIR_NAME} is a symbolic link. Backups are never written through a link, because `
-            + 'the copies would land wherever the link points — outside the directory you asked to '
-            + 'scan, and outside what `rollback` can restore from. Nothing was written and nothing '
-            + 'was changed. Replace it with a real directory to enable auto-fix.',
+            `${storePath} is a symbolic link. HackMyAgent creates this directory itself and never `
+            + 'writes backups through a link, because the copies would land wherever the link '
+            + 'points, outside what `rollback` restores from. Nothing was written and nothing was '
+            + 'changed.',
         },
         'HMA-BACKUP-NOT-DIR': {
-          fix: `Remove or rename ${shellQuote(basePath)}, then re-run: ${rerun}`,
+          fix: `Remove or rename ${quotedStore}, then re-run: ${rerun}`,
           guidance:
-            `Something that is not a directory already occupies ${BACKUP_DIR_NAME}, so there is `
+            `Something that is not a directory already occupies ${storePath}, so there is `
             + 'nowhere to store the copies auto-fix would need. Nothing was written and nothing was '
             + 'changed.',
         },
-        'HMA-BACKUP-OUTSIDE-TREE': {
-          fix: `Replace ${shellQuote(basePath)} with a real directory inside the project, then re-run: ${rerun}`,
+        'HMA-BACKUP-INSIDE-TREE': {
+          fix: `Set HMA_BACKUP_HOME to a directory outside the one you are fixing, then re-run: ${rerun}`,
           guidance:
-            `${BACKUP_DIR_NAME} resolves to a location outside the directory being scanned. Backups `
-            + 'stay inside the tree they belong to, so the run detected only. Nothing was written '
-            + 'and nothing was changed.',
+            'Backups are kept outside the directory being fixed, so that no later scan reports the '
+            + `copies. The backup store (${storePath}) is inside the directory you asked to fix, so `
+            + 'the run detected only. Nothing was written and nothing was changed.',
         },
         'HMA-BACKUP-NO-NEW-DIR': {
           fix: `Re-run: ${rerun}`,
@@ -5416,9 +5407,12 @@ export class HardeningScanner {
           + 'detected. Findings below are unmodified.',
         file: path.basename(targetDir),
         fixable: false,
-        fix: cause?.fix ?? `Make the target writable, then re-run: ${rerun}`,
+        fix: cause?.fix
+          ?? `Make ${quotedStore} writable, or set HMA_BACKUP_HOME to a writable directory outside the one you are fixing, then re-run: ${rerun}`,
         guidance: cause?.guidance
-          ?? 'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. This usually means a read-only mount, a container volume, or a checkout owned by another user.',
+          ?? 'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. '
+          + 'Backups are kept in a per-user store outside the scanned tree (HMA_BACKUP_HOME, else $OPENA2A_HOME/backups, else ~/.opena2a/backups); '
+          + 'this usually means a read-only or container home directory.',
       });
     }
 
@@ -5678,64 +5672,25 @@ export class HardeningScanner {
     let reportFixVerification = false;
     if (shouldFix) {
       const fixedFindings = findings.filter(f => f.fixed && f.file);
-      // #374 — this scan has a second job. It is a context-free scan of the
-      // post-fix tree, which makes it the only thing in the run that knows what
-      // the user's NEXT scan will score: `backupContext` exists only inside a
-      // `--fix` run, so the archive this run created is excluded here and
-      // included by every later scan (deliberately — `:4769`). Both numbers came
-      // from this run, and they described different trees.
-      //
-      // So it runs whenever this run left copies in its archive, not only when
-      // a fix landed: a `--fix` that repaired nothing still archives its backup
-      // candidates up front, and its score still has to be the one that comes
-      // back.
-      //
-      // #381 — this gate used to read `backupContext.covered.size`, which never
-      // gates: `covered` is seeded from `existingFiles` PLUS `absentAtBackup`, the
-      // static candidates that do NOT exist, so it was above zero even on an
-      // empty directory and every `--fix` ran a second full scan. An archive
-      // holding nothing but its own manifest cannot move the score, so the
-      // question is asked of the archive itself. See `ownArchiveHoldsCopies`.
-      const archiveHoldsCopies = await this.ownArchiveHoldsCopies();
-      if (fixedFindings.length > 0 || archiveHoldsCopies) {
+      // #376 — this scan has one job again: confirm the fixes that landed. From
+      // #374 it also ran whenever this run's archive held copies, because the
+      // archive sat inside the tree and only a context-free scan could say what
+      // the next scan would score with it. The archive is outside the tree now,
+      // so the next scan scores exactly what this run's own checks saw, and a
+      // `--fix` that repaired nothing has nothing to verify.
+      if (fixedFindings.length > 0) {
         // Re-run a targeted scan (no fix, just detect) to verify.
         //
-        // This scan has to be the NEXT SCAN, not merely another scan. Its findings
-        // are adopted into this run's score below, so every option that decides
-        // which checks run has to come from the run it is standing in for.
-        // Building the options fresh here inherited none of them, and the default
-        // is `standard`: a `--fix --scan-depth quick` run therefore adopted Layer-2
-        // findings from its own archive that `isQuick` (`:2138`) means the user's
-        // next quick scan can never report. Measured on a fixture whose archived
-        // `.cursor/mcp.json` holds a token: announced rawScore 72, immediate quick
-        // rescan 85. That is #374 exactly, through a second door — the displayed
-        // score only agreed because the #259 clamp floored both to 69, and `--json`
-        // published the contradiction as `rawScore` regardless.
+        // Every option that decides which checks run comes from the run being
+        // verified: built fresh, it inherited none of them and defaulted to
+        // `standard`, so a `--fix --scan-depth quick` run was verified by checks
+        // the user's run never ran.
         //
         // `deep` is deliberately NOT threaded, and `scanDepth` is capped below it.
-        //
-        // Threading it was tried and reverted the same day. Layer 3 (`:2162`) fires
-        // on `options.deep` and puts file CONTENT on the wire to the Anthropic API.
-        // Its archive exclusion is `isOwnBackupDir`, whose FIRST STATEMENT returns
-        // false whenever there is no `backupContext` — and this verify scanner is a
-        // fresh instance that has none. So a threaded `deep` walked Layer 3
-        // into the archive this run had just written and transmitted the only
-        // remaining PLAINTEXT copies of the credentials the same run had redacted
-        // out of the live files. Measured: 2 LLM payloads before, 4 after, the two
-        // extra ones carrying the token bytes.
-        //
-        // A `--deep` user consents to their live files being analysed. Re-sending a
-        // secret AFTER removing it, out of an artifact presented as a local rollback
-        // aid, is a different bargain and was not one this tool disclosed. Cost was
-        // never the reason to avoid it; that is.
-        //
-        // The price is real and is disclosed instead of hidden: on a `--fix --deep`
-        // with an API key set, the announced score does not include Layer-3 findings
-        // inside the archive, so it can read higher than the next `--deep` scan.
-        // Layer 1 and Layer 2 archive findings — every credential detector among
-        // them — are still counted, so the number is not the pre-#374 number.
-        // Tracked as #386; the transmission hole itself is #385, and a plain
-        // `secure --deep` still walks any archive in the tree because of it.
+        // Layer 3 puts file CONTENT on the wire to the LLM API, and confirming a
+        // static fix needs none of it. A tree can still hold an archive an earlier
+        // version wrote into it, which holds the plaintext copy of a credential a
+        // fix redacted; a threaded `deep` would send it again (#385).
         const verifyDepth: ScanDepth = scanDepth === 'deep' ? 'standard' : scanDepth;
         const verifyScanner = new HardeningScanner();
         const verifyResult = await verifyScanner.scan({
@@ -5897,85 +5852,12 @@ export class HardeningScanner {
         // fixes confirmed" above "Attempted 1 fix, none confirmed". Both go
         // to the same reader, who is left deciding which number is wrong.
         reportFixVerification = fixedFindings.length > 0;
-
-        // #374 — adopt the findings this scan produced inside THIS RUN's own
-        // archive, so the score is computed over the tree the next scan sees.
-        //
-        // This is deliberately NOT the other repair. Excluding the archive from
-        // scoring would hand any scanned tree a suppression token and would
-        // reopen #305/#309/#341; `isOwnBackupDir`, `resolveArchiveBase` and the
-        // walk exclusion are all untouched here, and a pre-existing archive is
-        // still an ordinary reported finding. What changes is only WHICH TREE the
-        // announced number describes. The archived copy of a credential is real,
-        // so it counts — it just has to count in both numbers, not one.
-        //
-        // Safe against the rewrite hazard the exclusion exists for: this runs
-        // after every fix write has already happened, so nothing here can send
-        // `--fix` back into its own backup.
-        //
-        // Scoped to archive-located findings, not "every finding the verify scan
-        // has and we do not". A finding whose `file` attribution SHIFTED between
-        // the two scans — the PERM-001 head-shift this block already deals with
-        // above — looks novel under a (checkId, file) key, and adopting it would
-        // count one issue twice and penalise the score for a repair that landed.
-        // Keyed with a space: a checkId is `[A-Z0-9-]+` and never contains one,
-        // so the first space splits the pair unambiguously however the path is
-        // spelled. (A NUL separator is the conventional choice and is what this
-        // was first written with — it is also a raw control byte in source,
-        // invisible in every diff, which `render-source-gate` rightly rejects.)
-        const alreadyHeld = new Map<string, SecurityFindingDraft>();
-        for (const f of findings) {
-          if (f.file) alreadyHeld.set(`${f.checkId} ${f.file}`, f);
-        }
-        const adopted: SecurityFindingDraft[] = [];
-        for (const f of verifyResult.findings) {
-          if (!f.file) continue;
-          // Identity, not spelling (#317) — and only a proven `yes`. `unknown`
-          // means an ancestor the filesystem would not describe, which is not
-          // evidence that a path is ours; treating it as ours would let the
-          // shifted-attribution case back in through the one door this filter
-          // exists to close.
-          if (await this.isInsideOwnBackup(path.resolve(targetDir, f.file)) !== 'yes') continue;
-          const key = `${f.checkId} ${f.file}`;
-          // If a finding is already in this run's list, adopting it again would
-          // double-count it. Skipping it silently would be worse in the other
-          // direction: it would stay unflagged, and `scoreExcludingOwnArchive`
-          // (`:949`) derives the live-tree number by DROPPING flagged findings, so
-          // an archive copy would count as live tree and the report would tell the
-          // user those points do not come back when the archive goes — the inverse
-          // of what that line exists to say. So flag it where it already sits, and
-          // adopt only what is genuinely new.
-          //
-          // NO PRODUCER REACHES THIS BRANCH TODAY, and an earlier version of this
-          // comment claimed one did — that `keyFiles`/`namedSensitive` do not
-          // exclude the archive, so some archive findings are already in the list.
-          // That is false: `SENSITIVE_NAMES` and `keyFiles` feed `presentSensitive`
-          // into GIT-001/GIT-002's `details.files`, and those findings carry the
-          // CONSTANT `.gitignore` as their `file`. Nothing sets a finding's `file`
-          // to a path inside this run's own archive. Verified three ways: an
-          // instrumented full suite (229 files, 0 hits), a kitchen-sink fixture of
-          // every sensitive name and `BACKUP_FILES` shape (35 findings, 17 flagged,
-          // 0 hits), and reverting this branch entirely (all 5 suite tests still
-          // pass). It is kept as the correct behaviour for the day the Layer-2
-          // wiring changes, not because it fires. That wiring is guarded at the
-          // `StructuralAnalyzer.analyze` seam by
-          // `__tests__/semantic/layer2-handed-own-backup-exclusion.test.ts`
-          // (#382): deleting `isExcludedDir` from the Layer-2 call above makes
-          // this branch fire for every archive copy and turns that suite red.
-          const held = alreadyHeld.get(key);
-          if (held) { held.inOwnArchive = true; continue; }
-          alreadyHeld.set(key, f);
-          f.inOwnArchive = true;
-          adopted.push(f);
-        }
-        findings.push(...adopted);
       }
     }
 
-    // #384 — a credential finding inside a backup archive gets the archive
-    // remediation whichever detector produced it. Runs after the adoption
-    // above; the verify scan passed its own findings through this same step,
-    // so adopted findings arrive already aligned.
+    // #384 — a credential finding inside a backup archive an earlier version
+    // wrote into the tree gets the archive remediation whichever detector
+    // produced it.
     await this.alignArchivedCredentialFixes(findings, targetDir);
 
     // Filter findings to only show real, actionable issues:
@@ -6189,26 +6071,17 @@ export class HardeningScanner {
     // same shape as the scan-soul #206/#251 clamp.
     const { score, clamped: scoreClamped } = clampScoreToVerdictBand(rawScore, scoredFindings);
 
-    // #374 — the live-tree view of the SAME findings set. `score` above is the
-    // number the next scan at the SAME DEPTH will produce — exactly so for `quick`
-    // and `standard`, and with one documented exception for `--deep`, where the
-    // verify scan is capped at `standard` so it cannot transmit this run's archive
-    // to the LLM (#385/#386). This is what the tree is worth once the archived copy
-    // is rotated and deleted, and the report names it so a post-fix number that
-    // went DOWN is attributable rather than mysterious.
-    const scoreExcludingArchive = scoreExcludingOwnArchive(filteredFindings);
-
-    // #383 — attribute every finding inside the target's archive base, not only
-    // the ones this run's archive produced. A second `--fix` run's own archive
-    // holds only redacted copies, so nothing in it is a finding and
-    // `scoreExcludingArchive` is unset; the plaintext lives in the FIRST run's
-    // archive, and without this the report left that run's number unexplained.
-    // Attribution only: nothing here moves the score, the verdict or a finding,
-    // and `isInsideArchiveBase` answers `yes` only for the target's own base, so
-    // a directory named `.hackmyagent-backup` elsewhere in the tree is untouched.
+    // #383 — attribute every finding inside the archive base an earlier version
+    // wrote into this tree (`<target>/.hackmyagent-backup`), so the report can
+    // say where those findings sit and what moves them. `--fix` no longer
+    // writes there (#376), and an archive already there is scanned and scored
+    // like any other content of the tree. Attribution only: nothing here moves
+    // the score, the verdict or a finding, and `isInsideArchiveBase` answers
+    // `yes` only for the target's own base, so a directory named
+    // `.hackmyagent-backup` elsewhere in the tree is untouched.
     for (const f of findings) {
       if (!f.file) continue;
-      if (f.inOwnArchive || (await this.isInsideArchiveBase(path.resolve(targetDir, f.file), targetDir)) === 'yes') {
+      if ((await this.isInsideArchiveBase(path.resolve(targetDir, f.file), targetDir)) === 'yes') {
         f.inArchive = true;
       }
     }
@@ -6279,7 +6152,6 @@ export class HardeningScanner {
       score,
       rawScore,
       scoreClamped,
-      scoreExcludingOwnArchive: scoreExcludingArchive,
       maxScore,
       backupPath,
       dryRun: dryRun && autoFix ? true : undefined,
@@ -7077,6 +6949,21 @@ export class HardeningScanner {
    * copy, so it is recorded as an absent candidate and left to
    * `recordCreatedFiles`, which hash-verifies before rollback removes it.
    */
+  /**
+   * Copy one file into this run's backup, owner-only (#376).
+   *
+   * `copyFile` gives the copy the source's mode, so a `0644` config holding a
+   * token produced a world-readable plaintext copy. The copy is narrowed to
+   * `0600` and any directory created for it is `0700`. A filesystem that
+   * refuses the `chmod` keeps the copy: the run directory above it is
+   * already `0700`, and losing the copy would make the fix unrecoverable.
+   */
+  private async copyIntoBackup(sourcePath: string, destPath: string): Promise<void> {
+    await fs.mkdir(path.dirname(destPath), { recursive: true, mode: 0o700 });
+    await fs.copyFile(sourcePath, destPath);
+    try { await fs.chmod(destPath, 0o600); } catch { /* no mode bits here; the 0700 run directory still confines it */ }
+  }
+
   private async ensureBackupCovers(filePath: string): Promise<boolean> {
     const ctx = this.backupContext;
     if (!ctx) return false;
@@ -7095,9 +6982,7 @@ export class HardeningScanner {
     // the guard protected a path that was not the one being written.
     let existed = true;
     try {
-      const destPath = path.join(ctx.backupDir, rel);
-      await fs.mkdir(path.dirname(destPath), { recursive: true });
-      await fs.copyFile(filePath, destPath);
+      await this.copyIntoBackup(filePath, path.join(ctx.backupDir, rel));
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
       // ENOENT is overloaded here and only ONE of its meanings is a creation.
@@ -7284,9 +7169,8 @@ export class HardeningScanner {
    * it. Only the advice changes: check, severity, verdict and score are the
    * detector's, so the finding counts exactly as before.
    *
-   * `inOwnArchive` is proof on its own (the #374 adoption set it by identity).
-   * Otherwise only a proven `yes` rewrites; `unknown` leaves the detector's
-   * text, which is the state before this change rather than a new claim.
+   * Only a proven `yes` rewrites; `unknown` leaves the detector's text, which
+   * is the state before this change rather than a new claim.
    */
   private async alignArchivedCredentialFixes(
     findings: SecurityFindingDraft[],
@@ -7295,9 +7179,7 @@ export class HardeningScanner {
     for (const f of findings) {
       if (!f.file || f.passed !== false || f.fixed || f.notApplicable) continue;
       if (f.fix === ARCHIVED_CREDENTIAL_FIX || !isCredentialFinding(f)) continue;
-      const inArchive = f.inOwnArchive
-        || (await this.isInsideArchiveBase(path.resolve(targetDir, f.file), targetDir)) === 'yes';
-      if (!inArchive) continue;
+      if ((await this.isInsideArchiveBase(path.resolve(targetDir, f.file), targetDir)) !== 'yes') continue;
       f.fix = ARCHIVED_CREDENTIAL_FIX;
       f.guidance = archivedCredentialGuidance(this.cliName);
       f.fixable = false;
@@ -7436,28 +7318,6 @@ export class HardeningScanner {
     // when the cheap compare says no.
     if (this.isPathWithinDirectory(dirPath, ctx.backupDir)) return true;
     return sameIdentity(identityOrUndefined(await identityOf(dirPath)), ctx.backupIdent);
-  }
-
-  /**
-   * True when this run's archive holds anything besides its own manifest —
-   * the only content there a later scan can report (#381).
-   *
-   * Read from the directory, not from the manifest's lists. `absentAtBackup`
-   * names candidates that were NOT copied, which is what made `covered.size`
-   * useless as this answer, and a copy whose manifest append failed is on disk
-   * in no list at all. The directory is what the next scan walks.
-   *
-   * Any doubt answers true: that costs one extra scan, never a wrong score.
-   */
-  private async ownArchiveHoldsCopies(): Promise<boolean> {
-    const ctx = this.backupContext;
-    if (!ctx) return false;
-    try {
-      const entries = await fs.readdir(ctx.backupDir);
-      return entries.some((name) => name !== '.manifest.json');
-    } catch {
-      return true;
-    }
   }
 
   /**
@@ -12423,7 +12283,6 @@ dist/
       score: number;
       rawScore?: number;
       scoreClamped?: boolean;
-      scoreExcludingOwnArchive?: number;
     },
     findings: SecurityFindingDraft[],
   ): void {
@@ -12432,87 +12291,24 @@ dist/
     result.score = score;
     result.rawScore = rawScore;
     result.scoreClamped = clamped;
-    // #374 — re-derived here, from the same array, for the same reason the clamp
-    // is: a merge that adds or drops findings moves both numbers, and a stale
-    // live-tree figure beside a fresh headline would advertise a delta neither
-    // number supports. Assigned unconditionally so it can also go back to
-    // `undefined` when a re-filter removes the last archive finding.
-    result.scoreExcludingOwnArchive = scoreExcludingOwnArchive(findings);
   }
 
   /**
-   * The directory `--fix` stores backups under, resolved to a real directory
-   * inside the scanned tree. Throws otherwise, which degrades the run to
-   * detect-only rather than writing somewhere unintended.
+   * The directory `--fix` stores backups under: this target's store in the
+   * per-user backup store, outside the scanned tree (#376). Throws when no
+   * store can be used, which degrades the run to detect-only rather than
+   * writing somewhere unintended.
    *
-   * #321 — this used to be a bare `mkdir -p <target>/.hackmyagent-backup/<stamp>`
-   * followed by `copyFile`, and both follow symlinks. One
-   * `ln -s /attacker/drop <target>/.hackmyagent-backup` sent every backup copy,
-   * `.env` included, out of the tree. Reproduced on the base commit as well as
-   * on this branch, so it is not a regression from the unpushed range — but it
-   * shares its root with #317/#318/#320, and the root is trusting a path string
-   * where filesystem identity is needed.
-   *
-   * The base directory is REFUSED outright when it is a symlink, wherever it
-   * points. Resolving it and accepting an in-tree target would still mean
-   * backups landing somewhere the scanned tree chose, and this is the one
-   * directory whose location HMA must own.
+   * It used to be `<target>/.hackmyagent-backup`, and every later scan of the
+   * tree reported the copies in it. The refusals that location needed — a base
+   * that is a symlink out of the tree (#321), something that is not a
+   * directory, a base resolving outside the tree — are carried over to the
+   * store's own directory, and one is added: a store that would sit inside the
+   * tree being fixed (`secure --fix ~`) is refused, because there every later
+   * scan would report it again. See `src/store/archive-store.ts`.
    */
   private async prepareBackupRoot(targetDir: string): Promise<string> {
-    const targetReal = await fs.realpath(targetDir);
-    const base = path.join(targetReal, BACKUP_DIR_NAME);
-
-    try {
-      // Non-recursive: `targetReal` exists (realpath just proved it), so the
-      // only thing this can create is the base itself.
-      await fs.mkdir(base);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
-    }
-
-    // `lstat`, not `stat`: a symlink to a directory is a directory to `stat`,
-    // which is exactly how #321 stayed invisible.
-    const st = await fs.lstat(base);
-    if (st.isSymbolicLink()) {
-      throw backupSetupError(
-        'HMA-BACKUP-SYMLINK',
-        `${base} is a symbolic link, and backups are not written through a link.`,
-      );
-    }
-    if (!st.isDirectory()) {
-      throw backupSetupError(
-        'HMA-BACKUP-NOT-DIR',
-        `${base} exists and is not a directory, so backups cannot be stored there.`,
-      );
-    }
-
-    // Canonical, including the ON-DISK CASING: everything downstream compares
-    // against this, and a `.HACKMYAGENT-BACKUP` adopted by name would otherwise
-    // leave the run's own paths spelled one way and read back another (#317).
-    //
-    // #334 — that property needs `realpath.native`. Measured on macOS with the
-    // directory on disk named `.HACKMYAGENT-BACKUP`:
-    //
-    //   fs.realpathSync(".../.hackmyagent-backup")        -> ".../.hackmyagent-backup"
-    //   fs.realpathSync.native(".../.hackmyagent-backup") -> ".../.HACKMYAGENT-BACKUP"
-    //
-    // The JS implementation returns the CALLER's spelling for the final
-    // component, so the comment above described something the code did not do
-    // and the lexical fast path in `isOwnBackupDir` almost never fired — one
-    // `stat` per directory of every `--fix` walk, for a compare that could not
-    // match. Identity covered the gap, which is why nothing broke; correctness
-    // of the stated property and the cost are both worth fixing.
-    //
-    // Sync because there is no promises-API `.native` (Node exposes it on the
-    // callback and sync forms only), and because this runs once per run.
-    const baseReal = fsSync.realpathSync.native(base);
-    if (!this.isPathWithinDirectory(baseReal, targetReal)) {
-      throw backupSetupError(
-        'HMA-BACKUP-OUTSIDE-TREE',
-        `${base} resolves to ${baseReal}, which is outside the scanned tree.`,
-      );
-    }
-    return baseReal;
+    return prepareArchiveStore(targetDir);
   }
 
   /**
@@ -12582,7 +12378,9 @@ dist/
         + `-${crypto.randomBytes(4).toString('hex')}`,
       );
       try {
-        await fs.mkdir(dir);
+        // 0700: the copies are plaintext, and one can hold a credential this
+        // run is about to redact from the live file (#376).
+        await fs.mkdir(dir, { mode: 0o700 });
         return dir;
       } catch (err) {
         lastErr = err;
@@ -12718,8 +12516,7 @@ dist/
           continue;
         }
         const destPath = path.join(backupDir, file);
-        await fs.mkdir(path.dirname(destPath), { recursive: true });
-        await fs.copyFile(sourcePath, destPath);
+        await this.copyIntoBackup(sourcePath, destPath);
         manifest.existingFiles.push(file);
       } catch {
         // #313 — absence is PROVEN here, never inferred from the fact that
@@ -12759,7 +12556,8 @@ dist/
     // Save manifest
     await fs.writeFile(
       path.join(backupDir, '.manifest.json'),
-      JSON.stringify(manifest, null, 2)
+      JSON.stringify(manifest, null, 2),
+      { mode: 0o600 },
     );
 
     // Normalized so `ensureBackupCovers` compares like with like: the entries
@@ -13049,35 +12847,79 @@ dist/
     } catch {
       throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
     }
-    // Check if backup directory exists — and that it is a real directory in the
-    // tree, not a link out of it (#321). `access` follows symlinks, so a
-    // `.hackmyagent-backup -> /attacker/drop` passed this gate and rollback then
-    // read its manifest and restored from its contents.
+
+    // #376 — the backups `--fix` writes now are in the per-user store, keyed by
+    // this directory's identity, so a moved, renamed or symlinked target finds
+    // them. They are consulted FIRST and, when the store holds any run, ONLY:
+    // nothing in the scanned tree can create or rename a run there, whereas a
+    // tree can ship its own `.hackmyagent-backup/9999-…/` that sorts above every
+    // real stamp (#338). Merging the two lists would hand that forged directory
+    // the first try at writing into the tree.
     //
+    // A store recorded for a directory created at another time is a reused
+    // identity, not this directory's backups: refused, named, and left alone.
+    // Deleting the store makes this throw "No backup found" or fall back to an
+    // archive an earlier version wrote inside the tree, which the report names.
+    // It never makes rollback report success with nothing restored.
+    const store = await findArchiveStore(targetReal);
+    if (store.kind === 'other-directory') {
+      throw new Error(
+        `The backup store ${store.dir} has this directory's filesystem identity but was recorded for a `
+        + 'directory created at another time'
+        + `${store.lastKnownPath ? ` (last seen at ${store.lastKnownPath})` : ''}. The filesystem has reused `
+        + 'that directory\'s identity, so rollback will not restore its files here. If those backups are yours, '
+        + 'copy the files back by hand from the run directories inside it.',
+      );
+    }
+    if (store.kind === 'unknown' && store.dir) {
+      throw new Error(
+        `The backup store ${store.dir} for this directory could not be used: ${store.reason}. `
+        + 'Nothing was restored. Check that directory, then run rollback again.',
+      );
+    }
+    let storeRuns: string[] = [];
+    if (store.kind === 'store') {
+      try {
+        storeRuns = await listArchiveRuns(store.dir);
+      } catch {
+        throw new Error(
+          `The backup store ${store.dir} for this directory could not be listed. Nothing was restored.`,
+        );
+      }
+    }
+
     // `backupBaseDir` is the RESOLVED base from here on, and every path below is
     // built from it. Comparing a resolved path against a lexically-joined one is
-    // the #317 mistake in miniature: a compare against the name we joined would
-    // refuse a legitimate rollback on a `.HACKMYAGENT-BACKUP`.
-    //
-    // #334 — this comment used to say `realpath` returns the on-disk casing. It
-    // does not: the JS implementation returns the caller's spelling for the
-    // final component, and only `realpath.native` canonicalizes case. The code
-    // is correct either way — everything below is built from whatever this
-    // returns, so the two spellings cannot diverge — but the reason stated for
-    // it was wrong.
+    // the #317 mistake in miniature.
     let backupBaseDir: string;
-    try {
-      const joinedBase = path.join(targetReal, BACKUP_DIR_NAME);
-      const baseSt = await fs.lstat(joinedBase);
-      if (baseSt.isSymbolicLink() || !baseSt.isDirectory()) {
-        throw new Error('not a real backup directory');
+    let backupSource: 'store' | 'in-tree';
+    if (store.kind === 'store' && storeRuns.length > 0) {
+      backupBaseDir = fsSync.realpathSync.native(store.dir);
+      backupSource = 'store';
+    } else {
+      // No run in the store: an archive an earlier version wrote INSIDE the
+      // tree is still restorable. Check that it is a real directory in the
+      // tree, not a link out of it (#321). `access` follows symlinks, so a
+      // `.hackmyagent-backup -> /attacker/drop` passed this gate and rollback
+      // then read its manifest and restored from its contents.
+      //
+      // #334 — only `realpath.native` canonicalizes case; the JS `realpath`
+      // returns the caller's spelling for the final component. Everything
+      // below is built from whatever this returns, so the two cannot diverge.
+      try {
+        const joinedBase = path.join(targetReal, BACKUP_DIR_NAME);
+        const baseSt = await fs.lstat(joinedBase);
+        if (baseSt.isSymbolicLink() || !baseSt.isDirectory()) {
+          throw new Error('not a real backup directory');
+        }
+        backupBaseDir = await fs.realpath(joinedBase);
+        if (!this.isPathWithinDirectory(backupBaseDir, targetReal)) {
+          throw new Error('backup directory resolves outside the tree');
+        }
+      } catch {
+        throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
       }
-      backupBaseDir = await fs.realpath(joinedBase);
-      if (!this.isPathWithinDirectory(backupBaseDir, targetReal)) {
-        throw new Error('backup directory resolves outside the tree');
-      }
-    } catch {
-      throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
+      backupSource = 'in-tree';
     }
 
     // Find the most recent backup.
@@ -13087,12 +12929,7 @@ dist/
     // was selected as "the latest backup", and every legitimate rollback in that
     // tree failed on it. `withFileTypes` decides by what the entry IS rather
     // than by what it is called.
-    const backups = await fs.readdir(backupBaseDir, { withFileTypes: true });
-    const sortedBackups = backups
-      .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
-      .map((e) => e.name)
-      .sort()
-      .reverse();
+    const sortedBackups = (await listArchiveRuns(backupBaseDir)).sort().reverse();
 
     if (sortedBackups.length === 0) {
       throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
@@ -13305,6 +13142,8 @@ dist/
       barrenBackups: barren.map((b) => ({ name: b.name, listed: b.unrestored.length })),
       backupsBehind: remainingBehind,
       backupUsed: latestBackup,
+      backupSource,
+      backupBase: backupBaseDir,
     };
 
     // Restore existing files from backup.

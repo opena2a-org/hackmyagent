@@ -1,35 +1,39 @@
 /**
- * #381 — the gate on the post-fix verify scan did not gate.
+ * #381 / #376 — the post-fix verify scan runs when there is a fix to verify,
+ * and only then.
  *
- * #374 made `secure --fix` run a second, context-free scan so the score it
- * announces is the score the next scan produces: the next scan walks the archive
- * this run just wrote, and this run's own scan excluded it. The second scan was
- * meant to be skipped when the archive could not move the score, but the gate
- * read `backupContext.covered.size`, and `covered` is seeded from
- * `existingFiles` PLUS `absentAtBackup` — the static candidates that do NOT
- * exist. On an empty directory that is every candidate, so the gate was always
- * true and every `--fix` paid for two full scans.
+ * #374 made `secure --fix` run a second, context-free scan whenever its archive
+ * held a copy, because the archive sat inside the scanned tree and only such a
+ * scan could say what the next scan would score with it. #381 found that gate
+ * read `backupContext.covered.size`, which is above zero on an empty directory,
+ * so every `--fix` paid for two full scans.
  *
- * Both directions are pinned, because either alone is insufficient:
- *   1. an archive that received no copy does not trigger the second scan, and
- *      the next scan finds nothing in it that the skipped scan would have added;
- *   2. an archive that DID receive a copy still triggers it when nothing was
- *      fixed — the #374 case the gate exists for.
- * Plus the fail-safe: an archive that cannot be listed counts as holding a copy.
+ * #376 moved the archive out of the tree, into the per-user backup store, and
+ * the archive half of the gate went with it: a copy in the store cannot move any
+ * scan's result. What remains is the scan's first job, confirming the fixes
+ * that landed.
+ *
+ * All three directions are pinned:
+ *   1. nothing fixed, nothing copied: one scan;
+ *   2. nothing fixed, a copy in the store: still one scan, and the announced
+ *      score is the rescan's (the case #374 needed the second scan for);
+ *   3. a fix landed: the verify scan runs.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdir, writeFile, rm, readdir, readFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { tempDir } from '../helpers/temp-dir';
+import { latestStoreRun, storeRuns } from '../helpers/backup-store';
 
 async function onlyArchive(dir: string): Promise<string> {
-  const stamps = await readdir(path.join(dir, '.hackmyagent-backup'));
-  expect(stamps.length, 'no archive was created, so this run exercised nothing').toBe(1);
-  return path.join(dir, '.hackmyagent-backup', stamps[0]);
+  expect((await storeRuns(dir)).length, 'no archive was created, so this run exercised nothing').toBe(1);
+  return latestStoreRun(dir);
 }
 
-describe('#381 the post-fix verify scan runs only when the archive holds a copy', () => {
+const GITIGNORE = '.env\n.env.*\nsecrets.json\ncredentials.json\n*.pem\n*.key\n.idea/\n.vscode/\nnode_modules/\ndist/\n';
+
+describe('#381/#376 the post-fix verify scan runs only when a fix landed', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -45,10 +49,7 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
     try {
       await mkdir(dir);
       await mkdir(path.join(root, 'shared'));
-      await writeFile(
-        path.join(root, 'shared', '.gitignore'),
-        '.env\n.env.*\nsecrets.json\ncredentials.json\n*.pem\n*.key\n.idea/\n.vscode/\nnode_modules/\ndist/\n',
-      );
+      await writeFile(path.join(root, 'shared', '.gitignore'), GITIGNORE);
       await symlink(path.join('..', 'shared', '.gitignore'), path.join(dir, '.gitignore'));
 
       const scan = vi.spyOn(HardeningScanner.prototype, 'scan');
@@ -58,7 +59,7 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
 
       // ── Non-vacuity ──
       // The archive exists and holds no copy, and the manifest lists absent
-      // candidates — the entries that made the old gate true.
+      // candidates — the entries that made the #381 gate true.
       const archive = await onlyArchive(dir);
       expect(await readdir(archive)).toEqual(['.manifest.json']);
       const manifest = JSON.parse(await readFile(path.join(archive, '.manifest.json'), 'utf-8'));
@@ -70,37 +71,17 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
       ).toEqual([]);
 
       // ── The property ──
-      // Fails on the pre-fix build: 2 scans, the second one a full scan of a
-      // tree whose archive cannot change the result.
-      expect(scansDuringFix, 'an archive with no copy in it triggered a second full scan (#381)').toBe(1);
-
-      // Skipping it must not reopen #374. With no fix to verify, the verify
-      // scan's only contribution is the findings it sees inside this run's
-      // archive, so the next scan must find none there. (Not `score` equality:
-      // the refused write through the link is reported by FIX-WRITE-FAILED,
-      // which only the run that attempted it can produce. Measured 93 vs 98
-      // with and without the second scan alike.)
-      const rescan = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
-      expect(
-        rescan.findings
-          .filter((f) => (f.file ?? '').includes('.hackmyagent-backup'))
-          .map((f) => `${f.checkId} ${f.file}`),
-        'the next scan reports a finding in an archive the verify scan was skipped for',
-      ).toEqual([]);
-      expect(fixed.findings.some((f) => f.inOwnArchive)).toBe(false);
+      expect(scansDuringFix, 'a run with nothing to verify triggered a second full scan (#381)').toBe(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it('still runs the second scan when the archive holds a copy and nothing was fixed', async () => {
+  it('skips the second scan when the archive holds a copy and nothing was fixed', async () => {
     const dir = tempDir('hma-381-copy-');
     try {
       await writeFile(path.join(dir, 'package.json'), '{"name":"f","version":"1.0.0"}\n');
-      await writeFile(
-        path.join(dir, '.gitignore'),
-        '.env\n.env.*\nsecrets.json\ncredentials.json\n*.pem\n*.key\n.idea/\n.vscode/\nnode_modules/\ndist/\n',
-      );
+      await writeFile(path.join(dir, '.gitignore'), GITIGNORE);
       await mkdir(path.join(dir, 'src'), { recursive: true });
       await writeFile(path.join(dir, 'src', 'index.js'), 'module.exports = 1;\n');
 
@@ -110,8 +91,8 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
       vi.restoreAllMocks();
 
       // ── Non-vacuity ──
-      // A copy landed in the archive and no fix landed, so only the archive
-      // can be the reason for the second scan.
+      // A copy landed in the archive and no fix landed: before #376 this was the
+      // one case that ran the second scan for the archive's sake alone.
       const archive = await onlyArchive(dir);
       expect(await readdir(archive)).toContain('package.json');
       expect(
@@ -120,7 +101,7 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
       ).toEqual([]);
 
       // ── The property ──
-      expect(scansDuringFix, 'an archive holding a copy did not trigger the verify scan').toBe(2);
+      expect(scansDuringFix, 'a copy in the backup store triggered a second full scan').toBe(1);
 
       const rescan = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
       expect(fixed.score).toBe(rescan.score);
@@ -130,21 +111,21 @@ describe('#381 the post-fix verify scan runs only when the archive holds a copy'
     }
   });
 
-  it('treats an archive it cannot list as holding a copy', async () => {
-    // A wrong "no" skips the scan that keeps the announced score honest; a
-    // wrong "yes" costs one scan. Doubt has to land on "yes".
-    const dir = tempDir('hma-381-unlisted-');
+  it('runs the second scan when a fix landed, to confirm it', async () => {
+    // An empty tree: GIT-001 writes a `.gitignore`, which is the fix to verify.
+    const dir = tempDir('hma-381-fixed-');
     try {
-      const scanner = new HardeningScanner() as unknown as {
-        backupContext?: { backupDir: string; targetDir: string; covered: Set<string> };
-        ownArchiveHoldsCopies(): Promise<boolean>;
-      };
-      scanner.backupContext = {
-        backupDir: path.join(dir, '.hackmyagent-backup', 'gone'),
-        targetDir: dir,
-        covered: new Set(),
-      };
-      expect(await scanner.ownArchiveHoldsCopies()).toBe(true);
+      await writeFile(path.join(dir, 'package.json'), '{"name":"f","version":"1.0.0"}\n');
+
+      const scan = vi.spyOn(HardeningScanner.prototype, 'scan');
+      const fixed = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      const scansDuringFix = scan.mock.calls.length;
+      vi.restoreAllMocks();
+
+      const landed = fixed.findings.filter((f) => f.fixed && f.file);
+      expect(landed.length, 'no fix landed, so there was nothing to verify').toBeGreaterThan(0);
+      expect(scansDuringFix, 'a fix that landed was not verified').toBe(2);
+      expect(landed.every((f) => f.fixVerified !== undefined), 'a landed fix carries no verification result').toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

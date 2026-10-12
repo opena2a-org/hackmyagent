@@ -40,6 +40,7 @@ import {
   SPLIT_MARKER,
 } from '../helpers/render-safety';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
+import { archiveStoreDirFor } from '../../src/store/archive-store';
 
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
 
@@ -143,10 +144,15 @@ describe('#328 every report that renders a tree-derived path renders it safely',
     assertRenderSafe(out, 'secure');
   }, 300_000);
 
-  it('secure --fix', () => {
+  // #376 — a `--fix` run's backup lives in the per-user store, and the report
+  // ends with the line that names it and the command that deletes it. That
+  // command is the one `rm -rf` the report may carry, and only for the store
+  // directory derived here independently of the CLI.
+  it('secure --fix', async () => {
     const out = run(['secure', scanDir, '--fix']);
     expect(out, 'secure --fix never named the hostile path').toContain(SPLIT_MARKER);
-    assertRenderSafe(out, 'secure --fix');
+    expect(out, 'the backup-store line never rendered, so its citation is unmeasured').toMatch(/^Backups: 1 --fix backup/m);
+    assertRenderSafe(out, 'secure --fix', [], [await archiveStoreDirFor(scanDir)]);
   }, 300_000);
 
   /**
@@ -158,13 +164,13 @@ describe('#328 every report that renders a tree-derived path renders it safely',
    * `; touch PWNED-BY-CITATION;` citations, one of them inside a backticked
    * command the report tells the user to run.
    */
-  it('secure: with the hostile name on the TARGET rather than inside it', () => {
+  it('secure: with the hostile name on the TARGET rather than inside it', async () => {
     const out = run(['secure', hostileDir, '--fix']);
     expect(
       out,
       'secure never rendered its own target, so this case measures nothing',
     ).toContain(SPLIT_MARKER);
-    assertRenderSafe(out, 'secure (hostile target)');
+    assertRenderSafe(out, 'secure (hostile target)', [], [await archiveStoreDirFor(hostileDir)]);
   }, 300_000);
 
   it('rollback', () => {

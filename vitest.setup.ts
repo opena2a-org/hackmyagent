@@ -1,5 +1,5 @@
 import { afterAll } from 'vitest';
-import { removeTempDirs } from './__tests__/helpers/temp-dir';
+import { removeTempDirs, tempDir } from './__tests__/helpers/temp-dir';
 
 // Test-harness hermeticity: a scan in this suite must not read the developer's
 // home directory.
@@ -88,7 +88,18 @@ for (const v of [
   delete process.env[v];
 }
 
-// Third: a test file leaves nothing in the temporary directory. `tempDir` in
+// Fourth: `--fix` keeps its backups in a per-user store outside the scanned
+// tree (#376), by default under ~/.opena2a/backups. A suite that runs `--fix`
+// hundreds of times must not fill the developer's home with plaintext copies of
+// its fixtures, and a store left by an earlier run must not be what a rollback
+// test finds. Each test file gets its own store, removed when the file finishes
+// (it is a `tempDir` created outside any test). Set unconditionally: a value
+// inherited from the shell would be shared by every file and never removed.
+// A spawn test that passes `{ ...process.env }` inherits it; one that builds
+// its environment from scratch keeps its own HOME or OPENA2A_HOME.
+process.env.HMA_BACKUP_HOME = tempDir('hma-backup-home-');
+
+// Fifth: a test file leaves nothing in the temporary directory. `tempDir` in
 // __tests__/helpers/temp-dir.ts removes what it creates when the creating test
 // finishes; this hook removes what was created outside a test, and anything
 // the per-test pass could not, when each file finishes. Registering it here

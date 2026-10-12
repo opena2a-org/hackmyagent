@@ -479,6 +479,7 @@ import { levelPopulation } from './benchmarks/oasb-1';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
+import { describeArchiveStore } from './store/archive-store';
 import {
   preflight,
   probeReachability,
@@ -1364,16 +1365,6 @@ interface UnifiedCheckDisplayOptions {
     rawScore?: number;
     /** True when `score < rawScore` because the verdict is fail-direction (#259). */
     scoreClamped?: boolean;
-    /**
-     * What `score` would be without the archive this `--fix` run created (#374).
-     * Set only on a `--fix` run whose own archive contributed a finding.
-     */
-    scoreExcludingOwnArchive?: number;
-    /**
-     * Where that archive is, so the delta line can name the cost rather than
-     * assert it. Absolute path; rendered escaped.
-     */
-    ownArchivePath?: string;
     /** What the scan actually examined, measured at runtime. */
     coverage?: ScanResult['coverage'];
     /**
@@ -2197,48 +2188,16 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       // anchored on the narrow-matrix numeric score.)
       console.log(`  ${colors.cyan}${colors.bold}${quickScanFollowupText(quickScan)}${RESET()}`);
     }
-    // #374 — a `--fix` run can now print a score LOWER than the one before it
-    // ran, and that has to be attributable on the spot. The score is the number
-    // the next scan AT THE SAME DEPTH will produce, which includes the archive
-    // `--fix` just wrote; that archive holds the pre-fix copy of the very
-    // credential the run redacted. (`--deep` is the one exception: the verify scan
-    // is capped at `standard` so it cannot send this run's archive to the LLM, so
-    // Layer-3 archive findings are missing from this number — #385/#386.)
-    // Unexplained, a number that went down reads as the remediation having made
-    // the tree worse. So name the live-tree figure and where the difference sits,
-    // framed as recoverable rather than as a deduction.
-    const liveTreeScore = localScan?.scoreExcludingOwnArchive;
-    if (liveTreeScore !== undefined) {
-      const archiveCount = (localScan?.findings ?? []).filter((f) => f.inOwnArchive).length;
-      const noun = `${archiveCount} finding${archiveCount === 1 ? '' : 's'}`;
-      // #324/#339 — the archive path is derived from the scanned target, so it
-      // is scanned-tree data on a rendered line.
-      const where = localScan?.ownArchivePath
-        ? ` at ${escapePathForDisplay(localScan.ownArchivePath)}`
-        : '';
-      const delta = liveTreeScore - score;
-      // `delta` cannot be negative — dropping findings only ever lowers the
-      // weighted sum — but it CAN be 0 when the archived findings are diminished
-      // by the per-check cap. Claiming a "0-point difference" would be a number
-      // with nothing behind it, so that case names the archive and stops.
-      if (delta > 0) {
-        console.log(`  ${colors.cyan}Live tree:${RESET()} ${liveTreeScore}/100 ${colors.dim}— the ${delta}-point difference is ${noun} inside the backup this run created${where}${RESET()}`);
-      } else {
-        console.log(`  ${colors.dim}${noun} above ${archiveCount === 1 ? 'sits' : 'sit'} inside the backup this run created${where}${RESET()}`);
-      }
-      console.log(`  ${colors.dim}Those are the pre-fix copies, kept so \`${CLI_PREFIX} rollback\` can undo this run. Rotate what was exposed, then delete that directory once you no longer need to roll back.${RESET()}`);
-    }
-    // #383 — the same attribution for a backup this run did NOT create. A second
-    // `--fix` run archives only redacted copies, so `liveTreeScore` is unset and
-    // the block above is silent, while the first run's plaintext copies still
-    // hold the score down. No second number is printed: which run wrote a copy
-    // under the archive base cannot be proven, so the line says what is true
-    // either way — where the findings sit, that they count, and what moves them.
-    const earlierArchiveCount = (localScan?.findings ?? []).filter((f) => f.inArchive && !f.inOwnArchive).length;
+    // #383 — findings inside the backup directory an earlier version of
+    // HackMyAgent wrote into this tree. `--fix` keeps its backups outside the
+    // tree since #376, but an archive already here is scanned and counted like
+    // any other content, so the line says where those findings sit, that they
+    // count, and what moves them.
+    const earlierArchiveCount = (localScan?.findings ?? []).filter((f) => f.inArchive).length;
     if (earlierArchiveCount > 0) {
       const noun = `${earlierArchiveCount} finding${earlierArchiveCount === 1 ? '' : 's'}`;
       const verb = earlierArchiveCount === 1 ? 'sits' : 'sit';
-      console.log(`  ${colors.dim}${noun} above ${verb} inside .hackmyagent-backup, where HackMyAgent keeps this tree's --fix backups, in a copy this run did not create. ${earlierArchiveCount === 1 ? 'It counts' : 'They count'} toward this score.${RESET()}`);
+      console.log(`  ${colors.dim}${noun} above ${verb} inside .hackmyagent-backup, where earlier versions of HackMyAgent kept this tree's --fix backups. ${earlierArchiveCount === 1 ? 'It counts' : 'They count'} toward this score.${RESET()}`);
       console.log(`  ${colors.dim}\`${CLI_PREFIX} secure --fix\` and \`${CLI_PREFIX} fix-all\` never edit a backup, so these points move only when that copy goes: rotate what was exposed, check the live file, then delete the backup once you no longer need \`${CLI_PREFIX} rollback\`.${RESET()}`);
     }
   } else if (registry?.found) {
@@ -3509,7 +3468,7 @@ function printBenchmarkUnreadDisclosure(result: ScanResult): void {
 /**
  * #610 — keyed on the backup the scanner wrote, not on the attempt count.
  * A `--fix` run that attempted nothing still writes a fresh run directory
- * under `.hackmyagent-backup/`. #862 — the `-b oasb-1` and `-b oasb-2` text
+ * in the backup store. #862 — the `-b oasb-1` and `-b oasb-2` text
  * reports return before the ordinary report's tail, so each calls this too.
  */
 function printFixBackupDisclosure(
@@ -3520,10 +3479,51 @@ function printFixBackupDisclosure(
   write: (line: string) => void = console.log,
 ): void {
   if (!result.backupPath) return;
-  // #339 — the backup path is derived from the target, and the rollback
-  // hint is a command the report tells the user to paste. Both were raw.
+  // #339 — the backup path is rendered escaped, and the rollback hint is a
+  // command the report tells the user to paste.
   write(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+  write(`  ${backupContentsNotice()}`);
   write(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
+}
+
+/**
+ * #376 — what a `--fix` backup holds, said wherever one is created. The
+ * backup is outside the scanned tree, so no later scan reports it; that makes
+ * this sentence the only place the user learns that a plaintext copy of a
+ * credential the run removed is still on disk.
+ */
+function backupContentsNotice(): string {
+  return 'It holds the pre-fix copies of the files this run changed, including any credential it removed from them. '
+    + 'It is outside the scanned directory, so later scans do not report it.';
+}
+
+/**
+ * #376 — the one line every `secure` text report prints when the target has
+ * backups in the per-user store. Not a finding and never scored: the backups
+ * are outside the tree, so they are not something the tree contains, but they
+ * hold plaintext pre-fix copies, so their count, their location and the
+ * command that deletes them are disclosed on every run.
+ *
+ * The store directory is HackMyAgent's own state, keyed by this directory's
+ * identity, so unlike an archive found inside a scanned tree (#326) every run
+ * in it is known to be one of ours, and deleting it loses nothing but the
+ * ability to roll back. The path comes from HOME or `HMA_BACKUP_HOME`, never
+ * from the tree, and is still cited through `commandNaming`: a path that
+ * cannot be shown and named truthfully gets prose instead of a command.
+ */
+async function printArchiveStoreNotice(directory: string): Promise<void> {
+  const store = await describeArchiveStore(directory);
+  if (!store) return;
+  const n = store.runs;
+  const remove = commandNaming(store.dir, (cited) => `rm -rf ${cited}`);
+  console.log(
+    `${colors.dim}Backups: ${n} --fix backup${n === 1 ? '' : 's'} of this directory, holding pre-fix copies that can include `
+    + `a credential a fix removed, ${n === 1 ? 'is' : 'are'} kept outside it at ${escapePathForDisplay(store.dir)}. `
+    + (remove
+      ? `Delete ${n === 1 ? 'it' : 'them'} once you no longer need \`${CLI_PREFIX} rollback\`: ${remove}`
+      : `Delete that directory once you no longer need \`${CLI_PREFIX} rollback\`.`)
+    + `${RESET()}\n`,
+  );
 }
 
 // SARIF 2.1.0 output for GitHub Security tab and IDE integration
@@ -6738,11 +6738,6 @@ Change scope (--range, --staged):
           score: result.score,
           rawScore: result.rawScore,
           scoreClamped: result.scoreClamped,
-          // #374 — the live-tree companion to `score`, and the directory the
-          // difference is in. Both undefined on every run that did not create an
-          // archive, which is every run except `--fix`.
-          scoreExcludingOwnArchive: result.scoreExcludingOwnArchive,
-          ownArchivePath: result.backupPath,
           maxScore: result.maxScore,
           // A fix the verification pass could not confirm stays in the
           // findings list, so the verdict is built from the same evidence as
@@ -6843,9 +6838,7 @@ Change scope (--range, --staged):
         console.log();
 
         // Remaining issues with fix guidance (not yet auto-fixed)
-        // #384 — copies inside this run's own backup are not something `fix-all`
-        // can move (it never edits an archive); their `Fix:` line names the step.
-        const remainingWithFix = issues.filter((f: SecurityFinding) => !f.fixed && !f.inOwnArchive && (f.fix || f.fixable));
+        const remainingWithFix = issues.filter((f: SecurityFinding) => !f.fixed && (f.fix || f.fixable));
         if (remainingWithFix.length > 0) {
           console.log(`${remainingWithFix.length} remaining issue${remainingWithFix.length === 1 ? '' : 's'} ${remainingWithFix.length === 1 ? 'has' : 'have'} fix guidance. Run \`${CLI_PREFIX} fix-all\` to apply all available fixes.\n`);
         }
@@ -6854,6 +6847,9 @@ Change scope (--range, --staged):
       // #610 — not nested under `fixedFindings.length > 0`, where a run that
       // attempted nothing added a backup run directory without a word.
       printFixBackupDisclosure(result, directory);
+      // #376 — and every run, fixing or not, says what the store holds for
+      // this directory and how to delete it.
+      await printArchiveStoreNotice(targetDir);
 
       // Registry reporting: only when explicitly requested via --version-id (CI) or --registry-report
       // Community contributions are handled by the opena2a CLI wrapper, not HMA directly
@@ -7564,6 +7560,7 @@ Examples:
       const printBackupDisclosure = (): void => {
         if (!result.backupPath) return;
         console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
+        console.log(`  ${backupContentsNotice()}`);
         console.log(`${colors.yellow}To rollback:${RESET()} ${CLI_PREFIX} rollback ${citationTarget(targetDir)}`);
       };
 
@@ -8120,7 +8117,11 @@ program
   .description(`Rollback auto-fix changes to the most recent backup
 
 Restores files to their state before the last --fix operation.
-Backups are stored in .hackmyagent-backup/ with timestamps.
+Backups are stored outside the project, one directory per project, under
+$HMA_BACKUP_HOME, else $OPENA2A_HOME/backups, else ~/.opena2a/backups.
+A moved or renamed project still finds its backups. A .hackmyagent-backup/
+that an earlier version wrote inside the project is used only when the
+store holds no backup for it.
 
 A file it cannot restore is named, with the reason. The backup is then kept
 rather than deleted, since it holds the only remaining copy, and the command
@@ -8164,6 +8165,15 @@ Examples:
       );
       for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${escapePathForDisplay(file)}`);
       for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${escapePathForDisplay(file)}`);
+      // #376 — `--fix` writes its backups outside the tree, so a backup taken
+      // from inside it was written by an earlier version, or put there by
+      // whoever wrote the tree. Either way the user is told where it came from.
+      if (report.backupSource === 'in-tree' && report.backupBase) {
+        console.log(
+          `   ${colors.dim}from${RESET()}      ${escapePathForDisplay(report.backupBase)} `
+          + `${colors.dim}(a backup directory inside the project, written by an earlier version; the backup store held none for it)${RESET()}`,
+        );
+      }
 
       // Files the manifest listed and rollback could not put back (#327). Named
       // first among the exceptions: this is the one case where the user's own

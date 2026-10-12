@@ -25,10 +25,11 @@
  * did not.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { latestStoreRun, storeDirOf } from '../helpers/backup-store';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
@@ -60,13 +61,27 @@ describe('#338 one unusable backup directory cannot wedge recovery', () => {
     if (dir) await rm(dir, { recursive: true, force: true });
   });
 
-  /** `--fix` for real, so the backup under test is one HackMyAgent made. */
+  /**
+   * `--fix` for real, so the backup under test is one HackMyAgent made.
+   *
+   * #376 — `--fix` writes to the per-user store now, and a store run is
+   * selected before anything in the tree, so a forged in-tree directory cannot
+   * stand in front of it at all (asserted at the end of this file). The wedge
+   * these cases measure survives for archives an earlier version wrote INTO the
+   * tree, so the real run is moved to that layout and the store removed: the
+   * state of a tree fixed by an earlier version and rolled back by this one.
+   */
   const fixForReal = async (): Promise<void> => {
     await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
     expect(
       await readFile(path.join(dir, 'config.json'), 'utf-8'),
       'the fix did not redact the credential; this test measures nothing',
     ).toContain('${GITHUB_TOKEN}');
+    const run = await latestStoreRun(dir);
+    const legacy = path.join(dir, '.hackmyagent-backup', path.basename(run));
+    await mkdir(path.dirname(legacy), { recursive: true });
+    await cp(run, legacy, { recursive: true });
+    await rm(await storeDirOf(dir), { recursive: true, force: true });
   };
 
   /**
@@ -311,5 +326,32 @@ describe('#338 one unusable backup directory cannot wedge recovery', () => {
       await readFile(path.join(dir, 'config.json'), 'utf-8'),
       'the original bytes were not recovered',
     ).toBe(original);
+  }, 120_000);
+
+  /**
+   * #376 — with the real backup in the store, a directory the tree ships under
+   * `.hackmyagent-backup` is not a candidate at all: not tried, not reported as
+   * passed over, not deleted. Merging the two lists would give the forged
+   * `9999-…` the first chance to write into the tree, and here it carries a
+   * file that would be restored over the user's.
+   */
+  it('restores from the store and never consults a directory the tree forged', async () => {
+    await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+    const forged = path.join(dir, '.hackmyagent-backup', FORGED);
+    await mkdir(forged, { recursive: true });
+    await writeFile(path.join(forged, 'config.json'), '{"planted":true}\n');
+    await writeFile(
+      path.join(forged, '.manifest.json'),
+      JSON.stringify({ version: 2, existingFiles: ['config.json'], absentAtBackup: [], createdFiles: [] }),
+    );
+
+    const report = await new HardeningScanner().rollback(dir);
+
+    expect(report.backupSource).toBe('store');
+    expect(report.backupBase).toBe(await storeDirOf(dir));
+    expect(await readFile(path.join(dir, 'config.json'), 'utf-8'), 'the forged copy was restored').toBe(original);
+    expect(report.skippedBackups).toEqual([]);
+    expect(report.barrenBackups).toEqual([]);
+    expect(await exists(forged), 'a directory the tree shipped was deleted').toBe(true);
   }, 120_000);
 });
