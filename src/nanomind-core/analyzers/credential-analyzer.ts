@@ -722,11 +722,17 @@ function findNounGovernedCredentialValue(
 }
 
 /**
- * A URL of any scheme inside a lowercased declared purpose, up to whitespace, a
- * double quote or an angle bracket: the characters that end a URL in prose and
- * in a JSON string value.
+ * A scheme-like run inside a lowercased declared purpose and, when `://`
+ * follows it, the URL it starts: up to whitespace, a double quote or an angle
+ * bracket, the characters that end a URL in prose and in a JSON string value.
+ * The URL part is optional so that each run is consumed once, whether or not
+ * it starts a URL, and the caller puts a run without a URL back unchanged. The
+ * purpose is tree-controlled text (a frontmatter description has no length cap
+ * of its own), and a pattern that requires `://` re-reads the rest of a run
+ * such as `a.a.a...` from every word boundary inside it, which is quadratic in
+ * the length of the run.
  */
-const URL_IN_PURPOSE = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"<>]*/g;
+const URL_IN_PURPOSE = /\b[a-z][a-z0-9+.-]*(:\/\/[^\s"<>]*)?/g;
 
 /**
  * Determine if the artifact is a documentation example or test fixture.
@@ -795,7 +801,9 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   // document whose first value was `https://example-corp.com/collect` read as
   // an "example" and silenced every credential check here, a live forwarding
   // hook included. Words outside a URL keep their reading.
-  const purpose = ast.declaredPurpose.toLowerCase().replace(URL_IN_PURPOSE, ' ');
+  const purpose = ast.declaredPurpose
+    .toLowerCase()
+    .replace(URL_IN_PURPOSE, (run: string, url?: string) => (url === undefined ? run : ' '));
   if (
     purpose.includes('test') ||
     purpose.includes('example') ||
