@@ -17,6 +17,11 @@
  *
  *   store root: $HMA_BACKUP_HOME, else $OPENA2A_HOME/backups, else ~/.opena2a/backups
  *
+ * The store root has to be an absolute path. A relative one names a different
+ * directory from each working directory, so `--fix` run from one place would
+ * write backups that `rollback` run from another could not find. It is
+ * refused wherever it comes from, and the refusal names the variable.
+ *
  * keyed by the target directory's filesystem identity, never by its path. A
  * path is a string the scanned tree can spell (#317), and it changes when the
  * user moves or renames the project, which would leave `rollback` unable to
@@ -51,11 +56,39 @@ const TARGET_RECORD = 'target.json';
 /** No record HackMyAgent writes comes near this; a larger one is not ours. */
 const MAX_RECORD_BYTES = 64 * 1024;
 
-export type ArchiveStoreErrorCode = 'HMA-BACKUP-SYMLINK' | 'HMA-BACKUP-NOT-DIR' | 'HMA-BACKUP-INSIDE-TREE';
+export type ArchiveStoreErrorCode =
+  | 'HMA-BACKUP-SYMLINK'
+  | 'HMA-BACKUP-NOT-DIR'
+  | 'HMA-BACKUP-INSIDE-TREE'
+  | 'HMA-BACKUP-RELATIVE-ROOT';
 
-/** `$HMA_BACKUP_HOME`, else `<user store>/backups`. Not created. */
+/** The environment variable the store root is read from. `HOME` stands for the home directory when neither override is set. */
+export type BackupStoreRootVariable = 'HMA_BACKUP_HOME' | 'OPENA2A_HOME' | 'HOME';
+
+/** Which variable decides the store root in this environment. An empty value counts as unset. */
+export function backupStoreRootVariable(): BackupStoreRootVariable {
+  if (process.env.HMA_BACKUP_HOME) return 'HMA_BACKUP_HOME';
+  if (process.env.OPENA2A_HOME) return 'OPENA2A_HOME';
+  return 'HOME';
+}
+
+/** Why a store root that is not absolute is refused, naming the variable it came from. */
+function relativeRootReason(variable: BackupStoreRootVariable): string {
+  return `${variable} is not an absolute path, and the backup store is derived from it. A relative path names a `
+    + 'different directory from each working directory, so backups written from one could not be found from another';
+}
+
+/**
+ * `$HMA_BACKUP_HOME`, else `<user store>/backups`. Not created. Throws
+ * `HMA-BACKUP-RELATIVE-ROOT` when the result is not an absolute path: nothing
+ * is resolved against the working directory, so nothing is created under it.
+ */
 export function backupStoreRoot(): string {
-  return process.env.HMA_BACKUP_HOME || path.join(userStoreRoot(), 'backups');
+  const root = process.env.HMA_BACKUP_HOME || path.join(userStoreRoot(), 'backups');
+  if (!path.isAbsolute(root)) {
+    throw storeError('HMA-BACKUP-RELATIVE-ROOT', root, `${relativeRootReason(backupStoreRootVariable())}.`);
+  }
+  return root;
 }
 
 interface TargetIdentity {
@@ -258,8 +291,10 @@ export async function findArchiveStore(targetDir: string): Promise<ArchiveStoreL
   let dir: string;
   try {
     dir = storeDirFor(id);
-  } catch {
-    return { kind: 'unknown', reason: 'the backup store location could not be resolved' };
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'HMA-BACKUP-RELATIVE-ROOT'
+      ? { kind: 'unknown', reason: relativeRootReason(backupStoreRootVariable()) }
+      : { kind: 'unknown', reason: 'the backup store location could not be resolved' };
   }
   try {
     const st = await fs.lstat(dir);
