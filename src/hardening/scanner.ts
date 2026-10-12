@@ -61,7 +61,7 @@ const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay, escapePathForDisplay } from '../ui/display-safe';
 import {
   prepareArchiveStore, findArchiveStore, listArchiveRuns, backupStoreRootVariable, backupStoreRootSource,
-  searchedBackupStoreRoot,
+  searchedBackupStoreRoot, ownedByCurrentUser,
 } from '../store/archive-store';
 import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import { scanGitHistory, shortCommit, type HistoryCredentialHit, type HistoryScanPlan } from './git-history-scan';
@@ -1670,7 +1670,9 @@ function identityOrUndefined(probe: IdentityProbe): FsIdentity | undefined {
  *
  * The refusals about the store directory itself (`HMA-BACKUP-SYMLINK`,
  * `HMA-BACKUP-NOT-DIR`, `HMA-BACKUP-INSIDE-TREE`, `HMA-BACKUP-RELATIVE-ROOT`) are raised by
- * `src/store/archive-store.ts` with the same `code` field (#376).
+ * `src/store/archive-store.ts` with the same `code` field (#376), and so are the
+ * refusals of a store another user account owns or could replace
+ * (`HMA-BACKUP-NOT-OWNED`, `HMA-BACKUP-SHARED-ROOT`, #1051).
  */
 type BackupSetupCode = 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED' | 'HMA-BACKUP-UNIDENTIFIED';
 
@@ -5589,6 +5591,10 @@ export class HardeningScanner {
       // from the tree, but it is still quoted wherever it is cited.
       const storePath = backupFailure.path ?? 'the backup store directory';
       const quotedStore = backupFailure.path ? shellQuote(backupFailure.path) : storePath;
+      // The same path as the operand of a command the reader is invited to
+      // paste. Null when the store reported no path, or when the path cannot be
+      // shown truthfully in a command; the command is then left out.
+      const citedStore = backupFailure.path ? citationPath(backupFailure.path) : null;
       const rerun = `${this.cliName} secure ${shellQuote(targetDir)} --fix`;
       // #1043 — said wherever the remedy is to set a store variable: a backup
       // taken under one value is not found by a `rollback` run under another.
@@ -5629,6 +5635,28 @@ export class HardeningScanner {
             + `$OPENA2A_HOME/backups, else ~/.opena2a/backups). ${backupStoreRootVariable()} is a relative path, which resolves `
             + 'to a different directory from each working directory, so the run detected only. Nothing '
             + `was written and nothing was changed. ${rollbackReadsTheSame}`,
+        },
+        // #1051 — the store's key is three numbers any account can read with
+        // `stat`, so a store another account created first is refused, and so
+        // is a root where another account could put one in place of this one's.
+        'HMA-BACKUP-NOT-OWNED': {
+          fix: `Set HMA_BACKUP_HOME to a directory only your account can write, then re-run: ${rerun}`,
+          guidance:
+            `${storePath}, or the target.json in it, belongs to another user account`
+            + `${citedStore ? `; \`ls -ln ${citedStore}\` shows the owners` : ''}. `
+            + 'A backup store is named after numbers any account can read, so another '
+            + 'account that can write the store root can create a project\'s store before you do and fill it '
+            + 'with copies of its choosing, which `rollback` would restore into the project. A store this '
+            + 'account did not create is neither written to nor restored from. Nothing was written and '
+            + 'nothing was changed.',
+        },
+        'HMA-BACKUP-SHARED-ROOT': {
+          fix: `${citedStore ? `Run chmod go-w ${citedStore}, or set` : 'Set'} HMA_BACKUP_HOME to a directory only your account can write, then re-run: ${rerun}`,
+          guidance:
+            `${storePath} can be written by other user accounts and does not have the sticky bit, so any of `
+            + 'them could rename a project\'s backup store and put one of their own in its place, which '
+            + '`rollback` would then restore from. A shared directory with the sticky bit set (`chmod +t`), '
+            + 'as /tmp has, is accepted. Nothing was written and nothing was changed.',
         },
         'HMA-BACKUP-NO-NEW-DIR': {
           fix: `Re-run: ${rerun}`,
@@ -13603,6 +13631,9 @@ dist/
         const st = await fs.lstat(candidateDir);
         if (st.isSymbolicLink()) dirRefusal = 'it is a symbolic link, and rollback does not read through one';
         else if (!st.isDirectory()) dirRefusal = 'it is not a directory';
+        // #1051 — a run this account did not create holds whatever files and
+        // modes the account that did chose to list.
+        else if (!ownedByCurrentUser(st)) dirRefusal = 'it belongs to another user account, and rollback restores only from a backup this account took';
         else {
           candidateReal = await fs.realpath(candidateDir);
           if (!this.isPathWithinDirectory(candidateReal, backupBaseDir)) {

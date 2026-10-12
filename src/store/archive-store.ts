@@ -62,6 +62,19 @@
  * `$HMA_BACKUP_HOME` is the user's: it keeps the mode it has, and only what
  * HackMyAgent creates inside it is made private.
  *
+ * What another user account created is never used (#1051). The key is three
+ * numbers any account can read with `stat`, so under a store root other
+ * accounts can write, one of them could create this target's store first, with
+ * no `target.json` and a run whose manifest lists files and modes, and
+ * `rollback` would restore them into the target. A store directory or a
+ * `target.json` this account does not own is refused by `--fix` and by
+ * `rollback` alike, and `rollback` passes over a run directory it does not own.
+ * A store root that is group- or world-writable without the sticky bit is
+ * refused too: there any account can rename or remove this account's store and
+ * put its own in its place. A shared root with the sticky bit, such as
+ * `/tmp`, is accepted, because only the owner of an entry can rename or remove
+ * it there.
+ *
  * Nothing here is reached by a scan: the store is outside the scanned tree, and
  * a store that would sit inside it (`secure --fix ~`) is refused, so that run
  * detects only.
@@ -82,7 +95,9 @@ export type ArchiveStoreErrorCode =
   | 'HMA-BACKUP-SYMLINK'
   | 'HMA-BACKUP-NOT-DIR'
   | 'HMA-BACKUP-INSIDE-TREE'
-  | 'HMA-BACKUP-RELATIVE-ROOT';
+  | 'HMA-BACKUP-RELATIVE-ROOT'
+  | 'HMA-BACKUP-NOT-OWNED'
+  | 'HMA-BACKUP-SHARED-ROOT';
 
 /** The environment variable the store root is read from. `HOME` stands for the home directory when neither override is set. */
 export type BackupStoreRootVariable = 'HMA_BACKUP_HOME' | 'OPENA2A_HOME' | 'HOME';
@@ -197,6 +212,34 @@ function storeError(code: ArchiveStoreErrorCode, dir: string, message: string): 
   return err;
 }
 
+/**
+ * Whether `st` belongs to the account running HackMyAgent (#1051). A platform
+ * with no user ids (Windows) has nothing to compare, and there it is true.
+ */
+export function ownedByCurrentUser(st: { uid: number | bigint }): boolean {
+  const uid = process.getuid?.();
+  return uid === undefined || BigInt(st.uid) === BigInt(uid);
+}
+
+/**
+ * A directory other accounts can write and whose entries they can rename or
+ * remove: group- or world-writable, with no sticky bit. Windows reports no
+ * such mode bits, so nothing is judged there.
+ */
+function openToOtherUsers(st: { mode: number }): boolean {
+  return process.platform !== 'win32' && (st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0;
+}
+
+/** Why a store root other accounts can write is refused. */
+function sharedRootReason(root: string): string {
+  return `the backup store root ${root} can be written by other user accounts and does not have the sticky bit, `
+    + 'so any of them could replace a store in it with one of their own';
+}
+
+/** Why a store directory this account does not own is refused. */
+const NOT_OWNED_REASON = 'it belongs to another user account, and a store that another account created could hold '
+  + 'whatever files that account chose';
+
 /** Bigint stat: an inode number can exceed 2^53 on some filesystems, and a rounded one names another directory. */
 async function targetIdentity(targetReal: string): Promise<TargetIdentity> {
   const st = await fs.stat(targetReal, { bigint: true });
@@ -227,7 +270,8 @@ function isWithin(child: string, parent: string): boolean {
   return rel === '' || (!rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel));
 }
 
-type RecordRead = { kind: 'absent' } | { kind: 'invalid' } | { kind: 'record'; record: TargetRecord };
+/** `foreign`: the record belongs to another user account, so it says nothing about whose store this is (#1051). */
+type RecordRead = { kind: 'absent' } | { kind: 'invalid' } | { kind: 'foreign' } | { kind: 'record'; record: TargetRecord };
 
 /** Only ENOENT is absence. Any other errno throws: an unreadable record proves nothing about whose store this is. */
 async function readRecord(dir: string): Promise<RecordRead> {
@@ -239,6 +283,7 @@ async function readRecord(dir: string): Promise<RecordRead> {
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { kind: 'absent' };
     throw err;
   }
+  if (!ownedByCurrentUser(st)) return { kind: 'foreign' };
   if (!st.isFile() || st.size > MAX_RECORD_BYTES) return { kind: 'invalid' };
   let parsed: unknown;
   try {
@@ -272,16 +317,8 @@ async function writeRecord(dir: string, record: TargetRecord): Promise<void> {
   await fs.rename(tmp, path.join(dir, TARGET_RECORD));
 }
 
-/**
- * Create `dir` 0700 if absent, and prove it is a real directory either way.
- * The mode is re-applied to an existing one; a directory this user cannot
- * chmod keeps its mode, which is not a reason to refuse a backup.
- *
- * `keepExistingMode` is for the one directory the user can name, the store
- * root under `HMA_BACKUP_HOME`: when it already exists its mode is theirs and
- * is left as found. It is still created 0700 when it is absent.
- */
-async function ensurePrivateDir(dir: string, opts: { keepExistingMode?: boolean } = {}): Promise<void> {
+/** Create `dir` 0700 if absent, and prove it is a real directory either way. Returns whether it was already there. */
+async function ensureDir(dir: string): Promise<boolean> {
   let existed = false;
   try {
     await fs.mkdir(dir, { mode: 0o700 });
@@ -296,8 +333,48 @@ async function ensurePrivateDir(dir: string, opts: { keepExistingMode?: boolean 
   if (!st.isDirectory()) {
     throw storeError('HMA-BACKUP-NOT-DIR', dir, `${dir} exists and is not a directory, so backups cannot be stored there.`);
   }
-  if (existed && opts.keepExistingMode) return;
-  try { await fs.chmod(dir, 0o700); } catch { /* not ours to change, or a filesystem without mode bits */ }
+  return existed;
+}
+
+/**
+ * A target's store directory, created 0700 if absent and made 0700 if not.
+ * One that another user account owns is refused before anything is read from
+ * it or written to it (#1051): its mode is not this account's to change, and
+ * what it holds is whatever that account put there.
+ */
+async function ensurePrivateDir(dir: string): Promise<void> {
+  await ensureDir(dir);
+  if (!ownedByCurrentUser(await fs.lstat(dir))) {
+    throw storeError('HMA-BACKUP-NOT-OWNED', dir, `The backup store ${dir} belongs to another user account. A store that `
+      + 'another account created could hold whatever files that account chose, so backups are neither written to it '
+      + 'nor restored from it.');
+  }
+  try { await fs.chmod(dir, 0o700); } catch { /* a filesystem without mode bits */ }
+}
+
+/**
+ * The store root, created 0700 if absent. `keepExistingMode` is for the one
+ * directory the user can name, the store root under `HMA_BACKUP_HOME`: when it
+ * already exists its mode is theirs and is left as found. Any other existing
+ * root is made 0700; a root this account cannot chmod keeps its mode.
+ *
+ * Either way, a root that other accounts can write without the sticky bit is
+ * refused (#1051): any of them could rename this target's store and put one of
+ * their own under its key. Another account may own the root, as root owns
+ * `/tmp`; with the sticky bit set, only the owner of an entry can replace it.
+ */
+async function ensureStoreRoot(root: string, opts: { keepExistingMode: boolean }): Promise<void> {
+  const existed = await ensureDir(root);
+  if (!(existed && opts.keepExistingMode)) {
+    try { await fs.chmod(root, 0o700); } catch { /* not ours to change: the mode check below decides */ }
+  }
+  if (openToOtherUsers(await fs.lstat(root))) {
+    throw storeError('HMA-BACKUP-SHARED-ROOT', root, `${capitalize(sharedRootReason(root))}.`);
+  }
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /**
@@ -326,7 +403,9 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
   // Ancestors keep their default mode; only the store root and below are
   // private. A root the user named with HMA_BACKUP_HOME and that already
   // exists keeps its mode: a shared or group-readable directory they chose is
-  // not ours to close. `<user store>/backups` is ours, and stays 0700.
+  // not ours to close, and one other accounts can write without the sticky
+  // bit is refused rather than closed (#1051). `<user store>/backups` is ours,
+  // and stays 0700.
   //
   // The one exception is `~/.opena2a` when neither override is set: the
   // OpenA2A user config creates it 0700, and a `--fix` that runs first used to
@@ -336,10 +415,17 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
   const root = path.dirname(dir);
   const variable = backupStoreRootVariable();
   await fs.mkdir(path.dirname(root), variable === 'HOME' ? { recursive: true, mode: 0o700 } : { recursive: true });
-  await ensurePrivateDir(root, { keepExistingMode: variable === 'HMA_BACKUP_HOME' });
+  await ensureStoreRoot(root, { keepExistingMode: variable === 'HMA_BACKUP_HOME' });
   await ensurePrivateDir(dir);
 
   let found = await readRecord(dir);
+  if (found.kind === 'foreign') {
+    // Not moved aside like a record HackMyAgent did not write: the store
+    // directory is this account's, so another account wrote into it, and what
+    // else it put there is not known. The user decides what to keep.
+    throw storeError('HMA-BACKUP-NOT-OWNED', dir, `${path.join(dir, TARGET_RECORD)} belongs to another user account, `
+      + `so the backup store ${dir} is neither written to nor restored from.`);
+  }
   if (found.kind === 'invalid' || (found.kind === 'record' && !sameBirth(found.record.birthtimeNs, id.birthtimeNs))) {
     const aside = `${dir}.replaced-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     await fs.rename(dir, aside);
@@ -400,16 +486,26 @@ export async function findArchiveStore(targetDir: string): Promise<ArchiveStoreL
     if (st.isSymbolicLink() || !st.isDirectory()) {
       return { kind: 'unknown', dir, reason: 'it is not a directory HackMyAgent created' };
     }
+    if (!ownedByCurrentUser(st)) return { kind: 'unknown', dir, reason: NOT_OWNED_REASON };
   } catch (err) {
     return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
       ? { kind: 'none' }
       : { kind: 'unknown', dir, reason: 'the filesystem would not say what it is' };
+  }
+  const root = path.dirname(dir);
+  try {
+    if (openToOtherUsers(await fs.lstat(root))) return { kind: 'unknown', dir, reason: sharedRootReason(root) };
+  } catch {
+    return { kind: 'unknown', dir, reason: 'the filesystem would not say what its store root is' };
   }
   let found: RecordRead;
   try {
     found = await readRecord(dir);
   } catch {
     return { kind: 'unknown', dir, reason: `its ${TARGET_RECORD} could not be read` };
+  }
+  if (found.kind === 'foreign') {
+    return { kind: 'unknown', dir, reason: `its ${TARGET_RECORD} belongs to another user account` };
   }
   if (found.kind === 'invalid') {
     return { kind: 'unknown', dir, reason: `its ${TARGET_RECORD} is not a record HackMyAgent wrote` };
