@@ -12924,8 +12924,10 @@ dist/
     // real stamp (#338). Merging the two lists would hand that forged directory
     // the first try at writing into the tree.
     //
-    // A store recorded for a directory created at another time is a reused
-    // identity, not this directory's backups: refused, named, and left alone.
+    // A store whose record names a directory created at another time is not
+    // this directory's backups: refused, named, and left alone. A directory
+    // that took a removed directory's inode number does not reach it: the key
+    // carries the birth time, so that directory has a store of its own.
     // Deleting the store makes this throw "No backup found" or fall back to an
     // archive an earlier version wrote inside the tree, which the report names.
     // It never makes rollback report success with nothing restored.
@@ -12934,9 +12936,8 @@ dist/
       throw new Error(
         `The backup store ${store.dir} has this directory's filesystem identity but was recorded for a `
         + 'directory created at another time'
-        + `${store.lastKnownPath ? ` (last seen at ${store.lastKnownPath})` : ''}. The filesystem has reused `
-        + 'that directory\'s identity, so rollback will not restore its files here. If those backups are yours, '
-        + 'copy the files back by hand from the run directories inside it.',
+        + `${store.lastKnownPath ? ` (last seen at ${store.lastKnownPath})` : ''}, so rollback will not restore `
+        + 'its files here. If those backups are yours, copy the files back by hand from the run directories inside it.',
       );
     }
     if (store.kind === 'unknown') {

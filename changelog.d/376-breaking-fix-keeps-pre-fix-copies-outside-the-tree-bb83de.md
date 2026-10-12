@@ -15,7 +15,9 @@ breaking: true
   has its own directory in the store, found by the directory's identity on the
   filesystem and not by its path. `rollback` therefore finds the backups of a
   directory that was moved or renamed, or that is reached through a symbolic
-  link, and two directories with the same name do not share one. The store's
+  link, and two directories with the same name do not share one. A directory
+  created after another one was deleted does not get the deleted directory's
+  backups, even when the filesystem gives it the same inode number. The store's
   directories are created with mode 0700 and the copies with mode 0600. A
   directory that already exists at `$HMA_BACKUP_HOME` keeps the mode it has.
 - `--fix` applies no fix when it cannot take a backup, and reports
