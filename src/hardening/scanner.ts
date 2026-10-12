@@ -58,8 +58,11 @@ import { lineOfJsonValue } from '../scanner/json-locate';
 
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
-import { escapeForDisplay } from '../ui/display-safe';
-import { prepareArchiveStore, findArchiveStore, listArchiveRuns, backupStoreRootVariable } from '../store/archive-store';
+import { escapeForDisplay, escapePathForDisplay } from '../ui/display-safe';
+import {
+  prepareArchiveStore, findArchiveStore, listArchiveRuns, backupStoreRootVariable, backupStoreRootSource,
+  searchedBackupStoreRoot,
+} from '../store/archive-store';
 import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import { scanGitHistory, shortCommit, type HistoryCredentialHit, type HistoryScanPlan } from './git-history-scan';
 import { verifySigncryptSignature, describeUnsigned } from '../plugins/signcrypt-block';
@@ -986,6 +989,31 @@ export interface RollbackReport {
    * printed nothing — a backup left on disk with no line saying so.
    */
   backupRemovalFailed?: { path: string; reason: string };
+}
+
+/** How `rollback` cites the command in the next steps of an error it throws (#1043). */
+export interface RollbackOptions {
+  /** The command prefix, as `scan` takes it. Default `hackmyagent`. */
+  cliName?: string;
+  /** The directory as the user typed it. Default: the directory `rollback` was given. */
+  typedDir?: string;
+}
+
+/**
+ * `rollback` restored nothing, and `message` is the block that says why
+ * (#1043): what happened, then that nothing was restored, then the next steps,
+ * one per line and indented two spaces.
+ *
+ * Every path is display-escaped before it goes into a line, so the message
+ * splits into lines only at the block's own line breaks, and a caller prints it
+ * line by line. A raw path never goes in: a directory name can hold a newline
+ * followed by text that reads as a next step of ours.
+ */
+export class RollbackNothingRestoredError extends Error {
+  constructor(lines: readonly string[]) {
+    super(lines.join('\n'));
+    this.name = 'RollbackNothingRestoredError';
+  }
 }
 
 // `ResolveRefusal` / `ResolveOutcome` / `resolveInsideTree` moved to
@@ -5529,6 +5557,10 @@ export class HardeningScanner {
       const storePath = backupFailure.path ?? 'the backup store directory';
       const quotedStore = backupFailure.path ? shellQuote(backupFailure.path) : storePath;
       const rerun = `${this.cliName} secure ${shellQuote(targetDir)} --fix`;
+      // #1043 — said wherever the remedy is to set a store variable: a backup
+      // taken under one value is not found by a `rollback` run under another.
+      const rollbackReadsTheSame = '`hackmyagent rollback` reads HMA_BACKUP_HOME and OPENA2A_HOME the same way, so run '
+        + 'it with the value this run had, or it reports no backup.';
       const CAUSES: Record<string, { fix: string; guidance: string }> = {
         'HMA-BACKUP-SYMLINK': {
           fix: `Remove ${quotedStore}, then re-run: ${rerun}`,
@@ -5550,7 +5582,7 @@ export class HardeningScanner {
           guidance:
             'Backups are kept outside the directory being fixed, so that no later scan reports the '
             + `copies. The backup store (${storePath}) is inside the directory you asked to fix, so `
-            + 'the run detected only. Nothing was written and nothing was changed.',
+            + `the run detected only. Nothing was written and nothing was changed. ${rollbackReadsTheSame}`,
         },
         'HMA-BACKUP-RELATIVE-ROOT': {
           // The variable that set the root, not always HMA_BACKUP_HOME: a
@@ -5561,10 +5593,9 @@ export class HardeningScanner {
             : `Set ${backupStoreRootVariable()} to an absolute path, or set HMA_BACKUP_HOME to an absolute path outside the directory you are fixing, then re-run: ${rerun}`,
           guidance:
             'Backups are kept in a per-user store outside the scanned tree (HMA_BACKUP_HOME, else '
-            + '$OPENA2A_HOME/backups, else ~/.opena2a/backups), and `rollback` finds them again by '
-            + `resolving the same location. ${backupStoreRootVariable()} is a relative path, which resolves `
+            + `$OPENA2A_HOME/backups, else ~/.opena2a/backups). ${backupStoreRootVariable()} is a relative path, which resolves `
             + 'to a different directory from each working directory, so the run detected only. Nothing '
-            + 'was written and nothing was changed.',
+            + `was written and nothing was changed. ${rollbackReadsTheSame}`,
         },
         'HMA-BACKUP-NO-NEW-DIR': {
           fix: `Re-run: ${rerun}`,
@@ -5593,7 +5624,7 @@ export class HardeningScanner {
         guidance: cause?.guidance
           ?? 'Applying fixes without a backup would leave nothing to roll back to, so the run detects only. Every finding below reflects the tree as it is on disk. '
           + 'Backups are kept in a per-user store outside the scanned tree (HMA_BACKUP_HOME, else $OPENA2A_HOME/backups, else ~/.opena2a/backups); '
-          + 'this usually means a read-only or container home directory.',
+          + `this usually means a read-only or container home directory. ${rollbackReadsTheSame}`,
       });
     }
 
@@ -13137,7 +13168,9 @@ dist/
    * since edited is kept, not silently discarded (#262). The caller is
    * expected to report the kept files rather than claim a clean revert.
    */
-  async rollback(targetDir: string): Promise<RollbackReport> {
+  async rollback(targetDir: string, opts: RollbackOptions = {}): Promise<RollbackReport> {
+    const cliName = escapeForDisplay(opts.cliName ?? 'hackmyagent');
+
     // Resolved once, and every containment decision below is made against this
     // rather than against the caller's spelling. On macOS `os.tmpdir()` alone
     // makes the two differ (`/var` -> `/private/var`), so a resolved-vs-lexical
@@ -13146,8 +13179,37 @@ dist/
     try {
       targetReal = await fs.realpath(targetDir);
     } catch {
-      throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
+      // #1043 — no search ran, so this says neither "No backup found" nor
+      // which root or variable a search would have used. It used to send the
+      // user to `secure --fix`, which cannot create a directory that is gone.
+      throw new RollbackNothingRestoredError([
+        `${escapePathForDisplay(targetDir)} does not exist or cannot be accessed, so rollback has nothing to restore into.`,
+        'Nothing was restored. The backups of a directory that was deleted stay in its backup store.',
+        `  If the path is wrong, run: ${cliName} rollback <dir>`,
+      ]);
     }
+
+    // #1043 — the directory exists and neither the store nor the tree holds a
+    // backup for it. The error names the root that was searched and what chose
+    // it, because the commonest cause is a `--fix` run under another
+    // HMA_BACKUP_HOME or OPENA2A_HOME: its backup is intact in a root this run
+    // never looked at. The old advice, to run `secure --fix` first, took a
+    // backup of the already-fixed tree, and the next rollback then reported
+    // success without the pre-fix content.
+    //
+    // The root is prose on the first line and in no command. The one command
+    // names the directory, quoted as every citation of a target is, and holds
+    // no value read from the environment.
+    const noBackupFound = (): RollbackNothingRestoredError => new RollbackNothingRestoredError([
+      'No backup found for this directory. None of the backup stores in '
+      + `${escapePathForDisplay(searchedBackupStoreRoot())} (${backupStoreRootSource()}) is for it, and it holds no `
+      + `${BACKUP_DIR_NAME}/ directory with a backup.`,
+      'Nothing was restored.',
+      '  If --fix ran with a different HMA_BACKUP_HOME or OPENA2A_HOME, set them as that run did, then run: '
+      + `${cliName} rollback ${citationTarget(opts.typedDir ?? targetDir)}`,
+      '  If every --fix backup of this directory has already been rolled back, or --fix never ran on it, there is '
+      + 'nothing to roll back.',
+    ]);
 
     // #376 — the backups `--fix` writes now are in the per-user store, keyed by
     // this directory's identity, so a moved, renamed or symlinked target finds
@@ -13225,7 +13287,7 @@ dist/
           throw new Error('backup directory resolves outside the tree');
         }
       } catch {
-        throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
+        throw noBackupFound();
       }
       backupSource = 'in-tree';
     }
@@ -13240,7 +13302,7 @@ dist/
     const sortedBackups = (await listArchiveRuns(backupBaseDir)).sort().reverse();
 
     if (sortedBackups.length === 0) {
-      throw new Error('No backup found. Run hackmyagent secure --fix <dir> first to create a backup.');
+      throw noBackupFound();
     }
 
     // Select a backup that can actually be USED, trying the next candidate when

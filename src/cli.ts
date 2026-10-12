@@ -486,6 +486,7 @@ import { UsageError, usageError, isRefusal, networkTimeoutError } from './checke
 import { RootRefusalError } from './mcp/roots';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { describeArchiveStore } from './store/archive-store';
+import { RollbackNothingRestoredError } from './hardening/scanner';
 import {
   preflight,
   probeReachability,
@@ -5389,7 +5390,19 @@ Change scope (--range, --staged):
   from the working tree, and scanned with the same options. A finding is
   reported only when the base has no finding with the same check, file and
   cited line content; a file the change deletes reports nothing. The score,
-  the exit code and every --format cover the introduced findings only.`)
+  the exit code and every --format cover the introduced findings only.
+
+Backups (--fix):
+  Before it changes anything, --fix copies every file a fix may change, .env
+  included and whether or not a fix then changes it, into a per-user backup
+  store outside the project: $HMA_BACKUP_HOME if set, else
+  $OPENA2A_HOME/backups, else ~/.opena2a/backups. The copies can hold a
+  credential that is still in use. They stay until you delete them or rollback
+  restores from them, and every text report of the project prints the command
+  that deletes them.
+  ${CLI_PREFIX} rollback restores the most recent backup. It reads
+  HMA_BACKUP_HOME and OPENA2A_HOME the same way, so run it with the values the
+  --fix run had, or it finds no backup.`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
   .option('--fix', 'Automatically fix issues where possible')
   .option('--dry-run', 'Preview fixes without applying them (use with --fix)')
@@ -8304,7 +8317,7 @@ Examples:
       console.log(`\nRolling back changes in ${escapePathForDisplay(targetDir)}...\n`);
 
       const scanner = new HardeningScanner();
-      const report = await scanner.rollback(targetDir);
+      const report = await scanner.rollback(targetDir, { cliName: CLI_PREFIX, typedDir: directory });
 
       // Report what happened rather than asserting a clean revert (#262).
       // The old copy said "All auto-fix changes have been reverted" even
@@ -8545,6 +8558,13 @@ Examples:
           // land in the crash bucket and skew the error rate it exists to measure.
           process.exit(1); // exit-unsettled(#350/S062): pre-work refusal — the event awaits the schema reason field (#525)
         }
+      } else if (error instanceof RollbackNothingRestoredError) {
+        // #1043 — a block, printed line by line as the usage branch above
+        // prints its own: what happened, that nothing was restored, then the
+        // next steps. Every path in it was escaped where the line was built,
+        // so it has exactly the lines the scanner wrote.
+        error.message.split('\n').forEach((line, i) =>
+          console.error(i === 0 ? `Error: ${escapeForDisplay(line)}` : escapeForDisplay(line)));
       } else {
         console.error(`Error: ${escapeForDisplay(error instanceof Error ? error.message : 'Unknown error')}`);
       }
