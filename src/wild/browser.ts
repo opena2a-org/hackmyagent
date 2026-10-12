@@ -7,6 +7,8 @@
  */
 
 import type { InjectionSurface } from './types';
+import { hiddenRuns } from './unicode-stego';
+import { escapeForDisplay } from '../ui/display-safe';
 import {
   elementMatches,
   htmlComments,
@@ -205,6 +207,24 @@ export function extractContent(page: FetchedPage): ExtractedContent {
         type: 'image-alt',
         content: img.value.slice(0, 200),
         stealthScore: 6,
+      });
+    }
+  }
+
+  // 8. Text hidden in code points that render as nothing (#988), read from the
+  // raw HTML so attributes and comments are covered. A run is a surface only
+  // when its decoded text reads as a payload: the code points themselves occur
+  // in ordinary Persian, Hebrew and Hindi text and in emoji sequences. Tag
+  // characters do not render and survive into a model's context, so the
+  // stealth score matches the highest above. The decoded text is page data
+  // and may hold control bytes, so it is cut to 200 code points and escaped.
+  for (const run of hiddenRuns(html)) {
+    const payload = run.decodings.find((text) => looksLikePayload(text));
+    if (payload !== undefined) {
+      surfaces.push({
+        type: 'unicode-stego',
+        content: escapeForDisplay(Array.from(payload).slice(0, 200).join('')),
+        stealthScore: 8,
       });
     }
   }
