@@ -38,7 +38,9 @@
  * The store root is created 0700, each target's store 0700, and `target.json`
  * 0600; the scanner creates each run directory 0700 and each copy 0600. The
  * copies are plaintext, and the files they were taken from could hold a
- * credential the run then redacted.
+ * credential the run then redacted. A directory that already exists at
+ * `$HMA_BACKUP_HOME` is the user's: it keeps the mode it has, and only what
+ * HackMyAgent creates inside it is made private.
  *
  * Nothing here is reached by a scan: the store is outside the scanned tree, and
  * a store that would sit inside it (`secure --fix ~`) is refused, so that run
@@ -206,12 +208,18 @@ async function writeRecord(dir: string, record: TargetRecord): Promise<void> {
  * Create `dir` 0700 if absent, and prove it is a real directory either way.
  * The mode is re-applied to an existing one; a directory this user cannot
  * chmod keeps its mode, which is not a reason to refuse a backup.
+ *
+ * `keepExistingMode` is for the one directory the user can name, the store
+ * root under `HMA_BACKUP_HOME`: when it already exists its mode is theirs and
+ * is left as found. It is still created 0700 when it is absent.
  */
-async function ensurePrivateDir(dir: string): Promise<void> {
+async function ensurePrivateDir(dir: string, opts: { keepExistingMode?: boolean } = {}): Promise<void> {
+  let existed = false;
   try {
     await fs.mkdir(dir, { mode: 0o700 });
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+    existed = true;
   }
   const st = await fs.lstat(dir);
   if (st.isSymbolicLink()) {
@@ -220,6 +228,7 @@ async function ensurePrivateDir(dir: string): Promise<void> {
   if (!st.isDirectory()) {
     throw storeError('HMA-BACKUP-NOT-DIR', dir, `${dir} exists and is not a directory, so backups cannot be stored there.`);
   }
+  if (existed && opts.keepExistingMode) return;
   try { await fs.chmod(dir, 0o700); } catch { /* not ours to change, or a filesystem without mode bits */ }
 }
 
@@ -245,10 +254,13 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
     );
   }
 
-  // Ancestors keep their default mode; only the store root and below are private.
+  // Ancestors keep their default mode; only the store root and below are
+  // private. A root the user named with HMA_BACKUP_HOME and that already
+  // exists keeps its mode: a shared or group-readable directory they chose is
+  // not ours to close. `<user store>/backups` is ours, and stays 0700.
   const root = path.dirname(dir);
   await fs.mkdir(path.dirname(root), { recursive: true });
-  await ensurePrivateDir(root);
+  await ensurePrivateDir(root, { keepExistingMode: backupStoreRootVariable() === 'HMA_BACKUP_HOME' });
   await ensurePrivateDir(dir);
 
   let found = await readRecord(dir);

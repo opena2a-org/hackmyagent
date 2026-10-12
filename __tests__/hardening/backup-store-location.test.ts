@@ -12,16 +12,21 @@
  * `A/relstore/...`, and `rollback` in the same environment from directory B
  * exited 1 with "No backup found", while from A it restored 3 files. The
  * backups existed and the command that restores them said they did not.
+ *
+ * The mode of a directory the user named. Measured before this was fixed: an
+ * existing `HMA_BACKUP_HOME` directory was `drwxr-xr-x` before `--fix` and
+ * `drwx------` after it. What HackMyAgent creates inside is private; a
+ * directory the user created keeps the mode they gave it.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { findArchiveStore, prepareArchiveStore } from '../../src/store/archive-store';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
-import { storeDirOf } from '../helpers/backup-store';
+import { latestStoreRun, storeDirOf } from '../helpers/backup-store';
 
 const CLI = path.resolve(__dirname, '..', '..', 'dist', 'cli.js');
 
@@ -39,6 +44,7 @@ function fixableTree(prefix = 'hma-376-loc-'): string {
 const liveConfig = (dir: string): string => readFileSync(path.join(dir, 'config.json'), 'utf-8');
 /** The directory as the store spells it: its real path (macOS's `/var` is a link). */
 const realDir = (dir: string): string => realpathSync.native(dir);
+const mode = (p: string): number => statSync(p).mode & 0o777;
 
 interface Spawned { stdout: string; stderr: string; status: number | null }
 
@@ -164,4 +170,70 @@ describe('#376 the store lookup and the store setup refuse a relative root', () 
 
     expect(path.dirname(await storeDirOf(target))).toBe(path.join(realDir(home), 'backups'));
   });
+});
+
+describe.skipIf(process.platform === 'win32')('#376 the mode of the store and of a directory the user named', () => {
+  let saved: { backup?: string; opena2a?: string };
+
+  beforeEach(() => {
+    saved = { backup: process.env.HMA_BACKUP_HOME, opena2a: process.env.OPENA2A_HOME };
+  });
+
+  afterEach(() => {
+    if (saved.backup === undefined) delete process.env.HMA_BACKUP_HOME; else process.env.HMA_BACKUP_HOME = saved.backup;
+    if (saved.opena2a === undefined) delete process.env.OPENA2A_HOME; else process.env.OPENA2A_HOME = saved.opena2a;
+  });
+
+  const fix = async (target: string): Promise<void> => {
+    await new HardeningScanner().scan({ targetDir: target, autoFix: true });
+    expect(liveConfig(target), 'the fix did not redact the credential; this cell measures nothing').toContain('${GITHUB_TOKEN}');
+  };
+
+  it('leaves an existing HMA_BACKUP_HOME directory with the mode the user gave it', async () => {
+    const target = fixableTree();
+    const named = path.join(tempDir('hma-376-named-'), 'X');
+    mkdirSync(named);
+    chmodSync(named, 0o755);
+    process.env.HMA_BACKUP_HOME = named;
+
+    await fix(target);
+
+    expect(mode(named).toString(8), 'the run changed the mode of a directory the user created').toBe('755');
+    const store = await storeDirOf(target);
+    expect(path.dirname(store)).toBe(realDir(named));
+    expect(mode(store).toString(8)).toBe('700');
+    const run = await latestStoreRun(target);
+    expect(mode(run).toString(8)).toBe('700');
+    expect(mode(path.join(store, 'target.json')).toString(8)).toBe('600');
+    expect(mode(path.join(run, 'config.json')).toString(8)).toBe('600');
+    expect(mode(path.join(run, '.manifest.json')).toString(8)).toBe('600');
+  }, 120_000);
+
+  it('creates an absent HMA_BACKUP_HOME 0700 and leaves the parent it had to create at the default', async () => {
+    const target = fixableTree();
+    const parent = path.join(tempDir('hma-376-named-'), 'Y');
+    const named = path.join(parent, 'Z');
+    process.env.HMA_BACKUP_HOME = named;
+
+    await fix(target);
+
+    expect(mode(named).toString(8)).toBe('700');
+    expect(mode(parent) & 0o700, 'the parent is not usable by its owner').toBe(0o700);
+    expect(mode(await storeDirOf(target)).toString(8)).toBe('700');
+  }, 120_000);
+
+  it('keeps backups/ under the user store 0700 even when it was left open', async () => {
+    const target = fixableTree();
+    const home = tempDir('hma-376-home-');
+    const backups = path.join(home, 'backups');
+    mkdirSync(backups);
+    chmodSync(backups, 0o755);
+    delete process.env.HMA_BACKUP_HOME;
+    process.env.OPENA2A_HOME = home;
+
+    await fix(target);
+
+    expect(mode(backups).toString(8), 'backups/ is HackMyAgent\'s own directory and holds plaintext copies').toBe('700');
+    expect(mode(await storeDirOf(target)).toString(8)).toBe('700');
+  }, 120_000);
 });
