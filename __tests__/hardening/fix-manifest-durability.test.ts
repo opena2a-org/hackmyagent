@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { storeDirOf, storeRuns } from '../helpers/backup-store';
 
 const roots: string[] = [];
 
@@ -46,12 +47,15 @@ function fixableTree(): string {
   return dir;
 }
 
-/** Every `.manifest.json` under the backup dir, newest first. */
-function manifests(dir: string): any[] {
-  const backup = path.join(dir, '.hackmyagent-backup');
-  if (!fs.existsSync(backup)) return [];
-  return fs.readdirSync(backup)
-    .map((d) => path.join(backup, d, '.manifest.json'))
+/**
+ * Every `.manifest.json` the target has in the backup store. #376 — `--fix`
+ * writes its runs there, outside the tree, and no longer under
+ * `<target>/.hackmyagent-backup`.
+ */
+async function manifests(dir: string): Promise<any[]> {
+  const store = await storeDirOf(dir);
+  return (await storeRuns(dir))
+    .map((d) => path.join(store, d, '.manifest.json'))
     .filter((p) => fs.existsSync(p))
     .map((p) => {
       try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
@@ -74,7 +78,7 @@ describe('#499 the rollback manifest survives an interrupt during the semantic p
         passRan = true;
         // Read the manifest from DISK at exactly the moment the semantic pass
         // gets control. This is the state an interrupt here would leave behind.
-        const created = manifests(dir).flatMap((m) => (m.createdFiles ?? []).map((c: any) => c.path));
+        const created = (await manifests(dir)).flatMap((m) => (m.createdFiles ?? []).map((c: any) => c.path));
         seenAtPassTime = created;
         return undefined;
       },
@@ -86,7 +90,7 @@ describe('#499 the rollback manifest survives an interrupt during the semantic p
 
     // The fix must actually have generated something, or the test proves
     // nothing about durability.
-    const finalCreated = manifests(dir).flatMap((m) => (m.createdFiles ?? []).map((c: any) => c.path));
+    const finalCreated = (await manifests(dir)).flatMap((m) => (m.createdFiles ?? []).map((c: any) => c.path));
     expect(finalCreated.length).toBeGreaterThan(0);
 
     // The record the interrupt would leave must already be the complete one.

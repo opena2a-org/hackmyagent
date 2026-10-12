@@ -28,6 +28,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { storeRuns } from '../helpers/backup-store';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -70,17 +71,23 @@ function run(dir: string, extra: string[] = []) {
 }
 
 /** The fixture must have reached the disproved-attempt branch, or nothing below measures anything. */
-function assertTreeWasRewritten(dir: string) {
+/**
+ * #376 — the backup is in the store, outside the tree. `run` spreads
+ * `process.env`, so the spawned CLI writes to the store vitest.setup.ts gave
+ * this file, and the helper reads the same one.
+ */
+async function assertTreeWasRewritten(dir: string) {
   const line7 = readFileSync(path.join(dir, 'skills', 'demo', 'SKILL.md'), 'utf8').split('\n')[6];
   expect(line7, 'fixture no longer reaches the branch: SKILL-004 auto-fix did not rewrite line 7').toBe(POST_FIX_LINE_7);
-  expect(existsSync(path.join(dir, '.hackmyagent-backup')), 'fixture no longer reaches the branch: no backup was created').toBe(true);
+  expect(await storeRuns(dir), 'fixture no longer reaches the branch: no backup was created').toHaveLength(1);
+  expect(existsSync(path.join(dir, '.hackmyagent-backup')), 'the backup was written into the scanned tree').toBe(false);
 }
 
 describe('#274 secure-openclaw --fix on a run whose only attempt was disproved', () => {
-  it('counts the disproved attempt as an issue, not a fix, and still discloses the backup and the rollback command', () => {
+  it('counts the disproved attempt as an issue, not a fix, and still discloses the backup and the rollback command', async () => {
     const dir = fixture();
     const r = run(dir);
-    assertTreeWasRewritten(dir);
+    await assertTreeWasRewritten(dir);
     expect(r.stdout, 'a CLI failure is not a measurement').not.toMatch(/at .*\.js:\d+:\d+/);
 
     const counts = r.stdout.split('\n').find((l) => l.startsWith('Checks: '));
@@ -95,10 +102,10 @@ describe('#274 secure-openclaw --fix on a run whose only attempt was disproved',
     expect(r.status).toBe(1);
   }, 180_000);
 
-  it('--json reports fixed: 0 while the finding itself still carries the attempt', () => {
+  it('--json reports fixed: 0 while the finding itself still carries the attempt', async () => {
     const dir = fixture();
     const r = run(dir, ['--json']);
-    assertTreeWasRewritten(dir);
+    await assertTreeWasRewritten(dir);
     const json = JSON.parse(r.stdout);
     const skill004 = (json.findings as Array<{ checkId: string; fixed?: boolean; fixVerified?: boolean }>)
       .find((f) => f.checkId === 'SKILL-004');

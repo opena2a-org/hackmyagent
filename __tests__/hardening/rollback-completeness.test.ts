@@ -23,11 +23,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { access, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
+import { latestStoreRun, storeDirOf } from '../helpers/backup-store';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
@@ -189,8 +190,16 @@ describe('#327 a rollback reports what it could not restore', () => {
    * `zzz` — which sorts above every stamp — was chosen as "the most recent
    * backup", and every legitimate rollback in that tree failed on it under a
    * message naming a `.manifest.json` that was never opened.
+   *
+   * #376 — the base `--fix` writes to is the target's directory in the backup
+   * store, and the base an earlier version wrote to is `.hackmyagent-backup` in
+   * the tree, which rollback still restores from when the store holds no run.
+   * Both are selected from the same way, so both are measured.
    */
-  it('ignores a non-directory in the backup base and rolls back the real one', async () => {
+  it.each([
+    { base: 'the backup store', legacy: false },
+    { base: 'a backup directory an earlier version left in the tree', legacy: true },
+  ])('ignores a non-directory in $base and rolls back the real one', async ({ legacy }) => {
     await writeFile(
       path.join(dir, 'config.json'),
       `${JSON.stringify({ token: FAKE_GH_TOKEN }, null, 2)}\n`,
@@ -198,8 +207,19 @@ describe('#327 a rollback reports what it could not restore', () => {
 
     const scanner = new HardeningScanner();
     await scanner.scan({ targetDir: dir, autoFix: true });
+    let base = await storeDirOf(dir);
+    if (legacy) {
+      // The state of a tree fixed by an earlier version and rolled back by
+      // this one: the run sits in the tree and the store holds none.
+      const run = await latestStoreRun(dir);
+      const inTree = path.join(dir, '.hackmyagent-backup');
+      await mkdir(inTree, { recursive: true });
+      await cp(run, path.join(inTree, path.basename(run)), { recursive: true });
+      await rm(base, { recursive: true, force: true });
+      base = inTree;
+    }
     // Dropped in after the backup exists, so it can only affect SELECTION.
-    await writeFile(path.join(dir, '.hackmyagent-backup', 'zzz'), 'not a backup\n');
+    await writeFile(path.join(base, 'zzz'), 'not a backup\n');
 
     const report = await scanner.rollback(dir);
 
@@ -207,6 +227,7 @@ describe('#327 a rollback reports what it could not restore', () => {
       report.restored,
       'a file in the backup base was selected as the latest backup, so the real one was never used',
     ).toContain('config.json');
+    expect(report.backupSource).toBe(legacy ? 'in-tree' : 'store');
   }, 120_000);
 
   /**
