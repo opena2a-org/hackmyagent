@@ -57,9 +57,18 @@ const NOT_THERE_ERRNOS: ReadonlySet<string> = new Set(['ENOENT', 'EISDIR', 'ENOT
  * A failure is recorded whoever raised it, because "I could not read this" is a
  * fact about the target rather than a claim by a check. A SUCCESS raised there
  * is still dropped: unattributable evidence is not evidence, and that asymmetry
- * is the fail-closed direction on both channels.
+ * is the fail-closed direction on both channels. It follows that a failure
+ * recorded under this name has no success to be subtracted against, and no
+ * framed read of the same path clears it.
  */
 const UNATTRIBUTED = '(unattributed)';
+
+/**
+ * Every reader that failed on one path, each with the FIRST errno it got
+ * there, in the order the readers first failed. A reader is a check method,
+ * or `UNATTRIBUTED`.
+ */
+type FailingReaders = Map<string, string>;
 
 /**
  * True when a failed read means the scan lost an input it had discovered.
@@ -389,18 +398,23 @@ export class CoverageLedger {
   /**
    * Paths inside the target that were discovered and whose contents could NOT
    * be read, keyed by path so twelve checks probing one unreadable file record
-   * one input and not twelve. Value is the errno the first failure carried.
+   * one input and not twelve. Value is EVERY reader that failed on the path,
+   * each with the first errno it got there (#510). Keeping only the first
+   * failing reader let that reader's own retry clear the path while a second
+   * reader that never got the bytes, or a failure raised outside any check,
+   * went unrecorded.
    *
    * Recorded raw: every failing errno lands here, including `ENOENT`. Deciding
    * which of them mean "discovered but not read" is a policy question and lives
    * in `unreadableInputs`, not in the recording — a ledger that filters at
    * write time cannot be re-measured when the policy is questioned.
    */
-  private readonly readFailures = new Map<string, { code: string; method: string }>();
+  private readonly readFailures = new Map<string, FailingReaders>();
   /**
    * Directories inside the target that were discovered and could NOT be
-   * listed (`readdir`/`opendir` rejected), keyed by resolved path — the
-   * directory kind of the same fact `readFailures` records for files (#588).
+   * listed (`readdir`/`opendir` rejected), keyed by resolved path, with every
+   * failing reader and its first errno — the directory kind of the same fact
+   * `readFailures` records for files (#588, #510).
    * A directory the walker cannot list loses every path under it without a
    * single read ever being attempted, so nothing on the read channel can
    * disclose it; this is the only place it can land.
@@ -409,7 +423,7 @@ export class CoverageLedger {
    * `unreadableInputs` through the one `countsAsUnread` predicate — a second
    * errno list for listings would be a second predicate for one fact.
    */
-  private readonly listFailures = new Map<string, { code: string; method: string }>();
+  private readonly listFailures = new Map<string, FailingReaders>();
 
   constructor(targetRoot: string) {
     this.targetRoot = path.resolve(targetRoot);
@@ -534,10 +548,12 @@ export class CoverageLedger {
    * with a credential file readable and 98/100 at exit 0 with the same file at
    * mode 000 — the score went UP because the evidence went away (#438).
    *
-   * Filtered exactly like `noteRead`: attributable to a running check, inside
-   * the target, deduped by path. A path that is later read successfully is not
-   * unreadable — see `unreadableInputs`, which subtracts rather than this
-   * recording it, so the two orderings agree.
+   * Filtered like `noteRead` (inside the target, deduped by path), except
+   * that a failure raised outside any check is still recorded. Every reader
+   * that fails on a path is kept, with the first errno it got there. A path
+   * the SAME reader reads successfully is not unreadable to that reader — see
+   * `unreadableInputs`, which subtracts rather than this recording it, so the
+   * two orderings agree.
    */
   noteReadFailure(target: string, code: string): void {
     this.recordFailure(target, code, this.readFailures);
@@ -548,9 +564,10 @@ export class CoverageLedger {
    * Called by the tracked `fs` namespace and by the walkers (#588).
    *
    * Same filters as `noteReadFailure`: unattributed allowed, inside the
-   * target, realpath containment, deduped by resolved path, first errno wins.
-   * A directory that the SAME check later lists successfully is subtracted
-   * in `unreadableInputs`, exactly as a retried read is.
+   * target, realpath containment, deduped by resolved path, every failing
+   * reader kept with the first errno it got. A failing reader that later
+   * lists the directory successfully is subtracted in `unreadableInputs`,
+   * exactly as a retried read is; the other readers' failures stand.
    */
   noteListFailure(target: string, code: string): void {
     this.recordFailure(target, code, this.listFailures);
@@ -559,7 +576,7 @@ export class CoverageLedger {
   private recordFailure(
     target: string,
     code: string,
-    into: Map<string, { code: string; method: string }>,
+    into: Map<string, FailingReaders>,
   ): void {
     // NOT filtered on attribution, and this is the one place the failure
     // channel must diverge from `note()`.
@@ -583,7 +600,16 @@ export class CoverageLedger {
       return;
     }
     if (!this.isInsideTarget(resolved)) return;
-    if (into.has(resolved)) return; // first failure wins
+    const recorded = into.get(resolved);
+    if (recorded) {
+      // Containment was already decided for this path. Every failing reader
+      // is kept, and each keeps the first errno it got (#510): a path is lost
+      // while ANY of them has no success of its own on it, so keeping only
+      // the first reader let its retry clear a failure a second reader still
+      // carried.
+      if (!recorded.has(method)) recorded.set(method, code || 'UNKNOWN');
+      return;
+    }
     // Containment is decided on the REAL path, not the lexical one. A symlink
     // inside the target pointing at a file outside it — `src/evil.js` ->
     // `/etc/master.passwd` — is a path any contributor can commit, and the read
@@ -609,7 +635,7 @@ export class CoverageLedger {
       const real = realpathSync(resolved);
       if (real !== resolved && !this.isInsideReal(real)) return;
     } catch { /* unresolvable — keep the lexical decision */ }
-    into.set(resolved, { code: code || 'UNKNOWN', method });
+    into.set(resolved, new Map([[method, code || 'UNKNOWN']]));
   }
 
   private note(target: string, into: Map<string, Set<string>>, isRead: boolean): void {
@@ -861,9 +887,12 @@ export class CoverageLedger {
    * and the scan cannot claim it read them. `EACCES` is the measured true
    * positive — zero occurrences across four real trees, one on the fixture.
    *
-   * Subtracts anything later read successfully, so a retry that succeeds does
-   * not leave a phantom, and the failure-then-success and success-then-failure
-   * orderings agree.
+   * Subtracts per reader: a path stays lost while any reader that failed on it
+   * with a counting errno has no successful read of its own on that path
+   * (#510). A retry that succeeds therefore leaves no phantom, the
+   * failure-then-success and success-then-failure orderings agree, and one
+   * reader's success never clears another reader's failure. The errno
+   * reported is the first counting one among the readers still failing.
    *
    * Returns COUNTS and errno codes, never paths — same rule as
    * `categoryFileCounts`. The paths reach the user through a finding, which is
@@ -895,10 +924,14 @@ export class CoverageLedger {
    * Subtraction mirrors the read channel: a listing the SAME check later
    * completed sits in `listedByMethod`, as a retried read sits in
    * `readsByMethod` — never an inspection, which succeeds on a directory
-   * nothing can list. A path recorded on BOTH channels (a mode-000 directory
-   * rejects the walker's `readdir` and a check's `readFile` probe alike) is one
-   * obstruction and is reported once, as the directory — the kind whose remedy
-   * actually clears it.
+   * nothing can list. Both channels subtract per failing reader
+   * (`stillFailing`), so a path stays lost while any reader that failed on it
+   * has not succeeded on it itself.
+   *
+   * A path recorded on BOTH channels (a mode-000 directory rejects the
+   * walker's `readdir` and a check's `readFile` probe alike) is one
+   * obstruction and is reported once, as the directory — the kind whose
+   * remedy actually clears it.
    *
    * One obstruction reachable under two SPELLINGS is one record too (#621).
    * The maps are keyed by the path the caller named, and on a case-insensitive
@@ -913,10 +946,9 @@ export class CoverageLedger {
    */
   private lostInputs(): { resolved: string; code: string; kind: 'file' | 'directory' }[] {
     const lostDirs = new Map<string, string>(); // resolved dir -> errno
-    for (const [resolved, { code, method }] of this.listFailures) {
-      if (!countsAsUnread(code)) continue;
-      if (this.listedByMethod.get(method)?.has(resolved)) continue;
-      lostDirs.set(resolved, code);
+    for (const [resolved, readers] of this.listFailures) {
+      const code = CoverageLedger.stillFailing(resolved, readers, this.listedByMethod);
+      if (code !== undefined) lostDirs.set(resolved, code);
     }
     // Coalescing (#588 ruling): a record beneath a directory that is ITSELF a
     // recorded obstruction is attributed to that directory, never counted
@@ -945,7 +977,7 @@ export class CoverageLedger {
     type Lost = { resolved: string; code: string };
     const fold = (into: Map<string, Lost>, onDisk: string, resolved: string, code: string): void => {
       const first = into.get(onDisk);
-      // First errno wins, as at recording; the path reported is the on-disk
+      // The first record's errno wins; the path reported is the on-disk
       // spelling when a record carries it, because that is the name a listing
       // of the parent shows.
       if (!first) into.set(onDisk, { resolved, code });
@@ -957,9 +989,9 @@ export class CoverageLedger {
       fold(dirsOnDisk, this.onDiskSpelling(resolved), resolved, code);
     }
     const filesOnDisk = new Map<string, Lost>();
-    for (const [resolved, { code, method }] of this.readFailures) {
-      if (!countsAsUnread(code)) continue;
-      if (this.readsByMethod.get(method)?.has(resolved)) continue;
+    for (const [resolved, readers] of this.readFailures) {
+      const code = CoverageLedger.stillFailing(resolved, readers, this.readsByMethod);
+      if (code === undefined) continue;
       if (lostDirs.has(resolved) || beneath(resolved, lostDirs)) continue;
       const onDisk = this.onDiskSpelling(resolved);
       if (dirsOnDisk.has(onDisk) || beneath(onDisk, dirsOnDisk)) continue;
@@ -972,6 +1004,30 @@ export class CoverageLedger {
     }
     for (const { resolved, code } of filesOnDisk.values()) out.push({ resolved, code, kind: 'file' });
     return out;
+  }
+
+  /**
+   * The errno a recorded path is lost under, or `undefined` when it is not
+   * lost (#510): the first counting errno among the readers that failed on
+   * it and have no success of their own on it in `successes`.
+   *
+   * Per reader, never scan-wide. A check that never got the bytes is blind to
+   * them however many other checks read the file, so one reader's success
+   * cannot launder another's failure. A reader with no success set at all —
+   * `UNATTRIBUTED` among them, since `note()` drops a success raised outside
+   * every frame — is never subtracted.
+   */
+  private static stillFailing(
+    resolved: string,
+    readers: FailingReaders,
+    successes: Map<string, Set<string>>,
+  ): string | undefined {
+    for (const [method, code] of readers) {
+      if (!countsAsUnread(code)) continue;
+      if (successes.get(method)?.has(resolved)) continue;
+      return code;
+    }
+    return undefined;
   }
 
   /**
