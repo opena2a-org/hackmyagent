@@ -15,10 +15,12 @@
  * GitHub push protection or a secret scanner.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { latestStoreRun } from '../helpers/backup-store';
 
 /** Synthesised at runtime — never a literal in the source tree. */
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
@@ -119,25 +121,24 @@ describe('#292 config-shaped credential detection below the scan root', () => {
     expect(cred.map((f) => f.file)).not.toContain('config/README.md');
   });
 
-  it('reports the backup THIS RUN created exactly once, and exactly as the next scan does', async () => {
-    // `createBackup` runs before every check, so the same run sees the credential
-    // in the live file and in the copy HMA made microseconds earlier.
+  it('reports the credential THIS RUN archived once, in the live file, and scores what the next scan does', async () => {
+    // `createBackup` runs before every check, so while the backup was written
+    // into the tree the same run saw the credential in the live file and in the
+    // copy HMA had made microseconds earlier.
     //
-    // #374 REVERSED what this asserted, so the reason is recorded rather than the
-    // expectation quietly flipped. It used to require that the run report NOTHING
-    // inside its own archive, on the theory that the copy was a duplicate.
+    // This cell has now asserted three things, and the reasons are recorded
+    // rather than the expectation quietly flipped. First, that the run report
+    // NOTHING inside its own archive, on the theory that the copy was a
+    // duplicate. Then #374 reversed it: `--fix` redacts the live file, so the
+    // archive held the only remaining plaintext copy, a plain rescan reported
+    // and scored it, and the exemption only made `--fix` announce a number its
+    // own next scan contradicted (measured 69 vs 59). The copy was reported
+    // once and attributed to the run.
     //
-    // The copy is not a duplicate: `--fix` redacts the live file, so the archive
-    // holds the ONLY remaining plaintext copy of the secret — the same reasoning
-    // #309 recorded for a pre-existing archive, one directory over. And measured
-    // on this build, a plain rescan of the post-fix tree reports that copy and
-    // scores it. The exemption asserted here therefore hid nothing from the user;
-    // it only made `--fix` announce a number its own next scan contradicted
-    // (measured 69 vs 59, #374).
-    //
-    // What replaces it: the copy is reported ONCE — the anti-double-count
-    // property this test was really protecting — and the run's score describes
-    // the same tree the next scan will.
+    // #376 removes the cause instead of reconciling it: the copy is written to
+    // the backup store, outside the scanned tree, so there is no second record
+    // to exempt or attribute. What is kept is what the cell was protecting both
+    // times: one file, one finding, and a score the next scan repeats.
     //
     // The fixture deliberately does NOT pre-seed a backup: the archive under
     // test has to be one this run produced, or the test is measuring the
@@ -157,16 +158,19 @@ describe('#292 config-shaped credential detection below the scan root', () => {
         cred.some((f) => f.file === 'config.json'),
         'the live config never fired; this test is measuring nothing',
       ).toBe(true);
-
-      const archived = cred.filter((f) => f.file?.includes('.hackmyagent-backup'));
+      // Non-vacuity, second half: the run did archive the plaintext. Without
+      // this, "no record for the copy" would also hold for a run that took none.
       expect(
-        archived.length,
-        'the plaintext copy `--fix` left in its own archive was not reported, so the '
-        + 'score it announced describes a tree the next scan will not see (#374)',
-      ).toBe(1);
-      // Attributed as ours, which is what lets the report name it as the delta
-      // and tell the user those points come back when the archive goes.
-      expect(archived[0].inOwnArchive, 'this run\'s own archive was not attributed to it').toBe(true);
+        await readFile(path.join(await latestStoreRun(dir), 'config.json'), 'utf-8'),
+        'this run archived no plaintext copy, so there was nothing to keep out of the tree',
+      ).toBe(body);
+
+      expect(cred, 'the run reported something besides the live file').toHaveLength(1);
+      expect(
+        result.findings.filter((f) => f.file?.includes('.hackmyagent-backup')),
+        'a finding is attributed to a backup directory inside the scanned tree',
+      ).toEqual([]);
+      expect(existsSync(path.join(dir, '.hackmyagent-backup')), '--fix wrote its backup into the scanned tree').toBe(false);
 
       // The anti-double-count property, kept: one file, one finding.
       const keys = cred.map((f) => `${f.checkId}|${f.file}|${f.line ?? ''}`);

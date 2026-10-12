@@ -23,15 +23,24 @@
  *      Next Steps stop citing commands that cannot move them — while a live
  *      credential still gets them.
  *
+ * #376 — `--fix` writes its backup to the store outside the tree, so a second
+ * run by this version leaves nothing behind for the third to explain, and
+ * `scoreExcludingOwnArchive` and `inOwnArchive` are gone. The state above still
+ * exists in every tree 0.25.x to 0.33.x fixed: the plaintext copy sits in
+ * `.hackmyagent-backup`, the live file is redacted, and the next run has to
+ * attribute what it finds there. The fixture builds that state from a real
+ * `--fix` run, moved to the layout those versions wrote.
+ *
  * Credential values are synthesised at runtime, never written as literals.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, writeFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { assertDistFresh, assertDistFreshIfPresent, BUILT_CLI } from '../helpers/dist-freshness';
+import { latestStoreRun, storeDirOf } from '../helpers/backup-store';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -53,6 +62,21 @@ async function makeFixture(prefix: string): Promise<string> {
 const inBackupBase = (file: string | undefined): boolean =>
   (file ?? '').split(/[\\/]/)[0] === '.hackmyagent-backup';
 
+/**
+ * `--fix` as an earlier version left the tree: the live file redacted, and the
+ * run's copies in `<target>/.hackmyagent-backup/<stamp>/`, with no run in the
+ * store. Returns the stamp.
+ */
+async function fixAsEarlierVersion(dir: string): Promise<string> {
+  await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+  const run = await latestStoreRun(dir);
+  const stamp = path.basename(run);
+  await mkdir(path.join(dir, '.hackmyagent-backup'), { recursive: true });
+  await cp(run, path.join(dir, '.hackmyagent-backup', stamp), { recursive: true });
+  await rm(await storeDirOf(dir), { recursive: true, force: true });
+  return stamp;
+}
+
 function runCli(args: string[], home: string): string {
   const r = spawnSync(process.execPath, [BUILT_CLI, ...args], {
     encoding: 'utf8',
@@ -62,36 +86,46 @@ function runCli(args: string[], home: string): string {
   return `${r.stdout ?? ''}${r.stderr ?? ''}`;
 }
 
-/** The Next Steps section of a rendered report, up to the version footer. */
+/**
+ * The Next Steps section of a rendered report: up to the `Backups:` line when
+ * the run prints one, else up to the version footer. The `Backups:` line (#376)
+ * follows the section and is not a step; it names the "--fix backup" the store
+ * holds, which is not a citation of `secure --fix`.
+ */
 function nextSteps(out: string): string {
   const at = out.indexOf('Next Steps');
   expect(at, 'the report printed no Next Steps section').toBeGreaterThan(-1);
-  const end = out.indexOf('Scanned with', at);
-  return out.slice(at, end === -1 ? undefined : end);
+  const ends = [out.indexOf('\nBackups:', at), out.indexOf('Scanned with', at)].filter((i) => i !== -1);
+  return out.slice(at, ends.length ? Math.min(...ends) : undefined);
 }
 
 describe('#383 findings inside an earlier run\'s backup are attributed, not exempted', () => {
   it('a second --fix run flags the first run\'s archive findings and leaves the score alone', async () => {
     const dir = await makeFixture('hma-383-second-fix-');
     try {
-      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      const stamp = await fixAsEarlierVersion(dir);
       const second = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
       const rescan = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
 
-      // ── Non-vacuity: this is the #383 state, not the #374 one ──
-      const stamps = await readdir(path.join(dir, '.hackmyagent-backup'));
-      expect(stamps.length, 'two --fix runs should have left two archives').toBeGreaterThanOrEqual(2);
+      // ── Non-vacuity: the earlier run's archive is in the tree, and it is the
+      // only one there. The second run added none (#376).
       expect(
-        second.scoreExcludingOwnArchive,
-        'the second run attributed its own archive, so the #374 line would print and this is not #383',
-      ).toBeUndefined();
+        await readdir(path.join(dir, '.hackmyagent-backup')),
+        'the second --fix run wrote a backup into the tree',
+      ).toEqual([stamp]);
       const archived = second.findings.filter((f) => inBackupBase(f.file));
       expect(archived.length, 'the first run\'s plaintext copy was not reported').toBeGreaterThan(0);
 
       // ── The property ──
       for (const f of archived) {
         expect(f.inArchive, `${f.checkId} at ${f.file} is inside the archive base but unflagged`).toBe(true);
-        expect(f.inOwnArchive ?? false, `${f.checkId} at ${f.file} was claimed as this run's own`).toBe(false);
+      }
+      // #376 — nothing claims a copy as this run's own, and no result carries a
+      // second number. Both fields are removed, not left unset: a field that is
+      // present implies a measurement that is no longer made.
+      expect('scoreExcludingOwnArchive' in second, 'the retired second score is back on the result').toBe(false);
+      for (const f of second.findings) {
+        expect('inOwnArchive' in f, `${f.checkId} at ${f.file} carries the retired own-archive flag`).toBe(false);
       }
       for (const f of second.findings.filter((x) => !inBackupBase(x.file))) {
         expect(f.inArchive ?? false, `${f.checkId} at ${f.file} is outside the archive but flagged`).toBe(false);
@@ -133,14 +167,17 @@ describe('#383 findings inside an earlier run\'s backup are attributed, not exem
     const home = await mkdtemp(path.join(tmpdir(), 'hma-383-home-'));
     const control = await makeFixture('hma-383-control-');
     try {
-      await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+      await fixAsEarlierVersion(dir);
       await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
 
       const out = runCli(['secure', dir], home);
       expect(out, 'the earlier backup findings went unexplained next to the score').toMatch(
-        /findings? above sits? inside \.hackmyagent-backup, where HackMyAgent keeps this tree's --fix backups, in a copy this run did not create\. (It|They) counts? toward this score\./,
+        /findings? above sits? inside \.hackmyagent-backup, where earlier versions of HackMyAgent kept this tree's --fix backups\. (It|They) counts? toward this score\./,
       );
       expect(out).toContain('never edit a backup');
+      // The store holds the second run's backup, so this report also prints
+      // the `Backups:` line, after the section measured here.
+      expect(out).toMatch(/\nBackups: 1 --fix backup of this directory/);
       const steps = nextSteps(out);
       expect(steps, 'Next Steps cited secure --fix for findings it never edits').not.toContain('--fix');
       expect(steps, 'Next Steps cited protect for findings it never edits').not.toContain('protect');
