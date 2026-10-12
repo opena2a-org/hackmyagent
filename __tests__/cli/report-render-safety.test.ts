@@ -26,7 +26,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -60,7 +60,7 @@ let hostileTextFile: string;
  * Spawned with the flag `secure` documents for hermetic fixture scans, so the
  * output describes the fixture and not the developer's `~/.openclaw`.
  */
-function run(args: string[]): string {
+function run(args: string[], env: NodeJS.ProcessEnv = {}): string {
   // BOTH streams, ALWAYS. `execFileSync` returns only stdout on success, and
   // this helper used to add stderr in its `catch` branch alone — so for any
   // command that exits 0 the entire stderr channel went uninspected. That is
@@ -72,7 +72,7 @@ function run(args: string[]): string {
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1' },
+    env: { ...process.env, NO_COLOR: '1', OPENA2A_CORPUS_DETERMINISTIC: '1', ...env },
   });
   return String(r.stdout ?? '') + String(r.stderr ?? '');
 }
@@ -153,6 +153,42 @@ describe('#328 every report that renders a tree-derived path renders it safely',
     expect(out, 'secure --fix never named the hostile path').toContain(SPLIT_MARKER);
     expect(out, 'the backup-store line never rendered, so its citation is unmeasured').toMatch(/^Backups: 1 --fix backup/m);
     assertRenderSafe(out, 'secure --fix', [], [await archiveStoreDirFor(scanDir)]);
+  }, 300_000);
+
+  /**
+   * #376 — the case above derives its store from a plain temporary path, so it
+   * never measures the quoting of the one `rm -rf` this gate accepts. Measured
+   * on a build that printed the store directory unquoted, with
+   * `HMA_BACKUP_HOME="<base>/My Backups"`: the operand was two words in zsh,
+   * and pasting it deleted the unrelated directory `<base>/My` and left the
+   * store in place. Here the store root holds a space, a single quote, `$(...)`,
+   * a backtick and `;`, so an unquoted operand also runs a command.
+   */
+  it('secure --fix: the store-deletion command when the store root needs quoting', async () => {
+    const pwned = 'PWNED-376-STORE-ROOT';
+    const base = path.join(root, 'quote');
+    const storeRoot = path.join(base, `b sp'q$(touch ${pwned})\`touch ${pwned}\`;x&y*z?`);
+    const target = path.join(base, 'target');
+    mkdirSync(target, { recursive: true });
+    writeFileSync(path.join(target, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+    writeFileSync(path.join(target, 'config.json'), `${JSON.stringify({ github: FAKE_GH_TOKEN }, null, 2)}\n`);
+
+    const out = run(['secure', target, '--fix'], { HMA_BACKUP_HOME: storeRoot });
+
+    // Derived here, from the same root, without the CLI's print path.
+    const saved = process.env.HMA_BACKUP_HOME;
+    process.env.HMA_BACKUP_HOME = storeRoot;
+    let storeDir: string;
+    try {
+      storeDir = await archiveStoreDirFor(target);
+    } finally {
+      if (saved === undefined) delete process.env.HMA_BACKUP_HOME; else process.env.HMA_BACKUP_HOME = saved;
+    }
+    expect(out, 'the store-deletion line never printed a command, so its quoting is unmeasured').toMatch(/^Backups: 1 --fix backup.*: rm -rf \S/m);
+    assertRenderSafe(out, 'secure --fix (store root that needs quoting)', [], [storeDir]);
+    for (const where of [process.cwd(), base, target]) {
+      expect(existsSync(path.join(where, pwned)), `a citation ran a command in ${where}`).toBe(false);
+    }
   }, 300_000);
 
   /**
