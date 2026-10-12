@@ -402,3 +402,62 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0 || !exi
     }, 180_000);
   },
 );
+
+/**
+ * RULE 4(b) of the #376 ruling: every later `secure` of a target with backups
+ * in the store prints one line with their count, the path and the command that
+ * deletes them. Measured before the benchmark paths printed it: 1 line on
+ * `secure`, 0 on `secure -b oasb-1`. `-b` is the same scan read against a
+ * control list, and the copies it does not mention are just as plaintext.
+ */
+describe.skipIf(!existsSync(CLI))('#376 every secure text report says what the store holds for the directory', () => {
+  beforeAll(assertDistFreshIfPresent);
+
+  /** The spawned CLI reads the store this file's in-process `--fix` runs wrote to. */
+  const sameStore = (home: string): Record<string, string> => ({
+    HOME: home,
+    OPENA2A_HOME: home,
+    HMA_BACKUP_HOME: process.env.HMA_BACKUP_HOME as string,
+  });
+  const backupsLines = (out: string): string[] => out.split('\n').filter((l) => l.startsWith('Backups: '));
+
+  it.each([
+    { report: 'secure', args: [] as string[] },
+    { report: 'secure -b oasb-1', args: ['-b', 'oasb-1'] },
+    { report: 'secure -b oasb-2', args: ['-b', 'oasb-2'] },
+  ])('$report prints one Backups line naming the store and the command that deletes it', async ({ args }) => {
+    const target = fixableTree();
+    await new HardeningScanner().scan({ targetDir: target, autoFix: true });
+    const store = await storeDirOf(target);
+    const home = tempDir('hma-376-home-');
+
+    const run = hma(['secure', target, ...args, '--static-only', '--no-machine-posture'], home, sameStore(home));
+
+    const lines = backupsLines(run.stdout);
+    expect(lines, `the report does not say the store holds a backup of this directory\n${run.stdout.slice(-600)}`).toHaveLength(1);
+    expect(lines[0]).toMatch(/^Backups: 1 --fix backup of this directory/);
+    expect(lines[0]).toContain(store);
+    expect(lines[0]).toContain(`rm -rf ${store}`);
+  }, 180_000);
+
+  it('prints no Backups line for a directory the store holds nothing for', () => {
+    const target = fixableTree();
+    const home = tempDir('hma-376-home-');
+
+    const run = hma(['secure', target, '-b', 'oasb-1', '--static-only', '--no-machine-posture'], home, sameStore(home));
+
+    expect(run.stdout, 'the benchmark report never rendered, so the absence below is unmeasured').toMatch(/OASB/);
+    expect(backupsLines(run.stdout)).toEqual([]);
+  }, 180_000);
+
+  it('keeps the line out of a machine-readable benchmark report', async () => {
+    const target = fixableTree();
+    await new HardeningScanner().scan({ targetDir: target, autoFix: true });
+    const home = tempDir('hma-376-home-');
+
+    const run = hma(['secure', target, '-b', 'oasb-1', '--format', 'sarif', '--static-only', '--no-machine-posture'], home, sameStore(home));
+
+    expect(run.stdout).not.toContain('Backups: ');
+    expect(() => JSON.parse(run.stdout), 'the SARIF document is no longer parseable').not.toThrow();
+  }, 180_000);
+});

@@ -6202,6 +6202,10 @@ Change scope (--range, --staged):
             process.stdout.write('\n');
           }
           printFixBackupDisclosure(result, directory);
+          // #376 — the benchmark text reports say what the store holds for
+          // this directory too: the line is owed on every `secure` text run,
+          // and `-b` is the same scan read against a control list.
+          await printArchiveStoreNotice(targetDir);
         }
 
         // #371 — the composite path had no default gate at all, so
@@ -6335,6 +6339,7 @@ Change scope (--range, --staged):
             printBenchmarkReport(benchmarkResult, options.verbose ?? false, targetDir, benchmarkRunFlags);
             printBenchmarkUnreadDisclosure(result);
             printFixBackupDisclosure(result, directory);
+            await printArchiveStoreNotice(targetDir);
             output = '';
         }
 
