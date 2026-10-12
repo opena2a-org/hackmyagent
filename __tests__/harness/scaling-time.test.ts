@@ -14,9 +14,11 @@
  * a factor of 4 above it.
  *
  * The helper's rules run here against a scripted clock, so this file does not
- * itself depend on how fast the machine is. The last block is a static gate on
- * the four suites: each times its cases through the helper, and none reads a
- * clock of its own.
+ * itself depend on how fast the machine is. The block after them runs the
+ * helper's own clock, the CPU time of the thread: a run parked off the CPU
+ * adds nothing to it, which a wall clock under load did, and a run that spins
+ * still fails. The last block is a static gate on the four suites: each times
+ * its cases through the helper, and none reads a clock of its own.
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
@@ -24,6 +26,8 @@ import * as path from 'node:path';
 import {
   timeScaling,
   scalesLinearly,
+  describeScaling,
+  cpuTimeMs,
   ROUNDS,
   SMALL_BYTES,
   FULL_BYTES,
@@ -158,6 +162,45 @@ describe('timeScaling and scalesLinearly', () => {
     const result = time((size) => (size === 'small' ? 0.125 : FLOOR_MS));
     expect(result.ratio).toBeGreaterThan(MAX_RATIO);
     expect(scalesLinearly(result)).toBe(false);
+  });
+});
+
+describe('the clock timeScaling reads unless given one', () => {
+  // Atomics.wait parks the thread with no work to do, as a scheduler does when
+  // other processes hold every core: time passes and the scan does not run.
+  const parked = new Int32Array(new SharedArrayBuffer(4));
+  const park = (ms: number): void => {
+    Atomics.wait(parked, 0, 0, ms);
+  };
+
+  it('does not count time the thread spends off the CPU, so a loaded machine cannot fail a linear scan', () => {
+    // Every 1 MiB run is parked for twice the floor and every 64 KiB run is not:
+    // more than the factor of 4 that load has to add to fail a case on a wall clock.
+    const result = timeScaling(() => (s) => {
+      if (s === FULL) park(2 * FLOOR_MS);
+    }, input);
+    expect(scalesLinearly(result), describeScaling(result)).toBe(true);
+  });
+
+  it('counts the time the thread spends running, so a slow 1 MiB scan still fails', () => {
+    // Spins until the clock has moved 2 x FLOOR_MS; the wall-clock limit only
+    // ends the loop if the clock never moves.
+    const spin = (ms: number): void => {
+      const start = cpuTimeMs();
+      const deadline = performance.now() + 10_000;
+      while (cpuTimeMs() - start < ms && performance.now() < deadline);
+    };
+    const result = timeScaling(() => (s) => {
+      if (s === FULL) spin(2 * FLOOR_MS);
+    }, input);
+    expect(result.tFull, describeScaling(result)).toBeGreaterThanOrEqual(2 * FLOOR_MS);
+    expect(scalesLinearly(result), describeScaling(result)).toBe(false);
+  });
+
+  it('openai-style-sk-key.test.ts times its scans on the same clock, and reads no wall clock', () => {
+    const text = fs.readFileSync(path.join(__dirname, '..', 'nanomind-core', 'openai-style-sk-key.test.ts'), 'utf8');
+    expect(text).toContain('cpuTimeMs()');
+    expect(text).not.toMatch(/performance\.now|Date\.now|process\.hrtime/);
   });
 });
 

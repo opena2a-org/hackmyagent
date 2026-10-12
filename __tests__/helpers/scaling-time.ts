@@ -28,6 +28,15 @@
  * load has to add three times the 1 MiB run's own time to that run, in most
  * rounds.
  *
+ * The clock is the CPU time of the thread running the scan (`cpuTimeMs`), not
+ * the wall clock. On a machine whose load average stayed between 25 and 35 on
+ * 16 cores, two full parallel runs in a row failed linear cases of these
+ * suites on the wall clock, and each file passed when run alone. A 64 KiB run
+ * can finish inside one time slice where a 1 MiB run spans many, so the wall
+ * clock charges most of the waits for a core to the 1 MiB side of a round.
+ * CPU time leaves out the time the thread waits and still counts every step
+ * the scan takes, so a quadratic scan measures 256x on it as before.
+ *
  * A case whose fastest runs of both sizes stay under FLOOR_MS passes without
  * the ratio, because a run that short times the machine more than the scan.
  * The floor only ever passes a case. There is no limit on the 1 MiB time
@@ -39,9 +48,25 @@
  * the function to time, so a suite can give each run fresh matchers and no run
  * can reuse what an earlier one cached.
  */
-import { performance } from 'node:perf_hooks';
-
 const KiB = 1024;
+
+type CpuUsage = () => { user: number; system: number };
+
+/**
+ * `process.threadCpuUsage` times this thread alone. A Node release without it
+ * falls back to `process.cpuUsage`, the whole process: the test file's own
+ * thread plus its garbage collection, since a vitest fork runs one test file
+ * at a time.
+ */
+const cpuUsage: CpuUsage =
+  (process as unknown as { threadCpuUsage?: CpuUsage }).threadCpuUsage?.bind(process) ??
+  (() => process.cpuUsage());
+
+/** The CPU time this thread has used, in ms, user and system together. */
+export function cpuTimeMs(): number {
+  const { user, system } = cpuUsage();
+  return (user + system) / 1000;
+}
 
 /** The smaller input, in bytes. */
 export const SMALL_BYTES = 64 * KiB;
@@ -74,7 +99,7 @@ export interface ScalingTime {
 export function timeScaling(
   prepare: () => (input: string) => void,
   input: (bytes: number) => string,
-  now: () => number = () => performance.now(),
+  now: () => number = cpuTimeMs,
 ): ScalingTime {
   const small = input(SMALL_BYTES);
   const full = input(FULL_BYTES);
@@ -102,7 +127,7 @@ export function scalesLinearly(t: ScalingTime): boolean {
 
 /** The figures a suite logs for a case, and reports when it fails. */
 export function describeScaling(t: ScalingTime): string {
-  return `fastest 64KiB=${t.tSmall.toFixed(1)} ms, fastest 1MiB=${t.tFull.toFixed(1)} ms, median ratio=${t.ratio.toFixed(1)}x`;
+  return `fastest 64KiB=${t.tSmall.toFixed(1)} ms, fastest 1MiB=${t.tFull.toFixed(1)} ms of CPU time, median ratio=${t.ratio.toFixed(1)}x`;
 }
 
 function timed(run: (input: string) => void, input: string, now: () => number): number {

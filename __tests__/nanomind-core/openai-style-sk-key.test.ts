@@ -31,6 +31,7 @@ import {
 import { runNanoMindScan } from '../../src/nanomind-core/scanner-bridge';
 import { assertDistFresh, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
+import { cpuTimeMs } from '../helpers/scaling-time';
 
 const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const PLACEHOLDER = /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE/i;
@@ -183,11 +184,15 @@ describe('#316: scan time is linear on 1 MB of sk- and alphanumerics', () => {
     fill('sk-', n),
   ];
 
+  /**
+   * CPU time of the scan, so time the thread spends waiting for a core on a
+   * loaded machine is not charged to the scan (__tests__/helpers/scaling-time.ts).
+   */
   function timeScan(content: string): number {
-    const started = performance.now();
+    const started = cpuTimeMs();
     scanCanonicalCredentialFormatsForTest(content);
     analyzeCredentialKeywordContext(content);
-    return performance.now() - started;
+    return cpuTimeMs() - started;
   }
 
   /**
@@ -242,7 +247,7 @@ describe('#316: scan time is linear on 1 MB of sk- and alphanumerics', () => {
       expect(full[i].length).toBe(size);
       timeScan(quarter[i]); // warm the regex before timing it
       const { small, large } = medianTimes(timeScan, quarter[i], full[i]);
-      expect(large, `shape ${i}: 1 MB took ${Math.round(large)} ms`).toBeLessThan(2000);
+      expect(large, `shape ${i}: 1 MB took ${Math.round(large)} ms of CPU time`).toBeLessThan(2000);
       expect(large, `shape ${i}: ${Math.round(small)} ms -> ${Math.round(large)} ms`)
         .toBeLessThan(linearBound(small));
     }
