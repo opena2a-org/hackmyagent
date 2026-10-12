@@ -17,13 +17,20 @@
  * existing `HMA_BACKUP_HOME` directory was `drwxr-xr-x` before `--fix` and
  * `drwx------` after it. What HackMyAgent creates inside is private; a
  * directory the user created keeps the mode they gave it.
+ *
+ * And what `rollback` does with the store: it follows a target that was moved
+ * and renamed, keeps two trees of one name apart, reports failure for a store
+ * that was deleted or that belongs to another directory, and a home directory
+ * that cannot hold a store makes `--fix` detect only.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
-import { findArchiveStore, prepareArchiveStore } from '../../src/store/archive-store';
+import { describeArchiveStore, findArchiveStore, prepareArchiveStore } from '../../src/store/archive-store';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
 import { latestStoreRun, storeDirOf } from '../helpers/backup-store';
@@ -237,3 +244,161 @@ describe.skipIf(process.platform === 'win32')('#376 the mode of the store and of
     expect(mode(await storeDirOf(target)).toString(8)).toBe('700');
   }, 120_000);
 });
+
+/**
+ * RULE 6 of the #376 ruling: what `rollback` does with the store for a target
+ * that moved, shares its name with another, cannot have a store, lost its
+ * store, or has the filesystem identity another directory used to have. Each
+ * cell fixes a real tree first, so the backup under test is one `--fix` made.
+ */
+describe('#376 rollback finds a target\'s backups by the directory, not by its path', () => {
+  const fix = async (target: string): Promise<string> => {
+    const before = liveConfig(target);
+    await new HardeningScanner().scan({ targetDir: target, autoFix: true });
+    expect(liveConfig(target), 'the fix did not redact the credential; this cell measures nothing').toContain('${GITHUB_TOKEN}');
+    return before;
+  };
+
+  it('restores a target that was moved to another parent and renamed', async () => {
+    const target = fixableTree();
+    const original = await fix(target);
+    const storeBefore = await storeDirOf(target);
+
+    const moved = path.join(tempDir('hma-376-elsewhere-'), 'renamed-project');
+    renameSync(target, moved);
+
+    // A store keyed by the path would be looked for under the new path's key,
+    // and the backups would be reported missing.
+    expect(await storeDirOf(moved), 'the store is keyed by something the move changed').toBe(storeBefore);
+    const report = await new HardeningScanner().rollback(moved);
+
+    expect(report.backupSource).toBe('store');
+    expect(report.restored).toContain('config.json');
+    expect(liveConfig(moved), 'the moved directory did not get its pre-fix file back').toBe(original);
+  }, 120_000);
+
+  it('restores through a symbolic link to the target', async () => {
+    const target = fixableTree();
+    const original = await fix(target);
+    const link = path.join(tempDir('hma-376-link-'), 'link-to-project');
+    symlinkSync(target, link);
+
+    expect(await storeDirOf(link), 'the link has a store of its own').toBe(await storeDirOf(target));
+    const report = await new HardeningScanner().rollback(link);
+
+    expect(report.backupSource).toBe('store');
+    expect(liveConfig(target), 'rollback through the link did not restore the target').toBe(original);
+  }, 120_000);
+
+  it('keeps two trees with the same name apart', async () => {
+    const a = path.join(tempDir('hma-376-parent-a-'), 'proj');
+    const b = path.join(tempDir('hma-376-parent-b-'), 'proj');
+    for (const [dir, port] of [[a, 1111], [b, 2222]] as const) {
+      mkdirSync(dir);
+      writeFileSync(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+      writeFileSync(path.join(dir, 'config.json'), `${JSON.stringify({ githubToken: FAKE_GH_TOKEN, port }, null, 2)}\n`);
+    }
+    const originalA = await fix(a);
+    const originalB = await fix(b);
+    expect(originalA).not.toBe(originalB);
+    expect(await storeDirOf(a), 'two directories named proj share one store').not.toBe(await storeDirOf(b));
+
+    // A's rollback restores A's bytes, not the newer run that B made, and
+    // leaves B fixed with its backup intact.
+    await new HardeningScanner().rollback(a);
+    expect(liveConfig(a)).toBe(originalA);
+    expect(liveConfig(b), 'rolling back one tree changed the other').toContain('${GITHUB_TOKEN}');
+
+    await new HardeningScanner().rollback(b);
+    expect(liveConfig(b)).toBe(originalB);
+  }, 180_000);
+
+  it('reports failure, and restores nothing, once the store has been deleted', async () => {
+    const target = fixableTree();
+    await fix(target);
+    const fixed = liveConfig(target);
+    rmSync(await storeDirOf(target), { recursive: true, force: true });
+
+    await expect(
+      new HardeningScanner().rollback(target),
+      'rollback claimed success with no backup to restore from',
+    ).rejects.toThrow(/No backup found/);
+    expect(liveConfig(target), 'a failed rollback changed the live file').toBe(fixed);
+    expect(existsSync(await storeDirOf(target)), 'a failed rollback re-created the store').toBe(false);
+  }, 120_000);
+
+  it('refuses a store recorded for another directory, and --fix moves it aside without deleting it', async () => {
+    const target = fixableTree();
+    const original = await fix(target);
+    const fixed = liveConfig(target);
+    const store = await storeDirOf(target);
+    const firstRun = path.basename(await latestStoreRun(target));
+
+    // The state a reused inode leaves: the store under this identity names a
+    // directory that was created at another time.
+    const recordFile = path.join(store, 'target.json');
+    const record = JSON.parse(readFileSync(recordFile, 'utf-8')) as { birthtimeNs: string; lastKnownPath: string };
+    expect(record.birthtimeNs, 'this filesystem reports no birth time, so a reused identity cannot be told apart').not.toBe('0');
+    writeFileSync(recordFile, JSON.stringify({ ...record, birthtimeNs: '1', lastKnownPath: '/somewhere/else' }));
+
+    expect((await findArchiveStore(target)).kind).toBe('other-directory');
+    expect(await describeArchiveStore(target), 'another directory\'s backups were counted as this one\'s').toBeUndefined();
+    await expect(
+      new HardeningScanner().rollback(target),
+      'rollback restored another directory\'s files here',
+    ).rejects.toThrow(/created at another time.*\/somewhere\/else/s);
+    expect(liveConfig(target)).toBe(fixed);
+
+    // The next --fix needs a store of its own. The other directory's is kept,
+    // whole, under a name that says what happened to it.
+    writeFileSync(path.join(target, 'config.json'), original);
+    await fix(target);
+
+    const aside = readdirSync(path.dirname(store)).filter((n) => n.startsWith(`${path.basename(store)}.replaced-`));
+    expect(aside, 'the other directory\'s store was adopted or deleted').toHaveLength(1);
+    expect(
+      readFileSync(path.join(path.dirname(store), aside[0], firstRun, 'config.json'), 'utf-8'),
+      'the copies in the store that was moved aside are gone',
+    ).toBe(original);
+    expect((await findArchiveStore(target)).kind).toBe('store');
+    expect(path.basename(await latestStoreRun(target)), 'the new store adopted the other directory\'s run').not.toBe(firstRun);
+    await new HardeningScanner().rollback(target);
+    expect(liveConfig(target)).toBe(original);
+  }, 180_000);
+});
+
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0 || !existsSync(CLI))(
+  '#376 a home directory that cannot hold a store',
+  () => {
+    beforeAll(assertDistFreshIfPresent);
+
+    it('--fix detects only and does not crash when HOME is read-only', () => {
+      const target = fixableTree();
+      const before = liveConfig(target);
+      const home = tempDir('hma-376-rohome-');
+      chmodSync(home, 0o555);
+      try {
+        // No override: the store would be `$HOME/.opena2a/backups`.
+        const fix = hma(['secure', target, '--fix', '--json', '--static-only', '--no-machine-posture'], home, { HOME: home });
+
+        expect(fix.stdout + fix.stderr, 'the run crashed').not.toMatch(/\n\s+at .*:\d+:\d+/);
+        const result = JSON.parse(fix.stdout) as FixJson;
+        const refused = result.findings.filter((f) => f.checkId === 'FIX-BACKUP-FAILED');
+        expect(refused, 'the run did not say that it skipped the fixes').toHaveLength(1);
+        expect(refused[0].passed).toBe(false);
+        expect(refused[0].fix, 'the remedy does not name the override').toContain('HMA_BACKUP_HOME');
+        expect(result.findings.some((f) => f.checkId === 'CRED-001' && !f.passed), 'detection was lost with the backup').toBe(true);
+        expect(result.backupPath).toBeUndefined();
+        expect(liveConfig(target), 'a fix landed with no backup to roll back to').toBe(before);
+        expect(existsSync(path.join(target, '.hackmyagent-backup')), 'the run fell back to a backup inside the tree').toBe(false);
+        expect(readdirSync(home), 'something was written into the read-only home').toEqual([]);
+
+        const rollback = hma(['rollback', target], home, { HOME: home });
+        expect(rollback.status, 'rollback claimed success with no store').not.toBe(0);
+        expect(rollback.stdout + rollback.stderr).toContain('No backup found');
+      } finally {
+        chmodSync(home, 0o755);
+      }
+    }, 180_000);
+  },
+);
