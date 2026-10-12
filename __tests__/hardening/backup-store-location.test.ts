@@ -31,7 +31,7 @@ import {
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { describeArchiveStore, findArchiveStore, prepareArchiveStore } from '../../src/store/archive-store';
-import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
 import { latestStoreRun, storeDirOf } from '../helpers/backup-store';
 
@@ -77,8 +77,8 @@ function hma(args: string[], cwd: string, storeEnv: Record<string, string>): Spa
 
 interface FixJson { backupPath?: string; findings: Array<{ checkId: string; passed: boolean; message?: string; fix?: string }> }
 
-describe.skipIf(!existsSync(CLI))('#376 a backup store root that is not absolute is refused', () => {
-  beforeAll(assertDistFreshIfPresent);
+describe('#376 a backup store root that is not absolute is refused', () => {
+  beforeAll(assertDistFresh);
 
   // Each row sets ONE variable to a relative path. `created` is the directory
   // a run that resolved it against the working directory would have made.
@@ -367,10 +367,10 @@ describe('#376 rollback finds a target\'s backups by the directory, not by its p
   }, 180_000);
 });
 
-describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0 || !existsSync(CLI))(
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
   '#376 a home directory that cannot hold a store',
   () => {
-    beforeAll(assertDistFreshIfPresent);
+    beforeAll(assertDistFresh);
 
     it('--fix detects only and does not crash when HOME is read-only', () => {
       const target = fixableTree();
@@ -410,8 +410,8 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0 || !exi
  * `secure`, 0 on `secure -b oasb-1`. `-b` is the same scan read against a
  * control list, and the copies it does not mention are just as plaintext.
  */
-describe.skipIf(!existsSync(CLI))('#376 every secure text report says what the store holds for the directory', () => {
-  beforeAll(assertDistFreshIfPresent);
+describe('#376 every secure text report says what the store holds for the directory', () => {
+  beforeAll(assertDistFresh);
 
   /** The spawned CLI reads the store this file's in-process `--fix` runs wrote to. */
   const sameStore = (home: string): Record<string, string> => ({
