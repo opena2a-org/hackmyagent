@@ -786,6 +786,19 @@ export interface BackupManifest {
   /** Files that existed before the fix and were copied into the backup. */
   existingFiles: string[];
   /**
+   * Each `existingFiles` entry's mode when it was copied, as `stat.mode &
+   * 0o7777` of the source (#376). The copy itself is narrowed to `0600`, and
+   * `copyFile` gives the restored file the copy's mode, so without this a
+   * rollback left a `0755` script and a `0644` config at `0600`.
+   *
+   * Honored only for a run in the backup store. A run inside the scanned tree
+   * (`.hackmyagent-backup/`, 0.33.2 and earlier) ignores it even when present:
+   * no release wrote it there, so one found there was written by the tree,
+   * and those copies already carry their original mode. A missing entry or a
+   * value that is not an integer from 0 to 4095 restores at the copy's mode.
+   */
+  existingFileModes?: Record<string, number>;
+  /**
    * Backup candidates observed missing WHEN THE BACKUP WAS TAKEN. Candidates
    * only, not claims: nothing here is known to have been written.
    */
@@ -6971,11 +6984,20 @@ export class HardeningScanner {
    * `0600` and any directory created for it is `0700`. A filesystem that
    * refuses the `chmod` keeps the copy: the run directory above it is
    * already `0700`, and losing the copy would make the fix unrecoverable.
+   *
+   * Returns the source's mode (`stat.mode & 0o7777`, following links as
+   * `copyFile` does), read before the copy is narrowed, so the manifest can
+   * record it and `rollback` can put it back (`existingFileModes`). Undefined
+   * when the source would not say; the copy is kept either way. A source that
+   * is missing still throws from `copyFile`, before any `stat`.
    */
-  private async copyIntoBackup(sourcePath: string, destPath: string): Promise<void> {
+  private async copyIntoBackup(sourcePath: string, destPath: string): Promise<number | undefined> {
     await fs.mkdir(path.dirname(destPath), { recursive: true, mode: 0o700 });
     await fs.copyFile(sourcePath, destPath);
+    let sourceMode: number | undefined;
+    try { sourceMode = (await fs.stat(sourcePath)).mode & 0o7777; } catch { /* restored at the copy's mode */ }
     try { await fs.chmod(destPath, 0o600); } catch { /* no mode bits here; the 0700 run directory still confines it */ }
+    return sourceMode;
   }
 
   private async ensureBackupCovers(filePath: string): Promise<boolean> {
@@ -6995,8 +7017,9 @@ export class HardeningScanner {
     // description of `filePath`, and re-deriving the source from it was #304:
     // the guard protected a path that was not the one being written.
     let existed = true;
+    let sourceMode: number | undefined;
     try {
-      await this.copyIntoBackup(filePath, path.join(ctx.backupDir, rel));
+      sourceMode = await this.copyIntoBackup(filePath, path.join(ctx.backupDir, rel));
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') return false;
       // ENOENT is overloaded here and only ONE of its meanings is a creation.
@@ -7014,7 +7037,7 @@ export class HardeningScanner {
     // Persist before returning: `recordCreatedFiles` re-reads this file from
     // disk, and `rollback` is a separate process. An in-memory-only update
     // would restore nothing.
-    if (!(await this.appendToBackupManifest(ctx.backupDir, rel, existed))) return false;
+    if (!(await this.appendToBackupManifest(ctx.backupDir, rel, existed, sourceMode))) return false;
     ctx.covered.add(rel);
     return true;
   }
@@ -7361,11 +7384,15 @@ export class HardeningScanner {
    * `recordCreatedFiles` proves HMA generated it). Returns false if the
    * manifest cannot be read or written, which makes the write unrecoverable
    * and so must abandon it.
+   *
+   * `sourceMode` is the copied file's mode, recorded in `existingFileModes`
+   * in the same write that adds its `existingFiles` entry.
    */
   private async appendToBackupManifest(
     backupDir: string,
     rel: string,
     existed: boolean,
+    sourceMode?: number,
   ): Promise<boolean> {
     const manifestPath = path.join(backupDir, '.manifest.json');
     try {
@@ -7374,7 +7401,10 @@ export class HardeningScanner {
       const list = existed
         ? manifest.existingFiles
         : (manifest.absentAtFixWrite ??= []);
-      if (!list.includes(rel)) list.push(rel);
+      if (!list.includes(rel)) {
+        list.push(rel);
+        if (existed && sourceMode !== undefined) (manifest.existingFileModes ??= {})[rel] = sourceMode;
+      }
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
       return true;
     } catch {
@@ -12530,8 +12560,9 @@ dist/
           continue;
         }
         const destPath = path.join(backupDir, file);
-        await this.copyIntoBackup(sourcePath, destPath);
+        const sourceMode = await this.copyIntoBackup(sourcePath, destPath);
         manifest.existingFiles.push(file);
+        if (sourceMode !== undefined) (manifest.existingFileModes ??= {})[file] = sourceMode;
       } catch {
         // #313 — absence is PROVEN here, never inferred from the fact that
         // something went wrong. This catch-all collapsed ENOENT-of-target,
@@ -12721,9 +12752,23 @@ dist/
       }
     }
 
+    // Kept, not dropped: `appendToBackupManifest` and `recordCreatedFiles`
+    // rewrite the manifest from this parsed form, so a parse that left the
+    // field out would erase every recorded mode at the next fix-write copy.
+    // Only keys that are `existingFiles` entries, with an integer from 0 to
+    // 4095 (`chmod`'s range), survive.
+    const rawModes = parsed.existingFileModes;
+    const listed = new Set(existingFiles);
+    const modeEntries = rawModes && typeof rawModes === 'object' && !Array.isArray(rawModes)
+      ? Object.entries(rawModes as Record<string, unknown>).filter(
+        (e): e is [string, number] => listed.has(e[0]) && Number.isInteger(e[1]) && (e[1] as number) >= 0 && (e[1] as number) <= 0o7777,
+      )
+      : [];
+
     return {
       version: typeof parsed.version === 'number' ? parsed.version : 1,
       existingFiles,
+      existingFileModes: modeEntries.length > 0 ? Object.fromEntries(modeEntries) : undefined,
       absentAtBackup: Array.isArray(parsed.absentAtBackup)
         ? (parsed.absentAtBackup as unknown[]).filter((f): f is string => typeof f === 'string')
         : [],
@@ -12777,6 +12822,7 @@ dist/
     backupReal: string,
     targetReal: string,
     rel: string,
+    restoreMode?: number,
   ): Promise<{ ok: true } | { ok: false; cause: RestoreRefusal; detail?: string; backupHoldsCopy: boolean }> {
     // ---- Does the backup hold a copy of this entry? ----
     //
@@ -12835,11 +12881,19 @@ dist/
 
     try {
       await fs.copyFile(sourceReal, dest.path);
-      return { ok: true };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
       return { ok: false, cause: 'write-failed', detail: code, backupHoldsCopy };
     }
+    // #376 — the copy is 0600 and `copyFile` gave the restored file that mode.
+    // The mode recorded when the backup was taken goes back on the same
+    // resolved destination, so it has the restore's containment: a link out of
+    // the tree was refused above, before either call. A failed `chmod` leaves
+    // the file at 0600, which is not a reason to report the restore failed.
+    if (restoreMode !== undefined) {
+      try { await fs.chmod(dest.path, restoreMode); } catch { /* the bytes are back; the mode stays private */ }
+    }
+    return { ok: true };
   }
 
   /**
@@ -13077,8 +13131,11 @@ dist/
       // would reach into an older run and restore stale content.
       const attempt: RollbackReport['unrestored'] = [];
       const put: string[] = [];
+      // Recorded modes are honored for a store run only. See `existingFileModes`.
+      const modes = backupSource === 'store' ? manifest?.existingFileModes : undefined;
       for (const file of manifest?.existingFiles ?? []) {
-        const outcome = await this.restoreOneBackupFile(candidateReal, targetReal, file);
+        const restoreMode = modes && Object.prototype.hasOwnProperty.call(modes, file) ? modes[file] : undefined;
+        const outcome = await this.restoreOneBackupFile(candidateReal, targetReal, file, restoreMode);
         if (outcome.ok) {
           put.push(file);
         } else {
