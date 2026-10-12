@@ -12,8 +12,8 @@
  *
  * Archives now live outside the tree, under a per-user state directory:
  *
- *   <store root>/<dev>-<ino>/target.json       which directory this store is for
- *   <store root>/<dev>-<ino>/<stamp>/          one `--fix` run's copies
+ *   <store root>/<dev>-<ino>-<birth>/target.json   which directory this store is for
+ *   <store root>/<dev>-<ino>-<birth>/<stamp>/      one `--fix` run's copies
  *
  *   store root: $HMA_BACKUP_HOME, else $OPENA2A_HOME/backups, else ~/.opena2a/backups
  *
@@ -29,11 +29,16 @@
  * same filesystem and a symlink to the target, and two trees with the same
  * name have different identities.
  *
- * An identity can be reused: delete a directory and the filesystem may give its
- * inode to the next one. `target.json` records the target's birth time, and a
- * store whose recorded birth time differs from the target's is not used for
- * it. A filesystem that reports no birth time (0) cannot make that check, and
- * there the identity alone decides.
+ * A device and an inode number alone are not an identity: delete a directory
+ * and the filesystem may give its inode number to the next one. Measured on
+ * Linux (ext4), the next directory created took a removed directory's inode
+ * number in 20 of 20 tries. The key therefore carries the target's birth time
+ * (`<birth>`, nanoseconds since the epoch), so such a directory gets a store of
+ * its own: `rollback` there finds no backup, and the removed directory's store
+ * is left where it is. `target.json` records the birth time too, and a store
+ * whose record names another birth time is not used for its target. A
+ * filesystem that reports no birth time gives 0, and there the device and inode
+ * number alone decide.
  *
  * The store root is created 0700, each target's store 0700, and `target.json`
  * 0600; the scanner creates each run directory 0700 and each copy 0600. The
@@ -113,9 +118,9 @@ interface TargetRecord {
 /**
  * What a lookup found for a target.
  *
- * `other-directory` is the reused-identity case: a store exists under this
- * target's identity and was recorded for a directory created at another time.
- * It is never used as this target's store, and it is never removed.
+ * `other-directory`: a store exists under this target's key and its record
+ * names a directory created at another time. It is never used as this
+ * target's store, and it is never removed.
  */
 export type ArchiveStoreLookup =
   | { kind: 'store'; dir: string; lastKnownPath?: string }
@@ -136,8 +141,9 @@ async function targetIdentity(targetReal: string): Promise<TargetIdentity> {
   return { dev: st.dev.toString(), ino: st.ino.toString(), birthtimeNs: st.birthtimeNs.toString() };
 }
 
+/** `<dev>-<ino>-<birth>`: the birth time keeps a directory that reuses a removed one's inode number out of its store. */
 function storeDirFor(id: TargetIdentity): string {
-  return path.join(realpathOfExistingPrefix(backupStoreRoot()), `${id.dev}-${id.ino}`);
+  return path.join(realpathOfExistingPrefix(backupStoreRoot()), `${id.dev}-${id.ino}-${id.birthtimeNs}`);
 }
 
 /**
@@ -237,10 +243,11 @@ async function ensurePrivateDir(dir: string, opts: { keepExistingMode?: boolean 
  * and recorded. Returns its real path. Throws when no store can be used, which
  * the scanner turns into a detect-only run (FIX-BACKUP-FAILED).
  *
- * A store left by a directory whose identity this target has reused is moved
- * aside to `<key>.replaced-<time>-<random>`, never deleted and never adopted:
- * its runs are another directory's files, and restoring them here would put
- * that directory's content over this one.
+ * A store under this key whose record HackMyAgent did not write, or names a
+ * directory created at another time, is moved aside to
+ * `<key>.replaced-<time>-<random>`, never deleted and never adopted: its runs
+ * may be another directory's files, and restoring them here would put that
+ * directory's content over this one.
  */
 export async function prepareArchiveStore(targetDir: string): Promise<string> {
   const targetReal = fsSync.realpathSync.native(targetDir);

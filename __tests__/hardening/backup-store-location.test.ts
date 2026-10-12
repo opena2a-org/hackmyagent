@@ -334,8 +334,8 @@ describe('#376 rollback finds a target\'s backups by the directory, not by its p
     const store = await storeDirOf(target);
     const firstRun = path.basename(await latestStoreRun(target));
 
-    // The state a reused inode leaves: the store under this identity names a
-    // directory that was created at another time.
+    // A store under this key whose record names a directory that was created
+    // at another time.
     const recordFile = path.join(store, 'target.json');
     const record = JSON.parse(readFileSync(recordFile, 'utf-8')) as { birthtimeNs: string; lastKnownPath: string };
     expect(record.birthtimeNs, 'this filesystem reports no birth time, so a reused identity cannot be told apart').not.toBe('0');
