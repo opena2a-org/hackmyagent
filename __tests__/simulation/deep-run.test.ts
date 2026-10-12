@@ -17,6 +17,7 @@ import { SimulationEngine } from '../../src/simulation/engine';
 import { LAYER3_PROBES } from '../../src/simulation/probes';
 import type { LLMBackend } from '../../src/simulation/llm-executor';
 import { MAX_REDACTION_INPUT_BYTES } from '../../src/nanomind-core/security/defense-in-depth';
+import { sectionRecording, virtualChangelog } from '../helpers/changelog-record';
 
 const TARGET = path.join(path.sep, 'scan', 'target');
 
@@ -272,7 +273,8 @@ describe('runDeepSimulation', () => {
 
   it('with every file over the size limit and no executor: the reason names both causes', async () => {
     // #1025: the reason named only the size limit, so a user who shrank the
-    // file met a second "not simulated" result for the missing executor.
+    // file met a second result in which the file is not simulated (NOT
+    // MEASURED), for the missing executor.
     const padded = BENIGN + '\n' + '<!-- padding -->\n'.repeat(Math.ceil(1_100_000 / 17));
     expect(Buffer.byteLength(padded, 'utf-8')).toBeGreaterThan(MAX_REDACTION_INPUT_BYTES);
     const overLimit = `over the ${MAX_REDACTION_INPUT_BYTES}-byte limit the credential redaction reads, so no probe was sent`;
@@ -301,6 +303,27 @@ describe('runDeepSimulation', () => {
     expect(out).toContain(
       '  [Simulation] NOT MEASURED — no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_API_KEY); the Findings block is the verdict.\n',
     );
+  });
+
+  it('a file shrunk within the size limit with no executor is NOT MEASURED, the label the #1025 entry quotes', async () => {
+    // #1042: the #1025 changelog entry quoted "not simulated" for this result,
+    // which the output labels NOT MEASURED and lists under no notSimulated.
+    const { report, out } = await run({ 'SKILL.md': BENIGN }, { engine: new SimulationEngine() });
+    expect(report.status).toBe('not-measured');
+    expect(report.notSimulated).toBeUndefined();
+    expect(out).toContain('  [Simulation] NOT MEASURED — ');
+    expect(out).not.toMatch(/not simulated/i);
+
+    const title = /^#### secure --deep names the missing probe executor when every file is over the size limit \(#1025\)$/m;
+    const section = sectionRecording(virtualChangelog(), title);
+    const from = section.search(title);
+    const body = section.indexOf('\n', from) + 1;
+    const next = section.slice(body).search(/^#{2,4} /m);
+    const entry = (next < 0 ? section.slice(from) : section.slice(from, body + next)).replace(/\s+/g, ' ');
+    const shrank = /A user who shrank the file then met ([^.]*)\./.exec(entry)?.[1];
+    expect(shrank, 'the entry no longer says what a user who shrank the file met').toBeDefined();
+    expect(shrank).toContain('`NOT MEASURED`');
+    expect(entry).not.toMatch(/"not simulated"/i);
   });
 
   it('counts the links the walk did not follow', async () => {
