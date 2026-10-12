@@ -29,7 +29,8 @@ const NO_EXECUTOR = 'no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_AP
  * - `measured`: an executor ran the probes against every simulated artifact.
  *   An artifact sent no probe is listed in `notSimulated`, never here.
  * - `not-measured`: no probe was sent, because no executor was available or
- *   every artifact is over the redaction size limit; `reason` says which.
+ *   every artifact is over the redaction size limit; `reason` names each
+ *   cause that holds.
  * - `no-artifacts`: the tree holds nothing to simulate.
  * - `error`: the run stopped early; `reason` says why.
  */
@@ -85,7 +86,7 @@ export interface DeepSimulationInput {
   /** Where the progress lines go: stderr in the CLI, beside whatever stdout carries. */
   write: (text: string) => void;
   /** Probe runner. Defaults to an engine that detects its own executor; tests inject one. */
-  engine?: Pick<SimulationEngine, 'runLayer3'>;
+  engine?: Pick<SimulationEngine, 'runLayer3' | 'resolveExecutor'>;
   /** Called once per measured artifact. */
   onMeasured?: (content: string, result: SimulationResult) => void | Promise<void>;
 }
@@ -189,9 +190,16 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
       await input.onMeasured?.(content, result);
     }
     if (report.status === 'no-artifacts' && report.notSimulated) {
-      // Every artifact reached was over the limit: nothing was measured.
+      // Every artifact reached was over the limit: nothing was measured. No
+      // probe ran, so whether an executor exists is still unknown; without
+      // one, a file brought within the limit would not be simulated either,
+      // and the reason says so.
       report.status = 'not-measured';
       report.reason = `every artifact reached is ${overLimit}`;
+      if ((await engine.resolveExecutor()) === null) {
+        write(`  [Simulation] NOT MEASURED — ${NO_EXECUTOR}; the Findings block is the verdict.\n`);
+        report.reason += `, and there is ${NO_EXECUTOR} to probe a file within the limit`;
+      }
     }
     write(`[Simulation] Complete.\n\n`);
   } catch (err) {

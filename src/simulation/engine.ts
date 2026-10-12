@@ -77,6 +77,15 @@ export class SimulationEngine {
   }
 
   /**
+   * The name of the executor a probe would run on, or null when there is none.
+   * Resolves the executor the same way a run does, and sends no probe.
+   */
+  async resolveExecutor(): Promise<string | null> {
+    const backend = await this.ensureLLM();
+    return backend ? backend.name : null;
+  }
+
+  /**
    * Run Layer 2 pre-screen: 5 targeted probes for quick triage.
    * Used when Layer 1 (NanoMind semantic) returns ambiguous confidence (0.40-0.80).
    */

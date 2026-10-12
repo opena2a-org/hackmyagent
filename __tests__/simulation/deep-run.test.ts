@@ -238,6 +238,8 @@ describe('runDeepSimulation', () => {
     expect(alone.measured).toEqual([]);
     expect(alone.out).toContain('[Simulation] SKILL.md — NOT SIMULATED: over the 1048576-byte limit');
     expect(alone.out).not.toContain('probes flagged');
+    // An executor is available, so the size limit is the only cause named.
+    expect(alone.out).not.toContain('NOT MEASURED');
 
     // Beside a file within the limit, that one is still measured and flagged.
     const mixed = await run(
@@ -250,6 +252,39 @@ describe('runDeepSimulation', () => {
     expect(mixed.report.artifacts.map((a) => a.file)).toEqual(['skills/audit/SKILL.md']);
     expect(mixed.report.artifacts[0].flaggedCount).toBe(LAYER3_PROBES.length);
     expect(mixed.report.notSimulated?.map((a) => a.file)).toEqual(['SKILL.md']);
+  });
+
+  it('with every file over the size limit and no executor: the reason names both causes', async () => {
+    // #1025: the reason named only the size limit, so a user who shrank the
+    // file met a second "not simulated" result for the missing executor.
+    const padded = BENIGN + '\n' + '<!-- padding -->\n'.repeat(Math.ceil(1_100_000 / 17));
+    expect(Buffer.byteLength(padded, 'utf-8')).toBeGreaterThan(MAX_REDACTION_INPUT_BYTES);
+    const overLimit = `over the ${MAX_REDACTION_INPUT_BYTES}-byte limit the credential redaction reads, so no probe was sent`;
+
+    // The default engine detects no executor unless asked to, so this run
+    // reaches no network.
+    const { report, out, measured } = await run(
+      { 'SKILL.md': padded, 'SOUL.md': padded },
+      { engine: new SimulationEngine() },
+    );
+
+    expect(report.status).toBe('not-measured');
+    expect(report.executor).toBeNull();
+    expect(report.reason).toBe(
+      `every artifact reached is ${overLimit}, and there is `
+      + 'no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_API_KEY) to probe a file within the limit',
+    );
+    expect(report.notSimulated).toEqual([
+      { file: 'SKILL.md', reason: overLimit },
+      { file: 'SOUL.md', reason: overLimit },
+    ]);
+    expect(report.artifactsSimulated).toBe(0);
+    expect(measured).toEqual([]);
+    expect(out.match(/NOT SIMULATED/g)).toHaveLength(2);
+    expect(out.match(/NOT MEASURED/g)).toHaveLength(1);
+    expect(out).toContain(
+      '  [Simulation] NOT MEASURED — no probe executor (NanoMind daemon, Ollama, or ANTHROPIC_API_KEY); the Findings block is the verdict.\n',
+    );
   });
 
   it('counts the links the walk did not follow', async () => {
