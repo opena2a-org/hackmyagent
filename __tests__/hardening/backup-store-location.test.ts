@@ -246,7 +246,7 @@ describe.skipIf(process.platform === 'win32')('#376 the mode of the store and of
 });
 
 /**
- * RULE 6 of the #376 ruling: what `rollback` does with the store for a target
+ * #376 — what `rollback` does with the store for a target
  * that moved, shares its name with another, cannot have a store, lost its
  * store, or has the filesystem identity another directory used to have. Each
  * cell fixes a real tree first, so the backup under test is one `--fix` made.
@@ -434,7 +434,7 @@ describe.skipIf(process.platform === 'win32')('#376 the user store a first --fix
 });
 
 /**
- * RULE 4(b) of the #376 ruling: every later `secure` of a target with backups
+ * #376 — every later `secure` of a target with backups
  * in the store prints one line with their count, the path and the command that
  * deletes them. Measured before the benchmark paths printed it: 1 line on
  * `secure`, 0 on `secure -b oasb-1`. `-b` is the same scan read against a
