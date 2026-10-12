@@ -66,6 +66,7 @@ import {
 import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import { scanGitHistory, shortCommit, type HistoryCredentialHit, type HistoryScanPlan } from './git-history-scan';
 import { verifySigncryptSignature, describeUnsigned } from '../plugins/signcrypt-block';
+import { findOtherBirthStores, OTHER_BIRTH_STORE_MEANING, type OtherBirthStore } from '../store/archive-store';
 import {
   decodeArtifact,
   MAX_DECODE_DEPTH,
@@ -995,13 +996,20 @@ export interface RollbackReport {
   /**
    * Where that base is (#376). `store` is the per-user backup store `--fix`
    * writes to; `in-tree` is a `.hackmyagent-backup` an earlier version wrote
-   * inside the target, used only when the store holds no run for it. The
-   * report names the in-tree case, because restoring from a directory the
-   * scanned tree could have written is worth knowing about.
+   * inside the target, used only when rollback finds no run for it in the
+   * store. The report names the in-tree case, because restoring from a
+   * directory the scanned tree could have written is worth knowing about.
    */
   backupSource?: 'store' | 'in-tree';
   /** The resolved base directory the run directory was taken from. */
   backupBase?: string;
+  /**
+   * Stores kept under the target's device and inode number and another birth
+   * time, which an `in-tree` run did not use (#1049). The report names them
+   * and does not say the store held no backup: one of them holds the target's
+   * newer backups when its reported birth time changed after a `--fix`.
+   */
+  otherBirthStores?: Array<{ dir: string; lastKnownPath?: string }>;
   /**
    * The backup this run finished with and could not delete.
    *
@@ -13321,6 +13329,31 @@ dist/
   }
 
   /**
+   * Whether the tree holds a `.hackmyagent-backup` that `rollback` would take
+   * a run from (#1049): the checks `rollback` makes on that directory before
+   * it uses it, answered and not thrown, so that a caller can say something
+   * else when there is none. A directory that cannot be listed counts as
+   * holding one, which leaves that failure to `rollback`.
+   */
+  private async inTreeArchiveHoldsRun(targetReal: string): Promise<boolean> {
+    let base: string;
+    try {
+      const joinedBase = path.join(targetReal, BACKUP_DIR_NAME);
+      const baseSt = await fs.lstat(joinedBase);
+      if (baseSt.isSymbolicLink() || !baseSt.isDirectory()) return false;
+      base = await fs.realpath(joinedBase);
+      if (!this.isPathWithinDirectory(base, targetReal)) return false;
+    } catch {
+      return false;
+    }
+    try {
+      return (await listArchiveRuns(base)).length > 0;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
    * Rollback to the most recent backup.
    *
    * Returns what it actually did. A generated file is deleted only when its
@@ -13423,10 +13456,61 @@ dist/
     // the #317 mistake in miniature.
     let backupBaseDir: string;
     let backupSource: 'store' | 'in-tree';
+    let otherBirthStores: OtherBirthStore[] = [];
     if (store.kind === 'store' && storeRuns.length > 0) {
       backupBaseDir = fsSync.realpathSync.native(store.dir);
       backupSource = 'store';
     } else {
+      // #1049 — no run under this directory's key is not yet "the store holds
+      // no backup for it". The key carries the birth time the filesystem
+      // reports, and that can change after a `--fix`: on macOS it moves back
+      // when the directory's modification time is set earlier (`touch -t`,
+      // `rsync -a`, `tar -x`, `cp -p`). The runs are then under the key the
+      // directory had when they were taken, and this branch used to restore an
+      // older archive from inside the tree, exit 0, and report that the store
+      // held none.
+      //
+      // A store under this device and inode number and another birth time is
+      // therefore named, and never restored from: a directory that took a
+      // removed directory's inode number finds one too, and its files are not
+      // this directory's. When this directory reports the EARLIER birth time
+      // it cannot be that later directory, so the store is its own and holds
+      // the newer backups: nothing is restored, from the store or from the
+      // tree. Otherwise the two cases cannot be told apart, and the archive in
+      // the tree is used as before, with the store named beside it. A tree
+      // with no archive to use gets "No backup found" from here, naming the
+      // store, and so never reaches the two throws below, which say that for
+      // a directory with no such store.
+      const others = await findOtherBirthStores(targetReal);
+      if (others.kind === 'unknown') {
+        throw new Error(
+          others.dir
+            ? `The backup store ${others.dir} could not be used: ${others.reason}, so whether it holds this `
+              + 'directory\'s backups is not known. Nothing was restored. Check that directory, then run rollback again.'
+            : `The backup store for this directory could not be located: ${others.reason}. Nothing was restored.`,
+        );
+      }
+      otherBirthStores = others.stores;
+      const named = (stores: OtherBirthStore[]): string => stores
+        .map((s) => `${s.dir}${s.lastKnownPath ? ` (last seen at ${s.lastKnownPath})` : ''}`)
+        .join(', ');
+      const own = otherBirthStores.filter((s) => s.targetBornEarlier);
+      if (own.length > 0) {
+        throw new Error(
+          'This directory\'s backups are in the backup store under a later creation time than the filesystem '
+          + `reports for it now, so rollback did not match them to it and restored nothing: ${named(own)}. `
+          + 'A reported creation time moves back when the directory\'s modification time is set earlier, as '
+          + 'touch -t, rsync -a, tar -x and cp -p do on macOS. Copy the files back by hand from the run '
+          + `directories inside ${own.length === 1 ? 'that store' : 'those stores'}.`,
+        );
+      }
+      if (otherBirthStores.length > 0 && !(await this.inTreeArchiveHoldsRun(targetReal))) {
+        throw new Error(
+          'No backup found. A backup store with this directory\'s device and inode number, kept under another '
+          + `creation time, was not used: ${named(otherBirthStores)}. ${OTHER_BIRTH_STORE_MEANING}`,
+        );
+      }
+
       // No run in the store: an archive an earlier version wrote INSIDE the
       // tree is still restorable. Check that it is a real directory in the
       // tree, not a link out of it (#321). `access` follows symlinks, so a
@@ -13705,6 +13789,9 @@ dist/
       backupUsed: latestBackup,
       backupSource,
       backupBase: backupBaseDir,
+      otherBirthStores: otherBirthStores.length > 0
+        ? otherBirthStores.map((s) => ({ dir: s.dir, lastKnownPath: s.lastKnownPath }))
+        : undefined,
     };
 
     // Restore existing files from backup.

@@ -484,6 +484,7 @@ import { generateBenchmarkReport, failingRecordsForControl } from './benchmarks/
 import { levelPopulation } from './benchmarks/oasb-1';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
+import { OTHER_BIRTH_STORE_MEANING } from './store/archive-store';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
 import { describeArchiveStore } from './store/archive-store';
 import { RollbackNothingRestoredError } from './hardening/scanner';
@@ -8305,8 +8306,10 @@ Restores files to their state before the last --fix operation.
 Backups are stored outside the project, one directory per project, under
 $HMA_BACKUP_HOME, else $OPENA2A_HOME/backups, else ~/.opena2a/backups.
 A moved or renamed project still finds its backups. A .hackmyagent-backup/
-that an earlier version wrote inside the project is used only when the
-store holds no backup for it.
+that an earlier version wrote inside the project is used only when rollback
+finds no backup for the project in the store. A store kept under the
+project's device and inode number and another creation time is named and
+never restored from.
 
 A file it cannot restore is named, with the reason. The backup is then kept
 rather than deleted, since it holds the only remaining copy, and the command
@@ -8379,11 +8382,34 @@ Examples:
       // #376 — `--fix` writes its backups outside the tree, so a backup taken
       // from inside it was written by an earlier version, or put there by
       // whoever wrote the tree. Either way the user is told where it came from.
+      //
+      // #1049 — "the backup store held none for it" was printed whenever no run
+      // sat under the directory's key, which is also the case when its runs sit
+      // under another key because the creation time the filesystem reports for
+      // it changed. A store under its device and inode number and another
+      // creation time is named, and the line says what was looked up.
       if (report.backupSource === 'in-tree' && report.backupBase) {
+        const others = report.otherBirthStores ?? [];
         console.log(
           `   ${colors.dim}from${RESET()}      ${escapePathForDisplay(report.backupBase)} `
-          + `${colors.dim}(a backup directory inside the project, written by an earlier version; the backup store held none for it)${RESET()}`,
+          + `${colors.dim}(a backup directory inside the project, written by an earlier version; `
+          + (others.length > 0
+            ? 'the backup store holds none under the creation time the filesystem reports for this directory now)'
+            : 'the backup store held none for it)')
+          + RESET(),
         );
+        for (const other of others) {
+          const lastSeen = other.lastKnownPath
+            ? ` ${colors.dim}(last seen at ${escapePathForDisplay(other.lastKnownPath)})${RESET()}`
+            : '';
+          console.log(`   ${colors.dim}not used${RESET()}  ${escapePathForDisplay(other.dir)}${lastSeen}`);
+        }
+        if (others.length > 0) {
+          console.log(
+            `   ${colors.dim}A backup store with this directory's device and inode number, kept under another creation time. `
+            + `${OTHER_BIRTH_STORE_MEANING}${RESET()}`,
+          );
+        }
       }
 
       // Files the manifest listed and rollback could not put back (#327). Named

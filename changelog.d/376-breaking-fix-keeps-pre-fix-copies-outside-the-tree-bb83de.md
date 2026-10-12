@@ -38,10 +38,11 @@ breaking: true
   and the `rm -rf` command that deletes them. The line is not a finding and
   does not change the score.
 - `rollback` restores from the store. It restores from a `.hackmyagent-backup`
-  directory inside the tree only when the store holds no backup for the
-  directory, and its report names that source. After the store is deleted,
-  `rollback` exits 1 with "No backup found" unless such a directory is in the
-  tree.
+  directory inside the tree only when it finds no backup for the directory in
+  the store, and its report names that source. A store kept under the
+  directory's device and inode number and another creation time is named and
+  never restored from. After the store is deleted, `rollback` exits 1 with
+  "No backup found" unless such a directory is in the tree.
 - `--json`: the top-level `scoreExcludingOwnArchive` field and the
   `inOwnArchive` field on each finding are removed. No run reports a copy in a
   backup of its own any more, so there is no second score to carry.
