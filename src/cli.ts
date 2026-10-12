@@ -7877,14 +7877,12 @@ function assessNemoClawRiskLevel(findings: readonly { severity: string }[]): { l
 
 program
   .command('secure-nemoclaw', { hidden: true } as any) // Deprecated — `hackmyagent secure` auto-detects all AI infrastructure
-  .description(`Security scan for NVIDIA NemoClaw installations
+  .description(`Security scan of a NemoClaw directory
 
-Performs focused security checks for NemoClaw sandbox deployments:
-  - Secrets: NVIDIA API key exposure in configs, logs, Docker, shell history
-  - Network: Gateway/k3s/inference port binding, Docker socket, egress policies
-  - Skills: Blueprint integrity, skill verification, directory permissions
-  - Process: Sandbox privileges, seccomp/Landlock enforcement, root execution
-  - OpenClaw layer: Inherited misconfigs that survive NemoClaw sandboxing
+Runs the checks \`${CLI_PREFIX} secure\` runs, on a NemoClaw, OpenShell or
+OpenClaw directory: the NemoClaw configuration checks (NEMO-*) among them.
+The NemoClaw runtime checks (containers, processes, open ports and shell
+history) are not run by this command.
 
 Auto-detects ~/.nemoclaw, ~/.openshell, or ~/.openclaw directories.
 Exit code 1 if critical/high issues found.
@@ -12462,7 +12460,7 @@ program
   .option('-d, --directory <dir>', 'Scan a specific directory to collect check metadata from findings')
   .option('--json', 'Output as JSON (default)')
   .action(async (options: { directory?: string }) => {
-    const { getAttackClass, getCanonicalClass, getTaxonomyMap, getCheckSeverity, getDeclaredCheckIdExclusions } = require('./hardening/taxonomy');
+    const { getAttackClass, getCanonicalClass, getTaxonomyMap, getCheckSeverity, getDeclaredCheckIdExclusions, getCountedCheckIds, getNotCountedCheckIds } = require('./hardening/taxonomy');
 
     // Build static registry from taxonomy map (covers all known checks)
     const taxMap = getTaxonomyMap();
@@ -12472,8 +12470,10 @@ program
     // rather than being published as if it were a class.
     const canonicalOf = (family: string): string => (family ? getCanonicalClass(family) : '');
 
-    // Add all checks from taxonomy (the authoritative source of check IDs)
-    for (const checkId of Object.keys(taxMap)) {
+    // Add every counted check from the taxonomy (the authoritative source of
+    // check IDs). The keys no command can report are listed under
+    // `notCounted` instead, so `checks` and `totalChecks` agree.
+    for (const checkId of getCountedCheckIds() as string[]) {
       const prefix = checkId.split('-').slice(0, -1).join('-') || checkId.split('-')[0];
       const attackClass = taxMap[checkId] || '';
       metadata[checkId] = {
@@ -12515,7 +12515,8 @@ program
 
     // Summary counts come from the single source of truth (getCheckCounts,
     // derived from the taxonomy) so this JSON, --help, and the scan display
-    // never disagree. `checks` still lists every metadata entry.
+    // never disagree. `checks` lists the counted checks, plus any check a
+    // `--directory` scan reported that the taxonomy does not hold.
     const counts = getCheckCounts();
     writeJsonStdout({
       totalChecks: counts.total,
@@ -12530,6 +12531,10 @@ program
       // `PREFIX-${…}` templates, and the registered expression-valued
       // sites; __tests__/hardening/checkid-census.test.ts).
       exclusions: getDeclaredCheckIdExclusions(),
+      // Taxonomy keys that no command can report, each family with its
+      // reason. They map an attack family but are not checks, so neither
+      // `checks` nor any count above includes them.
+      notCounted: getNotCountedCheckIds(),
       // The severity column is the inventory
       // default. Semantic checks (AST-*/SEM-*) assign severity per finding
       // at analysis time; the fixed-severity sites are pinned via
