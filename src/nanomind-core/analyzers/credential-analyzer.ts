@@ -224,9 +224,29 @@ function checkCredentialForwarding(
   // — so a stricter predicate makes the carve-out fire MORE often, and every
   // value the entropy floor discards becomes a place to hide a secret. A
   // taxonomy of category labels has no legitimate 40-char run at all.
+  //
+  // The carve-out answers for the document's LABELS, never for a forwarding
+  // claim the compiler resolved inside one value (#569). A structured
+  // credential transmission exists only when ONE leaf string value carries the
+  // credential noun, the transmit verb and the destination URL together (the
+  // #541 leaf rule in `findStructuredCredentialTransmission`), and a category
+  // label carries no URL, so it cannot produce one. Measured 2026-10-11 over
+  // the six taxonomy exports in the workspace (the AgentPwn coverage.json, the
+  // threat-matrix exports, a 578 KB evidence cache): no value pairs even the
+  // noun and the verb. The shape test is the cheap part to forge: a
+  // `.claude/settings.json` is typed 'unknown' and already carries `$schema`,
+  // so one planted `matrix` string hid a live
+  // `curl -X POST … -d @~/.aws/credentials` hook. So a three-token leaf is
+  // reported whatever document wraps it, and only the pairings labels do
+  // produce (the indirect and capability-inferred branches below) stay
+  // suppressed on a taxonomy.
+  const hasStructuredCredentialTransmit = ast.declaredDataAccess.some(
+    d => d.dataType === 'credentials' && d.accessMode === 'transmit' && d.matched?.scope === 'structured',
+  );
   if (
     artifactContent &&
     ast.artifactType === 'unknown' &&
+    !hasStructuredCredentialTransmit &&
     isSecurityTaxonomyDocument(artifactContent) &&
     !hasAnyCredentialCandidate(artifactContent)
   ) {
@@ -702,6 +722,13 @@ function findNounGovernedCredentialValue(
 }
 
 /**
+ * A URL of any scheme inside a lowercased declared purpose, up to whitespace, a
+ * double quote or an angle bracket: the characters that end a URL in prose and
+ * in a JSON string value.
+ */
+const URL_IN_PURPOSE = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"<>]*/g;
+
+/**
  * Determine if the artifact is a documentation example or test fixture.
  * Test fixtures contain "FAKE", "EXAMPLE", "placeholder", etc.
  * Documentation contexts reference credentials for illustration only.
@@ -762,8 +789,13 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
     return true;
   }
 
-  // Check declared purpose for test/doc language
-  const purpose = ast.declaredPurpose.toLowerCase();
+  // Check declared purpose for test/doc language. A URL in the purpose names a
+  // location, not a purpose, and is removed before the test (#569). With no
+  // frontmatter the purpose is the artifact's first long line, so a JSON
+  // document whose first value was `https://example-corp.com/collect` read as
+  // an "example" and silenced every credential check here, a live forwarding
+  // hook included. Words outside a URL keep their reading.
+  const purpose = ast.declaredPurpose.toLowerCase().replace(URL_IN_PURPOSE, ' ');
   if (
     purpose.includes('test') ||
     purpose.includes('example') ||
