@@ -3608,12 +3608,18 @@ function printFixBackupDisclosure(
  * #376 — what a `--fix` backup holds, said wherever one is created. The
  * backup is outside the scanned tree, so no later scan reports it; that makes
  * this sentence the only place the user learns that it holds a plaintext copy
- * of every file the run backed up, changed or not (`.env` among them), and
- * that it outlives the scanned directory.
+ * of each file a fix changed, a credential a fix removed among them, and that
+ * it outlives the scanned directory.
+ *
+ * #1039 — a file is copied only when a fix writes it, and a file whose only
+ * change is its mode is recorded by that mode, so a `.env` no fix rewrote is
+ * not in it. Earlier wording said every candidate was copied, which was true
+ * of the build that wrote it.
  */
 function backupContentsNotice(): string {
-  return 'It holds a copy of every file this run backed up, whether or not a fix changed it, so it can hold a credential '
-    + 'that is still in use, such as one in `.env`. It is outside the scanned directory, so later scans do not report it, '
+  return 'It holds a copy of each file a fix changed, taken just before the change, so it can hold a credential a fix '
+    + 'removed. A file whose only change was its mode, such as a `.env` the permissions fix narrowed, is not copied: '
+    + 'the backup records the mode it had. It is outside the scanned directory, so later scans do not report it, '
     + 'and deleting the scanned directory does not delete it. '
     + `It stays until you delete it or \`${CLI_PREFIX} rollback\` restores from it.`;
 }
@@ -3641,10 +3647,10 @@ async function printArchiveStoreNotice(directory: string): Promise<void> {
     `${colors.dim}Backups: ${n} --fix backup${n === 1 ? '' : 's'} of this directory ${n === 1 ? 'is' : 'are'} kept outside it `
     + `at ${escapePathForDisplay(store.dir)}. `
     + (n === 1
-      ? 'It holds a copy of every file that run backed up, including files no fix changed, such as `.env`, so it can hold '
-        + 'a credential that is still in use, and it stays after this directory is deleted. '
-      : 'Each holds a copy of every file its run backed up, including files no fix changed, such as `.env`, so they can '
-        + 'hold a credential that is still in use, and they stay after this directory is deleted. ')
+      ? 'It holds a copy of each file a fix in that run changed, so it can hold a credential a fix removed, '
+        + 'and it stays after this directory is deleted. '
+      : 'Each holds a copy of each file a fix in its run changed, so they can hold a credential a fix removed, '
+        + 'and they stay after this directory is deleted. ')
     + (remove
       ? `Delete ${n === 1 ? 'it' : 'them'} once you no longer need \`${CLI_PREFIX} rollback\`: ${remove}`
       : `Delete that directory once you no longer need \`${CLI_PREFIX} rollback\`.`)
@@ -8337,13 +8343,39 @@ Examples:
           : `${colors.green}[+] Rollback complete${RESET()}`,
       );
       const restoredCount = report.restored.length;
+      const modeCount = report.modesRestored.length;
       const removedCount = report.removed.length;
       console.log(
         `   Restored ${restoredCount} modified file${restoredCount === 1 ? '' : 's'}, ` +
+        (modeCount > 0 ? `set back the mode of ${modeCount} file${modeCount === 1 ? '' : 's'}, ` : '') +
         `removed ${removedCount} generated file${removedCount === 1 ? '' : 's'}.`,
       );
       for (const file of report.restored) console.log(`   ${colors.dim}restored${RESET()}  ${escapePathForDisplay(file)}`);
+      // #1039 — a file whose only change was its mode has no copy in the run,
+      // so it is not counted as restored: its mode is set back and said so.
+      for (const { path: modePath, mode } of report.modesRestored) {
+        console.log(
+          `   ${colors.dim}mode    ${RESET()}  ${escapePathForDisplay(modePath)}  `
+          + `${colors.dim}set back to ${mode.toString(8).padStart(4, '0')}${RESET()}`,
+        );
+      }
       for (const file of report.removed) console.log(`   ${colors.dim}removed ${RESET()}  ${escapePathForDisplay(file)}`);
+      // #1039 — a run copies only what a fix changed, so the newest backup of a
+      // `--fix` run that changed nothing lists nothing. This rollback consumed
+      // it; the run before it is the next one, and the user is told so rather
+      // than left with a "Restored 0" that reads like a failed revert.
+      if (
+        !incomplete
+        && report.backupSource === 'store'
+        && report.backupsBehind > 0
+        && report.restored.length + report.modesRestored.length + report.removed.length === 0
+        && report.keptModified.length + report.keptUnverifiable.length === 0
+      ) {
+        console.log(
+          '   The newest backup had nothing left to undo, so it was removed. '
+          + `Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` again to undo the run before it.`,
+        );
+      }
       // #376 — `--fix` writes its backups outside the tree, so a backup taken
       // from inside it was written by an earlier version, or put there by
       // whoever wrote the tree. Either way the user is told where it came from.
@@ -8461,10 +8493,10 @@ Examples:
           + `(${escapeForDisplay(report.backupRemovalFailed.reason)}):`,
         );
         console.log(`   ${colors.dim}left at${RESET()}  ${escapePathForDisplay(report.backupRemovalFailed.path)}`);
-        if (report.restored.length > 0 || report.removed.length > 0) {
+        const wentBack = report.restored.length + report.modesRestored.length + report.removed.length;
+        if (wentBack > 0) {
           console.log(
-            `   The ${report.restored.length + report.removed.length} file`
-            + `${report.restored.length + report.removed.length === 1 ? '' : 's'} above `
+            `   The ${wentBack} file${wentBack === 1 ? '' : 's'} above `
             + 'went back as reported; only the cleanup failed.',
           );
         }

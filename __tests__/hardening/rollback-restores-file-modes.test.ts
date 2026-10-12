@@ -13,6 +13,11 @@
  * restore applies it. A run inside the tree (`.hackmyagent-backup/`, written by
  * 0.33.2 and earlier) is read as before: no release wrote the field there, so
  * one found there was written by the scanned tree and is ignored.
+ *
+ * #1039 — a run copies only the files a fix changed, so the script here is one
+ * a fix rewrites, and the `.env` whose only change is the permissions fix has a
+ * mode-only entry instead of a copy. A file no fix touched is not in the run
+ * and keeps its mode because nothing changed it.
  */
 import { describe, it, expect } from 'vitest';
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -36,11 +41,15 @@ function put(dir: string, rel: string, content: string, fileMode: number): void 
 
 const tokenConfig = `${JSON.stringify({ githubToken: FAKE_GH_TOKEN, port: 8080 }, null, 2)}\n`;
 
+/** A web-served script with a credential: the web-credential fix rewrites it. */
+const tokenScript = `const token = "${FAKE_GH_TOKEN}";\nconsole.log(token.length);\n`;
+
 interface Manifest {
   version?: number;
   existingFiles: string[];
   createdFiles: unknown[];
   existingFileModes?: Record<string, number>;
+  modeOnlyFiles?: Record<string, number>;
 }
 
 const readManifest = (run: string): Manifest =>
@@ -58,26 +67,30 @@ describe.skipIf(process.platform === 'win32')('#376 rollback restores each file\
     const dir = tempDir('hma-376-modes-');
     put(dir, 'package.json', '{"name":"p","version":"1.0.0"}\n', 0o644);
     put(dir, 'config.json', tokenConfig, 0o644);
-    put(dir, 'public/tool.py', 'print("ok")\n', 0o755);
+    put(dir, 'public/tool.js', tokenScript, 0o755);
 
     const run = await fix(dir);
+    expect(readFileSync(path.join(dir, 'public/tool.js'), 'utf-8'), 'no fix rewrote the script; this cell measures nothing')
+      .not.toContain(FAKE_GH_TOKEN);
     const manifest = readManifest(run);
     expect(manifest.version).toBe(2);
-    expect(manifest.existingFiles).toEqual(expect.arrayContaining(['config.json', 'public/tool.py']));
+    expect(manifest.existingFiles).toEqual(expect.arrayContaining(['config.json', 'public/tool.js']));
+    expect(manifest.existingFiles, '#1039: a file no fix touched was copied').not.toContain('package.json');
     expect(manifest.createdFiles.length, 'no created file was recorded, so the rewrite through the parse is not exercised').toBeGreaterThan(0);
-    expect(manifest.existingFileModes?.['public/tool.py'], 'the script\'s mode was not recorded').toBe(493);
+    expect(manifest.existingFileModes?.['public/tool.js'], 'the script\'s mode was not recorded').toBe(493);
     expect(manifest.existingFileModes?.['config.json'], 'the config\'s mode was not recorded').toBe(420);
-    expect(octal(mode(path.join(run, 'public/tool.py'))), 'a copy in the store is readable by others').toBe('600');
+    expect(octal(mode(path.join(run, 'public/tool.js'))), 'a copy in the store is readable by others').toBe('600');
     expect(octal(mode(path.join(run, 'config.json')))).toBe('600');
 
     const report = await new HardeningScanner().rollback(dir);
 
     expect(report.backupSource).toBe('store');
-    expect(report.restored).toEqual(expect.arrayContaining(['config.json', 'public/tool.py']));
+    expect(report.restored).toEqual(expect.arrayContaining(['config.json', 'public/tool.js']));
     expect(readFileSync(path.join(dir, 'config.json'), 'utf-8')).toBe(tokenConfig);
-    expect(octal(mode(path.join(dir, 'public/tool.py'))), 'the script lost its execute bit').toBe('755');
+    expect(readFileSync(path.join(dir, 'public/tool.js'), 'utf-8')).toBe(tokenScript);
+    expect(octal(mode(path.join(dir, 'public/tool.js'))), 'the script lost its execute bit').toBe('755');
     expect(octal(mode(path.join(dir, 'config.json')))).toBe('644');
-    expect(octal(mode(path.join(dir, 'package.json'))), 'a file no fix touched came back at the copy\'s mode').toBe('644');
+    expect(octal(mode(path.join(dir, 'package.json'))), 'a file no fix touched changed mode').toBe('644');
   }, 120_000);
 
   it('undoes the permissions fix on a 0644 .env', async () => {
@@ -88,7 +101,9 @@ describe.skipIf(process.platform === 'win32')('#376 rollback restores each file\
 
     const run = await fix(dir);
     expect(octal(mode(path.join(dir, '.env'))), 'the permissions fix did not narrow .env; this cell measures nothing').toBe('600');
-    expect(readManifest(run).existingFileModes?.['.env']).toBe(420);
+    // #1039 — no fix changed its content, so the mode is all the run records.
+    expect(readManifest(run).modeOnlyFiles?.['.env']).toBe(420);
+    expect(readManifest(run).existingFiles).not.toContain('.env');
 
     await new HardeningScanner().rollback(dir);
 
@@ -122,6 +137,12 @@ describe.skipIf(process.platform === 'win32')('#376 rollback restores each file\
     const run = await fix(dir);
     const manifestPath = path.join(run, '.manifest.json');
     const manifest = readManifest(run);
+    // #1039 — the fix changed only config.json, so the other three are listed
+    // with copies the way a run written by an earlier build listed them.
+    for (const rel of ['public/tool.py', 'public/page.html', 'package.json']) {
+      put(run, rel, readFileSync(path.join(dir, rel), 'utf-8'), 0o600);
+      manifest.existingFiles.push(rel);
+    }
     // 4096 is one past chmod's range and would clear every permission bit;
     // a string and a fraction are not integers; package.json has no entry.
     manifest.existingFileModes = { 'config.json': 4096, 'public/tool.py': '493' as unknown as number, 'public/page.html': 420.5 };

@@ -864,11 +864,17 @@ export interface CreatedFileRecord {
 /** v2 backup manifest. v1 manifests are read defensively — see readManifest. */
 export interface BackupManifest {
   version?: number;
-  /** Files that existed before the fix and were copied into the backup. */
+  /**
+   * Files that existed before the fix and were copied into the backup.
+   *
+   * #1039 — copied when a fix is about to write them, never before. A run
+   * written by an earlier build lists every candidate that existed, changed or
+   * not, and is restored as it lists them.
+   */
   existingFiles: string[];
   /**
    * Each `existingFiles` entry's mode when it was copied, as `stat.mode &
-   * 0o7777` of the source (#376). The copy itself is narrowed to `0600`, and
+   * 0o777` of the source (#376). The copy itself is narrowed to `0600`, and
    * `copyFile` gives the restored file the copy's mode, so without this a
    * rollback left a `0755` script and a `0644` config at `0600`.
    *
@@ -877,8 +883,19 @@ export interface BackupManifest {
    * no release wrote it there, so one found there was written by the tree,
    * and those copies already carry their original mode. A missing entry or a
    * value that is not an integer from 0 to 4095 restores at the copy's mode.
+   * A set-user-id, set-group-id or sticky bit is never restored (#1039).
    */
   existingFileModes?: Record<string, number>;
+  /**
+   * #1039 — files whose mode a fix changed and whose content no fix had
+   * changed, with the mode each had before (`stat.mode & 0o777`). The
+   * permissions fix records the entry before its `chmod`, so the run holds no
+   * copy of a `.env` whose only change was its mode. A later write to the same
+   * file moves the entry into `existingFiles`, carrying this mode.
+   *
+   * Honored only for a run in the backup store, like `existingFileModes`.
+   */
+  modeOnlyFiles?: Record<string, number>;
   /**
    * Backup candidates observed missing WHEN THE BACKUP WAS TAKEN. Candidates
    * only, not claims: nothing here is known to have been written.
@@ -904,6 +921,11 @@ export interface BackupManifest {
 export interface RollbackReport {
   /** Files restored from the backup copy. */
   restored: string[];
+  /**
+   * #1039 — files whose mode was set back from a mode-only entry, with that
+   * mode. Their content was never copied because no fix changed it.
+   */
+  modesRestored: Array<{ path: string; mode: number }>;
   /** Generated files removed (content hash still matched). */
   removed: string[];
   /** Generated files left in place because the user edited them since. */
@@ -4572,6 +4594,8 @@ interface ScanRun {
     backupIdent: FsIdentity;
     targetDir: string;
     covered: Set<string>;
+    /** Paths with a mode-only entry in this run's manifest (#1039). */
+    modeRecorded: Set<string>;
   } | undefined;
   /**
    * The backup directory a given tree uses, resolved on first ask (#341).
@@ -5093,8 +5117,8 @@ export class HardeningScanner {
       try {
         backupPath = await this.createBackup(targetDir);
         // Every fix write from here on is gated on this (#300). Seeded with
-        // what `createBackup` already copied so the static candidates are not
-        // re-copied one at a time.
+        // the candidates `createBackup` proved absent; a file that exists is
+        // copied by the gate when a fix first writes it (#1039).
         //
         // `lastBackupIdent` is set by the same call and is non-undefined
         // whenever it resolves, so a missing identity here means the contract
@@ -5107,6 +5131,7 @@ export class HardeningScanner {
           backupIdent: this.lastBackupIdent,
           targetDir,
           covered: new Set(this.lastBackupCovered),
+          modeRecorded: new Set(),
         };
       } catch (err) {
         const e = err as NodeJS.ErrnoException;
@@ -7183,6 +7208,12 @@ export class HardeningScanner {
    * file that does not exist yet is a creation, not an overwrite: nothing to
    * copy, so it is recorded as an absent candidate and left to
    * `recordCreatedFiles`, which hash-verifies before rollback removes it.
+   *
+   * #1039 — this is the only place an existing file is copied. `createBackup`
+   * used to copy every candidate before any check ran, so a `.env` no fix
+   * touched sat in plaintext in every run. A file is copied here, when a fix is
+   * about to write it, and the content is the same: every earlier write to it
+   * in this run came through here and was copied first.
    */
   /**
    * Copy one file into this run's backup, owner-only (#376).
@@ -7193,17 +7224,18 @@ export class HardeningScanner {
    * refuses the `chmod` keeps the copy: the run directory above it is
    * already `0700`, and losing the copy would make the fix unrecoverable.
    *
-   * Returns the source's mode (`stat.mode & 0o7777`, following links as
+   * Returns the source's mode (`stat.mode & 0o777`, following links as
    * `copyFile` does), read before the copy is narrowed, so the manifest can
    * record it and `rollback` can put it back (`existingFileModes`). Undefined
    * when the source would not say; the copy is kept either way. A source that
-   * is missing still throws from `copyFile`, before any `stat`.
+   * is missing still throws from `copyFile`, before any `stat`. The
+   * set-user-id, set-group-id and sticky bits are not recorded (#1039).
    */
   private async copyIntoBackup(sourcePath: string, destPath: string): Promise<number | undefined> {
     await fs.mkdir(path.dirname(destPath), { recursive: true, mode: 0o700 });
     await fs.copyFile(sourcePath, destPath);
     let sourceMode: number | undefined;
-    try { sourceMode = (await fs.stat(sourcePath)).mode & 0o7777; } catch { /* restored at the copy's mode */ }
+    try { sourceMode = (await fs.stat(sourcePath)).mode & 0o777; } catch { /* restored at the copy's mode */ }
     try { await fs.chmod(destPath, 0o600); } catch { /* no mode bits here; the 0700 run directory still confines it */ }
     return sourceMode;
   }
@@ -7247,6 +7279,41 @@ export class HardeningScanner {
     // would restore nothing.
     if (!(await this.appendToBackupManifest(ctx.backupDir, rel, existed, sourceMode))) return false;
     ctx.covered.add(rel);
+    return true;
+  }
+
+  /**
+   * Guarantee the backup can undo a `chmod` of `filePath` before it happens
+   * (#1039). Returns false when it cannot, and the caller must then not change
+   * the mode.
+   *
+   * A mode change needs the mode, not the content. Copying the whole file to
+   * restore one mode is what put a plaintext `.env` in every run whose only
+   * change to it was the permissions fix, so a file with no copy in the run gets
+   * a mode-only entry (`modeOnlyFiles`) instead. A file this run already copied
+   * needs nothing more: its entry carries the mode it had before any fix.
+   *
+   * The mode is read with `stat`, following a link as `chmod` does, from the
+   * path the `chmod` will act on. Fail-safe like `ensureBackupCovers`: no
+   * backup context, a path outside the scanned tree, a mode the filesystem
+   * will not report, or a manifest that cannot be written all return false.
+   */
+  private async ensureModeRecorded(filePath: string): Promise<boolean> {
+    const ctx = this.backupContext;
+    if (!ctx) return false;
+
+    const rel = this.toTargetRelativePath(filePath, ctx.targetDir);
+    if (!rel) return false;
+    if (ctx.covered.has(rel) || ctx.modeRecorded.has(rel)) return true;
+
+    let mode: number;
+    try {
+      mode = (await fs.stat(filePath)).mode & 0o777;
+    } catch {
+      return false;
+    }
+    if (!(await this.recordModeOnly(ctx.backupDir, rel, mode))) return false;
+    ctx.modeRecorded.add(rel);
     return true;
   }
 
@@ -7595,6 +7662,11 @@ export class HardeningScanner {
    *
    * `sourceMode` is the copied file's mode, recorded in `existingFileModes`
    * in the same write that adds its `existingFiles` entry.
+   *
+   * #1039 — a file with a mode-only entry was `chmod`ed before this copy, so
+   * the copy's source no longer has the mode it started with. The entry's mode
+   * is the one recorded, and the entry moves into `existingFiles` in the same
+   * write, so `rollback` puts the bytes and the earlier mode back together.
    */
   private async appendToBackupManifest(
     backupDir: string,
@@ -7611,7 +7683,36 @@ export class HardeningScanner {
         : (manifest.absentAtFixWrite ??= []);
       if (!list.includes(rel)) {
         list.push(rel);
-        if (existed && sourceMode !== undefined) (manifest.existingFileModes ??= {})[rel] = sourceMode;
+        const modeOnly = manifest.modeOnlyFiles && Object.prototype.hasOwnProperty.call(manifest.modeOnlyFiles, rel)
+          ? manifest.modeOnlyFiles[rel]
+          : undefined;
+        const mode = modeOnly ?? sourceMode;
+        if (existed && mode !== undefined) (manifest.existingFileModes ??= {})[rel] = mode;
+        if (existed && modeOnly !== undefined && manifest.modeOnlyFiles) {
+          delete manifest.modeOnlyFiles[rel];
+          if (Object.keys(manifest.modeOnlyFiles).length === 0) delete manifest.modeOnlyFiles;
+        }
+      }
+      await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Add one mode-only entry to the on-disk manifest (#1039). Returns false if
+   * the manifest cannot be read or written, which makes the `chmod`
+   * unrecoverable and so must abandon it. An entry already recorded keeps the
+   * mode it was recorded with: that is the mode before the first change.
+   */
+  private async recordModeOnly(backupDir: string, rel: string, mode: number): Promise<boolean> {
+    const manifestPath = path.join(backupDir, '.manifest.json');
+    try {
+      const manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+      if (!manifest.existingFiles.includes(rel)) {
+        const modes = (manifest.modeOnlyFiles ??= {});
+        if (!Object.prototype.hasOwnProperty.call(modes, rel)) modes[rel] = mode;
       }
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
       return true;
@@ -7647,6 +7748,7 @@ export class HardeningScanner {
         backupIdent: this.lastBackupIdent,
         targetDir,
         covered: new Set(this.lastBackupCovered),
+        modeRecorded: new Set(),
       };
       return backupPath;
     } catch {
@@ -7994,8 +8096,18 @@ export class HardeningScanner {
             // fix writes and it is not reached through `applyFixWrite`, so the
             // sweep has to name it explicitly rather than assume the chokepoint
             // covers everything that mutates the filesystem.
+            //
+            // #1039 — and recoverable like every other mutation: the mode it had
+            // is recorded before it changes. A file this run copied already
+            // carries it; any other gets a mode-only entry, not a copy.
             const modePath = await this.resolveFixWriteTarget(filePath, ['PERM-001']);
-            if (modePath !== null) {
+            if (modePath !== null && !(await this.ensureModeRecorded(modePath))) {
+              this.fixWriteFailures.push({
+                file: filePath,
+                code: 'BACKUP-UNCOVERED',
+                message: 'not changed: its mode could not be recorded in the backup, so rollback could not undo this',
+              });
+            } else if (modePath !== null) {
               try {
                 await fs.chmod(modePath, 0o600);
               } catch (err) {
@@ -12733,7 +12845,15 @@ dist/
   }
 
   /**
-   * Create a backup of files that may be modified during auto-fix
+   * Create this run's backup directory and its manifest, before any fix runs.
+   *
+   * #1039 — it copies nothing. It used to copy every candidate that existed,
+   * so a run held a plaintext `.env` that no fix had touched. What it does
+   * before the fixes is what cannot be done later: prove which candidates are
+   * absent (the evidence `recordCreatedFiles` needs before `rollback` may delete
+   * a file) and withhold the candidates that resolve outside the tree. A file
+   * is copied by `ensureBackupCovers` when a fix is about to write it, and a
+   * mode change is recorded by `ensureModeRecorded` before the `chmod`.
    */
   private async createBackup(targetDir: string): Promise<string> {
     this.lastBackupWithheldLinks = [];
@@ -12768,7 +12888,7 @@ dist/
       createdFiles: [],
     };
 
-    // Backup each file that exists (static list + skill + web directory scan)
+    // Account for each candidate (static list + skill + web directory scan)
     const filesToBackup = [...HardeningScanner.BACKUP_FILES];
 
     // Skill files discovered recursively. The SKILL-004 and SKILL-019
@@ -12818,15 +12938,14 @@ dist/
         // direction) — plus a disclosure the caller renders alongside the
         // scan-side withheld links. An in-tree link (`SOUL.md ->
         // docs/SOUL.md`) resolves inside and is still backed up by content.
+        //
+        // #1039 — a candidate that stays inside is not copied here. It is left
+        // uncovered, and `ensureBackupCovers` copies it when a fix is about to
+        // write it; a candidate no fix writes is never copied at all.
         const stays = readStaysInsideTree(sourcePath, targetDir);
         if (!stays.ok) {
           this.lastBackupWithheldLinks.push({ rel: file, resolved: stays.resolved, call: 'copyFile' });
-          continue;
         }
-        const destPath = path.join(backupDir, file);
-        const sourceMode = await this.copyIntoBackup(sourcePath, destPath);
-        manifest.existingFiles.push(file);
-        if (sourceMode !== undefined) (manifest.existingFileModes ??= {})[file] = sourceMode;
       } catch {
         // #313 — absence is PROVEN here, never inferred from the fact that
         // something went wrong. This catch-all collapsed ENOENT-of-target,
@@ -12871,7 +12990,7 @@ dist/
 
     // Normalized so `ensureBackupCovers` compares like with like: the entries
     // above are joined with `path.join`, and `toTargetRelativePath` is what
-    // the write path produces (#300).
+    // the write path produces (#300). `existingFiles` is empty here (#1039).
     this.lastBackupCovered = [...manifest.existingFiles, ...manifest.absentAtBackup]
       .map((f) => this.toTargetRelativePath(f, targetDir))
       .filter((f): f is string => f !== null);
@@ -12890,7 +13009,7 @@ dist/
    * always reflects the first write — the one the user was told about.
    *
    * A candidate is recorded only when it did NOT exist at backup time (a
-   * file that existed was copied into the backup and must be restored, never
+   * file that existed is copied into the backup when a fix first writes it, and must be restored, never
    * deleted) and exists now. Silent on every failure: this is bookkeeping for
    * a convenience feature and must never break a scan that already succeeded.
    */
@@ -13021,18 +13140,23 @@ dist/
     // field out would erase every recorded mode at the next fix-write copy.
     // Only keys that are `existingFiles` entries, with an integer from 0 to
     // 4095 (`chmod`'s range), survive.
-    const rawModes = parsed.existingFileModes;
     const listed = new Set(existingFiles);
-    const modeEntries = rawModes && typeof rawModes === 'object' && !Array.isArray(rawModes)
-      ? Object.entries(rawModes as Record<string, unknown>).filter(
-        (e): e is [string, number] => listed.has(e[0]) && Number.isInteger(e[1]) && (e[1] as number) >= 0 && (e[1] as number) <= 0o7777,
-      )
-      : [];
+    const modeEntries = (raw: unknown, keep: (rel: string) => boolean): Array<[string, number]> =>
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? Object.entries(raw as Record<string, unknown>).filter(
+          (e): e is [string, number] => keep(e[0]) && Number.isInteger(e[1]) && (e[1] as number) >= 0 && (e[1] as number) <= 0o7777,
+        )
+        : [];
+    const fileModes = modeEntries(parsed.existingFileModes, (rel) => listed.has(rel));
+    // #1039 — same rule, for paths with no copy: an entry for a file that also
+    // has a copy is dropped, and the copy's own mode is the one that counts.
+    const modeOnly = modeEntries(parsed.modeOnlyFiles, (rel) => !listed.has(rel));
 
     return {
       version: typeof parsed.version === 'number' ? parsed.version : 1,
       existingFiles,
-      existingFileModes: modeEntries.length > 0 ? Object.fromEntries(modeEntries) : undefined,
+      existingFileModes: fileModes.length > 0 ? Object.fromEntries(fileModes) : undefined,
+      modeOnlyFiles: modeOnly.length > 0 ? Object.fromEntries(modeOnly) : undefined,
       absentAtBackup: Array.isArray(parsed.absentAtBackup)
         ? (parsed.absentAtBackup as unknown[]).filter((f): f is string => typeof f === 'string')
         : [],
@@ -13154,10 +13278,46 @@ dist/
     // resolved destination, so it has the restore's containment: a link out of
     // the tree was refused above, before either call. A failed `chmod` leaves
     // the file at 0600, which is not a reason to report the restore failed.
+    // #1039 — the permission bits only: a recorded set-user-id, set-group-id
+    // or sticky bit is never put on a file.
     if (restoreMode !== undefined) {
-      try { await fs.chmod(dest.path, restoreMode); } catch { /* the bytes are back; the mode stays private */ }
+      try { await fs.chmod(dest.path, restoreMode & 0o777); } catch { /* the bytes are back; the mode stays private */ }
     }
     return { ok: true };
+  }
+
+  /**
+   * Put one mode-only entry back (#1039): `chmod` the file to the mode it had
+   * before the permissions fix. Its content was never copied, because no fix
+   * changed it.
+   *
+   * The destination is resolved the way a restore's is, following an in-tree
+   * link as the fix's `chmod` did and refusing one that leaves the tree. Only
+   * the permission bits are applied. A file that is no longer there, or whose
+   * mode the filesystem refuses to change, is reported, with the mode it should
+   * have, so the user can set it by hand.
+   */
+  private async restoreOneMode(
+    targetReal: string,
+    rel: string,
+    mode: number,
+  ): Promise<{ ok: true; mode: number } | { ok: false; reason: string }> {
+    const permissions = mode & 0o777;
+    const shown = permissions.toString(8).padStart(4, '0');
+    const dest = await this.resolveInsideTree(targetReal, rel, { followLeafLink: true });
+    if (!dest.ok) return { ok: false, reason: `${RESTORE_REFUSAL_REASONS[dest.cause]}; its mode was ${shown}` };
+    try {
+      await fs.chmod(dest.path, permissions);
+      return { ok: true, mode: permissions };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      return {
+        ok: false,
+        reason: code === 'ENOENT'
+          ? `it is no longer there; its mode was ${shown}`
+          : `its mode could not be set back to ${shown}${code ? ` (${code})` : ''}`,
+      };
+    }
   }
 
   /**
@@ -13331,6 +13491,7 @@ dist/
       manifest: BackupManifest; unrestored: RollbackReport['unrestored'];
     }> = [];
     let restored: string[] = [];
+    let modesRestored: RollbackReport['modesRestored'] = [];
     let unrestored: RollbackReport['unrestored'] = [];
     let backupReal: string | undefined;
     let backupDir: string | undefined;
@@ -13429,6 +13590,7 @@ dist/
       const put: string[] = [];
       // Recorded modes are honored for a store run only. See `existingFileModes`.
       const modes = backupSource === 'store' ? manifest?.existingFileModes : undefined;
+      const modeOnly = backupSource === 'store' ? Object.entries(manifest?.modeOnlyFiles ?? {}) : [];
       for (const file of manifest?.existingFiles ?? []) {
         const restoreMode = modes && Object.prototype.hasOwnProperty.call(modes, file) ? modes[file] : undefined;
         const outcome = await this.restoreOneBackupFile(candidateReal, targetReal, file, restoreMode);
@@ -13443,23 +13605,46 @@ dist/
           });
         }
       }
+      // #1039 — mode-only entries, after the copies. A path with both kinds was
+      // merged into `existingFiles` when the copy was taken, so none is set twice.
+      // The run holds no copy for any of these, so an entry that does not go
+      // back never keeps the run on disk; its reason carries the mode instead.
+      const modesPut: RollbackReport['modesRestored'] = [];
+      const contentFailures = attempt.length;
+      for (const [file, recorded] of modeOnly) {
+        const outcome = await this.restoreOneMode(targetReal, file, recorded);
+        if (outcome.ok) modesPut.push({ path: file, mode: outcome.mode });
+        else attempt.push({ path: file, reason: outcome.reason, backupHoldsCopy: false });
+      }
       // A candidate that promises NOTHING contributes nothing either, and the
       // cheapest forgery there is — 49 bytes of empty manifest — used to be
       // selected, restore nothing, print "[+] Rollback complete", consume
       // itself, and say nothing about the backup behind it. Three of them cost
       // a user three runs of reading success before recovery. Advancing past it
       // cannot write anything stale, because it would have written nothing.
+      //
+      // #1039 — that forgery is a directory INSIDE the tree. A run in the store
+      // is one HackMyAgent wrote, and since a run copies only what a fix changed,
+      // one that lists nothing is a `--fix` run that changed nothing. It is the
+      // newest run, so it is the one this rollback undoes: passing over it would
+      // undo the run before it in the same step and leave it on disk for ever,
+      // reported as a directory that may not be the user's.
       const promisesNothing = (manifest?.existingFiles.length ?? 0) === 0
         && (manifest?.createdFiles.length ?? 0) === 0
-        && (manifest?.legacyCreatedFiles?.length ?? 0) === 0;
-      if (promisesNothing && sortedBackups.indexOf(candidate) < sortedBackups.length - 1) {
+        && (manifest?.legacyCreatedFiles?.length ?? 0) === 0
+        && modeOnly.length === 0;
+      if (promisesNothing && backupSource === 'in-tree' && sortedBackups.indexOf(candidate) < sortedBackups.length - 1) {
         barren.push({
           name: candidate, at: candidateReal, dir: candidateDir,
           manifest: manifest as BackupManifest, unrestored: [],
         });
         continue;
       }
-      if (put.length === 0 && attempt.length > 0) {
+      // Only a COPY that did not go back makes a candidate barren. A mode-only
+      // entry that could not be set (the file deleted since, say) is reported
+      // below, but passing over the run for it would put an older run's
+      // content back over the user's later work.
+      if (put.length === 0 && modesPut.length === 0 && contentFailures > 0) {
         barren.push({
           name: candidate, at: candidateReal, dir: candidateDir,
           manifest: manifest as BackupManifest, unrestored: attempt,
@@ -13468,6 +13653,7 @@ dist/
       }
 
       restored = put;
+      modesRestored = modesPut;
       unrestored = attempt;
       backupReal = candidateReal;
       backupDir = candidateDir;
@@ -13487,6 +13673,7 @@ dist/
       latestBackup = first.name;
       manifest = first.manifest;
       restored = [];
+      modesRestored = [];
       unrestored = first.unrestored;
     }
 
@@ -13506,6 +13693,7 @@ dist/
 
     const report: RollbackReport = {
       restored,
+      modesRestored,
       removed: [],
       keptModified: [],
       keptUnverifiable: [],

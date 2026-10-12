@@ -16,13 +16,16 @@
  * All three directions are pinned:
  *   1. nothing fixed, nothing copied: one scan;
  *   2. nothing fixed, a copy in the store: still one scan, and the announced
- *      score is the rescan's (the case #374 needed the second scan for);
+ *      score is the rescan's (the case #374 needed the second scan for). Since
+ *      #1039 a copy is taken only for a fix write, so this is a write refused
+ *      after its copy;
  *   3. a fix landed: the verify scan runs.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdir, writeFile, rm, readdir, readFile, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
+import { fs as trackedFs } from '../../src/hardening/tracked-fs';
 import { tempDir } from '../helpers/temp-dir';
 import { latestStoreRun, storeRuns } from '../helpers/backup-store';
 
@@ -81,10 +84,24 @@ describe('#381/#376 the post-fix verify scan runs only when a fix landed', () =>
     const dir = tempDir('hma-381-copy-');
     try {
       await writeFile(path.join(dir, 'package.json'), '{"name":"f","version":"1.0.0"}\n');
-      await writeFile(path.join(dir, '.gitignore'), GITIGNORE);
+      // Missing the credential entries, so a .gitignore fix computes a rewrite.
+      await writeFile(path.join(dir, '.gitignore'), 'node_modules/\ndist/\n');
       await mkdir(path.join(dir, 'src'), { recursive: true });
       await writeFile(path.join(dir, 'src', 'index.js'), 'module.exports = 1;\n');
 
+      // #1039 — a run copies a file only when a fix is about to write it, so a
+      // copy with nothing fixed is a write refused after the copy was taken.
+      // The refusal is the filesystem's, on the target's .gitignore alone.
+      const target = trackedFs as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+      const writeFileReal = target.writeFile;
+      vi.spyOn(target, 'writeFile').mockImplementation(async (...args: unknown[]) => {
+        if (typeof args[0] === 'string' && path.basename(args[0]) === '.gitignore') {
+          const err = new Error(`EPERM: operation not permitted, open '${args[0]}'`) as NodeJS.ErrnoException;
+          err.code = 'EPERM';
+          throw err;
+        }
+        return writeFileReal(...args);
+      });
       const scan = vi.spyOn(HardeningScanner.prototype, 'scan');
       const fixed = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
       const scansDuringFix = scan.mock.calls.length;
@@ -94,7 +111,11 @@ describe('#381/#376 the post-fix verify scan runs only when a fix landed', () =>
       // A copy landed in the archive and no fix landed: before #376 this was the
       // one case that ran the second scan for the archive's sake alone.
       const archive = await onlyArchive(dir);
-      expect(await readdir(archive)).toContain('package.json');
+      expect(await readdir(archive)).toContain('.gitignore');
+      expect(
+        fixed.findings.filter((f) => f.checkId === 'FIX-WRITE-FAILED').map((f) => f.file),
+        'the .gitignore write was not attempted and refused, so the copy is not one a fix took',
+      ).toEqual(['.gitignore']);
       expect(
         fixed.findings.filter((f) => f.fixed && f.file).map((f) => `${f.checkId} ${f.file}`),
         'a fix landed, so this no longer isolates the archive half of the gate',
@@ -103,9 +124,15 @@ describe('#381/#376 the post-fix verify scan runs only when a fix landed', () =>
       // ── The property ──
       expect(scansDuringFix, 'a copy in the backup store triggered a second full scan').toBe(1);
 
+      // The copy in the store moves no result: apart from the finding that
+      // reports this run's refused write, which only a `--fix` run can carry,
+      // the run's findings are the rescan's.
       const rescan = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
-      expect(fixed.score).toBe(rescan.score);
-      expect(fixed.rawScore).toBe(rescan.rawScore);
+      const key = (f: { checkId: string; file?: string; passed: boolean; severity: string }): string =>
+        `${f.checkId}|${f.file ?? ''}|${f.passed}|${f.severity}`;
+      expect(
+        fixed.findings.filter((f) => f.checkId !== 'FIX-WRITE-FAILED').map(key).sort(),
+      ).toEqual(rescan.findings.map(key).sort());
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

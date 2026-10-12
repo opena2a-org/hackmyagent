@@ -78,7 +78,10 @@ describe('#327 a rollback reports what it could not restore', () => {
 
     const report = await scanner.rollback(dir);
 
-    expect(report.restored, 'the symlinked config was not restored').toContain('config.json');
+    // #1039 — the copy is taken by the write gate, at the path the write lands
+    // on, so the run lists the link's target. Before, `createBackup` also
+    // copied it under the link's own name, whether or not a fix wrote it.
+    expect(report.restored, 'the symlinked config was not restored').toEqual(['shared/actual.json']);
     expect(report.unrestored, 'a legitimate restore was reported as a failure').toEqual([]);
     expect(await readFile(real, 'utf-8'), 'the original bytes were not recovered').toBe(original);
     expect(
