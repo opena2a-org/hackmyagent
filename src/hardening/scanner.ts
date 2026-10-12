@@ -59,7 +59,7 @@ import { lineOfJsonValue } from '../scanner/json-locate';
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
 import { escapeForDisplay } from '../ui/display-safe';
-import { prepareArchiveStore, findArchiveStore, listArchiveRuns } from '../store/archive-store';
+import { prepareArchiveStore, findArchiveStore, listArchiveRuns, backupStoreRootVariable } from '../store/archive-store';
 import { vendorAlternation, findJwtMatch, anchoredVendorAlternation } from '../types/credential-format';
 import { scanGitHistory, shortCommit, type HistoryCredentialHit, type HistoryScanPlan } from './git-history-scan';
 import { verifySigncryptSignature, describeUnsigned } from '../plugins/signcrypt-block';
@@ -1510,7 +1510,7 @@ function identityOrUndefined(probe: IdentityProbe): FsIdentity | undefined {
  * The code lets the finding name the real cause and the matching remedy.
  *
  * The refusals about the store directory itself (`HMA-BACKUP-SYMLINK`,
- * `HMA-BACKUP-NOT-DIR`, `HMA-BACKUP-INSIDE-TREE`) are raised by
+ * `HMA-BACKUP-NOT-DIR`, `HMA-BACKUP-INSIDE-TREE`, `HMA-BACKUP-RELATIVE-ROOT`) are raised by
  * `src/store/archive-store.ts` with the same `code` field (#376).
  */
 type BackupSetupCode = 'HMA-BACKUP-NO-NEW-DIR' | 'HMA-BACKUP-VANISHED' | 'HMA-BACKUP-UNIDENTIFIED';
@@ -5384,6 +5384,20 @@ export class HardeningScanner {
             'Backups are kept outside the directory being fixed, so that no later scan reports the '
             + `copies. The backup store (${storePath}) is inside the directory you asked to fix, so `
             + 'the run detected only. Nothing was written and nothing was changed.',
+        },
+        'HMA-BACKUP-RELATIVE-ROOT': {
+          // The variable that set the root, not always HMA_BACKUP_HOME: a
+          // relative OPENA2A_HOME reaches here too, and naming the wrong one
+          // sends the user to a variable they never set.
+          fix: backupStoreRootVariable() === 'HMA_BACKUP_HOME'
+            ? `Set HMA_BACKUP_HOME to an absolute path outside the directory you are fixing, then re-run: ${rerun}`
+            : `Set ${backupStoreRootVariable()} to an absolute path, or set HMA_BACKUP_HOME to an absolute path outside the directory you are fixing, then re-run: ${rerun}`,
+          guidance:
+            'Backups are kept in a per-user store outside the scanned tree (HMA_BACKUP_HOME, else '
+            + '$OPENA2A_HOME/backups, else ~/.opena2a/backups), and `rollback` finds them again by '
+            + `resolving the same location. ${backupStoreRootVariable()} is a relative path, which resolves `
+            + 'to a different directory from each working directory, so the run detected only. Nothing '
+            + 'was written and nothing was changed.',
         },
         'HMA-BACKUP-NO-NEW-DIR': {
           fix: `Re-run: ${rerun}`,
@@ -12871,10 +12885,16 @@ dist/
         + 'copy the files back by hand from the run directories inside it.',
       );
     }
-    if (store.kind === 'unknown' && store.dir) {
+    if (store.kind === 'unknown') {
+      // With no directory the store could not even be located (a relative
+      // HMA_BACKUP_HOME, say). That is refused too, and never read as "the
+      // store holds no run": falling back to an archive inside the tree here
+      // would give a forged one the first try whenever the store is unknown.
       throw new Error(
-        `The backup store ${store.dir} for this directory could not be used: ${store.reason}. `
-        + 'Nothing was restored. Check that directory, then run rollback again.',
+        store.dir
+          ? `The backup store ${store.dir} for this directory could not be used: ${store.reason}. `
+            + 'Nothing was restored. Check that directory, then run rollback again.'
+          : `The backup store for this directory could not be located: ${store.reason}. Nothing was restored.`,
       );
     }
     let storeRuns: string[] = [];

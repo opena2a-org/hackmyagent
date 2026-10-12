@@ -1,0 +1,167 @@
+/**
+ * #376 — where the backup store is, and what `--fix` and `rollback` do when it
+ * cannot be there.
+ *
+ * `--fix` keeps its pre-fix copies in a per-user store outside the scanned
+ * tree: `$HMA_BACKUP_HOME`, else `$OPENA2A_HOME/backups`, else
+ * `~/.opena2a/backups`, one directory per target keyed by the target's
+ * filesystem identity. These cells pin the location contract itself.
+ *
+ * A relative store root. Measured before this was refused: with
+ * `HMA_BACKUP_HOME=relstore`, `--fix` run from directory A put the store at
+ * `A/relstore/...`, and `rollback` in the same environment from directory B
+ * exited 1 with "No backup found", while from A it restored 3 files. The
+ * backups existed and the command that restores them said they did not.
+ */
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { HardeningScanner } from '../../src/hardening/scanner';
+import { findArchiveStore, prepareArchiveStore } from '../../src/store/archive-store';
+import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
+import { storeDirOf } from '../helpers/backup-store';
+
+const CLI = path.resolve(__dirname, '..', '..', 'dist', 'cli.js');
+
+/** Synthesised at runtime — never a literal in the source tree. */
+const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
+
+/** A tree `--fix` changes: the token in `config.json` is replaced by a reference. */
+function fixableTree(prefix = 'hma-376-loc-'): string {
+  const dir = tempDir(prefix);
+  writeFileSync(path.join(dir, 'package.json'), '{"name":"p","version":"1.0.0"}\n');
+  writeFileSync(path.join(dir, 'config.json'), `${JSON.stringify({ githubToken: FAKE_GH_TOKEN, port: 8080 }, null, 2)}\n`);
+  return dir;
+}
+
+const liveConfig = (dir: string): string => readFileSync(path.join(dir, 'config.json'), 'utf-8');
+/** The directory as the store spells it: its real path (macOS's `/var` is a link). */
+const realDir = (dir: string): string => realpathSync.native(dir);
+
+interface Spawned { stdout: string; stderr: string; status: number | null }
+
+/**
+ * The built CLI, in `cwd`, with exactly the store variables the cell names.
+ * `HMA_BACKUP_HOME` from vitest.setup.ts is dropped first, so a cell that sets
+ * only `OPENA2A_HOME` measures that variable and not the suite's own store.
+ */
+function hma(args: string[], cwd: string, storeEnv: Record<string, string>): Spawned {
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' };
+  delete env.HMA_BACKUP_HOME;
+  delete env.OPENA2A_HOME;
+  const res = spawnSync(process.execPath, [CLI, ...args], {
+    encoding: 'utf8',
+    timeout: 120_000,
+    cwd,
+    env: { ...env, ...storeEnv },
+  });
+  // eslint-disable-next-line no-control-regex
+  const strip = (s: string | null): string => (s ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+  return { stdout: strip(res.stdout), stderr: strip(res.stderr), status: res.status };
+}
+
+interface FixJson { backupPath?: string; findings: Array<{ checkId: string; passed: boolean; message?: string; fix?: string }> }
+
+describe.skipIf(!existsSync(CLI))('#376 a backup store root that is not absolute is refused', () => {
+  beforeAll(assertDistFreshIfPresent);
+
+  // Each row sets ONE variable to a relative path. `created` is the directory
+  // a run that resolved it against the working directory would have made.
+  it.each([
+    {
+      variable: 'HMA_BACKUP_HOME',
+      storeEnv: (home: string): Record<string, string> => ({ HOME: home, OPENA2A_HOME: home, HMA_BACKUP_HOME: 'relstore' }),
+      created: 'relstore',
+    },
+    {
+      variable: 'OPENA2A_HOME',
+      storeEnv: (home: string): Record<string, string> => ({ HOME: home, OPENA2A_HOME: 'rel' }),
+      created: path.join('rel', 'backups'),
+    },
+  ])('--fix detects only and rollback names $variable', ({ variable, storeEnv, created }) => {
+    const target = fixableTree();
+    const home = tempDir('hma-376-home-');
+    const cwdA = tempDir('hma-376-cwd-a-');
+    const cwdB = tempDir('hma-376-cwd-b-');
+    const before = liveConfig(target);
+
+    const fix = hma(['secure', target, '--fix', '--json', '--static-only', '--no-machine-posture'], cwdA, storeEnv(home));
+    const result = JSON.parse(fix.stdout) as FixJson;
+    const refused = result.findings.filter((f) => f.checkId === 'FIX-BACKUP-FAILED');
+
+    expect(refused, 'the run fixed with a store resolved against the working directory').toHaveLength(1);
+    expect(refused[0].passed).toBe(false);
+    expect(refused[0].message, 'the refusal does not name the variable that is relative').toContain(variable);
+    expect(refused[0].fix, 'the remedy does not name the variable to set').toContain(variable);
+    expect(result.backupPath, 'a run that took no backup reported one').toBeUndefined();
+    expect(liveConfig(target), 'a detect-only run changed the live file').toBe(before);
+    expect(existsSync(path.join(cwdA, created)), `a store was created under the working directory at ${created}`).toBe(false);
+
+    // The same environment from another directory: the store cannot be located,
+    // and the report says which variable to correct. "No backup found" would
+    // tell the user to run --fix again, which is not the remedy.
+    const rollback = hma(['rollback', target], cwdB, storeEnv(home));
+    const said = rollback.stdout + rollback.stderr;
+    expect(rollback.status, 'rollback claimed success with a store it could not locate').not.toBe(0);
+    expect(said).toContain(variable);
+    expect(said).not.toContain('No backup found');
+    expect(existsSync(path.join(cwdB, created))).toBe(false);
+    expect(liveConfig(target)).toBe(before);
+  }, 180_000);
+
+  it('creates nothing at all under the working directory for a relative HMA_BACKUP_HOME', () => {
+    const target = fixableTree();
+    const home = tempDir('hma-376-home-');
+    const cwd = tempDir('hma-376-cwd-');
+
+    hma(['secure', target, '--fix', '--json', '--static-only', '--no-machine-posture'], cwd,
+      { HOME: home, OPENA2A_HOME: home, HMA_BACKUP_HOME: 'relstore' });
+
+    expect(readdirSync(cwd)).toEqual([]);
+  }, 180_000);
+});
+
+describe('#376 the store lookup and the store setup refuse a relative root', () => {
+  let saved: { backup?: string; opena2a?: string };
+
+  beforeEach(() => {
+    saved = { backup: process.env.HMA_BACKUP_HOME, opena2a: process.env.OPENA2A_HOME };
+  });
+
+  afterEach(() => {
+    if (saved.backup === undefined) delete process.env.HMA_BACKUP_HOME; else process.env.HMA_BACKUP_HOME = saved.backup;
+    if (saved.opena2a === undefined) delete process.env.OPENA2A_HOME; else process.env.OPENA2A_HOME = saved.opena2a;
+  });
+
+  it.each([
+    { variable: 'HMA_BACKUP_HOME', set: (): void => { process.env.HMA_BACKUP_HOME = 'relstore'; } },
+    { variable: 'OPENA2A_HOME', set: (): void => { delete process.env.HMA_BACKUP_HOME; process.env.OPENA2A_HOME = 'rel'; } },
+  ])('for $variable', async ({ variable, set }) => {
+    const target = fixableTree();
+    set();
+
+    const found = await findArchiveStore(target);
+    expect(found.kind, 'a relative root was resolved against the working directory').toBe('unknown');
+    expect(found.kind === 'unknown' ? found.reason : '').toContain(variable);
+
+    await expect(prepareArchiveStore(target)).rejects.toMatchObject({
+      code: 'HMA-BACKUP-RELATIVE-ROOT',
+      message: expect.stringContaining(variable),
+    });
+
+    // The scanner turns that into the unknown-store refusal, never into the
+    // "no run in the store" branch that falls back to an archive in the tree.
+    await expect(new HardeningScanner().rollback(target)).rejects.toThrow(variable);
+  }, 60_000);
+
+  it('still treats an empty HMA_BACKUP_HOME as unset', async () => {
+    const target = fixableTree();
+    const home = tempDir('hma-376-home-');
+    process.env.HMA_BACKUP_HOME = '';
+    process.env.OPENA2A_HOME = home;
+
+    expect(path.dirname(await storeDirOf(target))).toBe(path.join(realDir(home), 'backups'));
+  });
+});
