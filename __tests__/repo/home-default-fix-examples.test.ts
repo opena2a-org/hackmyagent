@@ -12,6 +12,12 @@
  * `secure-openclaw` and `secure-nemoclaw` are the commands whose no-argument
  * form resolves to a directory under $HOME. `secure --fix` defaults to the
  * current project, which is where a reader running it expects it to act.
+ *
+ * Both commands are now hidden from `--help`, and the docs cite neither
+ * (__tests__/docs/documented-command-arguments.test.ts): the OpenClaw block
+ * documents `secure ~/.openclaw`, which acts on `$HOME` only because the line
+ * names it. The guard below stays so a reintroduced no-directory `--fix` line
+ * fails here with the #526 reason.
  */
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -41,9 +47,9 @@ function positionalsAfter(line: string, command: string): string[] | null {
 const docs = [join(ROOT, 'README.md'), ...markdownFiles(join(ROOT, 'docs'))];
 
 describe('#526 --fix examples for $HOME-default commands name their directory', () => {
-  it('finds the documented secure-openclaw examples (non-vacuity)', () => {
-    const text = readFileSync(join(ROOT, 'docs', 'SECURITY_CHECKS.md'), 'utf8');
-    expect(text.split('\n').filter(l => /hackmyagent secure-openclaw .*--fix/.test(l)).length).toBeGreaterThan(0);
+  it('reads the directory argument of a documented --fix line (non-vacuity)', () => {
+    expect(positionalsAfter('hackmyagent secure-openclaw --fix   # Auto-fix issues', 'secure-openclaw')).toEqual([]);
+    expect(positionalsAfter('hackmyagent secure-openclaw ~/.openclaw --fix --dry-run', 'secure-openclaw')).toEqual(['~/.openclaw']);
   });
 
   it('never shows --fix without a directory argument', () => {
@@ -60,9 +66,12 @@ describe('#526 --fix examples for $HOME-default commands name their directory', 
     expect(offenders).toEqual([]);
   });
 
-  it('states the real default directory order', () => {
+  it('names the OpenClaw directory on every --fix line of the OpenClaw usage block', () => {
     const text = readFileSync(join(ROOT, 'docs', 'SECURITY_CHECKS.md'), 'utf8');
-    expect(text).not.toMatch(/secure-openclaw\s+#\s*Scan default ~\/\.moltbot/);
-    expect(text).toContain('the first of ~/.openclaw, ~/.moltbot, ~/.clawdbot that exists');
+    expect(text).not.toMatch(/#\s*Scan default ~\/\.moltbot/);
+    const section = text.slice(text.indexOf('## OpenClaw Security Checks'), text.indexOf('### SKILL Checks'));
+    const fixLines = section.split('\n').filter(l => /^hackmyagent secure\b.*--fix\b/.test(l.split(/\s#/)[0]));
+    expect(fixLines.length).toBeGreaterThan(0);
+    expect(fixLines.filter(l => !(positionalsAfter(l, 'secure') ?? []).includes('~/.openclaw'))).toEqual([]);
   });
 });

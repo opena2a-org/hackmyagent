@@ -108,3 +108,24 @@ describe('documented command arguments (#762)', () => {
     expect(readFileSync(path.join(REPO_ROOT, 'docs', 'REGISTRY_INTEGRATION.md'), 'utf8')).toContain('https://api.oa2a.org');
   });
 });
+
+/**
+ * A command registered with `{ hidden: true }` still runs, so every gate that
+ * asks "is this verb registered" passes it, while `hackmyagent --help` never
+ * lists it. docs/SECURITY_CHECKS.md documented the OpenClaw checks only through
+ * `secure-openclaw`, which src/cli.ts marks deprecated and hidden because
+ * `secure` detects OpenClaw itself: a reader checking the command against
+ * `--help` found nothing, and the block taught the command the CLI retires.
+ */
+describe('documented commands are ones --help lists', () => {
+  const HIDDEN = [...CLI_SRC.matchAll(/\.command\('([a-z][a-z0-9-]*)'[^)\n]*\bhidden:\s*true/g)].map((m) => m[1]);
+
+  it('reads the hidden commands src/cli.ts registers (non-vacuity)', () => {
+    expect(HIDDEN.length, 'no `.command(<name>, { hidden: true })` found in src/cli.ts').toBeGreaterThan(0);
+  });
+
+  it('no documented invocation names a hidden command', () => {
+    const bad = ALL.filter((i) => HIDDEN.includes(i.verb)).map(describeInvocation);
+    expect(bad, `hidden from --help: ${HIDDEN.join(', ')}. Document the listed command that replaces it (\`secure <dir>\` detects OpenClaw and NemoClaw)`).toEqual([]);
+  });
+});
