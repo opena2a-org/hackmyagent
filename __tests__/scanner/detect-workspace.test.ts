@@ -41,7 +41,12 @@ import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync,
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
-import { discoverAgentProjects, parseMcpConfig } from '../../src/scanner/detect';
+import {
+  discoverAgentProjects,
+  GOVERNANCE_TITLE_GAPS,
+  GOVERNANCE_TITLE_NO_FILE,
+  parseMcpConfig,
+} from '../../src/scanner/detect';
 
 /** Shaped like the real thing, obviously not real. */
 const FAKE_ANTHROPIC = ['sk', '-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('');
@@ -217,8 +222,12 @@ describe('detect from a workspace root', () => {
     const { out, code } = run([], hr);
     expect(code).toBe(1);
     expect(out).toContain('AI Agents (');
-    expect(out).toMatch(/Cursor\s+installed\s+ungoverned/);
-    expect(out).toMatch(/AI agents? without governance/);
+    // The project's `.cursorrules` was read and scored, so its agents have
+    // governance gaps; `ungoverned` and "without governance" are for a
+    // project with no governance file.
+    expect(out).toMatch(/Cursor\s+installed\s+governance gaps/);
+    expect(out).toMatch(new RegExp(`AI agents? ${GOVERNANCE_TITLE_GAPS}`));
+    expect(out).not.toContain(GOVERNANCE_TITLE_NO_FILE);
     expect(out).toContain('Cursor (installed: .cursorrules)');
 
     const doc = JSON.parse(run(['--json', hr]).out);
