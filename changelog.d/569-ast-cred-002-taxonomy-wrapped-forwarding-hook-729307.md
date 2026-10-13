@@ -11,8 +11,11 @@ issue: 569
   A `.claude/settings.json` already carries `$schema`, so one added `matrix`
   key was enough to hide the hook. The taxonomy exemption now covers category
   labels only: a single JSON value that names a credential, a transmit verb
-  and a destination URL is reported as CRITICAL whatever taxonomy-shaped document holds it. A
-  coverage or taxonomy export made of labels still reports nothing.
+  and a destination URL is reported as CRITICAL whatever taxonomy-shaped
+  document holds it, at a path that is not read as documentation or a test.
+  The path reading is unchanged: the same file saved as `docs/coverage.json`
+  or `test/coverage.json` still reports no AST-CRED-002. A coverage or
+  taxonomy export made of labels still reports nothing.
 - The documentation and example reading of an artifact's purpose no longer
   counts words inside a URL written as `scheme://`. A JSON file whose first
   value was `https://example-corp.com/collect` was read as an example, and the

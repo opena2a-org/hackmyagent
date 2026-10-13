@@ -37,6 +37,21 @@ afterEach(async () => {
   await rm(base, { recursive: true, force: true });
 });
 
+/**
+ * The answer each side reaches for one candidate root. `home` is the home
+ * directory as the environment names it, which can be through a symbolic link:
+ * `HOME=/tmp/<dir>` on macOS, where /tmp resolves to /private/tmp.
+ * `rootTooBroad` compares two strings, so it is handed both of them resolved,
+ * the way `resolveRoots` and `initMcp` hand them over. Handing it `home` as
+ * named compared a resolved root with a link and answered null.
+ */
+async function bothSides(candidate: string, home: string) {
+  return {
+    server: await resolveRoots([candidate], { homedir: home }),
+    predicate: rootTooBroad(realpathSync(candidate), realpathSync(home)),
+  };
+}
+
 describe('#463 the root policy is one predicate, not one per caller', () => {
   it('refuses the filesystem root and a home directory', () => {
     expect(rootTooBroad('/', '/Users/someone')).toBe('filesystem-root');
@@ -51,10 +66,28 @@ describe('#463 the root policy is one predicate, not one per caller', () => {
     // Pinning agreement rather than each side separately: the defect was not
     // that either check was wrong, it was that only one of them existed.
     for (const [candidate, why] of [['/', 'filesystem-root'], [homedir(), 'home-directory']] as const) {
-      const server = await resolveRoots([candidate]);
+      const { server, predicate } = await bothSides(candidate, homedir());
       expect(server.ok).toBe(false);
       if (!server.ok) expect(server.refusal).toMatchObject({ kind: 'root-too-broad', why });
-      expect(rootTooBroad(realpathSync(candidate), homedir())).toBe(why);
+      expect(predicate).toBe(why);
+    }
+  });
+
+  it('is the same answer when HOME names the home directory through a symbolic link', async () => {
+    // The case above takes whatever HOME the suite runs under, so it met this
+    // shape only on a machine whose HOME was a link, and failed there. This one
+    // builds the link, with the root given both ways.
+    const realHome = path.join(base, 'real-home');
+    const linkedHome = path.join(base, 'linked-home');
+    await mkdir(realHome);
+    await symlink(realHome, linkedHome);
+    for (const candidate of [linkedHome, realHome]) {
+      const { server, predicate } = await bothSides(candidate, linkedHome);
+      expect(server.ok).toBe(false);
+      if (!server.ok) {
+        expect(server.refusal).toMatchObject({ kind: 'root-too-broad', root: realHome, why: 'home-directory' });
+      }
+      expect(predicate).toBe('home-directory');
     }
   });
 
