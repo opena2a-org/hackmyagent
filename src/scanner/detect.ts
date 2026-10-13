@@ -1347,6 +1347,40 @@ function agentStateLabel(agent: DetectedAgent): string {
   return agent.state === 'running' ? 'running' : `installed: ${escapePathForDisplay(agent.source)}`;
 }
 
+/**
+ * The two titles of the governance finding, one per state of the project's
+ * governance file: `<n> AI agent(s) without governance` when no file was
+ * found, `<n> AI agent(s) with governance gaps` when one was found and scored.
+ *
+ * There used to be one title. Over a `CLAUDE.md` or `.cursorrules` that
+ * `detect` had just read and scored, it printed "without governance" and said
+ * the agents "have no rules", on the screen whose meter showed that file's
+ * score. Exported so tests select the finding by the phrases the source
+ * writes, not by a copy that can drift from it.
+ */
+export const GOVERNANCE_TITLE_NO_FILE = 'without governance';
+export const GOVERNANCE_TITLE_GAPS = 'with governance gaps';
+
+/** The agents-table state of one agent. */
+export type AgentGovernanceLabel = 'governed' | 'governance gaps' | 'ungoverned';
+
+/**
+ * `governed`, `governance gaps` (a governance file was found and the agent is
+ * not governed by it) or `ungoverned` (no governance file was found).
+ *
+ * Computed from two fields the `--json` document already carries,
+ * `agents[].governanceStatus` and `identity.governanceFile`, so the row says
+ * nothing a machine reader cannot derive. The words carry the state; colour
+ * is decoration and is absent under NO_COLOR.
+ */
+export function agentGovernanceLabel(
+  agent: Pick<DetectedAgent, 'governanceStatus'>,
+  governanceFile: string | null,
+): AgentGovernanceLabel {
+  if (agent.governanceStatus === 'governed') return 'governed';
+  return governanceFile ? 'governance gaps' : 'ungoverned';
+}
+
 function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScanResult): Finding[] {
   const findings: Finding[] = [];
   const target = citationTarget(result.scanDirectory);
@@ -1397,15 +1431,24 @@ function generateFindings(result: Omit<DetectResult, 'findings'>, soul: SoulScan
 
     const detail = ungoverned.map((a) => `${a.name} (${agentStateLabel(a)})`).join(', ')
       + (reasons.length > 0 ? ` — ${reasons.join('; ')}` : '');
+    // The title and the why text follow the same fact the reasons do. With
+    // a file found, "have no rules" is false: the file was read and scored.
+    // What is true is that a gap the detail line names sets no confirmed
+    // boundary. The text claims nothing about whether the listed agents read
+    // the file, because running assistants are attributed machine-wide.
+    const agentCount = `${ungoverned.length} AI agent${ungoverned.length !== 1 ? 's' : ''}`;
     findings.push({
       severity: 'high',
       category: 'governance',
-      title: `${ungoverned.length} AI agent${ungoverned.length !== 1 ? 's' : ''} without governance`,
+      title: `${agentCount} ${soul.file ? GOVERNANCE_TITLE_GAPS : GOVERNANCE_TITLE_NO_FILE}`,
       detail,
-      whyItMatters:
-        'These agents can take actions in your project but have no rules defining what they '
-        + 'should or should not do. A SOUL.md file sets behavioral boundaries — what agents can and '
-        + 'cannot do, and what requires human approval.',
+      whyItMatters: soul.file
+        ? `This project's governance file, ${soul.file}, was read and scored. A gap named above is `
+          + 'a place where no boundary is confirmed for an agent working here: a missing or '
+          + 'contradicted control sets none, and a control the profile marker skips was not measured.'
+        : 'These agents can take actions in your project but have no rules defining what they '
+          + 'should or should not do. A SOUL.md file sets behavioral boundaries — what agents can and '
+          + 'cannot do, and what requires human approval.',
       // `harden-soul` both CREATES a governance document and appends missing
       // sections to an existing one, so it is the right command for "no file"
       // and for "file missing controls" alike. It is the wrong command for
@@ -2136,7 +2179,11 @@ function formatText(
       const nameCol = agent.name.padEnd(22);
       const isGoverned = agent.governanceStatus === 'governed';
       const stateCol = agent.state === 'running' ? 'running    ' : dim('installed  ');
-      const govStr = isGoverned ? green('governed') : yellow('ungoverned');
+      // `ungoverned` only when no governance file was found. Over a file that
+      // was read and scored the row says `governance gaps`, the same state the
+      // finding's title names.
+      const govLabel = agentGovernanceLabel(agent, result.identity.governanceFile);
+      const govStr = isGoverned ? green(govLabel) : yellow(govLabel);
       const pidStr = agent.state === 'running'
         ? (verbose ? dim(` (PID ${agent.pid})`) : '')
         : dim(` (${escapePathForDisplay(agent.source)})`);

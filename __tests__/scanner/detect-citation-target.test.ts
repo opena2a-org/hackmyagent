@@ -153,10 +153,14 @@ describe('#293 detect fix citations name the scanned target', () => {
     // would have turned the assertion off rather than failing it. Anchor on
     // what the row is, then assert the command inside it. (#303 changed the
     // verb for subverted documents, which is how this was caught.)
-    const rows = out.split('\n').filter((l) => l.includes('ungoverned'));
+    // The fixture's SOUL.md is found and scored, so the row's state is
+    // `governance gaps` (`ungoverned` is for a project with no governance
+    // file). Anchored on the state column, not the words alone, which the
+    // finding's title also carries.
+    const rows = out.split('\n').filter((l) => /\s(?:running|installed)\s+governance gaps\b/.test(l));
     expect(
       rows.length,
-      'no ungoverned agent row was rendered, so this case measures nothing',
+      'no agent row with governance gaps was rendered, so this case measures nothing',
     ).toBeGreaterThan(0);
     for (const row of rows) {
       expect(row, `agent row cites no fix command at all:\n${row}`).toMatch(/harden-soul|scan-soul/);

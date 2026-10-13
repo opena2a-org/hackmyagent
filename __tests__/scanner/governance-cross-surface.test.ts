@@ -36,6 +36,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { GOVERNANCE_TITLE_GAPS, GOVERNANCE_TITLE_NO_FILE } from '../../src/scanner/detect';
 
 // #285 — this suite spawns the built CLI. Without this it would happily
 // measure a binary older than `src/` and report a pass.
@@ -630,14 +631,32 @@ describe('#291 governance model reconciliation', () => {
       // `generateFindings` derives it from `soul` directly. Two derivations of
       // one predicate drift; this pins them together across every fixture —
       // including the marker fixture, which is the disjunct nothing exercised.
+      //
+      // This loop used to select the finding by `running without governance`,
+      // a title no source line produces, so it skipped every fixture and
+      // compared nothing. It now selects by the two titles the source exports,
+      // and a fixture whose agents are not governed has to yield the finding.
+      let compared = 0;
       for (const dir of [dirNone, dirProse, dirHardened, dirViolating, dirClaudeMd, dirMarker]) {
         const j = detectJson(dir);
         const subvertedByCode = j.findings.some(
           (f) => f.code === 'GOV-VIOLATION' || f.code === 'GOV-PROFILE-MARKER',
         );
         const ungovernedFinding = j.findings.find((f) =>
-          f.title.includes('running without governance'));
+          f.title.includes(GOVERNANCE_TITLE_GAPS) || f.title.includes(GOVERNANCE_TITLE_NO_FILE));
+        if (j.summary.ungoverned > 0) {
+          expect(
+            ungovernedFinding,
+            `${dir}: ${j.summary.ungoverned} planted agent(s) are not governed and no governance `
+            + 'finding was raised for them',
+          ).toBeDefined();
+        }
         if (!ungovernedFinding) continue;
+        compared++;
+        expect(
+          ungovernedFinding.title,
+          `${dir}: the title does not match whether a governance file was found`,
+        ).toContain(j.identity.governanceFile ? GOVERNANCE_TITLE_GAPS : GOVERNANCE_TITLE_NO_FILE);
         const citesScanSoul = /scan-soul/.test(
           (ungovernedFinding as { remediation?: string }).remediation ?? '',
         );
@@ -647,6 +666,8 @@ describe('#291 governance model reconciliation', () => {
           + 'whether the document is subverted',
         ).toBe(subvertedByCode);
       }
+      expect(compared, 'no fixture raised the governance finding, so nothing was compared')
+        .toBeGreaterThan(0);
     });
 
     /**
