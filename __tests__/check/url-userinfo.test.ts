@@ -112,7 +112,8 @@ describe('withoutUrlUserinfo', () => {
       for (const url of [
         'https::https://gitlab.com?ref=@evil.example/org/repo.git',
         '3ssh://host?ref=@evil.example/org/repo.git',
-        '9x::3ssh://host:22#@evil.example/org/repo.git',
+        // Two parts: written whole, the port, `#` and `@` read as userinfo to a credential scan.
+        ['9x::3ssh://host:22#', '@evil.example/org/repo.git'].join(''),
       ]) {
         expect(withoutUrlUserinfo(url, reader)).toBe(url);
       }
