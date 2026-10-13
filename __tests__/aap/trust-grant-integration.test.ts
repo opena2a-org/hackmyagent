@@ -195,7 +195,10 @@ describe('hackmyagent trust --grant (AAP gate)', () => {
 
     expect(code).toBe(4);
     expect(stderr).toMatch(/AAP broker unreachable/);
-    expect(stderr).toMatch(/secretless broker start/);
+    // The hint is a command the user can run: secretless-ai publishes the
+    // bins `secretless-ai` and `secretless-mcp`, and no bin named `secretless`.
+    const hint = stderr.match(/Start the broker:\s+(.+)/);
+    expect(hint?.[1]).toBe('npx secretless-ai broker start');
   });
 
   it('500 response: returns exit 6 and does NOT echo the broker body to stderr', async () => {

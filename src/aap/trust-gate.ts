@@ -145,7 +145,9 @@ export async function trustAapGate(options: TrustAapGateOptions): Promise<number
     }
     if (err instanceof BrokerGrantError) {
       process.stderr.write(`AAP broker unreachable: ${sanitizeForTty(err.message)}\n`);
-      process.stderr.write('  Start the broker:  secretless broker start\n');
+      // secretless-ai publishes the bins `secretless-ai` and `secretless-mcp`;
+      // there is no `secretless` bin, so the hint names the published one.
+      process.stderr.write('  Start the broker:  npx secretless-ai broker start\n');
       return 4;
     }
     process.stderr.write(`AAP gate failed unexpectedly: ${sanitizeForTty((err as Error).message)}\n`);

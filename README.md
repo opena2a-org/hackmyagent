@@ -260,7 +260,7 @@ hackmyagent nanomind status              # check model and runtime status
 hackmyagent trust express --grant grant://hackmyagent-trust --atx ~/.opena2a/atx.json
 ```
 
-With `--grant`, `trust` is gated by the [Agent Authorization Protocol](https://github.com/opena2a-standards/agent-authorization-protocol): the CLI presents an ATX and a grant reference to the local Secretless broker before any Registry lookup and proceeds only if the broker authorizes. A denial (HTTP 403) exits 3 with a pointer to `~/.secretless-ai/policies/`, and its reasons live only in the broker's signed audit log (AAP §6.6); an unreachable broker exits 4 with a `secretless broker start` hint; an unexpected status exits 6 and the response body is never echoed. Without `--grant`, `trust` runs as before.
+With `--grant`, `trust` is gated by the [Agent Authorization Protocol](https://github.com/opena2a-standards/agent-authorization-protocol): the CLI presents an ATX and a grant reference to the local Secretless broker before any Registry lookup and proceeds only if the broker authorizes. A denial (HTTP 403) exits 3 with a pointer to `~/.secretless-ai/policies/`, and its reasons live only in the broker's signed audit log (AAP §6.6); an unreachable broker exits 4 with a `npx secretless-ai broker start` hint; an unexpected status exits 6 and the response body is never echoed. Without `--grant`, `trust` runs as before.
 
 ### OpenClaw and NemoClaw auto-detection
 
