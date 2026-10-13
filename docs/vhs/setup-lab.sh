@@ -1,10 +1,11 @@
 #!/bin/bash
 # Set up a demo project for HackMyAgent VHS recordings.
 # Creates /tmp/hma-demo with an AI agent project that has security issues.
+#   docs/vhs/setup-lab.sh [target-directory]   (default /tmp/hma-demo; the directory is replaced)
 
 set -e
 
-LAB_DIR="/tmp/hma-demo"
+LAB_DIR="${1:-/tmp/hma-demo}"
 rm -rf "$LAB_DIR"
 mkdir -p "$LAB_DIR" && cd "$LAB_DIR"
 git init -q

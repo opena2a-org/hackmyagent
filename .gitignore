@@ -48,3 +48,5 @@ coverage/
 
 # docs/vhs tapes also render an MP4 for the websites; only the GIF is committed here
 docs/vhs/*.mp4
+# docs/vhs/record-secure.sh writes the MP4 here; its size and sha256 are in the sidecar
+docs/vhs/out/

@@ -427,12 +427,14 @@ describe('internal attribution stays off the public surfaces', () => {
   it('HMA-37.AC2 the tree walk covers every tracked top-level path and skips exactly the known image files', () => {
     const { binarySkipped } = scan(REPO_ROOT, PATTERN);
     expect([...binarySkipped].sort()).toEqual([
-      'docs/hackmyagent-demo.gif',
       'docs/images/secure-demo.png',
       'docs/vhs/attack-dvaa.gif',
       'docs/vhs/detect-inventory.png',
       'docs/vhs/detect-path-forward.png',
       'docs/vhs/detect.gif',
+      'docs/vhs/secure-fix.png',
+      'docs/vhs/secure-report.png',
+      'docs/vhs/secure.gif',
     ]);
   });
 
