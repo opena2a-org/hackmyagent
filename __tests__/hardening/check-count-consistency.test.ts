@@ -72,32 +72,64 @@ describe('check-count single source of truth', () => {
     expect(counts.staticCategories).toBe(67);
   });
 
+  const staticFigures = (text: string): number[] =>
+    [...text.matchAll(/\b(\d+) static (?:checks|declared)\b/g)].map(m => Number(m[1]));
+
+  // A recording's text capture is what the published build its sidecar names
+  // printed, and that build states its own count, which the tree can be ahead
+  // of until the next release. Such a capture is not rewritten by hand: it
+  // would then disagree with its frames. Each one is named here, and an entry
+  // holds only while its sidecar records that published build at the version
+  // in package.json (a release fails recording-sidecars.test.ts until it is
+  // re-rendered) and while the capture states a count other than the derived
+  // one. Once a re-render prints the derived count, drop the entry.
+  const RECORDED_FROM_PUBLISHED_BUILD = [
+    { capture: 'docs/vhs/secure-capture.txt', sidecar: 'docs/vhs/secure.json' },
+  ];
+
   // #970: README and docs carried the static count in eight more places than
   // the two sentences pinned below, sample captures of the scan Observations
   // line among them, and each was a literal. Every "N static checks" and
   // "N static declared" in README.md and docs/ states the derived count.
   it('every static-check count in README.md and docs/ is the derived count', () => {
     const root = join(__dirname, '../..');
+    const recorded = new Set(RECORDED_FROM_PUBLISHED_BUILD.map(e => e.capture));
     const files = ['README.md'];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
         const rel = `${dir}/${entry.name}`;
         if (entry.isDirectory()) walk(rel);
-        else if (/\.(md|txt)$/.test(entry.name)) files.push(rel);
+        else if (/\.(md|txt)$/.test(entry.name) && !recorded.has(rel)) files.push(rel);
       }
     };
     walk('docs');
     const stated: string[] = [];
     for (const file of files) {
-      const text = readFileSync(join(root, file), 'utf8');
-      for (const m of text.matchAll(/\b(\d+) static (?:checks|declared)\b/g)) {
-        stated.push(`${file}: ${m[1]}`);
+      for (const n of staticFigures(readFileSync(join(root, file), 'utf8'))) {
+        stated.push(`${file}: ${n}`);
       }
     }
     // README (3), SECURITY_CHECKS, quick-start-capture, USE-CASES,
     // scan-my-agent (3), openclaw-security (2), red-team-mcp.
     expect(stated.length).toBeGreaterThanOrEqual(12);
     expect(stated.filter(s => !s.endsWith(`: ${counts.static}`))).toEqual([]);
+  });
+
+  it('a capture left out of that census records the published build at the version in package.json', () => {
+    const root = join(__dirname, '../..');
+    const read = (rel: string): string => readFileSync(join(root, rel), 'utf8');
+    const version = (JSON.parse(read('package.json')) as { version: string }).version;
+    for (const entry of RECORDED_FROM_PUBLISHED_BUILD) {
+      const sidecar = JSON.parse(read(entry.sidecar)) as {
+        version: string; npmIntegrity?: string; outputs: { capture: string };
+      };
+      expect(sidecar.outputs.capture).toBe(entry.capture);
+      expect(sidecar.version, `${entry.sidecar} records another version: re-render it`).toBe(version);
+      expect(sidecar.npmIntegrity, `${entry.sidecar} records no published build`).toMatch(/^sha512-/);
+      const figures = staticFigures(read(entry.capture));
+      expect(figures.length).toBeGreaterThan(0);
+      expect(figures.every(n => n === counts.static), `${entry.capture} states the derived count: drop its entry`).toBe(false);
+    }
   });
 
   it('the --help and MCP tool descriptions read the derived counts', () => {

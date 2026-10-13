@@ -1,0 +1,245 @@
+$ npx hackmyagent secure
+
+Scanning /work/hma-demo...
+
+Discovering assembly components...
+Found 1 assembly components, simulating assembly...
+Scanning assembled prompt for lifecycle attacks...
+Assembly scan complete: 0 findings from 1 components
+Downloading security analysis model (5.5MB)...
+Model ready. Using neural inference for deep scanning.
+
+  demo-agent  v1.0.0 · library · 6 files analyzed
+  4 critical issues found
+
+  Security  ━━━━━━━━━━━━━━━━━━━━ 26/100
+
+  ── Observations ────────────────────────────────────────────
+  Surfaces    library · 6 semantic artifacts · all 6 artifacts reached 0-3 of 7 analyzer families
+  Checks      318 static declared · 63 of 63 check groups ran · 3 unreachable · 6 semantic (NanoMind AST, 0-3 of 7 analyzer families) · 6 files read by static checks
+  Coverage    20 of 25 categories examined · 5 unexamined (read no file) · 42 checks reported an absent mitigation (not shown)
+  Unexamined  A2A, capabilities, governance, heartbeat, skill
+  Unresolved  auth
+  Artifacts   CLAUDE.md  system_prompt · malicious · no inferred capabilities
+              mcp.json  mcp_config · malicious · no inferred capabilities  (no declared constraints)
+  Categories  credentials (2 critical) · MCP (1 critical) · prompt (1 high) · sandbox (2 high) · supply-chain (1 medium) · config (1 high) · git hygiene (1 critical) · 12 others clear
+  Verdict     Not safe to ship. Exposed Credential in .env:1 + 11 more. Fix before using in production.
+
+
+  ── Findings ────────────────────────────────────────────────
+  4 critical  6 high  1 medium  1 low
+
+  │ CRITICAL  Exposed Credential
+  │ .env:1
+  │ Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.
+  │ Verify: sed -n '1p' /work/hma-demo/.env
+  │ Fix: Add .env to .gitignore to prevent committing secrets
+
+  │ CRITICAL  .env Not Ignored
+  │ .env
+  │ .env contains API keys or secrets. Without .gitignore protection, a single git add . can expose all credentials in your repository history.
+  │ →  hackmyagent secure --fix
+
+  │ CRITICAL  Plaintext API Keys
+  │ .env
+  │ Plaintext API keys in .env files can be accidentally committed to version control and extracted by any process that reads the file.
+  │ Fix: npx opena2a-cli protect . — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │
+  │ ━━ Why the Secretless vault ━━ (shown once per scan)
+  │
+  │ Hardcoded credentials live in source, configs, and version control history
+  │ forever — even after you delete the line. The Secretless vault keeps them
+  │ out of process memory and out of AI context: the agent never reads the
+  │ value, only an opaque reference. If a prompt-injection convinces the agent
+  │ to exfiltrate environment variables, there is nothing to exfiltrate.
+  │ 
+  │ `npx opena2a-cli protect` migrates `.env` and config files into the vault and
+  │ replaces credential lines with vault references. Existing app code keeps
+  │ working — credentials still resolve at runtime via the vault adapter.
+
+  │ HIGH  Password embedded in URL
+  │ .env:2
+  │ URL-embedded credentials are logged by proxies, shell history, and process listings. They bypass .env file protections and are easily leaked in stack traces.
+  │ Verify: sed -n '2p' /work/hma-demo/.env
+  │ Fix: npx opena2a-cli protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ (Why Secretless: see above)
+
+  │ HIGH  Hardcoded secret in config
+  │ .env:1
+  │ .env files with hardcoded secrets should be gitignored. If this file is committed, the secret is exposed in version control history.
+  │ Verify: sed -n '1p' /work/hma-demo/.env
+  │ Fix: Ensure .env is in .gitignore and rotate this credential.
+
+  │ HIGH  Overly permissive agent instruction
+  │ CLAUDE.md:2
+  │ Permissive instructions weaken agent security boundaries. If an attacker achieves prompt injection, these instructions make it easier to escalate — the agent is already told to bypass safety checks.
+  │ Verify: sed -n '2p' /work/hma-demo/CLAUDE.md
+  │ Fix: Replace permissive instructions with specific, scoped permissions. Instead of "always execute", specify which operations are allowed and under what conditions.
+
+  │ HIGH  Unrestricted Bash access
+  │ .claude/settings.json
+  │ Unrestricted Bash access allows arbitrary command execution including reading/writing any file, making network requests, installing packages, and modifying system configuration.
+  │ Fix: Restrict Bash to specific commands: "Bash(npm test)", "Bash(git *)" or use deny rules to block dangerous commands.
+
+  │ LOW  Missing .gitignore
+  │ .gitignore
+  │ Without .gitignore, sensitive files (.env, secrets.json, *.pem, *.key) can be accidentally committed to version control and exposed.
+  │ →  hackmyagent secure --fix
+
+  │ CRITICAL  Overprivileged MCP server scope
+  │ mcp.json:5
+  │ Overprivileged filesystem access allows the agent (or an attacker via prompt injection) to read sensitive files like SSH keys, credentials, and system configs.
+  │ Verify: sed -n '5p' /work/hma-demo/mcp.json
+  │ Fix: Scope "filesystem" to the project directory: replace "/" with "./" or a specific subdirectory.
+
+  │ HIGH  Sensitive File Permissions
+  │ .env
+  │ Overly broad file permissions let any user on the system read sensitive config files that may contain credentials or API keys.
+  │ →  hackmyagent secure --fix
+
+  + 2 more findings (Overly Permissive Permissions, Dependency Lock File)  (run with --verbose to see all)
+
+  Path forward: 26 -> 100 by fixing 4 critical + 6 high
+
+  ── Next Steps ─────────────────────────────────────────────────
+  Protect credentials:  npx opena2a-cli protect .
+  Audit MCP servers:    npx opena2a-cli mcp audit  (run from project dir)
+  Auto-fix all issues:  hackmyagent secure . --fix
+  AI analysis:          hackmyagent check . --nanomind  (attack vectors + targeted remediation)
+  All commands:         hackmyagent --help
+  opena2a is a separate CLI — install with: npm i -g opena2a-cli
+
+  Scanned with hackmyagent v0.33.2
+[exit 1]
+
+$ npx hackmyagent secure --fix
+
+Scanning /work/hma-demo...
+
+Discovering assembly components...
+Found 1 assembly components, simulating assembly...
+Scanning assembled prompt for lifecycle attacks...
+Assembly scan complete: 0 findings from 1 components
+Verifying applied fixes...
+
+  demo-agent  v1.0.0 · library · 6 files analyzed
+  7 critical issues found
+
+  Security  ━━━━━━━━━━━━━━━━━━━━ 13/100
+  Live tree: 30/100 — the 17-point difference is 7 findings inside the backup this run created at /work/hma-demo/.hackmyagent-backup/2026-10-13-174403901-000-0a417c4b
+  Those are the pre-fix copies, kept so `hackmyagent rollback` can undo this run. Rotate what was exposed, then delete that directory once you no longer need to roll back.
+
+  ── Observations ────────────────────────────────────────────
+  Surfaces    library · 6 semantic artifacts · all 6 artifacts reached 0-3 of 7 analyzer families
+  Checks      318 static declared · 63 of 63 check groups ran · 3 unreachable · 6 semantic (NanoMind AST, 0-3 of 7 analyzer families) · 7 files read by static checks
+  Coverage    20 of 25 categories examined · 5 unexamined (read no file) · 42 checks reported an absent mitigation (not shown)
+  Unexamined  A2A, capabilities, governance, heartbeat, skill
+  Unresolved  auth
+  Artifacts   CLAUDE.md  system_prompt · malicious · no inferred capabilities
+              mcp.json  mcp_config · malicious · no inferred capabilities  (no declared constraints)
+  Categories  credentials (4 critical) · MCP (2 critical) · prompt (2 high) · sandbox (2 high) · supply-chain (1 medium) · config (1 high) · git hygiene (1 critical) · 12 others clear
+  Verdict     Not safe to ship. Exposed Credential in .env:1 + 16 more. Fix before using in production.
+
+
+  ── Findings ────────────────────────────────────────────────
+  7 critical  8 high  2 medium
+
+  │ CRITICAL  Exposed Credential
+  │ .env:1
+  │ Credentials in .env are expected but the file must be in .gitignore. Run `hackmyagent secure --fix` to create a .gitignore.
+  │ Verify: sed -n '1p' /work/hma-demo/.env
+  │ Fix: Add .env to .gitignore to prevent committing secrets
+
+  │ CRITICAL  .env Not Ignored
+  │ .env
+  │ .env contains API keys or secrets. Without .gitignore protection, a single git add . can expose all credentials in your repository history.
+  │ Fix: Auto-fix did not resolve this. Apply the change manually, then re-scan to confirm.
+
+  │ CRITICAL  Plaintext API Keys
+  │ .env
+  │ Plaintext API keys in .env files can be accidentally committed to version control and extracted by any process that reads the file.
+  │ Fix: npx opena2a-cli protect . — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │
+  │ ━━ Why the Secretless vault ━━ (shown once per scan)
+  │
+  │ Hardcoded credentials live in source, configs, and version control history
+  │ forever — even after you delete the line. The Secretless vault keeps them
+  │ out of process memory and out of AI context: the agent never reads the
+  │ value, only an opaque reference. If a prompt-injection convinces the agent
+  │ to exfiltrate environment variables, there is nothing to exfiltrate.
+  │ 
+  │ `npx opena2a-cli protect` migrates `.env` and config files into the vault and
+  │ replaces credential lines with vault references. Existing app code keeps
+  │ working — credentials still resolve at runtime via the vault adapter.
+
+  │ CRITICAL  Exposed Credential
+  │ .hackmyagent-backup/2026-10-13-174403901-000-0a417c4b/.env:1
+  │ Rotate the credential: it has been on disk in plaintext. Clearing the copy is yours to do — this file sits inside `.hackmyagent-backup`, the directory HackMyAgent stores this tree's backups in, which it never auto-edits (rewriting a backup would destroy what `rollback` restores from) and never offers to delete, because it cannot tell which run wrote a given copy. Check the live file first: `hackmyagent secure` should report no credential outside this directory.
+  │ Verify: sed -n '1p' /work/hma-demo/.hackmyagent-backup/2026-10-13-174403901-000-0a417c4b/.env
+  │ Fix: Rotate the credential, then remove this plaintext copy by hand
+
+  │ CRITICAL  Plaintext API Keys
+  │ .hackmyagent-backup/2026-10-13-174403901-000-0a417c4b/.env
+  │ Plaintext API keys in .env files can be accidentally committed to version control and extracted by any process that reads the file.
+  │ Fix: npx opena2a-cli protect . — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ (Why Secretless: see above)
+
+  │ HIGH  Password embedded in URL
+  │ .env:2
+  │ URL-embedded credentials are logged by proxies, shell history, and process listings. They bypass .env file protections and are easily leaked in stack traces.
+  │ Verify: sed -n '2p' /work/hma-demo/.env
+  │ Fix: npx opena2a-cli protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ (Why Secretless: see above)
+
+  │ HIGH  Hardcoded secret in config
+  │ .env:1
+  │ .env files with hardcoded secrets should be gitignored. If this file is committed, the secret is exposed in version control history.
+  │ Verify: sed -n '1p' /work/hma-demo/.env
+  │ Fix: Ensure .env is in .gitignore and rotate this credential.
+
+  │ HIGH  Overly permissive agent instruction
+  │ CLAUDE.md:2
+  │ Permissive instructions weaken agent security boundaries. If an attacker achieves prompt injection, these instructions make it easier to escalate — the agent is already told to bypass safety checks.
+  │ Verify: sed -n '2p' /work/hma-demo/CLAUDE.md
+  │ Fix: Replace permissive instructions with specific, scoped permissions. Instead of "always execute", specify which operations are allowed and under what conditions.
+
+  │ HIGH  Unrestricted Bash access
+  │ .claude/settings.json
+  │ Unrestricted Bash access allows arbitrary command execution including reading/writing any file, making network requests, installing packages, and modifying system configuration.
+  │ Fix: Restrict Bash to specific commands: "Bash(npm test)", "Bash(git *)" or use deny rules to block dangerous commands.
+
+  │ HIGH  Password embedded in URL
+  │ .hackmyagent-backup/2026-10-13-174403901-000-0a417c4b/.env:2
+  │ URL-embedded credentials are logged by proxies, shell history, and process listings. They bypass .env file protections and are easily leaked in stack traces.
+  │ Verify: sed -n '2p' /work/hma-demo/.hackmyagent-backup/2026-10-13-174403901-000-0a417c4b/.env
+  │ Fix: npx opena2a-cli protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ (Why Secretless: see above)
+
+  + 7 more findings (Overly permissive agent instruction, Unrestricted Bash access)  (run with --verbose to see all)
+
+  Path forward: 13 -> 100 by fixing 7 critical + 8 high
+
+  ── Next Steps ─────────────────────────────────────────────────
+  Protect credentials:  npx opena2a-cli protect .
+  Audit MCP servers:    npx opena2a-cli mcp audit  (run from project dir)
+  Auto-fix all issues:  hackmyagent secure . --fix
+  AI analysis:          hackmyagent check . --nanomind  (attack vectors + targeted remediation)
+  All commands:         hackmyagent --help
+  opena2a is a separate CLI — install with: npm i -g opena2a-cli
+
+Attempted 3 fixes — 2 verified, 1 not confirmed:
+  ✓✓ [PERM-001] .env - Sensitive File Permissions
+    → Changed permissions to 600
+  ✓✓ [GIT-001] .gitignore - Missing .gitignore
+  ✓? [GIT-003] .env - .env Not Ignored
+    →  [FIX NOT VERIFIED - issue may persist]
+
+  1 fix could not be verified. Review these manually.
+
+15 remaining issues have fix guidance. Run `hackmyagent fix-all` to apply all available fixes.
+
+Backup created: /work/hma-demo/.hackmyagent-backup/2026-10-13-174403901-000-0a417c4b
+Something wrong? Run `hackmyagent rollback .` to undo all changes.
+
+  Scanned with hackmyagent v0.33.2
+[exit 1]

@@ -382,10 +382,10 @@ node dist/cli.js secure      # run the build from source
 Security issues: see [SECURITY.md](SECURITY.md). Do not open a public issue.
 
 ## Links
-
 - [Use cases](docs/USE-CASES.md): step-by-step guides for scanning an agent, red-teaming an MCP server, securing OpenClaw and wiring a CI pipeline
 - [Programmatic API](docs/PROGRAMMATIC_API.md): TypeScript entry points for the scanner, the runtime protection layer and the NanoMind semantic compiler; [plugin authoring](docs/PLUGIN_API.md)
 - [Security Checks Reference](docs/SECURITY_CHECKS.md)
+- [hackmyagent secure: scores a sample agent project, then applies the fixes it can](docs/vhs/secure.gif). Recorded over a sample project with fake credentials, setup not shown. Text version: [docs/vhs/secure-capture.txt](docs/vhs/secure-capture.txt); provenance: [docs/vhs/secure.json](docs/vhs/secure.json); re-render: `docs/vhs/record-secure.sh`.
 - [OpenA2A CLI](https://github.com/opena2a-org/opena2a)
 - [aicomply](https://github.com/opena2a-org/aicomply): inline PII, credential, and regulated-data classification for agent I/O at runtime (HMA scans the code; aicomply guards the live stream)
 - [Documentation](https://opena2a.org/docs)
