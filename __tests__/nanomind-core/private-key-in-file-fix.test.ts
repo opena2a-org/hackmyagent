@@ -13,12 +13,13 @@
  * message, the BEGIN line, the Verify line, and every other shape's Fix (the
  * access-key case below pins that).
  *
- * The keys are minted in-process with node:crypto and live only in a temp
- * tree removed after each test. No committed line carries an armor header or
- * a credential-shaped literal: the access key is assembled from parts.
+ * The keys are made in-process with node:crypto (RSA keys at random, Ed25519
+ * keys from a fixed seed) and live only in a temp tree removed after each
+ * test. No committed line carries an armor header or a credential-shaped
+ * literal: the access key is assembled from parts.
  */
 
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -35,9 +36,25 @@ function rsaPem(): string {
   return privateKey.export({ type: 'pkcs1', format: 'pem' }) as string;
 }
 
-function ed25519Pem(): string {
-  const { privateKey } = generateKeyPairSync('ed25519');
-  return privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+/** The PKCS#8 header of an Ed25519 private key (RFC 8410); the 32-byte seed follows it. */
+const ED25519_PKCS8_HEADER = Buffer.from([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+]);
+
+/**
+ * An Ed25519 key whose seed is derived from `label`, so every run scans the
+ * same key. The first seed that gives a base64 body of letters and digits
+ * only is taken: AST-CRED-003 misses some keys whose body carries a `/`, a
+ * detector gap apart from this Fix, and a random key made this file pass or
+ * fail by chance.
+ */
+function ed25519Pem(label: string): string {
+  for (let i = 0; ; i++) {
+    const seed = createHash('sha256').update(`${label}:${i}`).digest();
+    const pem = createPrivateKey({ key: Buffer.concat([ED25519_PKCS8_HEADER, seed]), format: 'der', type: 'pkcs8' })
+      .export({ type: 'pkcs8', format: 'pem' }) as string;
+    if (/^[A-Za-z0-9]+$/.test(pem.trim().split('\n').slice(1, -1).join(''))) return pem;
+  }
 }
 
 /** An access-key-id-shaped value, assembled so no committed line carries one. */
@@ -80,7 +97,7 @@ describe('#1045: a PEM private key inside a file gets a key-specific Fix', () =>
       '',
     ].join('\n');
     // A key on one line, as a JavaScript string with escaped newlines.
-    const jsKey = ed25519Pem().trimEnd().split('\n').join('\\n');
+    const jsKey = ed25519Pem('signer.js').trimEnd().split('\n').join('\\n');
     const signer = [
       "const crypto = require('crypto');",
       `const SIGNING_KEY = "${jsKey}";`,
@@ -97,7 +114,7 @@ describe('#1045: a PEM private key inside a file gets a key-specific Fix', () =>
       '',
       'Use this key to sign releases:',
       '',
-      ed25519Pem(),
+      ed25519Pem('SKILL.md'),
     ].join('\n');
     const settings = [
       '// Runtime configuration for the billing worker.',
@@ -190,7 +207,7 @@ describe('#1045: git rm --cached is named only for a file that holds nothing but
   });
 
   it('two key blocks and nothing else still count as key-only; a key beside other text does not', async () => {
-    const twoKeys = await fixesFor(`${rsaPem()}\n${ed25519Pem()}`, 'keys.yaml');
+    const twoKeys = await fixesFor(`${rsaPem()}\n${ed25519Pem('keys.yaml')}`, 'keys.yaml');
     expect(twoKeys).toHaveLength(2);
     for (const f of twoKeys) expect(f.fix).toContain('git rm --cached keys.yaml');
 
