@@ -120,12 +120,17 @@ describe('cli.ts JSON-serialization tripwire', () => {
   // `writeJsonStdout`, now call `stringifyJsonOutput` so display hazards are
   // escaped. They are the same sites with the same boundary reads, so both
   // names are counted: a new `stringifyJsonOutput` call is a new channel too.
+  // The two pending-scan queue writes (queuePendingScan, flushPendingScans)
+  // left cli.ts for writePendingScans in src/telemetry/pending-scans.ts. The
+  // queue holds a name, scores, a project type, a finding count and a
+  // timestamp, never a `SecurityFinding`, so the boundary read had nothing to
+  // cover on either; the pin drops from 19 to 17.
   it('the number of JSON.stringify sites in cli.ts is accounted for', () => {
     const cli = readFileSync(join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
     const count = (cli.match(/\b(?:JSON\.stringify|stringifyJsonOutput)\(/g) ?? []).length;
     expect(
       count,
       'cli.ts gained or lost a JSON.stringify site — classify it against the publish-boundary read (unit 2) before updating this pin',
-    ).toBe(19);
+    ).toBe(17);
   });
 });
