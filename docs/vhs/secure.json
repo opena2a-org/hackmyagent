@@ -1,7 +1,6 @@
 {
   "tape": "docs/vhs/secure.tape",
   "tapeSha256": "1c72f58d30b7344a2f8156805958e5fb093fa0b73594c2849510ffc2199cb372",
-  "scriptSha256": "1c72f58d30b7344a2f8156805958e5fb093fa0b73594c2849510ffc2199cb372",
   "commands": [
     "npx hackmyagent secure",
     "npx hackmyagent secure --fix"

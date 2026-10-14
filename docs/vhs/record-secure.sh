@@ -136,7 +136,6 @@ const build = env.HMA_INTEGRITY ? { npmIntegrity: env.HMA_INTEGRITY } : { packed
 const out = {
   tape: env.TAPE,
   tapeSha256: sha(env.TAPE),
-  scriptSha256: sha(env.TAPE),
   commands: lines(env.TYPED),
   tool: "hackmyagent",
   version: env.HMA_VERSION,
