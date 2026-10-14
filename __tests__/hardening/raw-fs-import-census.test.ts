@@ -54,6 +54,7 @@ const ALLOWLIST: Record<string, string> = {
   'semantic/llm/budget.ts': 'HMA\'s own budget file under the home directory',
   'telemetry/contribute.ts': 'HMA\'s own queue files under the home directory',
   'telemetry/opt-in.ts': 'HMA\'s own opt-in record under the home directory',
+  'telemetry/pending-scans.ts': 'HMA\'s own pending-scan queue file under the home directory; writes only, never a target path',
   'store/project-store.ts': 'HMA\'s own project store under the home directory',
   'store/archive-store.ts': 'HMA\'s own backup store (#376): reads HackMyAgent\'s own state outside the scanned tree, and no scanned content passes through it',
   'hardening/nemoclaw-scanner.ts': 'not constructed anywhere in src/ (0 `new NemoClawScanner` sites); off the scan path',

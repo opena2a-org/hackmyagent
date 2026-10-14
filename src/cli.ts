@@ -470,6 +470,7 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand, rebaseOwnFileCitation } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { automationOffReason, automationOptOut, initWithAutomationOptOut } from './telemetry/automation';
+import { getPendingScansPath, writePendingScans } from './telemetry/pending-scans';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { runDeepSimulation, deepSimulationFailure, type DeepSimulationReport } from './simulation/deep-run';
 import { collapsedLocation } from './ui/collapse-label';
@@ -14043,14 +14044,7 @@ function recordScanAndContributeTip(): string | null {
 }
 
 // Pending-scan queue for `check` command registry publishes (retry on failure).
-// Stored in ~/.opena2a/hma-pending-scans.json (separate from @opena2a/contribute queue).
-function getPendingScansPath(): string {
-  const os = require('os');
-  const path = require('path');
-  const home = process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a');
-  return path.join(home, 'hma-pending-scans.json');
-}
-
+// Path and writer live in src/telemetry/pending-scans.ts.
 function queuePendingScan(
   name: string,
   result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
@@ -14067,10 +14061,7 @@ function queuePendingScan(
     findingCount: result.findings.filter(f => !f.passed).length,
     timestamp: new Date().toISOString(),
   });
-  try {
-    fs.mkdirSync(require('path').dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(queue.slice(-20), null, 2));
-  } catch { /* Non-fatal */ }
+  try { writePendingScans(p, queue.slice(-20)); } catch { /* Non-fatal */ }
 }
 
 async function flushPendingScans(): Promise<void> {
@@ -14093,7 +14084,7 @@ async function flushPendingScans(): Promise<void> {
     });
     if (!ok) remaining.push(scan);
   }
-  try { fs.writeFileSync(p, JSON.stringify(remaining, null, 2)); } catch { /* Non-fatal */ }
+  try { writePendingScans(p, remaining); } catch { /* Non-fatal */ }
 }
 
 interface RegistryTrustData {
