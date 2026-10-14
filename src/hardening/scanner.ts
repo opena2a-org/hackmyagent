@@ -7936,7 +7936,14 @@ export class HardeningScanner {
       for (const id of checkIds) if (!prior.checkIds.includes(id)) prior.checkIds.push(id);
       return prior;
     }
-    const entry: ExcludedFixWrite = { file, line: rule.line, rule: rule.rule, checkIds: [...new Set(checkIds)] };
+    // #1058 — the rule text is echoed bounded, as in the `hmaignore`
+    // disclosure; the refusal above matched the rule in full.
+    const entry: ExcludedFixWrite = {
+      file,
+      line: rule.line,
+      rule: boundHmaIgnoreEcho(rule.rule),
+      checkIds: [...new Set(checkIds)],
+    };
     this.fixWritesExcluded.push(entry);
     return entry;
   }

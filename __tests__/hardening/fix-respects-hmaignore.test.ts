@@ -12,7 +12,12 @@ import { describe, it, expect } from 'vitest';
 import { chmod, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { HardeningScanner, hmaIgnoreRuleExcludingFixWrite, parseHmaIgnore } from '../../src/hardening/scanner';
+import {
+  HardeningScanner,
+  HMAIGNORE_ECHO_MAX,
+  hmaIgnoreRuleExcludingFixWrite,
+  parseHmaIgnore,
+} from '../../src/hardening/scanner';
 import { SoulScanner } from '../../src/soul/scanner';
 import { tempDir } from '../helpers/temp-dir';
 
@@ -143,5 +148,54 @@ describe('#1033 --fix never writes a path .hmaignore excludes', () => {
     expect(hmaIgnoreRuleExcludingFixWrite(['docs/a.json'], ['GIT-001'], narrow)).toBeUndefined();
     expect(hmaIgnoreRuleExcludingFixWrite(['docs/b.json'], ['CRED-001'], narrow)).toBeUndefined();
     expect(hmaIgnoreRuleExcludingFixWrite(['docs/a.json'], ['CRED-001'], undefined)).toBeUndefined();
+  });
+});
+
+/** The echo of `text` when it is longer than the bound, as #937 writes it. */
+function cutEcho(text: string): string {
+  return `${text.slice(0, HMAIGNORE_ECHO_MAX)}… (${text.length} characters)`;
+}
+
+describe('#1058 a refused --fix write echoes a long .hmaignore rule bounded', () => {
+  it('fixWritesExcluded[].rule stops at HMAIGNORE_ECHO_MAX characters, and the rule still refuses the write', async () => {
+    const dir = tempDir('hma-1058-perm-');
+    const line = `secrets.json # ${'r'.repeat(64 * HMAIGNORE_ECHO_MAX)}`;
+    await put(dir, '.hmaignore', `${line}\n`);
+    await put(dir, 'secrets.json', '{}\n');
+    await chmod(path.join(dir, 'secrets.json'), 0o644);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    expect((await stat(path.join(dir, 'secrets.json'))).mode & 0o777).toBe(0o644);
+    expect(result.fixWritesExcluded).toEqual([
+      { file: 'secrets.json', line: 1, rule: cutEcho(line), checkIds: ['PERM-001'] },
+    ]);
+    expect(JSON.stringify(result.fixWritesExcluded).length).toBeLessThan(2 * HMAIGNORE_ECHO_MAX);
+  });
+
+  it('a refused governance write after the scan records the bounded rule', async () => {
+    const dir = tempDir('hma-1058-soul-');
+    const line = `SOUL.md # ${'s'.repeat(64 * HMAIGNORE_ECHO_MAX)}`;
+    await put(dir, '.hmaignore', `${line}\n`);
+    const scanner = new HardeningScanner();
+    await scanner.scan({ targetDir: dir, autoFix: true });
+
+    const excluded = await scanner.excludeGovernanceWrite(dir, 'SOUL.md', ['SOUL-001']);
+
+    expect(excluded).toEqual({ file: 'SOUL.md', line: 1, rule: cutEcho(line), checkIds: ['SOUL-001'] });
+  });
+
+  it('a rule of exactly HMAIGNORE_ECHO_MAX characters is echoed as written', async () => {
+    const dir = tempDir('hma-1058-atbound-');
+    const prefix = 'secrets.json # ';
+    const line = `${prefix}${'t'.repeat(HMAIGNORE_ECHO_MAX - prefix.length)}`;
+    await put(dir, '.hmaignore', `${line}\n`);
+    await put(dir, 'secrets.json', '{}\n');
+    await chmod(path.join(dir, 'secrets.json'), 0o644);
+
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: true });
+
+    expect(line).toHaveLength(HMAIGNORE_ECHO_MAX);
+    expect(result.fixWritesExcluded?.map((e) => e.rule)).toEqual([line]);
   });
 });
