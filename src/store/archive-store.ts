@@ -540,6 +540,13 @@ function bornEarlier(current: string, keyed: string): boolean {
  * name. One whose runs could not be counted is listed, since a failed read does
  * not prove it empty. A store moved aside as `<key>.replaced-...` is not
  * under a key and is not listed.
+ *
+ * The refusals `findArchiveStore` makes for the target's own key hold here too
+ * (#1051). A store directory another user account created is left out: it is
+ * not a store this account's `--fix` wrote, and naming it as the target's would
+ * send the user to copy that account's files into the target. When a store
+ * would be listed and its root can be written by other accounts without the
+ * sticky bit, the answer is `unknown`: any of them could have put it there.
  */
 export async function findOtherBirthStores(targetDir: string): Promise<OtherBirthLookup> {
   const key = await storeKeyOf(targetDir);
@@ -565,7 +572,7 @@ export async function findOtherBirthStores(targetDir: string): Promise<OtherBirt
     let runs: number | undefined;
     try {
       const st = await fs.lstat(dir);
-      if (st.isSymbolicLink() || !st.isDirectory()) continue;
+      if (st.isSymbolicLink() || !st.isDirectory() || !ownedByCurrentUser(st)) continue;
       runs = (await listArchiveRuns(dir)).length;
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
@@ -577,6 +584,13 @@ export async function findOtherBirthStores(targetDir: string): Promise<OtherBirt
       if (found.kind === 'record') lastKnownPath = found.record.lastKnownPath || undefined;
     } catch { /* named without the path its record would have given */ }
     stores.push({ dir, lastKnownPath, targetBornEarlier: bornEarlier(id.birthtimeNs, birth) });
+  }
+  if (stores.length > 0) {
+    try {
+      if (openToOtherUsers(await fs.lstat(root))) return { kind: 'unknown', dir: stores[0].dir, reason: sharedRootReason(root) };
+    } catch {
+      return { kind: 'unknown', dir: stores[0].dir, reason: 'the filesystem would not say what its store root is' };
+    }
   }
   return { kind: 'listed', stores };
 }

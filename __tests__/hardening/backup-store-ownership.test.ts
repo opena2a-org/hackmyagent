@@ -19,7 +19,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { HardeningScanner } from '../../src/hardening/scanner';
-import { describeArchiveStore, findArchiveStore, prepareArchiveStore } from '../../src/store/archive-store';
+import { describeArchiveStore, findArchiveStore, findOtherBirthStores, prepareArchiveStore } from '../../src/store/archive-store';
 import { tempDir } from '../helpers/temp-dir';
 import { storeDirOf } from '../helpers/backup-store';
 
@@ -77,6 +77,37 @@ function plantRun(store: string, name: string): string {
 function privateRoot(store: string): void {
   mkdirSync(path.dirname(store), { recursive: true });
   chmodSync(path.dirname(store), 0o700);
+}
+
+/**
+ * A store under `target`'s device and inode number, keyed by a creation time an
+ * hour later than the one the target reports (#1049). When the target has no
+ * store of its own, `rollback` reads such a store as the target's: it names it
+ * and restores nothing, from the store or from the tree.
+ */
+async function laterBirthStore(target: string): Promise<string> {
+  const id = statSync(realpathSync.native(target), { bigint: true });
+  return path.join(path.dirname(await storeDirOf(target)), `${id.dev}-${id.ino}-${id.birthtimeNs + 3_600_000_000_000n}`);
+}
+
+/** A tree with no credential in it, for the cells that take no `--fix` run. */
+function treeWithConfig(): string {
+  const dir = tempDir('hma-1051-');
+  writeFileSync(path.join(dir, 'config.json'), '{"port": 2222}\n');
+  return dir;
+}
+
+/** The `config.json` an archive an earlier version left inside the tree holds. */
+const IN_TREE = '{"port": 1111}\n';
+
+function plantInTreeArchive(target: string): void {
+  const run = path.join(target, '.hackmyagent-backup', '2026-01-01T00-00-00-000Z');
+  mkdirSync(run, { recursive: true });
+  writeFileSync(path.join(run, 'config.json'), IN_TREE);
+  writeFileSync(
+    path.join(run, '.manifest.json'),
+    `${JSON.stringify({ version: 2, existingFiles: ['config.json'], absentAtBackup: [], createdFiles: [] })}\n`,
+  );
 }
 
 /** Every entry under `dir` with its bytes, so a later read proves nothing in it was moved, removed or rewritten. */
@@ -174,6 +205,34 @@ describe.skipIf(process.platform === 'win32')('#1051 a backup store another user
     ]);
     expect(readFileSync(path.join(theirs, 'config.json'), 'utf-8'), 'the passed-over run was changed or removed').toBe(PLANTED);
   }, 120_000);
+
+  it('rollback passes over a store another account created under another creation time, and restores the archive in the tree', async () => {
+    const target = treeWithConfig();
+    const before = liveConfig(target);
+    const store = await laterBirthStore(target);
+    privateRoot(store);
+    plantRun(store, '2026-01-01-000000-ABCDEF12');
+    const planted = snapshot(store);
+    plantInTreeArchive(target);
+
+    // Control: owned by this account, the store is read as this directory's, and nothing is restored.
+    const own = await findOtherBirthStores(target);
+    expect(own.kind === 'listed' ? own.stores.find((s) => s.dir === store) : undefined, 'the planted store is not listed; this cell measures nothing')
+      .toEqual({ dir: store, lastKnownPath: undefined, targetBornEarlier: true });
+    await expect(new HardeningScanner().rollback(target)).rejects.toThrow(/later creation time/);
+    expect(liveConfig(target)).toBe(before);
+
+    owners.foreign.add(store);
+    const found = await findOtherBirthStores(target);
+    expect(found.kind).toBe('listed');
+    expect(found.kind === 'listed' ? found.stores.map((s) => s.dir) : [], 'a store another account created was listed as this directory\'s')
+      .not.toContain(store);
+    const report = await new HardeningScanner().rollback(target);
+    expect(report.backupSource).toBe('in-tree');
+    expect(liveConfig(target), 'rollback did not restore the archive in the tree').toBe(IN_TREE);
+    expect((report.otherBirthStores ?? []).map((s) => s.dir), 'the report names a store another account created').not.toContain(store);
+    expect(snapshot(store), 'the other account\'s store was written to, moved or removed').toEqual(planted);
+  }, 60_000);
 });
 
 describe.skipIf(process.platform === 'win32')('#1051 a store root other accounts can write needs the sticky bit', () => {
@@ -250,6 +309,31 @@ describe.skipIf(process.platform === 'win32')('#1051 a store root other accounts
     await expect(new HardeningScanner().rollback(target)).rejects.toThrow(/sticky bit/);
     expect(liveConfig(target)).toBe(fixed);
   }, 120_000);
+
+  it('rollback refuses a store kept under another creation time when its root became writable by other accounts', async () => {
+    const root = namedRoot(0o700);
+    const target = treeWithConfig();
+    const before = liveConfig(target);
+    const store = await laterBirthStore(target);
+    plantRun(store, '2026-01-01-000000-ABCDEF12');
+    plantInTreeArchive(target);
+
+    // Control: under a root only this account can write, the store is listed as this directory's.
+    const listed = await findOtherBirthStores(target);
+    expect(listed.kind === 'listed' ? listed.stores.map((s) => s.dir) : [], 'the store is not listed; this cell measures nothing')
+      .toContain(store);
+
+    chmodSync(root, 0o777);
+    const found = await findOtherBirthStores(target);
+    expect(found.kind, 'a store in a root any account can replace entries of was listed as this directory\'s').toBe('unknown');
+    expect(found.kind === 'unknown' ? found.reason : '').toMatch(/sticky bit/);
+    await expect(new HardeningScanner().rollback(target)).rejects.toThrow(/sticky bit/);
+    expect(liveConfig(target)).toBe(before);
+
+    chmodSync(root, 0o1777);
+    const sticky = await findOtherBirthStores(target);
+    expect(sticky.kind === 'listed' ? sticky.stores.map((s) => s.dir) : [], 'a root with the sticky bit was refused').toContain(store);
+  }, 60_000);
 
   it.each(['1777', '1770', '755'])('accepts a root of mode %s, and rollback restores from it', async (octal) => {
     const target = fixableTree();
