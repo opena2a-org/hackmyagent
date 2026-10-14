@@ -43,7 +43,7 @@ const NOT_PINNED = [
 ];
 
 const REQUIRED_KEYS = [
-  'tape', 'tapeSha256', 'scriptSha256', 'commands', 'tool', 'version', 'ranAtUtc', 'fixture', 'fixtureSha',
+  'tape', 'tapeSha256', 'commands', 'tool', 'version', 'ranAtUtc', 'fixture', 'fixtureSha',
   'fixtureUncommittedChanges', 'fixturePath', 'hostname', 'columns', 'rows', 'framerate', 'gifsicle', 'gifFrames',
   'gifFullScreenFrames', 'renderedPixelSize', 'outputs', 'durationSeconds', 'wallClockSeconds', 'meteredCostUsd',
   'vhsPatchSha256', 'edits',
@@ -58,7 +58,7 @@ const VERSION_OR_DATE = /[0-9]+\.[0-9]+\.[0-9]+|20[0-9]{2}-[0-9]{2}-[0-9]{2}/;
 
 interface FileRecord { path: string; bytes: number; sha256: string }
 interface Sidecar {
-  tape: string; tapeSha256: string; scriptSha256: string; commands: string[]; tool: string; version: string;
+  tape: string; tapeSha256: string; commands: string[]; tool: string; version: string;
   npmIntegrity?: string; packedFromCommit?: string; fixtureSha: string; fixtureUncommittedChanges: number;
   hostname: string; columns: number; rows: number; framerate: number; durationSeconds: number;
   wallClockSeconds: number; meteredCostUsd: number; vhsPatchSha256: string; edits: string[];
@@ -135,7 +135,6 @@ describe('recording sidecars', () => {
 
     it('the tape, the fixture script and the outputs on disk are the ones the sidecar hashed', () => {
       expect(sidecar.tapeSha256).toBe(sha256(sidecar.tape));
-      expect(sidecar.scriptSha256).toBe(sidecar.tapeSha256);
       expect(sidecar.fixtureSha).toBe(sha256('docs/vhs/setup-lab.sh'));
       expect(sidecar.fixtureUncommittedChanges).toBe(0);
       for (const file of [sidecar.outputs.gif, ...sidecar.outputs.frames]) {
@@ -145,6 +144,17 @@ describe('recording sidecars', () => {
       expect(tape.outputs).toContain(sidecar.outputs.gif.path);
       expect(tape.outputs).toContain(sidecar.outputs.mp4.path);
       expect(sidecar.outputs.frames.map((f) => f.path)).toEqual(tape.screenshots);
+    });
+
+    it('each top-level hash is the sha256 of the file it names, and the sidecar carries no other', () => {
+      const hashed: Record<string, string> = {
+        tapeSha256: sidecar.tape,
+        fixtureSha: 'docs/vhs/setup-lab.sh',
+        vhsPatchSha256: 'docs/vhs/docker/vhs-0.12.0-render-context.patch',
+      };
+      const record = sidecar as unknown as Record<string, unknown>;
+      expect(Object.keys(record).filter((key) => /Sha(256)?$/.test(key)).sort()).toEqual(Object.keys(hashed).sort());
+      for (const [key, file] of Object.entries(hashed)) expect(record[key], key).toBe(sha256(file));
     });
 
     it('was rendered at 120 columns by 40 rows, 10 frames a second, on a host named laptop', () => {
