@@ -1,8 +1,9 @@
 ---
 type: fixed
 issue: 1051
+breaking: true
 ---
-#### `secure --fix` and `rollback` refuse a backup store another user account created (#1051)
+#### Breaking: `secure --fix` and `rollback` refuse a backup store another user account created (#1051)
 
 - A backup store is named after the project directory's device, inode number
   and birth time, which any account can read. Before, with `HMA_BACKUP_HOME`
@@ -16,3 +17,10 @@ issue: 1051
   refused the same way, and the fix line names `chmod go-w` on it or another
   `HMA_BACKUP_HOME`. A shared root with the sticky bit, as `/tmp` has, is
   still accepted.
+- These refusals change exit codes. With `HMA_BACKUP_HOME` set to a directory
+  of mode 0775, `secure <dir> --fix --json` on a directory holding a
+  `package.json` and a `config.json` with a GitHub token value exited 0 and
+  redacted the value; it now exits 1 with `FIX-BACKUP-FAILED` and leaves the
+  file as it was. After a `--fix` run under a store root of mode 0700 that is
+  then made 0775, `rollback <dir>` exited 0 and restored the files; it now
+  exits 1 and restores nothing.

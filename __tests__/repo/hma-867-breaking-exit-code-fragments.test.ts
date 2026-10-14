@@ -34,6 +34,7 @@ const EXIT_CODE_CHANGES: Record<number, string> = {
   760: '`explain` on the `SOUL-*` ids `scan-soul` prints: exit 1 -> exit 0',
   761: '`check` on a scoped name npm does not have: exit 0 -> exit 2',
   1049: '`rollback` after the directory\'s reported creation time moved back, with an older archive in the tree: exit 0 -> exit 1',
+  1051: '`secure --fix` with `HMA_BACKUP_HOME` at a mode 0775 directory, and `rollback` after that store root was made 0775: exit 0 -> exit 1',
 };
 
 interface Fragment { name: string; issues: number[]; breaking: string | undefined }
