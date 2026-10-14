@@ -115,7 +115,7 @@ export interface ExcludedFixWrite {
   file: string;
   /** 1-based `.hmaignore` line of the rule that excluded it. */
   line: number;
-  /** That line as written. */
+  /** That line as written, cut at HMAIGNORE_ECHO_MAX characters like the `hmaignore` disclosure (#1058). */
   rule: string;
   /** The checks whose fix was not written to this path. */
   checkIds: string[];
