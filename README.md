@@ -9,7 +9,7 @@
 
 [Website](https://hackmyagent.com) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
 
-Security scanner for AI agents: finds the shadow AI on a machine (every AI assistant, MCP server and agent project, worst first), scans agent projects and packages for credentials, risky MCP configs and prompt injection, grades SOUL.md governance, and generates red-team payloads.
+Security scanner for AI agents: finds shadow AI on machine (every AI assistant, MCP server and agent project, worst first), scans agent projects and packages for credentials, risky MCP configs and prompt injection, grades SOUL.md governance, and generates red-team payloads.
 
 ## Quick start
 
