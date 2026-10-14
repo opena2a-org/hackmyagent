@@ -8,9 +8,10 @@
  * the model's prose is not a gate.
  *
  * Two changes close it and this file pins both, because either alone leaves a
- * hole: the reply is read from the shapes models actually return, AND a reply
- * that still cannot be read produces exit 2 — "reached no verdict" — instead of
- * a pass. Severity stays `medium` deliberately (CISO): a transient API failure
+ * hole: the answer is read from one forced `report_findings` tool call and
+ * never from the reply's text, so formatting no longer reaches the verdict, AND
+ * a reply that carries no readable report produces exit 2 — "reached no
+ * verdict" — instead of a pass. Severity stays `medium` deliberately (CISO): a transient API failure
  * is an availability event, not a statement that the user's tree is unsafe.
  *
  * The CLI is SPAWNED rather than called, because the claim is about an exit
@@ -30,8 +31,13 @@ const FINDING = JSON.stringify([
   { line: 3, type: 'Password', severity: 'critical', description: 'Plain text operator password', rationale: 'Cleartext credential' },
 ]);
 
-/** Run `secure --deep` with Layer 3 answering with one fixed response shape. */
-function runDeep(shape: string, marker: string, extraArgs: string[] = []): { code: number; out: string; stdout: string } {
+/** The analyst's reply: text only, or a full message with content blocks and a stop reason. */
+type Reply = { text: string } | { message: { content: unknown[]; stop_reason: string } };
+
+const REPORT = { type: 'tool_use', id: 'toolu_stub', name: 'report_findings', input: { findings: JSON.parse(FINDING) } };
+
+/** Run `secure --deep` with Layer 3 answering with one fixed reply. */
+function runDeep(reply: Reply, marker: string, extraArgs: string[] = []): { code: number; out: string; stdout: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'hma-462-verdict-'));
   try {
     // Content differs per case ON PURPOSE. The cache key is a hash of the file
@@ -47,7 +53,9 @@ function runDeep(shape: string, marker: string, extraArgs: string[] = []): { cod
       env: {
         ...process.env,
         ANTHROPIC_API_KEY: 'stub-key-never-used-the-preload-answers',
-        HMA_STUB_ANALYST_RESPONSE: shape,
+        ...('text' in reply
+          ? { HMA_STUB_ANALYST_RESPONSE: reply.text }
+          : { HMA_STUB_ANALYST_MESSAGE: JSON.stringify(reply.message) }),
         NODE_OPTIONS: `--require ${PRELOAD}`,
       },
     });
@@ -68,21 +76,18 @@ beforeAll(() => {
 });
 
 describe('#462 an incomplete deep scan cannot report a pass', () => {
-  // The shapes this parser reads. A richer parser was written and REVERTED: it
-  // read every shape below plus prose-wrapped and `{"findings":[…]}` replies,
-  // and in doing so it let an array planted in the SCANNED FILE — quoted by the
-  // analyst after its real answer — become the verdict, and made any refusal
-  // containing a bracket read as clean. Losing a finding loudly beats losing one
-  // silently, so the narrow parser stays and the gap is reported, not hidden.
-  const readable: Array<[string, string]> = [
-    ['bare array', FINDING],
-    ['fenced array', '```json\n' + FINDING + '\n```'],
-    ['fenced array after prose', 'I detected a forged header.\n\n```json\n' + FINDING + '\n```'],
+  // The answer is the input of the one report call. Text beside the call is not
+  // read, so a sentence in front of it changes nothing.
+  const readable: Array<[string, Reply]> = [
+    ['one report call', { message: { content: [REPORT], stop_reason: 'tool_use' } }],
+    ['one report call after a sentence', {
+      message: { content: [{ type: 'text', text: 'I detected a forged header.' }, REPORT], stop_reason: 'tool_use' },
+    }],
   ];
 
-  for (const [name, shape] of readable) {
+  for (const [name, reply] of readable) {
     it(`reports the finding and exits 1 — ${name}`, () => {
-      const { code, out } = runDeep(shape, name.replace(/\W+/g, ''));
+      const { code, out } = runDeep(reply, name.replace(/\W+/g, ''));
       // Loud rather than vacuous: if Layer 3 never ran, this would exit 0 with
       // no finding and the assertion below would measure the static layers.
       expect(out, 'Layer 3 did not run — this case measured nothing').not.toContain('not analyzed');
@@ -90,26 +95,32 @@ describe('#462 an incomplete deep scan cannot report a pass', () => {
     });
   }
 
-  // The KNOWN gap, pinned so it is a decision rather than a surprise. These are
-  // shapes a model really returns; this parser cannot read them, and the run
-  // says so and reaches no verdict instead of reporting a pass.
-  const unreadable: Array<[string, string]> = [
-    ['prose, then a bare array', 'I detected a forged header.\n\n' + FINDING],
-    ['a bare array, then prose', FINDING + '\n\nThe file is otherwise small.'],
-    ['a findings wrapper', JSON.stringify({ findings: JSON.parse(FINDING) })],
-    ['a refusal', 'I am unable to complete this analysis.'],
+  // A reply with no readable report is a non-answer, however readable its text
+  // is. The first rows hold the finding in shapes the old text extractor read
+  // or nearly read; none of them is a report call, so each one reaches no
+  // verdict instead of a pass, and none is read as clean.
+  const unreadable: Array<[string, Reply]> = [
+    ['a bare array as text', { text: FINDING }],
+    ['a fenced array as text', { text: '```json\n' + FINDING + '\n```' }],
+    ['prose, then a bare array', { text: 'I detected a forged header.\n\n' + FINDING }],
+    ['a findings wrapper as text', { text: JSON.stringify({ findings: JSON.parse(FINDING) }) }],
+    ['a refusal', { text: 'I am unable to complete this analysis.' }],
+    ['a report cut off at the output limit', { message: { content: [REPORT], stop_reason: 'max_tokens' } }],
+    ['a report with no findings array', {
+      message: { content: [{ ...REPORT, input: { result: JSON.parse(FINDING) } }], stop_reason: 'tool_use' },
+    }],
   ];
 
-  for (const [name, shape] of unreadable) {
+  for (const [name, reply] of unreadable) {
     it(`reports the gap and exits 2, never 0 — ${name}`, () => {
-      const { code, out } = runDeep(shape, name.replace(/\W+/g, ''));
+      const { code, out } = runDeep(reply, name.replace(/\W+/g, ''));
       expect(out).toContain('not analyzed');
       expect(code, `${name} must not report a pass`).toBe(2);
     });
   }
 
   it('says why the run reached no verdict rather than only setting a code', () => {
-    const { out } = runDeep('I am unable to complete this analysis.', 'explains');
+    const { out } = runDeep({ text: 'I am unable to complete this analysis.' }, 'explains');
     expect(out.toLowerCase().replace(/\s+/g, ' ')).toContain('reached no deep-scan');
   });
 
@@ -117,7 +128,7 @@ describe('#462 an incomplete deep scan cannot report a pass', () => {
     // #450's rule, broken by the first fix round 20 lines under the comment that
     // states it: the predicate read `result.findings`, the FILTERED list, so
     // suppressing the check removed it from the verdict as well as the report.
-    const { code } = runDeep('I am unable to complete this analysis.', 'ignored', [
+    const { code } = runDeep({ text: 'I am unable to complete this analysis.' }, 'ignored', [
       '--ignore', 'SEM-LLM-NOT-ANALYZED',
     ]);
     expect(code).toBe(2);
@@ -126,7 +137,7 @@ describe('#462 an incomplete deep scan cannot report a pass', () => {
   it('reaches the same verdict on the --json channel, not only on text', () => {
     // Four of the five output channels were pinned by nothing: deleting the
     // incomplete-scan branch from all four left the suite green.
-    const { code, stdout } = runDeep('I am unable to complete this analysis.', 'jsonchan', ['--json']);
+    const { code, stdout } = runDeep({ text: 'I am unable to complete this analysis.' }, 'jsonchan', ['--json']);
     expect(code).toBe(2);
     // The --json channel is stdout. Notices such as the Registry "nothing
     // sent" line go to stderr and are not part of the payload; parsing the

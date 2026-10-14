@@ -46,7 +46,10 @@ function runSecure(content: string | null, args: string[], env: Record<string, s
     if (content !== null) writeFileSync(path.join(dir, 'config.json'), content);
     // The key and any preload the parent carries are removed, so "no key"
     // means no key whatever the machine running the suite has set.
-    const { ANTHROPIC_API_KEY: _key, NODE_OPTIONS: _opts, HMA_STUB_ANALYST_RESPONSE: _r, HMA_STUB_ANALYST_THROW: _t, ...base } = process.env;
+    const {
+      ANTHROPIC_API_KEY: _key, NODE_OPTIONS: _opts, HMA_STUB_ANALYST_RESPONSE: _r, HMA_STUB_ANALYST_MESSAGE: _m,
+      HMA_STUB_ANALYST_THROW: _t, ...base
+    } = process.env;
     const res = spawnSync(process.execPath, [CLI, 'secure', '.', ...args, '--json'], {
       cwd: dir,
       encoding: 'utf8',
@@ -108,9 +111,19 @@ describe('#479 a deep scan whose Layer 3 could not run cannot report a pass', ()
   it('with a stubbed key the issue fixture stays 69/100, exit 1, and carries no gap', () => {
     const run = runSecure(ISSUE_FIXTURE, ['--deep'], {
       ANTHROPIC_API_KEY: 'stub-key-never-used-the-preload-answers',
-      HMA_STUB_ANALYST_RESPONSE: JSON.stringify([
-        { line: 2, type: 'Password', severity: 'critical', description: 'admin password', rationale: 'plaintext' },
-      ]),
+      HMA_STUB_ANALYST_MESSAGE: JSON.stringify({
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_stub',
+          name: 'report_findings',
+          input: {
+            findings: [
+              { line: 2, type: 'Password', severity: 'critical', description: 'admin password', rationale: 'plaintext' },
+            ],
+          },
+        }],
+        stop_reason: 'tool_use',
+      }),
       NODE_OPTIONS: `--require ${PRELOAD}`,
     });
     expect(run.notRun).toHaveLength(0);

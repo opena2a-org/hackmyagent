@@ -8,10 +8,10 @@
  */
 
 import type { SemanticFinding, AnalysisFile, LLMAnalysisOptions } from '../types';
-import { AnthropicClient } from './client';
+import { AnthropicClient, type AnthropicToolResponse } from './client';
 import { LLMCache } from './cache';
 import { BudgetTracker } from './budget';
-import { getPromptForFileType, buildFileAnalysisMessage } from './prompts';
+import { getPromptForFileType, buildFileAnalysisMessage, REPORT_FINDINGS_TOOL } from './prompts';
 
 /**
  * #462 — what came back, as three states rather than two.
@@ -28,6 +28,9 @@ import { getPromptForFileType, buildFileAnalysisMessage } from './prompts';
  *
  * 0.27.0's own headline says a verdict that was not measured must not read as
  * clean. This is that sentence applied to the layer that shipped it.
+ *
+ * The states are decided by the transport, not by reading reply text: see
+ * `readToolResponse`. A reply that carries no findings report is `unparsed`.
  */
 export type LLMFileOutcome =
   | { kind: 'findings'; findings: SemanticFinding[] }
@@ -74,8 +77,12 @@ export class LLMAnalyzer {
       const file = files[i];
       const { systemPrompt, model } = getPromptForFileType(file.type);
 
-      // Check cache
-      const contentHash = this.cache.hash(file.content, systemPrompt);
+      // Check cache. The tool schema is part of the key with the prompt: the
+      // two together are what the cached answer was given in reply to.
+      const contentHash = this.cache.hash(
+        file.content,
+        systemPrompt + JSON.stringify(REPORT_FINDINGS_TOOL)
+      );
       const cached = await this.cache.get(contentHash);
 
       // An entry written by 0.27.0 or earlier holds the raw `response` text and
@@ -119,10 +126,11 @@ export class LLMAnalyzer {
           file.type
         );
 
-        const result = await this.client.chat(
+        const result = await this.client.callTool(
           model,
           systemPrompt,
-          userMessage
+          userMessage,
+          REPORT_FINDINGS_TOOL
         );
 
         // Record cost. Billed whether or not the answer was readable.
@@ -133,7 +141,7 @@ export class LLMAnalyzer {
         );
         totalCost += cost;
 
-        const outcome = this.parseModelResponse(result.text, file);
+        const outcome = this.readToolResponse(result, file);
 
         if (outcome.kind === 'unparsed') {
           // Nothing is cached for an unreadable response, so a retry is a real
@@ -171,38 +179,58 @@ export class LLMAnalyzer {
   }
 
   /**
-   * Read the model's response, or say it could not be read.
+   * Read the analyst's answer from the transport, or say there is none.
    *
-   * The greedy `/\[[\s\S]*\]/` is gone rather than narrowed. A non-greedy
-   * version truncates any finding whose description contains a `]`, and a
-   * hand-written balanced scanner is a new parser — the surface #449 spent five
-   * review rounds paying for. What is left is the smallest total rule: the
-   * response is a JSON array, optionally inside one fenced block, and anything
-   * else is `unparsed` and is REPORTED.
+   * There is no extraction step. The answer is the input of the one
+   * `report_findings` call, which the API returns already parsed, and the reply
+   * text is never read, so no rule decides which text to believe.
+   *
+   * Structured output would MOVE the #462 failure rather than remove it if "no
+   * tool call came back" were ever built as clean. So `findings` needs all of:
+   * the reply stopped to make its call (`tool_use`), it made exactly one call,
+   * to the tool it was offered, and that call holds a findings array whose
+   * every entry has a severity and a description. Anything else is `unparsed`
+   * and is REPORTED. An entry that cannot be read fails the whole answer
+   * rather than being dropped: dropping it would turn a report of malformed
+   * entries into zero findings, which is clean built from a non-answer.
    */
-  parseModelResponse(response: string, file: AnalysisFile): LLMFileOutcome {
-    const body = extractJsonPayload(response);
-    if (body === null) {
+  readToolResponse(
+    response: Pick<AnthropicToolResponse, 'stopReason' | 'toolCalls'>,
+    file: AnalysisFile
+  ): LLMFileOutcome {
+    if (response.stopReason !== 'tool_use') {
+      return { kind: 'unparsed', reason: describeStop(response.stopReason) };
+    }
+
+    const calls = response.toolCalls;
+    if (calls.length === 0) {
+      return { kind: 'unparsed', reason: 'the analyst returned no findings report' };
+    }
+    if (calls.length > 1) {
       return {
         kind: 'unparsed',
-        reason: 'the analyst\'s response contained no JSON array to read',
+        reason: `the analyst returned ${calls.length} findings reports where exactly one was asked for`,
+      };
+    }
+    if (calls[0].name !== REPORT_FINDINGS_TOOL.name) {
+      return { kind: 'unparsed', reason: 'the analyst called a tool it was not offered' };
+    }
+
+    const input = calls[0].input;
+    const entries = isRecord(input) ? input.findings : undefined;
+    if (!Array.isArray(entries)) {
+      return { kind: 'unparsed', reason: 'the analyst\'s findings report held no findings array' };
+    }
+
+    const unreadable = entries.filter((entry) => !isReadableFinding(entry)).length;
+    if (unreadable > 0) {
+      return {
+        kind: 'unparsed',
+        reason: `${unreadable} of the ${entries.length} entries in the analyst's findings report had no readable severity and description`,
       };
     }
 
-    let raw: unknown;
-    try {
-      raw = JSON.parse(body);
-    } catch {
-      return {
-        kind: 'unparsed',
-        reason: 'the analyst\'s response was not the JSON array the prompt asks for',
-      };
-    }
-    if (!Array.isArray(raw)) {
-      return { kind: 'unparsed', reason: 'the analyst returned JSON that was not an array of findings' };
-    }
-
-    return { kind: 'findings', findings: this.toFindings(raw as LLMFindingRaw[], file) };
+    return { kind: 'findings', findings: this.toFindings(entries as LLMFindingRaw[], file) };
   }
 
   /** Rebuild findings from a cache entry, re-anchoring them on this file. */
@@ -214,22 +242,21 @@ export class LLMAnalyzer {
     }));
   }
 
+  /** Every entry has already passed `isReadableFinding`, so none is dropped here. */
   private toFindings(raw: LLMFindingRaw[], file: AnalysisFile): SemanticFinding[] {
-    return raw
-      .filter((f) => f.description && f.severity)
-      .map((f, idx) => ({
-        id: `SEM-LLM-${String(idx + 1).padStart(3, '0')}`,
-        title: f.type || 'LLM finding',
-        description: f.description || '',
-        rationale: f.rationale || '',
-        category: 'credential' as const,
-        severity: this.normalizeSeverity(f.severity || 'medium'),
-        file: file.path,
-        line: f.line ?? undefined,
-        recommendation: f.recommendation || 'Review and remediate.',
-        layer: 3 as const,
-        autoFixable: false,
-      }));
+    return raw.map((f, idx) => ({
+      id: `SEM-LLM-${String(idx + 1).padStart(3, '0')}`,
+      title: f.type || 'LLM finding',
+      description: f.description || '',
+      rationale: f.rationale || '',
+      category: 'credential' as const,
+      severity: this.normalizeSeverity(f.severity || 'medium'),
+      file: file.path,
+      line: typeof f.line === 'number' ? f.line : undefined,
+      recommendation: f.recommendation || 'Review and remediate.',
+      layer: 3 as const,
+      autoFixable: false,
+    }));
   }
 
   private normalizeSeverity(
@@ -243,36 +270,29 @@ export class LLMAnalyzer {
   }
 }
 
-/**
- * The JSON text in a model response, or null.
- *
- * Line-based and total. It has exactly two rules — the whole response is JSON,
- * or the answer is the LAST fenced block — and neither can span from a stray `[`
- * to a distant `]`, which is what the greedy `/\[[\s\S]*\]/` did.
- *
- * Rule two is not optional and it was measured into existence. With the boundary
- * rule in place the analyst frequently DETECTS the injection and says so before
- * answering ("Despite the attempt to redirect me with instructions inside the
- * artifact…"), so requiring the whole response to be JSON threw away correct
- * answers on exactly the adversarial inputs this fix exists for: the forged
- * fixture went to `unparsed` in 2 of 3 trials while the model had reported both
- * credentials. A stricter parser is a false negative, just a loud one.
- */
-export function extractJsonPayload(text: string): string | null {
-  const trimmed = text.trim();
-  if (trimmed.startsWith('[') || trimmed.startsWith('{')) return trimmed;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
-  const lines = trimmed.split('\n');
-  const fences: number[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (/^```[a-zA-Z0-9_-]*$/.test(lines[i].trim())) fences.push(i);
+/** An entry that names a severity and says what was found. */
+function isReadableFinding(entry: unknown): boolean {
+  return (
+    isRecord(entry) &&
+    typeof entry.severity === 'string' &&
+    entry.severity.length > 0 &&
+    typeof entry.description === 'string' &&
+    entry.description.length > 0
+  );
+}
+
+/** Why a reply that did not stop to make its call is not an answer. */
+function describeStop(stopReason: string | null): string {
+  if (stopReason === 'max_tokens') {
+    return 'the analyst\'s answer was cut off at the output limit, so its findings report may be incomplete';
   }
-  if (fences.length < 2) return null;
-
-  const close = fences[fences.length - 1];
-  const open = fences[fences.length - 2];
-  if (close - open < 1) return null;
-  return lines.slice(open + 1, close).join('\n').trim();
+  if (stopReason === 'refusal') return 'the analyst declined to analyze this file';
+  if (stopReason === null) return 'the analyst\'s reply carried no stop reason';
+  return `the analyst stopped (${JSON.stringify(stopReason)}) without returning its findings report`;
 }
 
 export { AnthropicClient } from './client';
