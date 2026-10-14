@@ -1,17 +1,15 @@
 # HackMyAgent
 
-[![Status: stable](https://img.shields.io/badge/status-stable-green)](./STATUS.md)
-
-> **[OpenA2A](https://github.com/opena2a-org/opena2a)**: [CLI](https://github.com/opena2a-org/opena2a) · [HackMyAgent](https://github.com/opena2a-org/hackmyagent) · [Secretless](https://github.com/opena2a-org/secretless-ai) · [OpenA2A AIM (Agent Identity Management)](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/AI-BrowserGuard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
-
-Security scanner for AI agents: finds the shadow AI on a machine (every AI assistant, MCP server and agent project, worst first), scans agent projects and packages for credentials, risky MCP configs and prompt injection, grades SOUL.md governance, and generates red-team payloads. Apache 2.0.
-
+[![Status: stable](https://img.shields.io/badge/status-stable-green)](STATUS.md)
 [![npm version](https://img.shields.io/npm/v/hackmyagent.svg)](https://www.npmjs.com/package/hackmyagent)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Tests](https://github.com/opena2a-org/hackmyagent/actions/workflows/test-matrix.yml/badge.svg?branch=main)](https://github.com/opena2a-org/hackmyagent/actions/workflows/test-matrix.yml)
-[![NanoMind](https://img.shields.io/badge/NanoMind-semantic%20layer-teal)](https://huggingface.co/opena2a/nanomind-security-classifier)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+> **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · **HackMyAgent** · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/ai-browserguard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
 
 [Website](https://hackmyagent.com) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
+
+Security scanner for AI agents: finds the shadow AI on a machine (every AI assistant, MCP server and agent project, worst first), scans agent projects and packages for credentials, risky MCP configs and prompt injection, grades SOUL.md governance, and generates red-team payloads.
 
 ## Quick start
 
