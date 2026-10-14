@@ -26,7 +26,7 @@
  * move the store to the key another birth time gives, which is the same
  * relation between key and directory seen from the store.
  */
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
@@ -114,6 +114,26 @@ async function rollbackError(target: string): Promise<string> {
   }
   throw new Error('rollback reported a restore where it had to refuse');
 }
+
+/**
+ * Each cell runs against a backup store root of its own. The stores a cell
+ * leaves are keyed by its target's device and inode number, and the target is
+ * removed when the cell ends. A filesystem that gives a removed directory's
+ * inode number to the next one it creates (ext4 does; APFS does not) would
+ * then show a later cell the stores earlier cells left, under the keys they
+ * gave them: the one keyed an hour later than its target's birth time is the
+ * newer backups of a directory born earlier, and rollback refuses, as it must.
+ * Measured on Linux: the last cell exited 1 for that store, not for its own.
+ */
+let fileStoreRoot: string | undefined;
+beforeEach(() => {
+  fileStoreRoot = process.env.HMA_BACKUP_HOME;
+  process.env.HMA_BACKUP_HOME = tempDir('hma-1049-store-');
+});
+afterEach(() => {
+  if (fileStoreRoot === undefined) delete process.env.HMA_BACKUP_HOME;
+  else process.env.HMA_BACKUP_HOME = fileStoreRoot;
+});
 
 describe('#1049 a directory whose reported birth time moved back keeps its backups in view', () => {
   afterEach(() => {
