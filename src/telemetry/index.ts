@@ -22,6 +22,5 @@ export {
   saveContributeChoice,
   showContributePrompt,
   recordScanAndMaybeShowTip,
-  migrateLegacyContributeChoice,
   _resetBackend,
 } from './opt-in';

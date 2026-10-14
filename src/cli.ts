@@ -5231,6 +5231,10 @@ function resolveRepoUrl(targetDir: string): { url: string | null; localPath: boo
  *
  * Also records the scan and shows a delayed consent tip after the 3rd scan
  * if the user hasn't opted in or dismissed.
+ *
+ * It never changes the stored setting. A legacy ~/.hackmyagent/config.json is
+ * not read: this function used to copy its `contribute: true` over the stored
+ * setting, a stored `false` included, in a `--ci` run too.
  */
 async function handleContribution(
   contributeFlag: boolean | undefined,
@@ -5254,11 +5258,7 @@ async function handleContribution(
       recordScanAndMaybeShowTip,
       buildScanEvent,
       queueAndMaybeFlush,
-      migrateLegacyContributeChoice,
     } = await import('./telemetry');
-
-    // One-time migration: honor contribute=true from legacy ~/.hackmyagent/config.json
-    migrateLegacyContributeChoice();
 
     // Record scan count and maybe show the delayed consent tip
     const tip = recordScanAndMaybeShowTip();
@@ -14024,48 +14024,18 @@ function isContributeEnabled(): boolean {
   }
 }
 
-function saveContributeChoice(enabled: boolean): void {
+/**
+ * Count this scan and return the delayed contribution tip when it is due, the
+ * same tip, on the same cadence, that `secure`, `scan-soul` and `detect` show.
+ * `check` asks no question: the stored setting is changed by the user only.
+ */
+function recordScanAndContributeTip(): string | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { saveContributeChoice: save } = require('./telemetry/opt-in.js');
-    save(enabled);
+    const { recordScanAndMaybeShowTip } = require('./telemetry/opt-in.js');
+    return recordScanAndMaybeShowTip();
   } catch {
-    // Non-fatal
-  }
-}
-
-function incrementScanCounter(): number {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { incrementScanCount } = require('./telemetry/opt-in.js');
-    return incrementScanCount();
-  } catch {
-    return 0;
-  }
-}
-
-function hasContributeChoice(): boolean {
-  // If user has explicitly opted in OR out, don't re-prompt.
-  // We check by calling isContributeEnabled and also checking if the config has a value.
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { shouldPromptContribute } = require('./telemetry/opt-in.js');
-    // shouldPromptContribute returns true only when no choice has been made yet
-    // (and after 3 scans, and cooldown expired). So hasContributeChoice = NOT shouldPromptContribute
-    // when scan count >= 3. But we use it to mean "has the user already decided?" which is
-    // the inverse: if shouldPromptContribute is false AND contribute is not enabled, it could be
-    // undecided-but-under-threshold. Use the canonical check directly.
-    const config = (() => {
-      const os = require('os');
-      const path = require('path');
-      const fs = require('fs');
-      const home = process.env.OPENA2A_HOME || path.join(os.homedir(), '.opena2a');
-      const p = path.join(home, 'config.json');
-      try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return {}; }
-    })();
-    return config.contribute?.enabled !== undefined;
-  } catch {
-    return false;
+    return null;
   }
 }
 
@@ -15053,33 +15023,12 @@ async function checkGitHubRepo(
       artifactSummaries,
     });
 
-    // Community contribution
+    // Community contribution: shared when the stored setting is on, never
+    // asked for. The delayed tip is shown instead, as on `secure`.
     if (process.stdin.isTTY && !globalCiMode) {
-      const scanCount = incrementScanCounter();
-      if (scanCount >= 3 && !hasContributeChoice()) {
-        console.log(`  ${colors.dim}Your scans help other developers make safer choices.`);
-        console.log(`  Sharing adds anonymized results to the OpenA2A trust registry`);
-        console.log(`  so others can check packages before installing.${RESET()}`);
-
-        const readline = await import('node:readline');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-        const answer = await new Promise<string>(resolve => {
-          rl.question(`\n  Share scans with the community? [Y/n] `, resolve);
-        });
-        rl.close();
-
-        const wantsToShare = answer.trim().toLowerCase() !== 'n';
-        saveContributeChoice(wantsToShare);
-
-        if (wantsToShare) {
-          const ok = await publishToRegistry(displayName, result);
-          if (ok) {
-            console.error(`\n  ${colors.green}Thanks for sharing! Future scans will auto-contribute.${RESET()}\n`);
-          } else {
-            queuePendingScan(displayName, result);
-          }
-        }
-      } else if (isContributeEnabled()) {
+      const tip = recordScanAndContributeTip();
+      if (tip && process.stdout.isTTY) process.stdout.write(tip + '\n');
+      if (isContributeEnabled()) {
         flushPendingScans();
         const ok = await publishToRegistry(displayName, result);
         if (!ok) queuePendingScan(displayName, result);
@@ -16007,33 +15956,12 @@ async function checkNpmPackage(
       artifactSummaries,
     });
 
-    // Community contribution (after 3 scans, interactive only)
+    // Community contribution: shared when the stored setting is on, never
+    // asked for. The delayed tip is shown instead, as on `secure`.
     if (process.stdin.isTTY && !globalCiMode) {
-      const scanCount = incrementScanCounter();
-      if (scanCount >= 3 && !hasContributeChoice()) {
-        console.log(`  ${colors.dim}Your scans help other developers make safer choices.`);
-        console.log(`  Sharing adds anonymized results to the OpenA2A trust registry`);
-        console.log(`  so others can check packages before installing.${RESET()}`);
-
-        const readline = await import('node:readline');
-        const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
-        const answer = await new Promise<string>(resolve => {
-          rl.question(`\n  Share scans with the community? [Y/n] `, resolve);
-        });
-        rl.close();
-
-        const wantsToShare = answer.trim().toLowerCase() !== 'n';
-        saveContributeChoice(wantsToShare);
-
-        if (wantsToShare) {
-          const ok = await publishToRegistry(name, result);
-          if (ok) {
-            console.error(`\n  ${colors.green}Thanks for sharing! Future scans will auto-contribute.${RESET()}\n`);
-          } else {
-            queuePendingScan(name, result);
-          }
-        }
-      } else if (isContributeEnabled()) {
+      const tip = recordScanAndContributeTip();
+      if (tip && process.stdout.isTTY) process.stdout.write(tip + '\n');
+      if (isContributeEnabled()) {
         // Auto-share silently, queue on failure
         flushPendingScans();
         const ok = await publishToRegistry(name, result);
