@@ -5232,7 +5232,7 @@ function resolveRepoUrl(targetDir: string): { url: string | null; localPath: boo
  * Also records the scan and shows a delayed consent tip after the 3rd scan
  * if the user hasn't opted in or dismissed.
  *
- * It never changes the stored setting. A legacy ~/.hackmyagent/config.json is
+ * It never turns the stored setting on. A legacy ~/.hackmyagent/config.json is
  * not read: this function used to copy its `contribute: true` over the stored
  * setting, a stored `false` included, in a `--ci` run too.
  */
@@ -14027,7 +14027,7 @@ function isContributeEnabled(): boolean {
 /**
  * Count this scan and return the delayed contribution tip when it is due, the
  * same tip, on the same cadence, that `secure`, `scan-soul` and `detect` show.
- * `check` asks no question: the stored setting is changed by the user only.
+ * `check` asks no question and never turns the stored setting on.
  */
 function recordScanAndContributeTip(): string | null {
   try {
