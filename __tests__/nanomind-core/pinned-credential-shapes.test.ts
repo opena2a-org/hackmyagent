@@ -316,6 +316,51 @@ describe('#543: hf_ and glpat- fire like the AWS access key control, with no cre
     }
   });
 
+  // #935. The case-mix check keeps single-case slugs quiet, not every slug. A
+  // slug that mixes cases is reported, and a real token whose body happens to
+  // be single-case is not. Both edges are pinned so that changing the check
+  // goes red here: a slug that stops firing moves to the list above.
+  //
+  // The miss rate. The body class `[A-Za-z0-9_-]` has 64 characters: 38 are not
+  // upper-case, 38 are not lower-case and 12 are neither. A body of n
+  // characters drawn uniformly from it lacks one of the two cases with
+  // probability 2 * (38/64)^n - (12/64)^n, which is 5.93e-5 at the
+  // 20-character minimum, about 1 in 16,862. The last test checks that formula
+  // against the scan.
+  describe('documented edges of the case-mix check', () => {
+    for (const slug of ['Shared-Linux-Docker-Runner-1', 'sharedLinuxDockerRunner01']) {
+      it(`KNOWN FALSE POSITIVE: the mixed-case slug ${slug} is reported`, async () => {
+        const content = alone('glpat-' + slug);
+        expect(scanCanonicalCredentialFormatsForTest(content).map(h => h.label))
+          .toEqual(['GitLab personal access token']);
+        expect(await failingFindings(content)).toContain('AST-CRED-003:critical');
+      }, 120_000);
+    }
+
+    it('KNOWN MISS: a token whose 20-character body is single-case is not reported', async () => {
+      const content = alone('glpat-' + 'abcdefghij0123456789');
+      expect(scanCanonicalCredentialFormatsForTest(content)).toEqual([]);
+      expect(await failingFindings(content)).toEqual([]);
+    }, 120_000);
+
+    it('the stated miss rate is the rate the scan applies', () => {
+      // Every two-character head over the body class, then 18 digits. Digits
+      // carry no case, so whether a body is reported depends on its head alone.
+      const BODY_CLASS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
+      const missRate = (n: number) => 2 * (38 / 64) ** n - (12 / 64) ** n;
+      let missed = 0;
+      for (const a of BODY_CLASS) {
+        for (const b of BODY_CLASS) {
+          const body = `${a}${b}012345678901234567`;
+          if (scanCanonicalCredentialFormatsForTest(alone('glpat-' + body)).length === 0) missed++;
+        }
+      }
+      expect(BODY_CLASS.length).toBe(64);
+      expect(missed).toBe(Math.round(missRate(2) * 64 ** 2));
+      expect(missRate(20)).toBeCloseTo(5.93e-5, 7);
+    });
+  });
+
   it('the case-mix check does not let a rejected match hide a real token after it', () => {
     const content = alone('glpat-' + 'shared-linux-docker-runner-1') + alone(`glpat-${fill(20)}`);
     expect(scanCanonicalCredentialFormatsForTest(content).map(h => h.label))
