@@ -3,7 +3,7 @@
 // The defect: a credential-exfiltrating shell script scores a clean 100, because
 // the deterministic checks key on credentials PRESENT in a file, not on a
 // command that STEALS them. The analyst can route such a file to `attack` at
-// high severity, but that escalation is advisory and non-scoring by [CDS-024]
+// high severity, but that escalation is advisory and non-scoring by design
 // (~22% measured FP rate on dual-use security code), so it rendered only in a
 // footer below a verdict line saying the tree was fine. Measured 2026-08-23 on
 // 8c767f6, one `.sh` holding a single exfiltrating curl beside a complete

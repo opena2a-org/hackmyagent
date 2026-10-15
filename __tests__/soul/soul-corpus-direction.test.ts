@@ -8,8 +8,8 @@
  *   soul/malicious/permissive-overrides-soul → all three flag it
  *
  * THE BENIGN ROW IS NOT KEYWORD-DETECTED, WHICH IS NOT THE SAME AS UNGOVERNED
- * (#390, 2026-08-10). `hackmyagent/CLAUDE.md` says a benign fixture that starts
- * firing is "a SIGNAL of a real regression in the scanner". That signal was
+ * (#390, 2026-08-10). A benign corpus fixture that starts firing is treated
+ * as a signal of a real regression in the scanner. That signal was
  * followed. What is true: the fixture contains no occurrence of `role-play`,
  * `pretend`, `act as`, `jailbreak`, `as DAN`, `persona` or `impersonat`, so
  * `SOUL-IH-003 Role-play refusal` — one of exactly two `critical: true`
@@ -30,7 +30,7 @@
  * is `['SOUL-IH-003']` alone here, both on the malicious fixture. Editing the
  * fixture to add a role-play clause would be authoring an artifact so a string
  * match succeeds; whether the corpus fixture's coverage claim is itself too
- * narrow went to `[CHIEF-CSR]` instead.
+ * narrow is a question for the corpus, not for this file.
  *
  * These assertions are on the EXIT CODE deliberately. Before #390 this file
  * checked only `violations` and `scoreClamped`, both of which are unmoved by

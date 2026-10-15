@@ -204,7 +204,7 @@ describe('#367 continuation lines escape on the printing line (src/cli.ts)', () 
   });
 
   it('no render site recovers structure by splitting fix on a newline', () => {
-    // I4 of the CISO ruling: structure from `fix.split(...)` is untrusted — a
+    // Structure from `fix.split(...)` is untrusted (#597) — a
     // scanned newline would become a line boundary. Any newline-shaped
     // separator counts: a string, a regex, or the platform EOL.
     // `\n`, `\r?\n` (string or regex, any flags) or EOL.

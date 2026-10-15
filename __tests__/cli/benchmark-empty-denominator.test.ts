@@ -12,12 +12,12 @@
  * `Rating: Certified` beside `Compliance: 0% (0/0 verified controls)` at exit
  * 0 — or exit 1 under `--fail-below 80`, because `0 < 80`.
  *
- * Ruling: CPO 2026-08-25 (COUNCIL_LEDGER, "#458 step 0"), on the CISO's
- * 2026-08-11 direction: zero denominator => `null`, "not assessed at this
- * level", never feeds the ladder, never `Not Passing`. A rung of the ladder
- * that reads a null level is skipped, not failed; when every rung reads a
- * null the rating is `Not Assessed` and the exit code is the unmeasured
- * floor (2), never 1 (1 = measured and failed).
+ * The contract, settled 2026-08-25 as step 0 of #458: zero denominator =>
+ * `null`, "not assessed at this level", never feeds the ladder, never
+ * `Not Passing`. A rung of the ladder that reads a null level is skipped,
+ * not failed; when every rung reads a null the rating is `Not Assessed` and
+ * the exit code is the unmeasured floor (2), never 1 (1 = measured and
+ * failed).
  *
  * Cells tagged RED-ON-BASE fail on the 6d6685e build; the others pin
  * behaviour that must not move (a measured level still fails as before).

@@ -232,7 +232,7 @@ describe('#463 roots policy', () => {
       // and the literal wraps across a line in the message.
       const flat = text.replace(/\s+/g, ' ');
       // Without this sentence a capable model reads the error as an obstacle and
-      // tries the next spelling instead of telling the user (CPO).
+      // tries the next spelling instead of telling the user.
       expect(flat).toContain('cannot be changed from inside this session');
       expect(text).toContain(root);
     }

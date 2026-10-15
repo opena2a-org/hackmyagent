@@ -96,7 +96,7 @@ describe('#292 config-shaped credential detection below the scan root', () => {
 
     it(`names ${rel} as the finding location, not just the basename`, async () => {
       const { cred } = await scanTreeWithConfigAt(rel);
-      // A finding that cannot say WHERE the credential is fails CISO Rule 11.
+      // A finding that cannot say WHERE the credential is leaves no path to it.
       expect(cred.map((f) => f.file)).toContain(rel);
     });
   }

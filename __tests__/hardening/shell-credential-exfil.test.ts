@@ -17,7 +17,7 @@ import {
  * download-execute shape (INSTALL-001) but had no rule for the reverse — a
  * remote curl/wget that UPLOADS a known credential file.
  *
- * CSR ruling 2026-08-24: checkId SHELL-EXFIL-001, class CRED-EXFIL, critical,
+ * The rule (#593): checkId SHELL-EXFIL-001, class CRED-EXFIL, critical,
  * scoped to credential-file upload so it does not overlap INSTALL-001's
  * `curl … | sh` surface. v1 requires a literal remote URL in the same command
  * and excludes env-var destinations and `$(cat …)` bodies.
@@ -134,7 +134,7 @@ describe('SHELL-EXFIL-001 — credential file exfiltration in shell scripts', ()
     });
 
     it('HMA-30.AC4 fires on an upload of a bare credentials file (the one new bare name)', () => {
-      // CSR ruling 2026-09-01 (item 1): `credentials` joins
+      // Since #712, `credentials` joins
       // SHELL_EXFIL_BARE_CRED_NAMES, so the same predicate that puts the file
       // in the CRED-001 population also makes its upload an exfil hit.
       expect(isCredentialFilePath('credentials')).toBe(true);

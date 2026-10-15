@@ -701,7 +701,7 @@ describe('#457 — a suppression may narrow the report, never invent a penalty',
     expect(suppressed.body.suppressed ?? []).toEqual([]);
   });
 
-  // #458 steps 1-2 split the old SANDBOX family into the two shapes the CPO
+  // #458 steps 1-2 split the old SANDBOX family into the two shapes the
   // four-state contract names: SANDBOX-001 is a fail-absent-mitigation
   // advisory (`passed: false`, `file` = the Dockerfile its fix creates) and is
   // REPORTABLE, so suppressing it is said; SANDBOX-002 is a not-applicable

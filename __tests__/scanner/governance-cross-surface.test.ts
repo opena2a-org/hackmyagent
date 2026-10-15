@@ -398,7 +398,7 @@ describe('#291 governance model reconciliation', () => {
         'the score was clamped by violations that appear in no finding — a lower '
         + 'number and no way to find out why',
       ).toBeTruthy();
-      // CISO Rule 11: a finding has to say WHERE.
+      // A finding has to say WHERE.
       expect(v!.detail, 'the violation finding carries no file:line').toMatch(/SOUL\.md:\d+/);
     });
 

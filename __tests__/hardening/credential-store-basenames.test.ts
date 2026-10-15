@@ -17,7 +17,7 @@ import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
  * holding a live AWS pair scored 93/100 with ZERO credential findings while the
  * identical pair in `config.json` produced CRED-001 at exit 1.
  *
- * CSR ruling 2026-09-01 (item 1): the examined population is exactly
+ * The rule (#712): the examined population is exactly
  * `isConfigShapedFile` OR `isCredentialFilePath(absPath)` — the two predicates
  * the scanner already owns — plus ONE new bare name (`credentials`) appended to
  * SHELL_EXFIL_BARE_CRED_NAMES. No third list. SSH `id_*` files route through

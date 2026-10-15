@@ -207,7 +207,7 @@ describe('the exit-surface ratchet (#350)', () => {
         if (!UNSETTLED_EXIT_IDS.has(site.annotation.id)) {
           problems.push(
             `${site.file}:${site.line} carries exit-unsettled id ${site.annotation.id}, which is NOT in the baseline. ` +
-              `The unsettled list only shrinks; a new dark exit site needs a CISO-lane ruling. ${owed(site)}`,
+              `The unsettled list only shrinks; a new dark exit site needs a reviewed decision. ${owed(site)}`,
           );
         }
       } else {
