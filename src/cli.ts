@@ -470,7 +470,13 @@ import { shouldShowDeepProgress } from './ui/progress-gate';
 import { generateVerifyCommand, rebaseOwnFileCitation } from './ui/verify-command';
 import { commandSucceeded, type ExitReason } from './telemetry/command-success';
 import { automationOffReason, automationOptOut, initWithAutomationOptOut } from './telemetry/automation';
-import { getPendingScansPath, writePendingScans } from './telemetry/pending-scans';
+import {
+  getPendingScansPath,
+  readPendingScans,
+  resendablePendingScan,
+  writePendingScans,
+  type PendingScan,
+} from './telemetry/pending-scans';
 import { escapeForDisplay, escapePathForDisplay } from './ui/display-safe';
 import { runDeepSimulation, deepSimulationFailure, type DeepSimulationReport } from './simulation/deep-run';
 import { collapsedLocation } from './ui/collapse-label';
@@ -14044,44 +14050,38 @@ function recordScanAndContributeTip(): string | null {
 }
 
 // Pending-scan queue for `check` command registry publishes (retry on failure).
-// Path and writer live in src/telemetry/pending-scans.ts.
-function queuePendingScan(
-  name: string,
-  result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
-): void {
-  const fs = require('fs');
+// Path, reader and writer live in src/telemetry/pending-scans.ts. An entry is
+// the submission the failed publish sent, so a retry sends the scan's own
+// findings, scan time and tool version.
+function queuePendingScan(scan: PendingScan): void {
   const p = getPendingScansPath();
-  let queue: Array<Record<string, unknown>> = [];
-  try { queue = JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* empty */ }
-  queue.push({
-    name,
-    score: result.score,
-    maxScore: result.maxScore,
-    projectType: result.projectType,
-    findingCount: result.findings.filter(f => !f.passed).length,
-    timestamp: new Date().toISOString(),
-  });
+  const queue = readPendingScans(p);
+  queue.push(scan);
   try { writePendingScans(p, queue.slice(-20)); } catch { /* Non-fatal */ }
 }
 
 async function flushPendingScans(): Promise<void> {
-  const fs = require('fs');
   const p = getPendingScansPath();
-  let queue: Array<Record<string, unknown>> = [];
-  try { queue = JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return; }
+  const queue = readPendingScans(p);
   if (queue.length === 0) return;
 
-  const remaining: Array<Record<string, unknown>> = [];
-  for (const queued of queue) {
-    // A scan an earlier version queued under a name with a git URL's user
-    // name and password is sent, and kept, under the name without them.
-    const scan = typeof queued.name === 'string' ? { ...queued, name: scanNameWithoutUserinfo(queued.name) } : queued;
-    const ok = await publishToRegistry(scan.name as string, {
-      score: scan.score as number,
-      maxScore: scan.maxScore as number,
-      projectType: scan.projectType as string,
-      findings: [],
-    });
+  // An entry an earlier version queued has no findings, scan time or tool
+  // version. Sent with an empty findings list, the registry would record the
+  // scan as one with no findings, so it is dropped instead.
+  const resendable = queue.map(resendablePendingScan).filter((scan): scan is PendingScan => scan !== null);
+  const dropped = queue.length - resendable.length;
+  if (dropped > 0) {
+    process.stderr.write(
+      `Removed ${dropped} queued registry share${dropped === 1 ? '' : 's'} saved by an earlier version without ${dropped === 1 ? 'its' : 'their'} findings; not sent. A new check of the same target shares a new scan.\n`,
+    );
+  }
+
+  const remaining: PendingScan[] = [];
+  for (const queued of resendable) {
+    // A scan queued under a name with a git URL's user name and password is
+    // sent, and kept, under the name without them.
+    const scan = { ...queued, name: scanNameWithoutUserinfo(queued.name) };
+    const ok = await publishToRegistry(scan);
     if (!ok) remaining.push(scan);
   }
   try { writePendingScans(p, remaining); } catch { /* Non-fatal */ }
@@ -14222,13 +14222,45 @@ function isScanStale(lastScannedAt?: string): boolean {
 }
 
 /**
- * Publish scan results to the community registry.
+ * The submission `check` sends to the community registry for a scan. A
+ * publish that fails queues this same object (queuePendingScan), so the retry
+ * sends what the first attempt sent.
  */
-async function publishToRegistry(
+function checkScanSubmission(
   name: string,
   result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
-): Promise<boolean> {
+): PendingScan {
   assertRedactionProvenance(result.findings, 'registry-publish-scan');
+  return {
+    name,
+    score: result.score,
+    maxScore: result.maxScore,
+    projectType: result.projectType,
+    toolVersion: VERSION,
+    findings: result.findings
+      .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
+      // #458 — result.findings holds measured records only (the render filter in
+      // scanner.ts drops a not-applicable record, which has no pass/fail state
+      // and no severity); this narrows the type to say both and drops nothing:
+      // the parity test pins it.
+      .filter((f): f is MeasuredFinding & { passed: boolean } => typeof f.passed === 'boolean' && f.severity !== undefined)
+      .map(f => ({
+        checkId: f.checkId,
+        name: f.name,
+        severity: f.severity,
+        passed: f.passed,
+        message: f.message,
+        category: f.category,
+      })),
+    scanTimestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Publish a scan to the community registry: a new one from
+ * checkScanSubmission, or a queued one being sent again.
+ */
+async function publishToRegistry(scan: PendingScan): Promise<boolean> {
   try {
     const { RegistryClient } = await import('@opena2a/registry-client');
     const client = new RegistryClient({
@@ -14237,28 +14269,14 @@ async function publishToRegistry(
       cache: false,
     });
     await client.publishScan({
-      name,
-      score: result.score,
-      maxScore: result.maxScore,
-      projectType: result.projectType,
+      name: scan.name,
+      score: scan.score,
+      maxScore: scan.maxScore,
+      projectType: scan.projectType,
       tool: 'hackmyagent',
-      toolVersion: VERSION,
-      findings: result.findings
-        .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
-        // #458 — result.findings holds measured records only (the render filter in
-        // scanner.ts drops a not-applicable record, which has no pass/fail state
-        // and no severity); this narrows the type to say both and drops nothing:
-        // the parity test pins it.
-        .filter((f): f is MeasuredFinding & { passed: boolean } => typeof f.passed === 'boolean' && f.severity !== undefined)
-        .map(f => ({
-          checkId: f.checkId,
-          name: f.name,
-          severity: f.severity,
-          passed: f.passed,
-          message: f.message,
-          category: f.category,
-        })),
-      scanTimestamp: new Date().toISOString(),
+      toolVersion: scan.toolVersion,
+      findings: scan.findings,
+      scanTimestamp: scan.scanTimestamp,
     });
     return true;
   } catch {
@@ -15024,8 +15042,9 @@ async function checkGitHubRepo(
       if (tip && process.stdout.isTTY) process.stdout.write(tip + '\n');
       if (isContributeEnabled()) {
         flushPendingScans();
-        const ok = await publishToRegistry(displayName, result);
-        if (!ok) queuePendingScan(displayName, result);
+        const scan = checkScanSubmission(displayName, result);
+        const ok = await publishToRegistry(scan);
+        if (!ok) queuePendingScan(scan);
       }
     }
 
@@ -15665,8 +15684,9 @@ async function checkRawUrl(
     if (process.stdin.isTTY && !globalCiMode) {
       if (isContributeEnabled()) {
         flushPendingScans();
-        const ok = await publishToRegistry(displayName, result);
-        if (!ok) queuePendingScan(displayName, result);
+        const scan = checkScanSubmission(displayName, result);
+        const ok = await publishToRegistry(scan);
+        if (!ok) queuePendingScan(scan);
       }
     }
 
@@ -15958,8 +15978,9 @@ async function checkNpmPackage(
       if (isContributeEnabled()) {
         // Auto-share silently, queue on failure
         flushPendingScans();
-        const ok = await publishToRegistry(name, result);
-        if (!ok) queuePendingScan(name, result);
+        const scan = checkScanSubmission(name, result);
+        const ok = await publishToRegistry(scan);
+        if (!ok) queuePendingScan(scan);
       }
     }
 
