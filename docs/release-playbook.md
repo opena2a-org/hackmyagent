@@ -32,6 +32,7 @@ grading rubric unique to real-world testing.
 Run this playbook when the diff modifies any of:
 
 - `src/hardening/scanner.ts`
+- `src/hardening/backup-store.ts` (the `secure --fix` backup store and `rollback`)
 - `src/nanomind-core/**` (analyzers, fix generator, intent-confidence)
 - `src/hardening/analyzers/**`
 - `src/hardening/score.ts` or any severity/scoring weight
