@@ -1051,7 +1051,8 @@ describe('UNICODE-STEGO checks', () => {
 
   /**
    * #467: the range literal is matched by VALUE, not by spelling. A literal counts
-   * when its value lies in U+FE00-FE0F or U+E0100-E01EF, written in hex, decimal,
+   * when its value lies in U+FE00-FE0F or U+E0100-E01FF (#959 moved the end from
+   * U+E01EF to the end UNICODE-STEGO-001 reports), written in hex, decimal,
    * `0o` or `0b`, numeric separators allowed. A hex literal counts wherever it
    * appears, as before; any other spelling counts only as an operand of a
    * comparison (`<` `<=` `>` `>=` `==` `===` `!=` `!==`), because decimal range
@@ -1134,14 +1135,34 @@ describe('UNICODE-STEGO checks', () => {
         }
       });
 
+      /**
+       * #959: UNICODE-STEGO-001 reports U+E0100-E01FF, so a decoder bounded at
+       * the end of what it reports (`cp <= 0xE01FF`) holds a range literal. The
+       * test stopped at U+E01EF and did not count that line.
+       */
+      it('accepts a literal in U+E01F0-E01FF, the unassigned end of the range UNICODE-STEGO-001 reports', () => {
+        for (const line of [
+          'if (cp <= 0xE01FF) out.push(cp);',
+          'if (cp >= 0xE01F0) {}',
+          'const LAST = 0xE01FF;',
+          'if (cp <= 918015) {}', // 0xE01FF
+          'if (cp < 918000) {}', // 0xE01F0
+          'if (cp < 0xE01F0) {}',
+          'if (cp <= 0o3400777) {}', // 0xE01FF
+        ]) {
+          expect(hasStegoRangeLiteral(line), line).toBe(true);
+        }
+      });
+
       it('does not accept a value outside the two ranges, in any spelling', () => {
         for (const line of [
           'if (cp >= 65023) {}',
           'if (cp < 65040) {}',
           'if (cp >= 917759) {}',
-          'if (cp < 918000) {}',
+          'if (cp < 918016) {}', // 0xE0200
           'if (cp < 0xFE10) {}',
-          'if (cp < 0xE01F0) {}',
+          'if (cp < 0xE0200) {}',
+          'const n = 0xE0200;',
           'const big = 0xFE0F12;',
           'if (cp >= 065024) {}', // sloppy-mode octal 27156, not 65024
           'if (cp >= x65024) {}',
@@ -1493,6 +1514,51 @@ describe('UNICODE-STEGO checks', () => {
       );
 
       expect(stego003.length).toBeGreaterThanOrEqual(1);
+    });
+
+    /**
+     * #959: UNICODE-STEGO-001 reports U+E0100-E01FF, and the visible-character
+     * count skipped only up to U+E01EF, so a payload of the unassigned
+     * U+E01F0-E01FF counted 30 visible characters and this check stayed silent.
+     */
+    it('counts U+E01F0-E01FF as invisible, the same as U+E0100-E01EF', async () => {
+      const cases: Array<[string, number[]]> = [
+        ['eval-e01f0.js', [0xF3, 0xA0, 0x87, 0xB0]], // U+E01F0
+        ['eval-e01ff.js', [0xF3, 0xA0, 0x87, 0xBF]], // U+E01FF
+        ['eval-e01ef.js', [0xF3, 0xA0, 0x87, 0xAF]], // U+E01EF, counted before #959
+      ];
+      for (const [file, bytes] of cases) {
+        const payload: number[] = [];
+        // 30 x 4 bytes = 120 bytes, above the 100-byte floor.
+        for (let i = 0; i < 30; i++) payload.push(...bytes);
+        await fs.writeFile(
+          path.join(tempDir, file),
+          Buffer.concat([Buffer.from('eval("'), Buffer.from(payload), Buffer.from('");\n')]),
+        );
+      }
+
+      const findings = await scanForUnicodeStego();
+      for (const [file] of cases) {
+        const stego003 = findings.filter((f) => f.checkId === 'UNICODE-STEGO-003' && f.file === file);
+        expect(stego003, file).toHaveLength(1);
+        expect(stego003[0].severity).toBe('critical');
+        expect(stego003[0].message).toBe(`Found eval/Function with 0 visible chars but 120 bytes in ${file}`);
+      }
+    });
+
+    it('still counts the first code point after U+E01FF as visible', async () => {
+      const payload: number[] = [];
+      // U+E0200 = F3 A0 88 80, outside the range the checks report.
+      for (let i = 0; i < 30; i++) payload.push(0xF3, 0xA0, 0x88, 0x80);
+      await fs.writeFile(
+        path.join(tempDir, 'eval-e0200.js'),
+        Buffer.concat([Buffer.from('eval("'), Buffer.from(payload), Buffer.from('");\n')]),
+      );
+
+      const findings = await scanForUnicodeStego();
+      expect(
+        findings.filter((f) => f.checkId === 'UNICODE-STEGO-003' && f.file === 'eval-e0200.js'),
+      ).toHaveLength(0);
     });
 
     it('does not flag eval() with normal string content', async () => {

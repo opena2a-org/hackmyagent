@@ -4113,7 +4113,9 @@ const STEGO_COMPARISON_AFTER = /^\s*(?:[<>]=?|[!=]==?)(?![<>=])/;
  * (#467). A decoder that writes `917760` where another writes `0xE0100` does
  * the same thing, so a test of the hex spelling alone was evaded by a
  * one-character edit. A literal counts when its value lies in U+FE00-FE0F or
- * U+E0100-E01EF. A hex literal counts wherever it appears, which is what the
+ * U+E0100-E01FF, the range UNICODE-STEGO-001 reports (#959: the Variation
+ * Selectors Supplement U+E0100-E01EF and the unassigned U+E01F0-E01FF after
+ * it). A hex literal counts wherever it appears, which is what the
  * hex-only pattern this replaces did. Any other spelling counts only as an
  * operand of a comparison: decimal range tables (`[65024, 65039, 0]`, the
  * shape of a width table) are common, and admitting every bare decimal would
@@ -4131,7 +4133,7 @@ export function hasStegoRangeLiteral(line: string): boolean {
         : binary !== undefined
           ? parseInt(binary.replace(/_/g, ''), 2)
           : parseInt(decimal.replace(/_/g, ''), 10);
-    const inRange = (value >= 0xFE00 && value <= 0xFE0F) || (value >= 0xE0100 && value <= 0xE01EF);
+    const inRange = (value >= 0xFE00 && value <= 0xFE0F) || (value >= 0xE0100 && value <= 0xE01FF);
     if (!inRange) continue;
     if (hex !== undefined) return true;
     if (
@@ -18048,7 +18050,10 @@ dist/
         // - Control characters (U+0000-001F, U+007F-009F)
         // - Variation selectors (U+FE00-FE0F)
         // - Zero-width characters (U+200B-200F, U+2060, U+FEFF)
-        // - Tag characters (U+E0000-E01EF)
+        // - Plane-14 invisibles (U+E0000-E01FF), the range UNICODE-STEGO-004
+        //   reports: the Tags block U+E0000-E007F, the Variation Selectors
+        //   Supplement U+E0100-E01EF and the unassigned U+E0080-E00FF and
+        //   U+E01F0-E01FF (#959)
         // - Combining marks and other invisible codepoints
         let visibleChars = 0;
         for (const ch of matchedStr) {
@@ -18058,8 +18063,8 @@ dist/
           if (cp >= 0x200B && cp <= 0x200F) continue; // zero-width chars
           if (cp === 0x2060 || cp === 0xFEFF) continue; // word joiner, BOM
           if (cp >= 0xFE00 && cp <= 0xFE0F) continue; // variation selectors
-          if (cp >= 0xE0000 && cp <= 0xE01EF) continue; // tag characters
-          if (cp >= 0xE0100 && cp <= 0xE01EF) continue; // variation selector supplement
+          if (cp >= 0xE0000 && cp <= 0xE00FF) continue; // Tags block and unassigned U+E0080-E00FF
+          if (cp >= 0xE0100 && cp <= 0xE01FF) continue; // variation selector supplement and unassigned U+E01F0-E01FF
           visibleChars++;
         }
         const byteLength = Buffer.byteLength(matchedStr, 'utf-8');
