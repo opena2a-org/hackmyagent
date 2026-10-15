@@ -153,7 +153,13 @@ command router is broken.
 Run every command. Each must produce output (not silent), have no stack trace,
 and have no dead end (every finding has a fix command or path forward).
 
+Usage telemetry is off from here to the end of the checklist (#963): a shell
+with no CI or test-runner marker sends a usage event for a scan, and a smoke
+run is not user activity. Section 5 turns it back on against a closed port and
+off again when it ends.
+
 ```bash
+export OPENA2A_TELEMETRY=off
 HMA=node\ dist/cli.js   # alias to shorten examples below
 
 # Help and version
@@ -311,6 +317,7 @@ Fail the release if:
 
 ```bash
 unset OPENA2A_TELEMETRY_URL   # restore after telemetry section
+export OPENA2A_TELEMETRY=off  # off again for the sections below
 ```
 
 ## 6. `--json` and `--ci` exit-code matrix (1 min)
@@ -597,6 +604,7 @@ is scanned instead of refused.
 
 ```bash
 unset OPENA2A_TELEMETRY_URL
+unset OPENA2A_TELEMETRY
 # Restore your real telemetry config if the telemetry tests overwrote it:
 # rm ~/.config/opena2a/telemetry.json  (or restore from backup)
 ```

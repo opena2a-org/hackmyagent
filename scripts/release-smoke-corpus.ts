@@ -59,6 +59,13 @@ const CORPUS_ROOT =
 const HMA_CLI = resolve(__dirname, '..', 'dist', 'cli.js');
 const CONSUMER_NAME = 'hackmyagent';
 
+/**
+ * The environment every CLI run gets. Usage telemetry is off by name (#963):
+ * run from a maintainer's shell there is no CI or test-runner marker, and
+ * each fixture run sent a usage event.
+ */
+const CLI_ENV = { ...process.env, OPENA2A_CORPUS_DETERMINISTIC: '1', OPENA2A_TELEMETRY: 'off' };
+
 function fail(msg: string, code = 2): never {
   process.stderr.write(`release-smoke-corpus: ${msg}\n`);
   process.exit(code);
@@ -114,10 +121,9 @@ interface HmaResult {
 }
 
 function runHma(target: string): HmaResult {
-  const env = { ...process.env, OPENA2A_CORPUS_DETERMINISTIC: '1' };
   const r = spawnSync(process.execPath, [HMA_CLI, 'secure', target, '--json'], {
     encoding: 'utf8',
-    env,
+    env: CLI_ENV,
     maxBuffer: 16 * 1024 * 1024,
   });
   if (r.status !== 0 && !r.stdout) {
@@ -337,10 +343,9 @@ interface SoulRow {
 }
 
 function runScanSoul(target: string): ScanSoulResult | { error: string } {
-  const env = { ...process.env, OPENA2A_CORPUS_DETERMINISTIC: '1' };
   const r = spawnSync(process.execPath, [HMA_CLI, 'scan-soul', target, '--json'], {
     encoding: 'utf8',
-    env,
+    env: CLI_ENV,
     maxBuffer: 16 * 1024 * 1024,
   });
   const stdout = r.stdout ?? '';
