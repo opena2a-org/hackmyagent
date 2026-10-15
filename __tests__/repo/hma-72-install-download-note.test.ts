@@ -3,7 +3,8 @@
  *
  * Installing this package runs the install script of onnxruntime-node, which
  * on Linux x64 downloads an execution-provider package from nuget.org that this
- * tool never loads. The README Install section says so and carries the two
+ * tool never loads. docs/install.md (the README's Install detail since the
+ * README was cut to its reading-load limits) says so and carries the two
  * switches that skip it. CHANGELOG.md corrects, exactly once and under
  * [Unreleased], the [0.27.0] claim that the script "exits before requiring
  * adm-zip on a default install", without rewriting the released entry. Both
@@ -19,7 +20,7 @@ import { join } from 'node:path';
 import { virtualChangelog } from '../helpers/changelog-record';
 
 const ROOT = join(__dirname, '..', '..');
-const README = readFileSync(join(ROOT, 'README.md'), 'utf-8');
+const INSTALL = readFileSync(join(ROOT, 'docs', 'install.md'), 'utf-8');
 const CHANGELOG = virtualChangelog();
 const GATE = readFileSync(join(ROOT, '__tests__', 'gate', 'no-internal-attribution.test.ts'), 'utf-8');
 const LOCK = JSON.parse(readFileSync(join(ROOT, 'package-lock.json'), 'utf-8')) as {
@@ -90,9 +91,8 @@ function walk(dir: string): string[] {
   return out;
 }
 
-/** The README note: the `### ` block of the Install section that names the dependency. */
-const installSection = section(README, '\n## Install\n');
-const note = installSection.split(/\n### /).find((block) => block.includes('onnxruntime-node')) ?? '';
+/** The note: the `## ` section of docs/install.md that names the dependency. */
+const note = INSTALL.split(/\n## /).find((block) => block.includes('onnxruntime-node')) ?? '';
 
 /** The retraction: the bullet carrying the marker plus its indented continuation lines. */
 function retraction(): string {
@@ -106,9 +106,9 @@ function retraction(): string {
 
 const THIRD_PARTIES = ['onnxruntime-node', 'nuget.org', 'adm-zip'];
 
-describe('HMA-72: the README and the CHANGELOG say what a default install does', () => {
+describe('HMA-72: docs/install.md and the CHANGELOG say what a default install does', () => {
   it('HMA-72.AC1 the Install section says installing runs the onnxruntime-node install script, which on Linux x64 downloads an execution-provider package from nuget.org', () => {
-    expect(note, 'no ### block of ## Install names onnxruntime-node').not.toBe('');
+    expect(note, 'no ## section of docs/install.md names onnxruntime-node').not.toBe('');
     const flat = collapse(note);
     for (const token of ['install script', 'onnxruntime-node', 'Linux x64', 'execution-provider package', 'nuget.org']) {
       expect(flat).toContain(token);
@@ -182,10 +182,13 @@ describe('HMA-72: the README and the CHANGELOG say what a default install does',
     expect(section(CHANGELOG, '\n## [0.27.0] - 2026-08-07\n')).toContain(block);
   });
 
-  it('HMA-72.AC3 README.md is a scanned surface of the wording gate and is absent from both of its frozen baselines', () => {
+  it('HMA-72.AC3 README.md and docs/ are scanned surfaces of the wording gate and are absent from both of its frozen baselines', () => {
     const occurrences = GATE.split('\n').filter((line) => line.includes("'README.md'"));
     expect(occurrences).toHaveLength(1);
     expect(occurrences[0].trimStart().startsWith('const SURFACES')).toBe(true);
+    // The note itself now lives under docs/, which the same list scans.
+    expect(occurrences[0]).toContain("'docs'");
+    expect(GATE).not.toContain('docs/install.md');
   });
 
   it('HMA-72.AC3 neither text calls adm-zip 0.6.1 fixed', () => {

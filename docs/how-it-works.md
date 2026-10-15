@@ -1,0 +1,17 @@
+# How it works
+
+What a scan does, from discovery to the exit code, and the two behaviours that sit beside it: the behavioural simulation and the self-integrity check.
+
+1. **Discover.** `secure` and `check` walk the target and sort what they find into surfaces: MCP configs, skills, governance files, system prompts, package manifests and source. `detect` also lists the AI assistants running on the machine and the machine-wide AI configs under your home directory.
+2. **Static checks.** 63 check groups run over those surfaces. A finding that comes from one line carries `file:line`, a `Verify:` command that prints that line, and a `Fix:`.
+3. **Semantic layer.** NanoMind compiles each agent artifact into an Abstract Security Tree, runs seven analyzers over it, and classifies it with a local ONNX model, downloaded once (8.7 MB) from Hugging Face. `--static-only` skips the layer.
+4. **Score, verdict, exit code.** Findings roll up into a 0-100 score with the path forward (`53 -> 92 by fixing 1 critical + 3 high` in the README Quick start), a verdict and an exit code. A run that could not read part of its input says so and exits 2 instead of reporting that nothing was found.
+5. **Local by default.** The scan runs on your machine. The exception is `--deep` (or `--scan-depth deep`) with `ANTHROPIC_API_KEY` set: it sends the agent instruction and MCP config files it analyses, and the files the simulation probes when no local probe executor is running, with credential values removed, to `api.anthropic.com`, and says so on stderr first. Credential files (`.env`, `config.json`, `config.yaml`, `config.yml`, `settings.json`) are never sent. A local scan's findings reach the OpenA2A Registry only after you opt in to contribution or pass `--publish`. Usage telemetry is separate: see [Telemetry](../README.md#telemetry).
+
+## Behavioural simulation (`--deep`)
+
+The **20-probe behavioural simulation** runs under `--deep`, in every output format, when a probe executor is present (NanoMind daemon, Ollama or `ANTHROPIC_API_KEY`). A model is given each skill, SOUL, agent instruction or YAML file as its instructions and sent the probes; its replies are checked for the behaviour each probe targets. That shows how a model following the text responds, not what the skill does inside a running agent. When the executor is `ANTHROPIC_API_KEY`, each file's text goes to `api.anthropic.com` after credential redaction, one request per probe, and a stderr line says so before the first request. Advisory: it never changes the score or the exit code, covers the first 10 `.md`, `.yaml` and `.yml` files found (never `config.yaml` or `config.yml`), and `--json` reports it as the `simulation` block. Without an executor it reports `NOT MEASURED` instead of a verdict.
+
+## Self-integrity check
+
+Every binary verifies itself on startup against an embedded SHA-256 manifest. Post-install tampered binaries enter QUARANTINE mode (exit code 3) with a per-file forensics report. Symlink-redirected manifests are rejected. The manifest is a file in the package and is not signed yet, so the check catches a listed file changed or deleted after the build and a manifest whose version or hashes do not match the installed files, but not a change made together with a regenerated manifest; without a manifest it accepts, the check runs in dev mode and passes.

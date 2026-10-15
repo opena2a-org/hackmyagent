@@ -749,13 +749,15 @@ describe('HMA-70.AC12 a result carries nothing that reads as an admission', () =
     expect(sentence!).toMatch(/not an approval/i);
   });
 
-  it('HMA-70.AC12 README.md states the same sentence in its scan-text section', () => {
-    const readme = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
-    const sentence = readme
+  // The scan-text section moved from the README to docs/ci.md when the README
+  // was cut to its reading-load limits.
+  it('HMA-70.AC12 docs/ci.md states the same sentence in its scan-text section', () => {
+    const page = readFileSync(path.join(REPO_ROOT, 'docs', 'ci.md'), 'utf8');
+    const sentence = page
       .replace(/\n/g, ' ')
       .split(/(?<=\.)\s+/)
       .find((s) => /clean result/i.test(s));
-    expect(sentence, 'README.md states no clean-result sentence').toBeDefined();
+    expect(sentence, 'docs/ci.md states no clean-result sentence').toBeDefined();
     expect(sentence!).toMatch(/instruction-override/i);
     expect(sentence!).toMatch(/authority-claim/i);
     expect(sentence!).toMatch(/not an approval/i);
@@ -831,18 +833,19 @@ describe('HMA-70.AC14 the tree documents the command', () => {
     expect(section.startsWith('## [Unreleased]'), 'the record must sit under ## [Unreleased]').toBe(true);
   });
 
-  it('HMA-70.AC14 README.md has a scan-text row in the Scan anything table', () => {
-    const readme = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
-    const table = readme.slice(readme.indexOf('## Scan anything'), readme.indexOf('### secure vs check'));
+  it('HMA-70.AC14 docs/commands.md has a scan-text row in the Scan anything table', () => {
+    const page = readFileSync(path.join(REPO_ROOT, 'docs', 'commands.md'), 'utf8');
+    const table = page.slice(page.indexOf('## Scan anything'), page.indexOf('### secure vs check'));
     expect(table.length, 'the Scan anything section was not found').toBeGreaterThan(200);
     const row = table.split('\n').find((l) => l.startsWith('|') && l.includes('scan-text'));
     expect(row, `no scan-text row in the Scan anything table:\n${table}`).toBeDefined();
   });
 
-  it('HMA-70.AC14 README.md CI/CD has a workflow piping a body into scan-text - --json, with the exit codes', () => {
-    const readme = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
-    const start = readme.indexOf('## CI/CD integration');
-    const section = readme.slice(start, readme.indexOf('## Exit codes', start));
+  it('HMA-70.AC14 docs/ci.md has a workflow piping a body into scan-text - --json, with the exit codes', () => {
+    const page = readFileSync(path.join(REPO_ROOT, 'docs', 'ci.md'), 'utf8');
+    const start = page.indexOf('# CI/CD integration');
+    expect(start, 'docs/ci.md has no CI/CD integration title').toBeGreaterThan(-1);
+    const section = page.slice(start);
     expect(section.length, 'the CI/CD section was not found').toBeGreaterThan(200);
     expect(section).toMatch(/hackmyagent scan-text - --as pr-body --json/);
     expect(section, 'the example must be a workflow').toMatch(/```yaml[\s\S]*runs-on[\s\S]*```/);

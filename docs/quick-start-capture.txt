@@ -1,4 +1,4 @@
-Full output behind the two Quick start samples in README.md.
+Full output behind the two README samples: `secure` in Quick start and `detect` in Usage.
 
 Tool:     hackmyagent 0.33.2, built from this repository and run as `node dist/cli.js`;
           the README shows the same commands as `npx hackmyagent`.

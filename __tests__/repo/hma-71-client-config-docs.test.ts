@@ -4,7 +4,8 @@
  * README's "Verify what the server is allowed to reach" line told the reader to
  * grep `.claude/settings.json`, a file `init-mcp` has not written since #757.
  * Someone following it greps an absent or inert file and concludes the server
- * was never configured.
+ * was never configured. The MCP server section moved from the README to
+ * docs/commands.md when the README was cut to its reading-load limits.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -12,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { virtualChangelog } from '../helpers/changelog-record';
 
-const README = readFileSync(join(__dirname, '../../README.md'), 'utf-8');
+const COMMANDS = readFileSync(join(__dirname, '../../docs/commands.md'), 'utf-8');
 const CHANGELOG = virtualChangelog();
 
 /** The body of a `## ` section, up to the next `## ` heading. */
@@ -24,8 +25,8 @@ function section(source: string, heading: string): string {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
-describe('HMA-71.AC6: README and CHANGELOG name the files init-mcp writes', () => {
-  const mcpSection = section(README, '\n## MCP server\n');
+describe('HMA-71.AC6: docs/commands.md and CHANGELOG name the files init-mcp writes', () => {
+  const mcpSection = section(COMMANDS, '\n## MCP server\n');
 
   it('HMA-71.AC6 the verify line names the file each client reads', () => {
     const verify = mcpSection.split('\n').filter((l) => l.startsWith('grep -A3 hackmyagent'));
