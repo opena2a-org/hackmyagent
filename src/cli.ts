@@ -5415,13 +5415,13 @@ Change scope (--range, --staged):
   the exit code and every --format cover the introduced findings only.
 
 Backups (--fix):
-  Before it changes anything, --fix copies every file a fix may change, .env
-  included and whether or not a fix then changes it, into a per-user backup
+  Before a fix changes a file, --fix copies the file into a per-user backup
   store outside the project: $HMA_BACKUP_HOME if set, else
-  $OPENA2A_HOME/backups, else ~/.opena2a/backups. The copies can hold a
-  credential that is still in use. They stay until you delete them or rollback
-  restores from them, and every text report of the project prints the command
-  that deletes them.
+  $OPENA2A_HOME/backups, else ~/.opena2a/backups. A fix that only narrows a
+  file's permissions records the file's earlier mode instead of a copy. The
+  copies can hold a credential that is still in use. They stay until you
+  delete them or rollback restores from them, and every text report of the
+  project prints the command that deletes them.
   ${CLI_PREFIX} rollback restores the most recent backup. It reads
   HMA_BACKUP_HOME and OPENA2A_HOME the same way, so run it with the values the
   --fix run had, or it finds no backup.`)
