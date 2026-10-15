@@ -478,7 +478,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     kind: 'structural',
     id: 'pem-private-key',
     label: 'PEM private key',
-    source: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----',
+    source: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----',
     guards: ['-----BEGIN'],
     surfaces: new Set<Surface>(['ast-canonical', 'nanomind-redaction']),
     rationale:
