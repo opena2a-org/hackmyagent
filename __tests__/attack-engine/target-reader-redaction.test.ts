@@ -89,7 +89,7 @@ describe('red-team target reader redaction', () => {
 
 /**
  * Shapes the shared boundary does not carry, measured on the same command and
- * the same artifact class (review ruling 2026-09-14, ledger): a JSON-quoted key, a
+ * the same artifact class (#750): a JSON-quoted key, a
  * Bearer header, a URL password carrying `/` or `@`, and a `Password=` DSN
  * each reached `declaredPurpose` or `modalStatements` with the witness
  * reading `clean`. Every value below is synthetic.

@@ -119,6 +119,40 @@ golden-first (the procedure is in that repository's README), then re-runs the fa
 parity job on your pull request. If the change was not meant to alter output, fix the
 regression in your branch.
 
+## Scanning this repository
+
+Scan the tree with the build you just made:
+
+```bash
+npm run build
+node dist/cli.js secure --ci .
+```
+
+`.hmaignore` keeps the three test trees (`test-fixtures/`, `test/` and `__tests__/`) out of
+scope, and the report's `Scope` line counts the findings they exclude. It has no rule that waives
+a check across the tree, and each rule that narrows one check to one file names a file that
+exists. `__tests__/hmaignore-scope-only.test.ts` enforces both.
+
+The scan reports MEDIUM `SANDBOX-001` Container Isolation on `Dockerfile`. There is no file of
+that name at the root: `Dockerfile` is the path the fix would create. The check passes when the
+scanned root holds a `Dockerfile`, `docker-compose.yml` or `docker-compose.yaml`, and this
+repository has none at its root on purpose:
+
+- hackmyagent ships as an npm package. The `files` list in `package.json` is `dist`,
+  `README.md` and `LICENSE`. The CLI, and `mcp-serve` when an MCP client starts it, run as a
+  local process with the permissions of the user who starts them. `mcp-serve --root` names the
+  directories its tools may read.
+- This repository publishes no container image. Its one Dockerfile,
+  `docs/vhs/docker/Dockerfile`, builds the image that records the terminal demos in `docs/vhs/`.
+  It is not in the npm package, and `SANDBOX-001` does not read it because it is not at the
+  root.
+- A user who wants the scanner isolated from their machine can run it inside a container of
+  their own.
+
+The finding is left visible rather than suppressed. If a `Dockerfile` is added at the root,
+`SANDBOX-001` passes on it and `SANDBOX-002` then checks it for a non-root `USER`, and
+`__tests__/docs/contributing-self-scan.test.ts` fails until this section is updated.
+
 ## Code style
 
 - TypeScript with strict mode
