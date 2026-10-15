@@ -33,6 +33,7 @@ const EXIT_CODE_CHANGES: Record<number, string> = {
   751: '`secure -b oasb-1` on a tree with no `package.json`: exit 1 -> exit 0, or exit 2 when no file was read',
   760: '`explain` on the `SOUL-*` ids `scan-soul` prints: exit 1 -> exit 0',
   761: '`check` on a scoped name npm does not have: exit 0 -> exit 2',
+  969: '`attack` on an agent whose only keyword successes were refusals: exit 1 -> exit 0; on one whose quoted system prompt was read as inconclusive: exit 0 -> exit 1',
   1049: '`rollback` after the directory\'s reported creation time moved back, with an older archive in the tree: exit 0 -> exit 1',
   1051: '`secure --fix` with `HMA_BACKUP_HOME` at a mode 0775 directory, and `rollback` after that store root was made 0775: exit 0 -> exit 1',
 };

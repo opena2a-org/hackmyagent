@@ -13,15 +13,20 @@
  *   SECURITY_MODE=secure node server.js
  *   SECURITY_MODE=vulnerable node server.js
  *   SECURITY_MODE=very-vulnerable node server.js
+ *
+ * HOST defaults to 127.0.0.1, so the server is reachable from this machine
+ * only. PORT=0 picks a free port; the startup line prints the one bound.
  */
 
 import http from 'http';
 
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || '127.0.0.1';
 const SECURITY_MODE = process.env.SECURITY_MODE || 'vulnerable';
 
 console.log(`🎯 HackMyAgent Test Server`);
 console.log(`   Security Mode: ${SECURITY_MODE}`);
+console.log(`   Host: ${HOST}`);
 console.log(`   Port: ${PORT}`);
 console.log('');
 
@@ -325,11 +330,13 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
-server.listen(PORT, () => {
-  console.log(`✅ Server running at http://localhost:${PORT}`);
-  console.log(`   Test endpoint: POST http://localhost:${PORT}/v1/chat/completions`);
+server.listen(PORT, HOST, () => {
+  const { port } = server.address();
+  const base = `http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${port}`;
+  console.log(`✅ Server running at ${base}`);
+  console.log(`   Test endpoint: POST ${base}/v1/chat/completions`);
   console.log('');
   console.log(`🧪 Test with HackMyAgent:`);
-  console.log(`   npx hackmyagent attack http://localhost:${PORT}/v1/chat/completions --api-format openai`);
+  console.log(`   npx hackmyagent attack ${base}/v1/chat/completions --api-format openai`);
   console.log('');
 });
