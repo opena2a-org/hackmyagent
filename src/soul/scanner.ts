@@ -2770,6 +2770,12 @@ Edit the marker in ${fileName}, or re-run without --tier.`;
     // Add tier/profile markers to existing files if not present
     if (existedBefore && !existingContent.match(/<!--\s*soul:tier=/i)) {
       newContent = `\n<!-- soul:tier=${preTier} -->\n<!-- soul:profile=${preProfile} -->\n` + newContent;
+    } else if (existedBefore && !permissiveProfileMarker(existingContent)) {
+      // A file that pins its tier still needs its profile pinned: the sections
+      // appended above say "orchestrator" and "delegate", so a profile read
+      // from words alone became `orchestrator` on the next scan. A profile
+      // marker the file already carries, readable or not, is left as written.
+      newContent = `\n<!-- soul:profile=${preProfile} -->\n` + newContent;
     }
 
     const outputFile = path.relative(targetDir, govFile) || path.basename(govFile);

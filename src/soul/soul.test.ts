@@ -756,6 +756,54 @@ governance:
       const result = await scanner.hardenSoul(tmpDir, { dryRun: true, tier: 'basic' });
       expect(result.sectionsAdded.length).toBeGreaterThan(0);
     });
+
+    // The appended sections say "orchestrator", "delegate" and "encoded", and
+    // a profile read from words alone became `orchestrator` after hardening.
+    // A file that already pinned its tier got no profile marker, so the
+    // profile it was scanned under before hardening did not survive it.
+    const scope = (r: Awaited<ReturnType<SoulScanner['scanSoul']>>) => ({
+      agentTier: r.agentTier,
+      agentProfile: r.agentProfile,
+      skippedDomains: r.skippedDomains,
+      totalControls: r.totalControls,
+    });
+    const profileMarkers = (text: string) => text.match(/soul:profile=/g)?.length ?? 0;
+
+    it.each([
+      ['TOOL-USING', 'conversational', '<!-- soul:tier=TOOL-USING -->\n# Bot\n\nA chat helper that answers questions about billing.\n'],
+      ['BASIC', 'custom', '<!-- soul:tier=BASIC -->\n# Bot\n\nAnswers questions about billing.\n'],
+    ])('harden-soul keeps the %s tier-marked file on the %s profile it scanned as', async (tier, profile, body) => {
+      const file = path.join(tmpDir, 'SOUL.md');
+      fs.writeFileSync(file, body);
+      const before = scope(await scanner.scanSoul(tmpDir));
+      expect(before.agentTier, 'fixture tier').toBe(tier);
+      expect(before.agentProfile, 'fixture profile').toBe(profile);
+
+      await scanner.hardenSoul(tmpDir);
+      const hardened = fs.readFileSync(file, 'utf-8');
+      expect(hardened).toContain(`<!-- soul:profile=${profile} -->`);
+      expect(hardened.match(/soul:tier=/g)?.length, 'a second tier marker').toBe(1);
+      expect(scope(await scanner.scanSoul(tmpDir))).toEqual(before);
+    });
+
+    it('harden-soul --profile pins the given profile in a tier-marked file', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'SOUL.md'), '<!-- soul:tier=TOOL-USING -->\n# Bot\n\nAnswers questions about billing.\n');
+      const preview = await scanner.hardenSoul(tmpDir, { dryRun: true, profile: 'tool-agent' });
+      expect(preview.content).toContain('<!-- soul:profile=tool-agent -->');
+
+      await scanner.hardenSoul(tmpDir, { profile: 'tool-agent' });
+      expect((await scanner.scanSoul(tmpDir)).agentProfile).toBe('tool-agent');
+    });
+
+    it.each([
+      ['a profile marker', '<!-- soul:tier=BASIC -->\n<!-- soul:profile=code-assistant -->\n# Bot\n\nAnswers questions about billing.\n'],
+      ['an unreadable profile marker', '<!-- soul:tier=BASIC -->\n<!-- soul:profile= -->\n# Bot\n\nAnswers questions about billing.\n'],
+    ])('harden-soul adds no profile marker to a tier-marked file that has %s', async (_label, body) => {
+      const file = path.join(tmpDir, 'SOUL.md');
+      fs.writeFileSync(file, body);
+      await scanner.hardenSoul(tmpDir);
+      expect(profileMarkers(fs.readFileSync(file, 'utf-8'))).toBe(1);
+    });
   });
 
   // ---------------------------------------------------------------
