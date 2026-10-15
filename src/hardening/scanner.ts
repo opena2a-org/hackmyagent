@@ -18580,7 +18580,13 @@ dist/
     // `exports.validateX = ... = exports.hashY = void 0;`). No form takes a
     // `(` outside a quoted module path, so a line that also calls a function
     // is still a verify site.
-    const exportOrImportList = /^\s*(?:(?:exports\.[\w$]+\s*=\s*)+void 0|export\s+(?:type\s+)?\{[\s\w$,]*\}?|(?:import|export)\b[\s\w$,{}*]*\bfrom\s*(['"])[^'"]*\1|module\.exports\s*=\s*\{[\s\w$,:]*\}?)\s*;?\s*$/;
+    //
+    // The whitespace after a brace list is consumed by exactly one quantifier:
+    // the list body ends at `}` or at the end of the line, and only the tail
+    // `[\s;]*` reads what follows the brace. Two quantifiers sharing a run of
+    // spaces (`[\s\w$,]*` then `\s*;?\s*`) made an unclosed `export {` line
+    // with thousands of trailing spaces take minutes.
+    const exportOrImportList = /^\s*(?:(?:exports\.[\w$]+\s*=\s*)+void 0|export\s+(?:type\s+)?\{[\s\w$,]*(?:\}|$)|(?:import|export)\b[\s\w$,{}*]*\bfrom\s*(['"])[^'"]*\1|module\.exports\s*=\s*\{[\s\w$,:]*(?:\}|$))[\s;]*$/;
     // `.exec(` is also RegExp.prototype.exec: as a method call it counts only
     // in a file that imports child_process. A bare `exec(` counts as before.
     const execCallNotMethod = /\bspawn\s*\(|(?<!\.\s*)\bexec\s*\(|\bexecSync\s*\(|\bexecFile\s*\(/;
