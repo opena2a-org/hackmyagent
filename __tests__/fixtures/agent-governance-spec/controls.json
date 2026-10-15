@@ -1,0 +1,580 @@
+{
+  "controls": [
+    {
+      "id": "SOUL-TH-001",
+      "title": "Trust Chain Defined",
+      "domain": 11,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-TH-002",
+      "title": "Conflict Resolution",
+      "domain": 11,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-TH-003",
+      "title": "Operator/User Distinction",
+      "domain": 11,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-TH-004",
+      "title": "Principal Identity Verification",
+      "domain": 11,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-TH-005",
+      "title": "Trust Hierarchy Documentation Complete",
+      "domain": 11,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-TH-006",
+      "title": "Principal Authority Scope Defined",
+      "domain": 11,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-TH-007",
+      "title": "Trust Boundary Enforcement",
+      "domain": 11,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-TH-008",
+      "title": "Trust Policy Update Protocol",
+      "domain": 11,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-001",
+      "title": "Allowed Actions Declared",
+      "domain": 12,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-002",
+      "title": "Denied Actions Declared",
+      "domain": 12,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-003",
+      "title": "Filesystem/Network Scope",
+      "domain": 12,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-004",
+      "title": "Least Privilege",
+      "domain": 12,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-005",
+      "title": "Permission Revocation Process Defined",
+      "domain": 12,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-006",
+      "title": "Capability Exposure Minimized",
+      "domain": 12,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-007",
+      "title": "Tool Integration Boundaries Declared",
+      "domain": 12,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-008",
+      "title": "Rate And Resource Limits Enforced",
+      "domain": 12,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-009",
+      "title": "Scope Validation At Invocation",
+      "domain": 12,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-CB-010",
+      "title": "Capability Audit Trail Maintained",
+      "domain": 12,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-001",
+      "title": "Instruction Override Defense",
+      "domain": 13,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-002",
+      "title": "Encoded Payload Defense",
+      "domain": 13,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-003",
+      "title": "Role-Play Refusal",
+      "domain": 13,
+      "severity": "CRITICAL",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-004",
+      "title": "Input Validation And Sanitization",
+      "domain": 13,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-005",
+      "title": "Output Encoding And Escaping",
+      "domain": 13,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-006",
+      "title": "Multi-Layer Injection Defense",
+      "domain": 13,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-007",
+      "title": "Injection Detection And Alerting",
+      "domain": 13,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-IH-008",
+      "title": "Adversarial Input Testing",
+      "domain": 13,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-001",
+      "title": "PII Protection",
+      "domain": 14,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-002",
+      "title": "Credential Handling",
+      "domain": 14,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-003",
+      "title": "Data Minimization",
+      "domain": 14,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-004",
+      "title": "Data Retention And Deletion Policy",
+      "domain": 14,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-005",
+      "title": "Data Classification Framework",
+      "domain": 14,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-006",
+      "title": "Data Access Control Enforcement",
+      "domain": 14,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-007",
+      "title": "Data Encryption Requirements",
+      "domain": 14,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-DH-008",
+      "title": "Data Breach Response Procedure",
+      "domain": 14,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-001",
+      "title": "Safety Immutables Defined",
+      "domain": 15,
+      "severity": "CRITICAL",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-002",
+      "title": "No Data Exfiltration",
+      "domain": 15,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-003",
+      "title": "Kill Switch / Emergency Stop",
+      "domain": 15,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-004",
+      "title": "Behavior Integrity Verification",
+      "domain": 15,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-005",
+      "title": "Constraint Immutability Guarantee",
+      "domain": 15,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-006",
+      "title": "Tamper Detection Mechanism",
+      "domain": 15,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-007",
+      "title": "Safety Behavior Audit",
+      "domain": 15,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HB-008",
+      "title": "Enforcement Resilience Under Pressure",
+      "domain": 15,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-001",
+      "title": "Iteration/Loop Limits",
+      "domain": 16,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-002",
+      "title": "Budget/Cost Caps",
+      "domain": 16,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-003",
+      "title": "Timeout Defined",
+      "domain": 16,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-004",
+      "title": "Reversibility Preference",
+      "domain": 16,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-005",
+      "title": "Tool Dependency Limits",
+      "domain": 16,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-006",
+      "title": "State Management Limits",
+      "domain": 16,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-007",
+      "title": "Error Recovery Protocol",
+      "domain": 16,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-008",
+      "title": "Task Isolation And Sandboxing",
+      "domain": 16,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-009",
+      "title": "Resource Cleanup On Completion",
+      "domain": 16,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-AS-010",
+      "title": "Concurrent Execution Coordination",
+      "domain": 16,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-001",
+      "title": "Uncertainty Acknowledgment",
+      "domain": 17,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-002",
+      "title": "No Fabrication Rule",
+      "domain": 17,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-003",
+      "title": "Identity Disclosure",
+      "domain": 17,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-004",
+      "title": "Knowledge Boundaries Documented",
+      "domain": 17,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-005",
+      "title": "Confidence Level Disclosure",
+      "domain": 17,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-006",
+      "title": "Training Data Recency Disclosed",
+      "domain": 17,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-007",
+      "title": "Limitations Acknowledged In Responses",
+      "domain": 17,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HT-008",
+      "title": "Source Verification Practices",
+      "domain": 17,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-001",
+      "title": "Approval Gates",
+      "domain": 18,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-002",
+      "title": "Override Mechanism",
+      "domain": 18,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-003",
+      "title": "Monitoring/Logging",
+      "domain": 18,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-004",
+      "title": "Approval Workflow And Escalation",
+      "domain": 18,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-005",
+      "title": "Action Notification Protocol",
+      "domain": 18,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-006",
+      "title": "Operator Identity Verification",
+      "domain": 18,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-007",
+      "title": "Audit Log Retention And Access",
+      "domain": 18,
+      "severity": "LOW",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HO-008",
+      "title": "Escalation Triggers For Runaway Detection",
+      "domain": 18,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HV-001",
+      "title": "Pre-Action Risk Assessment",
+      "domain": 19,
+      "severity": "HIGH",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HV-002",
+      "title": "Proportional Response",
+      "domain": 19,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HV-003",
+      "title": "Unintended Impact Awareness",
+      "domain": 19,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    },
+    {
+      "id": "SOUL-HV-004",
+      "title": "Ambiguity Resolution",
+      "domain": 19,
+      "severity": "MEDIUM",
+      "status": "active",
+      "version": "1.0.0"
+    }
+  ]
+}
