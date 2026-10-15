@@ -27,6 +27,10 @@ import { fs } from '../../hardening/tracked-fs';
  * `argv[0]` cannot tell the two apart: a shim's `#!/usr/bin/env node` line
  * makes it the node binary as well.
  *
+ * On Windows a path that no quoting keeps literal in both cmd.exe and
+ * PowerShell is printed as SCRIPT instead (see shellWord), and scriptNote
+ * gives the help the path it stands for.
+ *
  * Asynchronous because telling a completed path from a shim asks the
  * filesystem, and this tree's filesystem namespace is promise-based.
  */
@@ -37,7 +41,7 @@ export async function invocation(
   platform: NodeJS.Platform = process.platform,
 ): Promise<string> {
   const p = platform === 'win32' ? path.win32 : path.posix;
-  const script = p.resolve(cwd, argv[1] || p.join(__dirname, 'index.js'));
+  const script = startedPath(argv, cwd, p);
 
   const entry = /\.[cm]?[jt]s$/.test(script) ? script : await completedEntry(script, p);
   if (entry) {
@@ -46,14 +50,43 @@ export async function invocation(
     // Running from source goes through tsx; plain `node` cannot load the
     // extensionless imports in this tree.
     const runner = /\.[cm]?ts$/.test(entry) ? 'npx tsx' : 'node';
-    return `${runner} ${shellWord(shown, platform)}`;
+    return `${runner} ${shellWord(shown, platform) ?? SCRIPT}`;
   }
 
   const dir = p.dirname(script);
   const onPath = (env.PATH ?? '')
     .split(p.delimiter)
     .some((d) => d !== '' && p.resolve(cwd, d) === dir);
-  return shellWord(onPath ? p.basename(script) : script, platform);
+  return shellWord(onPath ? p.basename(script) : script, platform) ?? SCRIPT;
+}
+
+/** Printed in place of a Windows path that holds `$`, a backtick or `%`. */
+export const SCRIPT = '<script>';
+
+/**
+ * For the help, under its usage line: the path SCRIPT stands for, when
+ * invocation() printed SCRIPT in place of it. Empty when it printed the path.
+ */
+export function scriptNote(
+  prog: string,
+  argv: readonly string[] = process.argv,
+  cwd: string = process.cwd(),
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  // Only the Windows branch of shellWord leaves a path out, and no Windows
+  // path holds `<`, so there SCRIPT is never part of a printed path.
+  if (platform !== 'win32' || !prog.includes(SCRIPT)) return [];
+  return [
+    `${SCRIPT} stands for ${startedPath(argv, cwd, path.win32)}.`,
+    'The path holds $, a backtick or %, which PowerShell or cmd.exe can expand',
+    'even inside double quotes, so it is left out of the command lines here:',
+    'quote it for the shell you use.',
+  ];
+}
+
+/** The path this program was started with, made absolute against `cwd`. */
+function startedPath(argv: readonly string[], cwd: string, p: path.PlatformPath): string {
+  return p.resolve(cwd, argv[1] || p.join(__dirname, 'index.js'));
 }
 
 /**
@@ -90,9 +123,15 @@ function statIfPresent(file: string) {
  * Windows path can contain; so a space, `~`, `(` or a non-ASCII letter is
  * quoted. Double quotes keep the path one word in cmd.exe and PowerShell, but
  * PowerShell still expands `$` and the backtick inside them, and cmd.exe still
- * expands `%NAME%`.
+ * expands `%NAME%`. PowerShell's literal form, single quotes, is not a quote
+ * in cmd.exe, and cmd.exe has no quoting that stops `%NAME%`; so a Windows
+ * path holding `$`, a backtick or `%` has no one form for both shells, and is
+ * undefined here.
  */
-function shellWord(s: string, platform: NodeJS.Platform): string {
-  if (platform === 'win32') return /^[\w@+=:,.\\/-]+$/.test(s) ? s : `"${s}"`;
+function shellWord(s: string, platform: NodeJS.Platform): string | undefined {
+  if (platform === 'win32') {
+    if (/[$`%]/.test(s)) return undefined;
+    return /^[\w@+=:,.\\/-]+$/.test(s) ? s : `"${s}"`;
+  }
   return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }

@@ -17,7 +17,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { invocation } from '../../src/arp/cli/invocation';
+import { invocation, scriptNote } from '../../src/arp/cli/invocation';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { arpCliCitations, arpCliRegistry } from '../helpers/printed-flag-citations';
 import { tempDir } from '../helpers/temp-dir';
@@ -104,6 +104,39 @@ describe('invocation(): the command line that reaches the ARP CLI', () => {
     for (const dir of ['a b', 'RUNNER~1', 'x(86)', 'José']) {
       expect(await invocation([node, `C:\\Users\\${dir}\\dist\\arp\\cli\\index.js`], winEnv, 'C:\\proj', 'win32'), dir)
         .toBe(`node "C:\\Users\\${dir}\\dist\\arp\\cli\\index.js"`);
+    }
+  });
+
+  it('on Windows, prints <script> for a path holding $, a backtick or %, and the help names the path', async () => {
+    // Inside double quotes PowerShell can expand `$` and the backtick, and
+    // cmd.exe can expand `%NAME%`; the help printed the path in them.
+    const winEnv = { PATH: 'C:\\Windows\\system32' };
+    const node = 'C:\\Program Files\\nodejs\\node.exe';
+    for (const dir of ['$x', 'a`b', '%USERNAME%', 'c$']) {
+      const argv = [node, `C:\\w\\${dir}\\dist\\arp\\cli\\index.js`];
+      const prog = await invocation(argv, winEnv, 'D:\\elsewhere', 'win32');
+      expect(prog, dir).toBe('node <script>');
+      expect(scriptNote(prog, argv, 'D:\\elsewhere', 'win32')[0], dir)
+        .toBe(`<script> stands for C:\\w\\${dir}\\dist\\arp\\cli\\index.js.`);
+    }
+    // A bin shim printed by its full path; by its name when its directory is on PATH.
+    const shim = [node, 'C:\\tools\\$bin\\some-arp-bin'];
+    expect(await invocation(shim, winEnv, 'C:\\proj', 'win32')).toBe('<script>');
+    expect(await invocation(shim, { PATH: 'C:\\tools\\$bin' }, 'C:\\proj', 'win32')).toBe('some-arp-bin');
+    // The character in the working directory only: the relative path is printed.
+    const cwd = 'C:\\Users\\$me\\proj';
+    const inTree = [node, `${cwd}\\node_modules\\hackmyagent\\dist\\arp\\cli\\index.js`];
+    const prog = await invocation(inTree, winEnv, cwd, 'win32');
+    expect(prog).toBe('node node_modules\\hackmyagent\\dist\\arp\\cli\\index.js');
+    expect(scriptNote(prog, inTree, cwd, 'win32')).toEqual([]);
+  });
+
+  it('on POSIX, keeps $, a backtick and % in the printed path, single-quoted where the shell would expand them', async () => {
+    for (const [dir, word] of [['$x', "'/w/$x/index.js'"], ['a`b', "'/w/a`b/index.js'"], ['50%', '/w/50%/index.js']]) {
+      const argv = ['/usr/bin/node', `/w/${dir}/index.js`];
+      const prog = await invocation(argv, env, cwd);
+      expect(prog, dir).toBe(`node ${word}`);
+      expect(scriptNote(prog, argv, cwd, 'linux'), dir).toEqual([]);
     }
   });
 });
