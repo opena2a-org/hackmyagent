@@ -137,6 +137,12 @@ const REVIEWED: Record<string, { count: number; why: string }> = {
       + '`node -e` command UNICODE-STEGO-003 prints for the user to run (#999), and HMA never '
       + 'evaluates it',
   },
+  'hardening/backup-store.ts': {
+    count: 1,
+    why: 'fsSync, realpathSync.native on the backup store directory in rollback: it resolves the '
+      + 'store path HackMyAgent derived and reads no bytes. The store and rollback moved here from '
+      + 'scanner.ts, and every other read they make goes through the tracked namespace',
+  },
   'nanomind-core/scanner-bridge.ts': {
     count: 1,
     why: 'readArtifact — same citation re-read rule; see the comment at the import',

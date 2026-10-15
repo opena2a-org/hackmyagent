@@ -316,15 +316,25 @@ type Site = { reason: string; gate?: string };
 
 const MUTATION_CENSUS: Record<string, Record<string, Site>> = {
   'hardening/scanner.ts': {
+    'applyFixWrite:writeFile': { reason: 'every fix write to the target', gate: 'this.ensureBackupCovers(' },
+    'checkFilePermissions:chmod': { reason: 'the permissions fix on the target', gate: 'this.ensureModeRecorded(' },
+    'pemLooksPrivate:open': { reason: 'read-only open' },
+    'jsonPrivateKeyFields:open': { reason: 'read-only open' },
+    'startsWithShebang:open': { reason: 'read-only open' },
+    'checkEncodedPayloads:mkdtemp': { reason: 'a scratch directory under the OS temp directory' },
+    'checkEncodedPayloads:mkdir': { reason: 'inside that scratch directory' },
+    'checkEncodedPayloads:writeFile': { reason: 'inside that scratch directory' },
+    'checkEncodedPayloads:rm': { reason: 'removes that scratch directory' },
+  },
+  // The backup store and rollback, moved out of the scanner unchanged. None of
+  // these writes a fix to the target: the scanner's two sites above do, behind
+  // the gates this module provides.
+  'hardening/backup-store.ts': {
     'copyIntoBackup:mkdir': { reason: 'the run directory in the backup store, never the target' },
     'copyIntoBackup:copyFile': { reason: 'writes the copy into the run directory; reads the target' },
     'copyIntoBackup:chmod': { reason: 'narrows the copy in the run directory to 0600' },
     'appendToBackupManifest:writeFile': { reason: 'the run manifest' },
     'recordModeOnly:writeFile': { reason: 'the run manifest' },
-    'applyFixWrite:writeFile': { reason: 'every fix write to the target', gate: 'this.ensureBackupCovers(' },
-    'checkFilePermissions:chmod': { reason: 'the permissions fix on the target', gate: 'this.ensureModeRecorded(' },
-    'pemLooksPrivate:open': { reason: 'read-only open' },
-    'jsonPrivateKeyFields:open': { reason: 'read-only open' },
     'createRunBackupDir:mkdir': { reason: 'the run directory in the backup store' },
     'createBackup:writeFile': { reason: 'the run manifest' },
     'recordCreatedFiles:writeFile': { reason: 'the run manifest' },
@@ -333,11 +343,6 @@ const MUTATION_CENSUS: Record<string, Record<string, Site>> = {
     'restoreOneMode:chmod': { reason: 'rollback: puts a mode-only entry back' },
     'rollback:unlink': { reason: 'rollback: removes a file a fix generated, hash-verified' },
     'rollback:rm': { reason: 'rollback: removes the run it consumed' },
-    'startsWithShebang:open': { reason: 'read-only open' },
-    'checkEncodedPayloads:mkdtemp': { reason: 'a scratch directory under the OS temp directory' },
-    'checkEncodedPayloads:mkdir': { reason: 'inside that scratch directory' },
-    'checkEncodedPayloads:writeFile': { reason: 'inside that scratch directory' },
-    'checkEncodedPayloads:rm': { reason: 'removes that scratch directory' },
   },
   'soul/scanner.ts': {
     'hardenSoul:appendFileSync': { reason: 'appends governance sections to the target', gate: 'options.writeGuard(' },
