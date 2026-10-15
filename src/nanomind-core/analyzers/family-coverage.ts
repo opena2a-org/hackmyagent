@@ -46,16 +46,19 @@ export const ANALYZER_FAMILY_COUNT = ANALYZER_FAMILIES.length;
 /**
  * Which orchestration route `runNanoMindScan` sent the artifact down.
  *
- * `not_routed` is the case neither #456 nor its brief anticipated: the
- * documentation and metadata skip (README, CHANGELOG, LICENSE, package.json,
- * tsconfig.json, .npmrc ...) `continue`s BEFORE the analyzer routing, so those
- * files are counted in `compiledArtifacts` having reached zero families. A
- * disclosure that only handled 2-of-7 would still be overstating them.
+ * `not_routed` is the case neither #456 nor its brief anticipated: the bridge
+ * leaves `package-lock.json` out of the analyzers with a `continue` BEFORE the
+ * analyzer routing, so it is counted in `compiledArtifacts` having reached zero
+ * families. A disclosure that only handled 2-of-7 would still be overstating
+ * it. Until #1027 the same `continue` also caught every basename beginning
+ * with readme, changelog, license, contributing, history or authors, and
+ * package.json, tsconfig.json and .npmrc; those now take a route (see
+ * `analyzerRouteFor`).
  *
  * It has a second cause: an analyzer that throws leaves the row at its starting
  * value, because the bridge records coverage only after the analyzers return. So
- * an artifact type that can never be doc-skipped — a `skill`, say — reported
- * `not_routed` means a throw discarded its findings.
+ * an artifact that is not `package-lock.json` reported `not_routed` means a
+ * throw discarded its findings.
  */
 export type AnalyzerRoute = 'agent' | 'source_code' | 'non_agent' | 'not_routed';
 
@@ -144,6 +147,41 @@ export function nonAgentGateApplies(
 }
 
 /**
+ * The lower-cased last segment of a path, split on BOTH separators so that a
+ * Windows path (`docs\README.md`) names the same file as its POSIX spelling.
+ */
+export function lowerBasename(filePath: string): string {
+  const segments = filePath.split(/[\\/]/);
+  return (segments[segments.length - 1] ?? '').toLowerCase();
+}
+
+/**
+ * The documentation basenames (#1027): exactly one of six names, optionally
+ * with a document extension. End-anchored on purpose. The skip this replaced
+ * tested the same six words as a PREFIX, so `history.ts`, `authors.py`,
+ * `license-check.js` and `changelog.config.js` reached no analyzer at all.
+ */
+const DOCUMENT_BASENAME_RE =
+  /^(readme|changelog|license|contributing|history|authors)(\.(md|markdown|txt|rst|adoc))?$/;
+
+/**
+ * Is this path a documentation file in the #1027 sense? The bridge applies the
+ * vendor tier to these files' credential findings (`document-vendor-tier.ts`),
+ * so the credential family examines them at that tier, not in full.
+ */
+export function isDocumentBasename(filePath: string): boolean {
+  return DOCUMENT_BASENAME_RE.test(lowerBasename(filePath));
+}
+
+/**
+ * Package metadata analyzed on the non-agent route (#1027). It used to be
+ * skipped outright because a URL in `package.json` is not exfiltration; the
+ * non-agent route keeps that reason (no capability, governance, scope or prompt
+ * family) and still lets the credential family see a token in `scripts`.
+ */
+const NON_AGENT_METADATA_BASENAMES: ReadonlySet<string> = new Set(['package.json', 'tsconfig.json']);
+
+/**
  * Which route `runNanoMindScan` sends an artifact down.
  *
  * THE definition, exported so the bridge and anything measuring the bridge read
@@ -151,9 +189,25 @@ export function nonAgentGateApplies(
  * recomputed this locally and omitted the dev-instruction-file branch, so it
  * believed `CLAUDE.md` took the agent route when the bridge sends it to
  * `non_agent` — a disagreement about six of the seven families.
+ *
+ * `filePath` is the path the bridge read. It defaults to the AST's own path,
+ * but the compiler serves a cached AST to byte-identical files of the same
+ * type, carrying the FIRST file's path, so the documentation and metadata rule
+ * reads the path it is given. Read from the AST, a `package.json` and an
+ * `mcp.json` with the same bytes (both `mcp_config`) would both take the route
+ * of whichever compiled first.
  */
-export function analyzerRouteFor(ast: SecurityAST): AnalyzerRoute {
+export function analyzerRouteFor(
+  ast: SecurityAST,
+  filePath: string = ast.artifactPath ?? '',
+): AnalyzerRoute {
   const AGENT_TYPES = AGENT_ARTIFACT_TYPES;
+  // Documents and package metadata are never agent artifacts, whatever their
+  // content classified as: a `package.json` carrying `mcpServers` compiles as
+  // `mcp_config`.
+  if (isDocumentBasename(filePath) || NON_AGENT_METADATA_BASENAMES.has(lowerBasename(filePath))) {
+    return 'non_agent';
+  }
   // `system_prompt` is agent-like ONLY for an actual system prompt file, not a
   // developer instruction file (CLAUDE.md, .cursorrules, .clinerules,
   // .windsurfrules).
