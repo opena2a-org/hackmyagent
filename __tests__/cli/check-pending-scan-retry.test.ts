@@ -10,6 +10,11 @@
  * recorded as clean. An entry an earlier version queued in that form is now
  * dropped with a one-line notice and not sent.
  *
+ * The retry of the queued shares finishes before the run's own share is
+ * sent. The two ran at the same time, and with two or more queued shares the
+ * retry's write of the shares that failed again replaced the queue after the
+ * run's own failed share had been added to it.
+ *
  * Hermetic, as in check-url-userinfo-not-published.test.ts: `git` is a shim
  * on PATH that copies a local fixture tree; the registry is a capture server
  * on localhost, in a child process because `spawnSync` blocks this worker's
@@ -35,6 +40,24 @@ const FAILING_REPO = 'gitlab.com/example-org/failing-repo';
 const OTHER_REPO = 'gitlab.com/example-org/other-repo';
 const EARLIER_VERSION_REPO = 'gitlab.com/example-org/earlier-version-repo';
 const QUEUED_REPO = 'gitlab.com/example-org/queued-repo';
+const NEW_REPO = 'gitlab.com/example-org/new-repo';
+const QUEUED_REPO_A = 'gitlab.com/example-org/queued-repo-a';
+const QUEUED_REPO_B = 'gitlab.com/example-org/queued-repo-b';
+
+/** A queue entry in the current form, from another version on another day. */
+function queuedEntry(name: string, checkId: string): Record<string, unknown> {
+  return {
+    name,
+    score: 40,
+    maxScore: 100,
+    projectType: 'library',
+    toolVersion: '0.0.1-queued',
+    scanTimestamp: '2026-10-02T03:04:05.000Z',
+    findings: [
+      { checkId, name: 'queued failing check', severity: 'critical', passed: false, message: 'queued message', category: 'injection' },
+    ],
+  };
+}
 
 const GIT_SHIM = `#!/bin/sh
 # Stands in for git: \`git clone ... <url> <dest>\` copies the fixture tree to
@@ -89,6 +112,7 @@ let serverProc: ChildProcess | undefined;
 let failedRun: Run;
 let retryRun: Run;
 let mixedQueueRun: Run;
+let crowdedQueueRun: Run;
 
 function publishes(): Submission[] {
   const raw = fs.existsSync(capturePath) ? fs.readFileSync(capturePath, 'utf8') : '';
@@ -219,7 +243,13 @@ beforeAll(async () => {
       ],
     },
   ]);
-}, 400_000);
+  // The registry is down and two shares are queued: the retry of both and
+  // this run's own share all fail.
+  crowdedQueueRun = run('crowded', NEW_REPO, 503, [
+    queuedEntry(QUEUED_REPO_A, 'TEST-QUEUED-A'),
+    queuedEntry(QUEUED_REPO_B, 'TEST-QUEUED-B'),
+  ]);
+}, 500_000);
 
 afterAll(() => {
   serverProc?.kill();
@@ -270,5 +300,18 @@ describe('check sends a queued registry share with what the failed share sent', 
     expect(mixedQueueRun.queue).toEqual([]);
     // No other run printed it.
     expect(failedRun.stderr + retryRun.stderr).not.toContain('saved by an earlier version');
+  });
+});
+
+describe('check keeps its own failed share when queued shares fail on retry', () => {
+  it('sends both queued shares and its own, and queues all three', () => {
+    const { tool: _tool, ...own } = only(crowdedQueueRun, NEW_REPO) as Submission & { tool?: string };
+    expect(crowdedQueueRun.queue, crowdedQueueRun.stderr).toEqual([
+      queuedEntry(QUEUED_REPO_A, 'TEST-QUEUED-A'),
+      queuedEntry(QUEUED_REPO_B, 'TEST-QUEUED-B'),
+      own,
+    ]);
+    // The queued shares are sent before this run's own share.
+    expect(crowdedQueueRun.publishes.map((p) => p.name)).toEqual([QUEUED_REPO_A, QUEUED_REPO_B, NEW_REPO]);
   });
 });

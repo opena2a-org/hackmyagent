@@ -14087,6 +14087,18 @@ async function flushPendingScans(): Promise<void> {
   try { writePendingScans(p, remaining); } catch { /* Non-fatal */ }
 }
 
+/**
+ * Sends the queued shares, then this scan's share, and queues it when it
+ * fails. The retry finishes before this share is sent: the retry writes back
+ * the entries that failed again, and a share appended to the queue while it
+ * was still running was overwritten by that write.
+ */
+async function shareCheckScan(scan: PendingScan): Promise<void> {
+  await flushPendingScans();
+  const ok = await publishToRegistry(scan);
+  if (!ok) queuePendingScan(scan);
+}
+
 interface RegistryTrustData {
   found: boolean;
   name: string;
@@ -15041,10 +15053,7 @@ async function checkGitHubRepo(
       const tip = recordScanAndContributeTip();
       if (tip && process.stdout.isTTY) process.stdout.write(tip + '\n');
       if (isContributeEnabled()) {
-        flushPendingScans();
-        const scan = checkScanSubmission(displayName, result);
-        const ok = await publishToRegistry(scan);
-        if (!ok) queuePendingScan(scan);
+        await shareCheckScan(checkScanSubmission(displayName, result));
       }
     }
 
@@ -15683,10 +15692,7 @@ async function checkRawUrl(
     // Community contribution (auto-share if opted in, no first-time prompt for URLs)
     if (process.stdin.isTTY && !globalCiMode) {
       if (isContributeEnabled()) {
-        flushPendingScans();
-        const scan = checkScanSubmission(displayName, result);
-        const ok = await publishToRegistry(scan);
-        if (!ok) queuePendingScan(scan);
+        await shareCheckScan(checkScanSubmission(displayName, result));
       }
     }
 
@@ -15977,10 +15983,7 @@ async function checkNpmPackage(
       if (tip && process.stdout.isTTY) process.stdout.write(tip + '\n');
       if (isContributeEnabled()) {
         // Auto-share silently, queue on failure
-        flushPendingScans();
-        const scan = checkScanSubmission(name, result);
-        const ok = await publishToRegistry(scan);
-        if (!ok) queuePendingScan(scan);
+        await shareCheckScan(checkScanSubmission(name, result));
       }
     }
 
