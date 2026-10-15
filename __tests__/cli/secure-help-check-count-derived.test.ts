@@ -4,7 +4,7 @@
  * Measured 2026-08-23: `npx hackmyagent@{0.25.2,0.30.0,0.32.0} secure --help` all
  * printed "Performs 323 security checks across 74 categories" although seven minor
  * versions separate them, and the sibling opena2a-cli surfaces disagreed with it
- * anyway (README 204, help/init 209). CPO Rule 3: a constant is not a measurement.
+ * anyway (README 204, help/init 209). A constant is not a measurement.
  *
  * The sentence now interpolates `getCheckCounts()`. What was missing was a gate that
  * can SEE the drift: `__tests__/hardening/check-count-consistency.test.ts` compares

@@ -5,7 +5,7 @@
  * markers present", "runs as non-root", "tools whitelisted") but emitted
  * `passed: false` when the SUBJECT (CLAUDE.md, Dockerfile, mcp.json) did not
  * exist — collapsing "there is nothing to measure" with "it was measured and
- * found wanting". The ruled contract (COUNCIL_LEDGER #458):
+ * found wanting". The contract (#458):
  *
  *   read   -> measured pass/fail, byte-identical to before;
  *   absent -> a `notApplicable: { subject, reason }` record with NO severity

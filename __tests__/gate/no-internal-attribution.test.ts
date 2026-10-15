@@ -174,51 +174,12 @@ function scan(
 }
 
 // Frozen per-file counts of lines matching the first expression, measured on
-// the delivered tree: 45 files, 96 lines. Line numbers are deliberately not
-// pinned — unrelated edits would shift them.
+// the delivered tree: 4 files, 40 lines. Line numbers are deliberately not
+// pinned — unrelated edits would shift them. No file under __tests__ has an
+// entry: a test comment states its constraint in plain words, so a matching
+// line in a test file is always reported, never pinned.
 const PATTERN_BASELINE: Record<string, number> = {
   'CHANGELOG.md': 17,
-  '__tests__/checker/check-not-found-json.test.ts': 1,
-  '__tests__/checker/check-secure-cross-analyzer-parity.test.ts': 2,
-  '__tests__/cli/benchmark-empty-denominator.test.ts': 1,
-  '__tests__/cli/deep-scan-incomplete-verdict.test.ts': 1,
-  '__tests__/cli/fix-lines-render.test.ts': 1,
-  '__tests__/cli/hma08-pull-stubs.test.ts': 2,
-  '__tests__/cli/machine-posture-not-scored.test.ts': 1,
-  '__tests__/cli/opena2a-citation-and-next-steps-target.test.ts': 1,
-  '__tests__/cli/scan-soul-conformance-gate.test.ts': 2,
-  '__tests__/cli/secure-help-check-count-derived.test.ts': 1,
-  '__tests__/cli/secure-unread-input-gate.test.ts': 2,
-  '__tests__/cli/verdict-requires-measurement.test.ts': 2,
-  '__tests__/gate/pr-review-partition.test.ts': 1,
-  '__tests__/hardening/absent-subject-not-applicable.test.ts': 1,
-  '__tests__/hardening/analyst-findings-redaction.test.ts': 1,
-  '__tests__/hardening/config-credential-depth.test.ts': 1,
-  '__tests__/hardening/credential-preview-truncation.test.ts': 1,
-  '__tests__/hardening/credential-store-basenames.test.ts': 1,
-  '__tests__/hardening/finding-cast-launder-guard.test.ts': 1,
-  '__tests__/hardening/finding-emit-fix-lines.test.ts': 1,
-  '__tests__/hardening/fix-verification-attribution.test.ts': 1,
-  '__tests__/hardening/ignore-suppression-scope.test.ts': 1,
-  '__tests__/hardening/redaction-provenance-boundaries.test.ts': 2,
-  '__tests__/hardening/redaction-provenance-reader.test.ts': 2,
-  '__tests__/hardening/scanner.path-context.test.ts': 1,
-  '__tests__/hardening/scanner.rag-mem-context.test.ts': 1,
-  '__tests__/hardening/shell-credential-exfil.test.ts': 2,
-  '__tests__/harness/hermetic-home.test.ts': 1,
-  '__tests__/helpers/exit-surface-baseline.ts': 3,
-  '__tests__/mcp/mcp-root-confinement.test.ts': 1,
-  '__tests__/nanomind-core/analyst-coverage.test.ts': 1,
-  '__tests__/nanomind-core/analyst-escalation-wiring.test.ts': 3,
-  '__tests__/nanomind-core/fix-generator-scope-dispatch.test.ts': 1,
-  '__tests__/nanomind-core/scanner-fp-regression.test.ts': 2,
-  '__tests__/scanner/governance-cross-surface.test.ts': 1,
-  '__tests__/semantic/credential-context-git-state.test.ts': 1,
-  '__tests__/skills/create-skill-output-clean.test.ts': 2,
-  '__tests__/soul/scanner-profile-mismatch.test.ts': 1,
-  '__tests__/soul/soul-corpus-direction.test.ts': 2,
-  '__tests__/telemetry/exit-surface.test.ts': 1,
-  '__tests__/ui/analyst-dissent.test.ts': 1,
   'docs/release-playbook.md': 11,
   'docs/testing/release-smoke.md': 2,
   'src/attack/payloads/capability-abuse.ts': 10,
@@ -439,8 +400,8 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC3 every public-surface file carries exactly the frozen number of lines matching the first expression', () => {
-    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(45);
-    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(96);
+    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(4);
+    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(40);
     const { hits } = scan(REPO_ROOT, PATTERN);
     expect(compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE)).toEqual([]);
   });
@@ -455,6 +416,30 @@ describe('internal attribution stays off the public surfaces', () => {
     }
     const dir = plantRepo({ 'changelog.d/x-abc123.md': `---\ntype: fixed\n---\n- ${CAUGHT_SHAPES[1]}\n` });
     expect([...scan(dir, PATTERN).hits.keys()]).toEqual(['changelog.d/x-abc123.md']);
+  });
+
+  it('no frozen entry for the first expression names a file under __tests__: a test file is fixed, never pinned', () => {
+    for (const key of Object.keys(PATTERN_BASELINE)) {
+      expect(key.startsWith('__tests__/'), `frozen entry ${key} names a test file`).toBe(false);
+    }
+  });
+
+  it('a governance tag in a test comment and a decision identifier in a test name both fail the frozen-map comparison', () => {
+    // Planted through the same walk and the same comparison the tree
+    // assertion uses, against the real frozen map: a test file has no entry,
+    // so each matching line is listed with its file:line.
+    const rel = '__tests__/cli/planted.test.ts';
+    const root = plantRepo({
+      [rel]: `// ${CAUGHT_SHAPES[0]}: kept as is\nit('holds (${CAUGHT_SHAPES[2]})', () => {});\nit('plain', () => {});\n`,
+    });
+    const { hits } = scan(root, PATTERN);
+    expect(hits.get(rel)).toEqual([1, 2]);
+    const problems = compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE);
+    expect(problems.filter((problem) => problem.includes(rel))).toEqual([
+      `${rel}: 2 matching lines, 0 frozen — ${PATTERN_GUIDANCE}`,
+      `  ${rel}:1`,
+      `  ${rel}:2`,
+    ]);
   });
 
   it('HMA-79.AC5 no frozen entry names a path outside the six surfaces the walk once named by hand', () => {

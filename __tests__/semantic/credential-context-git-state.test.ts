@@ -322,7 +322,7 @@ describe('#208: .env credential severity by git state', () => {
     expect(env!.recommendation).toMatch(/find .* -inum|readlink/);
   });
 
-  it('out-of-tree symlink wording calls out the link target (round-3 CISO Rule 11)', async () => {
+  it('out-of-tree symlink wording calls out the link target (round 3, #208)', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'hma-208-outside-r3-'));
     try {
       writeFileSync(join(outside, 'real.env'), FAKE_ENV_BODY);

@@ -1,10 +1,10 @@
 /**
  * Regression tests for the three path-context exemptions shipped 2026-04-17.
  *
- * Each test maps to an entry in briefs/release-findings.md:
- *   - bug #5: UNICODE-STEGO-001 must skip training/corpus/** and datasets/**
- *   - bug #7: NEMO-007 (and TOCTOU-001) must skip test/fixtures paths
- *   - bug #3: AIM-002 must soften to MEDIUM inside examples/templates/docs/samples
+ * Each test maps to one bug found in release testing (#100):
+ *   - bug 5: UNICODE-STEGO-001 must skip training/corpus/** and datasets/**
+ *   - bug 7: NEMO-007 (and TOCTOU-001) must skip test/fixtures paths
+ *   - bug 3: AIM-002 must soften to MEDIUM inside examples/templates/docs/samples
  *
  * The fixtures are intentional (adversarial Unicode in a corpus, process.env
  * spread in a test setup, bearer-auth example without cryptographic binding).

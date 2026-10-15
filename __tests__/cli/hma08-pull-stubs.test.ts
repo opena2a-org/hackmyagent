@@ -3,13 +3,13 @@
  * status vocabulary, and starts printing the identifier its own next step
  * needs.
  *
- * DEFECT 1 of `todo/roadmap/hackmyagent-pull-stubs-status-vocabulary-mismatch.md`:
+ * DEFECT 1 (fixed by #689):
  * the CLI validated `--status` against a hardcoded
  * `['draft','review','integrated','rejected']` AND filtered the response
  * against the same list, while the DB CHECK constraint held a different set.
  * Every value except the default was unusable in one direction or the other,
  * so the pipeline's only working query was the default — the loop's terminus,
- * untraversable. [CHIEF-CA] 2026-08-31 ruled ONE vocabulary owned by the DB
+ * untraversable. Since 2026-08-31 ONE vocabulary is owned by the DB
  * and the Go domain constants, with the CLI array and the client filter
  * DELETED.
  *

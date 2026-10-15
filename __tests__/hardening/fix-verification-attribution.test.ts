@@ -155,7 +155,7 @@ describe('fix verification attribution (HIGH-3)', () => {
   });
 
   it('does not cite the auto-fix that just failed as the remedy', async () => {
-    // MEDIUM-2, CISO Rule 11. `fix` is `hackmyagent secure --fix` — which is
+    // A dead-end fix: `fix` is `hackmyagent secure --fix` — which is
     // the command that produced this finding. Following it runs the same
     // EPERM again. An unverified fix must cite a remedy that is not the
     // thing that failed.

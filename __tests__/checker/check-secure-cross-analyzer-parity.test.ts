@@ -12,8 +12,8 @@
 // the exposure was safe.
 //
 // This is the same class as the HMA 0.22.0 release-blocker (cross-
-// analyzer direction disagreement) and a CISO Rule 11 violation: an
-// absolute label asserting a global verdict the analyzer never
+// analyzer direction disagreement) and a verdict without a measurement:
+// an absolute label asserting a global verdict the analyzer never
 // evaluated.
 //
 // Two layers, mirroring check-not-found-json.test.ts:
@@ -56,7 +56,7 @@ describe('quick-scan scope disclosure (deterministic — #200 contract gate)', (
 
   it('never emits an absolute safety claim for an un-run matrix', () => {
     // The exact strings the pre-fix build shipped. Either one reaching a
-    // user is the CISO Rule 11 violation this issue is about.
+    // user is the unmeasured verdict this issue is about.
     expect(disclosure.cleanVerdict).not.toMatch(/looks safe to use/i);
     expect(disclosure.cleanVerdict).not.toMatch(/no security issues detected/i);
   });

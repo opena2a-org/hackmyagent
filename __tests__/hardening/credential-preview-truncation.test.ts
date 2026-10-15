@@ -10,8 +10,7 @@
  *
  * Measured 2026-08-19 on `1dac1e1`, before this file existed: `secure --json` carried 16
  * body characters at 4 JSON paths, `check --json` at 2, and a 5-character preview reached
- * `findings[].description` — all three unchanged from 0.31.0, all three required to be 0
- * by `todo/roadmap/hma-unit1-credential-boundary.md:227-236`.
+ * `findings[].description` — all three unchanged from 0.31.0, all three required to be 0.
  *
  * WHY THIS TEST IS SHAPED THIS WAY. `pinned-credential-shapes.test.ts` already pins that
  * the detector and the redactor know the same SHAPES. That invariant was green throughout,

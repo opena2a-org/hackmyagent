@@ -11,7 +11,7 @@
  * hole: the answer is read from one forced `report_findings` tool call and
  * never from the reply's text, so formatting no longer reaches the verdict, AND
  * a reply that carries no readable report produces exit 2 — "reached no
- * verdict" — instead of a pass. Severity stays `medium` deliberately (CISO): a transient API failure
+ * verdict" — instead of a pass. Severity stays `medium` deliberately: a transient API failure
  * is an availability event, not a statement that the user's tree is unsafe.
  *
  * The CLI is SPAWNED rather than called, because the claim is about an exit

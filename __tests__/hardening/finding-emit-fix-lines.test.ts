@@ -127,8 +127,8 @@ describe('no JSON channel can carry the structure, by construction', () => {
 });
 
 describe('only the fix generator writes the structure', () => {
-  // The CISO ruling for this unit names "any producer other than fix-generator
-  // populating fixLines" as the likeliest way the invariants erode. A second
+  // The likeliest way the invariants erode is any producer other than
+  // fix-generator populating fixLines (#597). A second
   // producer that does not compose from developer-authored parts would be
   // asserting structure it did not author. The bridge copies the field and the
   // boundary walks it; nothing else may write it.

@@ -1,5 +1,5 @@
 /**
- * Regression test for bug #1 (briefs/release-findings.md):
+ * Regression test for release-testing bug 1 (#100):
  * AST-SCOPE-003 / SEMANTIC-MISMATCH dispatch must preserve the specific
  * `finding.fix` supplied by the scope analyzer instead of falling through
  * to the generic `fixScopeMismatch` prose generator that leads with

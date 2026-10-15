@@ -9,7 +9,7 @@
  * the marker forces the scanner to skip them, producing a 100/100
  * HARDENED verdict that hides 5 of 9 governance domains.
  *
- * Path B fix (per CHIEF-CDS): honor the marker for legitimate use, but
+ * Path B fix (#162): honor the marker for legitimate use, but
  * emit HIGH `SOUL-PROFILE-MISMATCH` whenever body content suggests a
  * broader profile than the marker declares.
  */

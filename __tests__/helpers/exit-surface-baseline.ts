@@ -5,7 +5,7 @@
  * in `src/` carries either an `// exit-unsettled(#350/S<id>)` annotation
  * whose id lives here, or an `// exit-no-event(<tag>/L<id>)` claim whose id
  * is registered below with its tag. A NEW id of either kind is a new dark
- * exit site — the #350 inversion re-opening — and needs a CISO-lane ruling,
+ * exit site — the #350 inversion re-opening — and needs a reviewed decision,
  * not a list edit. A migration deletes the site's annotation AND its id here
  * in the same diff.
  *
@@ -46,7 +46,7 @@ export const UNSETTLED_EXIT_IDS: ReadonlySet<string> = new Set([
  * not sit inside a `.action(` callback; separate-entrypoint only inside
  * src/arp/cli/, which a standing assertion holds un-imported), and holds
  * the member list closed everywhere it cannot — a new member is a
- * baseline edit reviewed as a gate-semantics change (CISO lane), never a
+ * baseline edit reviewed as a gate-semantics change, never a
  * one-line comment.
  *
  * Tags with no registered member (`non-tracked-command`, `post-record`)
@@ -73,7 +73,7 @@ export const NO_EVENT_EXIT_SITES: ReadonlyMap<string, string> = new Map([
 
 /**
  * The closed exemption vocabulary. Each tag names the PREDICATE that makes
- * its sites event-free. Adding a tag is a gate-semantics change (CISO lane).
+ * its sites event-free. Adding a tag is a reviewed gate-semantics change.
  *
  * - `pre-action`: runs before any command action arms telemetry;
  *   structurally checked — the site must not be inside a `.action(`

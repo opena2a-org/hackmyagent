@@ -9,14 +9,14 @@
  *   skill scored 61/100 with 5 HIGH findings on the very next `hackmyagent
  *   secure simple-greeting-skill/` invocation — the tool's own "getting
  *   started" path immediately told the user their just-created skill was
- *   "Not safe as-is". This is a CISO Rule 11 dead-end: the documented next
+ *   "Not safe as-is". This is a dead end: the documented next
  *   step contradicted the displayed verdict.
  *
  *   P1-2 (HARDEN-SOUL -> SECURE RECOMMENDATION LOOP). The HIGH findings on
  *   the scaffold cited `hackmyagent harden-soul .` as their Fix line, but
  *   running harden-soul on the scaffold made the score WORSE (61 -> 52) and
  *   re-fired the same checkIds with the same harden-soul citation. Another
- *   CISO Rule 11 dead-end.
+ *   dead end.
  *
  * Both bugs traced to a common root cause: the constraint extractor only
  * classified constraints by the constraint TEXT, ignoring the markdown

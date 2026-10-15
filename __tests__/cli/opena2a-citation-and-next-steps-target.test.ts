@@ -3,8 +3,8 @@
 //
 // #201 — ~29 finding-fix and explainer strings cite `opena2a protect .`.
 // A user who ran `npm i hackmyagent` standalone does not have `opena2a`
-// on PATH, so the Fix line was `command not found`: a dead end under
-// CISO Rule 11. Worse, the one-time install hint that existed to soften
+// on PATH, so the Fix line was `command not found`: a dead end, a fix
+// the user cannot run. Worse, the one-time install hint that existed to soften
 // this said `npm i -g opena2a` — an unpublished name that 404s. The
 // package is `opena2a-cli`; the binary it installs is `opena2a`.
 //

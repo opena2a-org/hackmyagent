@@ -497,9 +497,9 @@ describe('#499 the completeness floor holds at every scan depth', NO_RUNNER_CAP,
   it.each(VALID_DEPTHS)('%s CONTROL: a clean readable tree still exits 0', (depth) => {
     // The negative control that keeps this a gate rather than a blanket fail.
     //
-    // Ruled 2026-08-11 (Abdel, on a CPO/CISO split): `--scan-depth quick` KEEPS
-    // its ability to exit 0. CISO argued a run that skipped 55 of 61 checks may
-    // never pass; the ruling is that #438's unit is "inputs discovered and not
+    // Decided 2026-08-11: `--scan-depth quick` KEEPS its ability to exit 0.
+    // The objection was that a run that skipped 55 of 61 checks may never
+    // pass; the decision is that #438's unit is "inputs discovered and not
     // read", not "every check ran", and a user passing `--scan-depth quick`
     // consented to the reduced depth. That objection is tracked separately, not
     // absorbed here.
