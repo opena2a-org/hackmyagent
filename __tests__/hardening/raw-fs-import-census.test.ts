@@ -75,6 +75,7 @@ const ALLOWLIST: Record<string, string> = {
   'plugins/signcrypt.ts': 'plugin; not reached by secure',
   'plugins/skillguard.ts': 'plugin; not reached by secure',
   'registry/publish.ts': 'publish arm reads package.json of the target to name it; runs after the scan, contents not scanned',
+  'registry/submissions.ts': 'payload builders read package.json / pyproject.toml of the target for its name and version; run after the scan, contents not scanned',
   'narrative/wire-publish.ts': '--publish arm: reads SKILL.md / package.json of the target and POSTs the narrative; both reads confined by readStaysInsideTree',
   'scanner/detect.ts': 'detect command; not reached by secure, and its governance-named reads (scanAiConfigs stat + read of .cursorrules / CLAUDE.md / copilot-instructions, and scanSoul via the soul scanner) are confined by readStaysInsideTree against the scanned tree',
   'skills/builder.ts': 'skill builder; not reached by secure',

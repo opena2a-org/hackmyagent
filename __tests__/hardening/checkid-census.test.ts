@@ -163,7 +163,6 @@ function collectExpressionSites(): Set<string> {
  *   constants and holds them to the inventory.
  */
 const EXPRESSION_SITES: Record<string, string> = {
-  'cli.ts :: ctrl.id': 'control-catalog',
   'cli.ts :: f.checkId': 'pass-through',
   "cli.ts :: f.checkId || ''": 'pass-through',
   'cli.ts :: finding.checkId': 'pass-through',
@@ -179,9 +178,10 @@ const EXPRESSION_SITES: Record<string, string> = {
   'hardening/semantic-refilter.ts :: r.checkId': 'pass-through',
   'mcp-server.ts :: f.checkId': 'pass-through',
   'nanomind-core/scanner-bridge.ts :: ast.checkId': 'pass-through',
-  'registry/publish.ts :: c.id || c.checkId': 'pass-through',
   'registry/publish.ts :: f.checkId': 'pass-through',
   'registry/publish.ts :: r.payload.id': 'payload-templates',
+  'registry/submissions.ts :: ctrl.id': 'control-catalog',
+  'registry/submissions.ts :: f.checkId': 'pass-through',
   'semantic/integration/finding-adapter.ts :: finding.id': 'semantic-finding-ids',
   'ui/unresolved-categories.ts :: s.checkId': 'pass-through',
   "ui/verdict-band.ts :: f.checkId || '_unknown_'": 'pass-through',

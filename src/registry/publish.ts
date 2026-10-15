@@ -102,6 +102,18 @@ export interface PublishScanData {
   oasbResult?: BenchmarkResult;
   /** CAAT tree hash — deterministic content hash of the scanned directory */
   treeHash?: string;
+  /**
+   * The controls a SOUL scan evaluated, as findings at each control's own
+   * severity (src/registry/submissions.ts builds them from `soulResult`).
+   */
+  governanceFindings?: Array<SecurityFinding & { severity: Severity; passed: boolean }>;
+  /**
+   * The score the run printed, for a run with no settled `secure` record
+   * behind it whose score is not computed from `findings` (a SOUL scan).
+   */
+  runScore?: { score: number; rawScore: number; scoreClamped: boolean };
+  /** The time of the scan. Absent, the payload is stamped when it is built. */
+  scanTimestamp?: string;
 }
 
 /** Result returned after publishing to registry */
@@ -183,7 +195,7 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string, 
   // fields away (wire-schema carry is a separate unit), so the read runs on
   // the INPUT, where the provenance still exists to be read.
   assertRedactionProvenance(data, 'registry-publish');
-  const scanTimestamp = new Date().toISOString();
+  const scanTimestamp = data.scanTimestamp ?? new Date().toISOString();
   const findings: UnifiedFinding[] = [];
 
   // Map hardening findings
@@ -225,15 +237,16 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string, 
     }
   }
 
-  // Map SOUL control results as findings
-  if (data.soulResult && (data.soulResult as any).controls) {
-    for (const c of (data.soulResult as any).controls) {
+  // Map SOUL control results as findings. `SoulScanResult` keeps its controls
+  // under `domains`, so reading a top-level `controls` published none.
+  if (data.governanceFindings) {
+    for (const f of data.governanceFindings) {
       findings.push({
-        checkId: c.id || c.checkId,
-        name: c.name,
-        severity: c.severity || 'medium',
-        passed: c.passed,
-        message: c.description || c.message || '',
+        checkId: f.checkId,
+        name: f.name,
+        severity: f.severity,
+        passed: f.passed,
+        message: f.message,
         category: 'governance',
       });
     }
@@ -264,9 +277,11 @@ export function buildPublishPayload(data: PublishScanData, toolVersion: string, 
   }
   const { score: localRawScore } = calculateSecurityScore(findings);
   const { score: localScore, clamped: localClamped } = clampScoreToVerdictBand(localRawScore, findings);
-  const rawScore = settled ? (settled.rawScore ?? settled.score) : localRawScore;
-  const score = settled ? settled.score : localScore;
-  const scoreClamped = settled ? (settled.scoreClamped ?? false) : localClamped;
+  // A SOUL run's score is the one it printed, not one computed here from its
+  // controls (a calculation over no findings published 100 for a run at 3).
+  const rawScore = settled ? (settled.rawScore ?? settled.score) : data.runScore ? data.runScore.rawScore : localRawScore;
+  const score = settled ? settled.score : data.runScore ? data.runScore.score : localScore;
+  const scoreClamped = settled ? (settled.scoreClamped ?? false) : data.runScore ? data.runScore.scoreClamped : localClamped;
   const failedCritical = settled ? settled.counts.critical : findings.filter(f => !f.passed && f.severity === 'critical').length;
   const failedHigh = settled ? settled.counts.high : findings.filter(f => !f.passed && f.severity === 'high').length;
   const failedMedium = settled ? settled.counts.medium : findings.filter(f => !f.passed && f.severity === 'medium').length;

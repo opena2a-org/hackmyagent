@@ -105,6 +105,17 @@ function computeVerdict(findings: SecurityFinding[]): string {
   return 'pass';
 }
 
+/** The package an event names: its name, and the ecosystem and version read from `directory`. */
+export function eventPackage(packageName: string, directory: string): { name: string; version?: string; ecosystem: string } {
+  const ecosystem = detectEcosystem(directory);
+  const version = detectPackageVersion(directory, ecosystem);
+  return {
+    name: packageName,
+    version: version || undefined,
+    ecosystem,
+  };
+}
+
 /**
  * Build a ContributionEvent from HMA scan findings.
  *
@@ -126,20 +137,15 @@ export function buildScanEvent(
   durationMs: number,
   settled?: SettledOutcome,
   completedChecks?: number,
+  // The time of the scan. Absent, the event is stamped when it is built.
+  timestamp: string = new Date().toISOString(),
 ): ContributionEvent {
-  const ecosystem = detectEcosystem(directory);
-  const version = detectPackageVersion(directory, ecosystem);
-
   const base = {
     type: 'scan_result' as const,
     tool: 'hackmyagent',
     toolVersion: VERSION,
-    timestamp: new Date().toISOString(),
-    package: {
-      name: packageName,
-      version: version || undefined,
-      ecosystem,
-    },
+    timestamp,
+    package: eventPackage(packageName, directory),
   };
 
   if (settled) {

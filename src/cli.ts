@@ -390,7 +390,7 @@ import {
   type ReadFailureRecord,
 } from './check/verdict';
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
-import { isLocalGitRemote, scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from './check/url-userinfo';
+import { withoutUrlUserinfo } from './check/url-userinfo';
 import { formatRegistryDeps } from './check/registry-deps';
 import { FIX_LINES } from './hardening/fix-lines';
 import {
@@ -467,7 +467,7 @@ import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { attachSuppressedLocations, clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, locateSuppressed, retainForVerdict, summarizeSuppressed, type MeasuredFinding, type SuppressedLocation } from './ui/verdict-band';
 import { refilterAfterLateSemanticMerge, refilterAfterSemanticMerge } from './hardening/semantic-refilter';
-import { gateSet, deepScanIncomplete, deepScanNotRunLines, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, wireStatus, type SettledOutcome } from './hardening/settled-outcome';
+import { gateSet, deepScanIncomplete, deepScanNotRunLines, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed } from './hardening/settled-outcome';
 import { shouldPrintVersionFooter, watchStreamWrites } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -507,11 +507,32 @@ import {
   probeReachability,
   settledSourceWarning,
   buildEvidence,
-  buildPatchBody,
   EVIDENCE_GATED_STATUS,
   type StubRefusal,
   type StubEvidence,
 } from './registry/stub-writeback';
+import {
+  PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES,
+  attackCommunityReport,
+  attackPublishSubmission,
+  attackVersionReport,
+  checkSharePayload,
+  checkShareSubmission,
+  ciScanSubmission,
+  detectContributionEvent,
+  narrativeSubmission,
+  queuedShareResend,
+  resolvePackageName,
+  resolvePackageVersion,
+  secureCommunityReport,
+  securePublishSubmission,
+  secureContributionEvent,
+  secureVersionReport,
+  soulContributionEvent,
+  soulPublishSubmission,
+  stubTransitionBody,
+  usageEvent,
+} from './registry/submissions';
 import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers';
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
@@ -5167,76 +5188,6 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
   console.log(`Spec: https://oasb.ai/oasb-1\n`);
 }
 
-// Package name resolution for community registry reporting
-function resolvePackageName(targetDir: string): string | null {
-  try {
-    const pkg = JSON.parse(require('fs').readFileSync(require('path').join(targetDir, 'package.json'), 'utf-8'));
-    if (pkg.name) return pkg.name;
-  } catch { /* ignore */ }
-  // Fallback: use directory name, resolving "." to the actual directory name
-  const path = require('path');
-  const resolved = path.resolve(targetDir);
-  const name = path.basename(resolved);
-  // Skip names that are clearly not package names
-  return name && name !== '.' && name !== '..' ? name : null;
-}
-
-function resolvePackageVersion(targetDir: string): string | null {
-  try {
-    const pkg = JSON.parse(require('fs').readFileSync(require('path').join(targetDir, 'package.json'), 'utf-8'));
-    if (pkg.version) return pkg.version;
-  } catch { /* ignore */ }
-  return null;
-}
-
-/**
- * Resolve package name from pyproject.toml (Python projects).
- */
-function resolvePackageNamePyproject(targetDir: string): string | null {
-  try {
-    const content = require('fs').readFileSync(require('path').join(targetDir, 'pyproject.toml'), 'utf-8');
-    const nameMatch = content.match(/\[project\][\s\S]*?name\s*=\s*"([^"]+)"/);
-    if (nameMatch) return nameMatch[1];
-    const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?name\s*=\s*"([^"]+)"/);
-    if (poetryMatch) return poetryMatch[1];
-  } catch { /* ignore */ }
-  return null;
-}
-
-/**
- * Resolve package version from pyproject.toml (Python projects).
- */
-function resolvePackageVersionPyproject(targetDir: string): string | null {
-  try {
-    const content = require('fs').readFileSync(require('path').join(targetDir, 'pyproject.toml'), 'utf-8');
-    const versionMatch = content.match(/\[project\][\s\S]*?version\s*=\s*"([^"]+)"/);
-    if (versionMatch) return versionMatch[1];
-    const poetryMatch = content.match(/\[tool\.poetry\][\s\S]*?version\s*=\s*"([^"]+)"/);
-    if (poetryMatch) return poetryMatch[1];
-  } catch { /* ignore */ }
-  return null;
-}
-
-/**
- * Resolve the repository URL from the git remote 'origin', without the user
- * name and password (or token) a CI checkout often writes into it: the URL is
- * published to the registry. An origin that is a path on this machine names
- * no repository the registry can link to, so it yields no URL either.
- */
-function resolveRepoUrl(targetDir: string): { url: string | null; localPath: boolean } {
-  try {
-    const { execSync } = require('child_process');
-    const url = execSync('git remote get-url origin', {
-      cwd: targetDir,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
-    if (url && isLocalGitRemote(url)) return { url: null, localPath: true };
-    if (url) return { url: withoutUrlUserinfo(url, 'git'), localPath: false };
-  } catch { /* ignore */ }
-  return { url: null, localPath: false };
-}
-
 /**
  * Handle community contribution after a scan completes.
  *
@@ -5244,8 +5195,11 @@ function resolveRepoUrl(targetDir: string): { url: string | null; localPath: boo
  *   1. --contribute / --no-contribute CLI flags (highest priority)
  *   2. ~/.opena2a/config.json contribute.enabled setting
  *
- * If contributing, queues an anonymized event to ~/.opena2a/contribute-queue.json
- * (compatible with @opena2a/contribute format) and flushes when threshold reached.
+ * If contributing, queues the event `buildEvent` returns (a builder in
+ * src/registry/submissions.ts, over the run's own result) to
+ * ~/.opena2a/contribute-queue.json (compatible with @opena2a/contribute
+ * format) and flushes when threshold reached. A builder that returns null
+ * (no package name, no result to describe) contributes nothing.
  *
  * Also records the scan and shows a delayed consent tip after the 3rd scan
  * if the user hasn't opted in or dismissed.
@@ -5256,25 +5210,14 @@ function resolveRepoUrl(targetDir: string): { url: string | null; localPath: boo
  */
 async function handleContribution(
   contributeFlag: boolean | undefined,
-  targetDir: string,
-  findings: SecurityFinding[],
-  durationMs: number,
+  buildEvent: () => import('./telemetry').ContributionEvent | null,
   registryUrl?: string,
   format?: string,
-  // #464/#519 — the `secure` sites pass their settled record; the event's
-  // figures then come from it, never from a recount of `findings`. The
-  // scan-soul and detect callers have no settled `secure` record and keep
-  // the legacy derivation, scoped to them inside `buildScanEvent`.
-  settled?: SettledOutcome,
-  // Completed check executions from the run's coverage record; omitted when
-  // the run kept none (the event then omits `totalChecks`, #519).
-  completedChecks?: number,
 ): Promise<void> {
   try {
     const {
       isContributeEnabled,
       recordScanAndMaybeShowTip,
-      buildScanEvent,
       queueAndMaybeFlush,
     } = await import('./telemetry');
 
@@ -5302,10 +5245,8 @@ async function handleContribution(
     if (!shouldContribute) return;
 
     // Build and queue contribution event (non-blocking, flushes at threshold)
-    const packageName = resolvePackageName(targetDir);
-    if (!packageName) return;
-
-    const event = buildScanEvent(packageName, targetDir, findings, durationMs, settled, completedChecks);
+    const event = buildEvent();
+    if (!event) return;
     await queueAndMaybeFlush(event, registryUrl, format === 'text');
     // Silent-post-consent rule (scan-result telemetry policy §5):
     // once the user has opted in (--contribute or persisted choice),
@@ -5314,43 +5255,6 @@ async function handleContribution(
   } catch {
     // Non-fatal: contribution failure must never crash the scan
   }
-}
-
-/**
- * Handle community contribution for scan-soul results.
- *
- * Converts SoulScanResult controls into SecurityFinding-like objects
- * for the contribution module, then delegates to handleContribution.
- */
-async function handleSoulContribution(
-  contributeFlag: boolean | undefined,
-  targetDir: string,
-  result: SoulScanResult,
-  durationMs: number,
-  registryUrl?: string,
-  format?: string,
-): Promise<void> {
-  // Convert soul controls into SecurityFinding-shaped objects.
-  // A draft accumulator: these are emitted at the `handleContribution` call
-  // below, which publishes them to the Registry.
-  const findings: SecurityFindingDraft[] = [];
-  for (const domain of result.domains) {
-    if (domain.skippedByProfile || domain.skippedByTier) continue;
-    for (const ctrl of domain.controls) {
-      findings.push({
-        checkId: ctrl.id,
-        name: ctrl.name,
-        description: '',
-        category: domain.domain,
-        severity: 'medium' as Severity,
-        passed: ctrl.passed,
-        message: '',
-        fixable: false,
-      });
-    }
-  }
-
-  await handleContribution(contributeFlag, targetDir, emitFindings(findings), durationMs, registryUrl, format);
 }
 
 program
@@ -5933,6 +5837,8 @@ Backups (--fix):
         },
       });
       const scanDurationMs = Date.now() - scanStartMs;
+      // The end of the scan: what a report of this run is dated with.
+      const scanEndedAt = new Date(scanStartMs + scanDurationMs);
       // A single-file target withheld before the scan joins the scan's own
       // withheld links, so every channel below discloses it the same way.
       if (singleFileWithheld) {
@@ -6627,14 +6533,8 @@ Backups (--fix):
           try {
             const { publishScanResults } = await import('./registry/publish');
             const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-            const packageName = resolvePackageName(displayDir);
-            if (packageName) {
-              const publishData = {
-                packageName,
-                packageVersion: resolvePackageVersion(displayDir) ?? undefined,
-                directory: displayDir,
-                hardeningFindings: result.findings,
-              };
+            const publishData = securePublishSubmission(displayDir, result);
+            if (publishData) {
               const publishResult = await publishScanResults(publishData, registryUrl, settled);
               publishStatus = { ...publishResult, registryUrl };
 
@@ -6643,14 +6543,7 @@ Backups (--fix):
               // something to render. Failure is non-fatal — never blocks publish.
               try {
                 const { wireNarrativePublish } = await import('./narrative/wire-publish');
-                const narrativeStatus = await wireNarrativePublish({
-                  targetDir,
-                  packageName,
-                  packageVersion: publishData.packageVersion ?? '0.0.0',
-                  findings: result.findings,
-                  projectType: result.projectType,
-                  registryUrl,
-                });
+                const narrativeStatus = await wireNarrativePublish(narrativeSubmission(targetDir, publishData, result, registryUrl));
                 publishStatus = { ...publishStatus, narrative: narrativeStatus };
               } catch (nErr: unknown) {
                 const nMsg = nErr instanceof Error ? nErr.message : 'unknown error';
@@ -6718,8 +6611,7 @@ Backups (--fix):
             withheldOutbound.push('contribution');
           }
         } else {
-          await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format, settled,
-            result.coverage?.executions ? result.coverage.executions.filter((e) => e.completed).length : undefined);
+          await handleContribution(options.contribute, () => secureContributionEvent(targetDir, result, settled, scanDurationMs), options.registryUrl, format);
         }
         printWithheldLine();
         // `--fail-below` is settled once at the settlement point above (#494);
@@ -7081,23 +6973,18 @@ Backups (--fix):
             }
             const atcToken = process.env.ATC_TOKEN;
             const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
-            const payload = core.buildScanReport(options.versionId, result.findings, settled);
-            await client.reportScanResult(payload);
+            await client.reportScanResult(secureVersionReport(options.versionId, result, settled, scanEndedAt));
             console.log(`Registry: scan results reported for version ${options.versionId}`);
-          } else if (typeof core.buildCommunityReport === 'function') {
+          } else {
             // Community path: request scan token, then submit results
             const client = new core.RegistryClient({ registryUrl, apiKey: '' });
-            const packageName = resolvePackageName(displayDir);
-            if (packageName) {
-              const packageVersion = resolvePackageVersion(displayDir);
+            const submission = secureCommunityReport(displayDir, result, settled, scanEndedAt);
+            if (submission) {
               const tokenResp = typeof client.requestScanToken === 'function'
-                ? await client.requestScanToken(packageName, { version: packageVersion ?? undefined })
+                ? await client.requestScanToken(submission.packageName, submission.tokenOptions)
                 : null;
-              const payload = core.buildCommunityReport(packageName, result.findings, {
-                version: packageVersion ?? undefined,
-              }, settled);
               const resp = typeof client.reportCommunityResult === 'function'
-                ? await client.reportCommunityResult(payload, tokenResp?.scanToken)
+                ? await client.reportCommunityResult(submission.report, tokenResp?.scanToken)
                 : { status: 'skipped' };
               if (resp.status === 'accepted') {
                 console.log('Registry: scan shared with OpenA2A community');
@@ -7127,21 +7014,14 @@ Backups (--fix):
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = resolvePackageName(displayDir);
+          const publishData = securePublishSubmission(displayDir, result);
 
-          if (!packageName) {
+          if (!publishData) {
             console.error('\nCould not determine package name. Publish requires a package.json with a name field.');
           } else {
             if (format === 'text') {
               console.log('\nPublishing results to registry...\n');
             }
-
-            const publishData = {
-              packageName,
-              packageVersion: resolvePackageVersion(displayDir) ?? undefined,
-              directory: displayDir,
-              hardeningFindings: result.findings,
-            };
 
             // The settled record rides here too — the adversarial round
             // caught this arm recomputing while the json arm read (#464).
@@ -7158,14 +7038,7 @@ Backups (--fix):
             // Failure is non-fatal — only logged in verbose mode.
             try {
               const { wireNarrativePublish } = await import('./narrative/wire-publish');
-              const narrativeStatus = await wireNarrativePublish({
-                targetDir,
-                packageName,
-                packageVersion: publishData.packageVersion ?? '0.0.0',
-                findings: result.findings,
-                projectType: result.projectType,
-                registryUrl,
-              });
+              const narrativeStatus = await wireNarrativePublish(narrativeSubmission(targetDir, publishData, result, registryUrl));
               if (options.verbose && narrativeStatus.attempted) {
                 console.error(`Narrative: ${narrativeStatus.artifactType} → ${narrativeStatus.result?.ok ? (narrativeStatus.result.cached ? 'cached' : 'published') : 'failed'}`);
               }
@@ -7198,72 +7071,24 @@ Backups (--fix):
 
         try {
           const { RegistryClient } = await import('./registry/client');
-          const { computeTreeHash } = await import('./registry/publish');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = resolvePackageName(displayDir) || resolvePackageNamePyproject(displayDir);
-          const packageVersion = resolvePackageVersion(displayDir) || resolvePackageVersionPyproject(displayDir);
-          const origin = resolveRepoUrl(targetDir);
-          const repoUrl = origin.url;
+          const ci = ciScanSubmission(displayDir, targetDir, result, settled, scanDepth, scanEndedAt, hmacSecret!);
 
-          if (!packageName) {
+          if (ci.kind === 'no-package-name') {
             console.error('\nCould not determine package name from package.json or pyproject.toml.');
-          } else if (origin.localPath) {
+          } else if (ci.kind === 'local-origin') {
             console.error('\nThe git remote origin is a local path, not a repository URL, so the CI scan result was not sent.');
             console.error('Check it with: git remote get-url origin');
             console.error('Set it to the repository URL: git remote set-url origin https://<host>/<org>/<repo>.git');
-          } else if (!repoUrl) {
+          } else if (ci.kind === 'no-repo-url') {
             console.error('\nCould not determine repo URL from git remote. Ensure a git remote is configured.');
           } else {
-            // Compute CAAT tree hash
-            let contentHash = '';
-            try {
-              contentHash = computeTreeHash(targetDir);
-            } catch {
+            if (ci.treeHashFailed) {
               console.error('Warning: Could not compute tree hash. Using empty hash.');
             }
-
-            // #464 — the counts and status READ the settled record. This
-            // very block derived them from the narrowed `result.findings`
-            // (a suppressed row cannot even appear there, #450), which
-            // published `status: passed, counts all 0` for a run that
-            // displayed 49 findings and exited 1.
-            const counts = settled.counts;
-            const status = wireStatus(settled);
-
             const client = new RegistryClient({ registryUrl, apiKey: '' });
-            const scanId = `hma-ci-${Date.now()}`;
-
-            // Get scanner version from package.json
-            let scannerVersion = 'unknown';
-            try {
-              const hmaPackagePath = require('path').resolve(__dirname, '../package.json');
-              scannerVersion = require(hmaPackagePath).version || 'unknown';
-            } catch { /* ignore */ }
-
-            const ciResult = await client.submitCIScanResult({
-              packageName,
-              packageType: undefined,
-              version: packageVersion ?? undefined,
-              repoUrl,
-              scanId,
-              status,
-              criticalCount: counts.critical,
-              highCount: counts.high,
-              mediumCount: counts.medium,
-              lowCount: counts.low,
-              contentHash,
-              scannerVersion,
-              hmacSecret,
-              rawReport: {
-                generator: 'hackmyagent',
-                totalFindings: result.findings.length,
-                failedFindings: counts.critical + counts.high + counts.medium + counts.low,
-                scanDepth,
-                // #464 — the settled record rides as ONE object built from
-                // the in-memory record (carried, not yet persisted server-side).
-                settledOutcome: settled,
-              },
-            });
+            const scanId = ci.params.scanId;
+            const ciResult = await client.submitCIScanResult(ci.params);
 
             if (format === 'text') {
               console.log(`\nCI scan result submitted to registry.`);
@@ -7288,8 +7113,7 @@ Backups (--fix):
         }
         printWithheldLine();
       } else {
-        await handleContribution(options.contribute, targetDir, result.findings, scanDurationMs, options.registryUrl, format, settled,
-          result.coverage?.executions ? result.coverage.executions.filter((e) => e.completed).length : undefined);
+        await handleContribution(options.contribute, () => secureContributionEvent(targetDir, result, settled, scanDurationMs), options.registryUrl, format);
       }
 
       // Star prompt (interactive TTY only, text format only)
@@ -9022,13 +8846,13 @@ Examples:
       }
       // The registry gets the target URL without its userinfo, query string
       // and fragment (a key passed to the endpoint lives in the query), the
-      // same name on every path, in the report's `target` too.
-      const registryTargetName = withoutUrlQueryAndFragment(withoutUrlUserinfo(target.url || targetUrl || 'unknown', 'fetch'));
+      // same name on every path, in the report's `target` too
+      // (src/registry/submissions.ts, attackTargetName).
+      const registryTarget = target.url || targetUrl || 'unknown';
       if (shouldReport) {
         try {
           const core = await import('./index');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const registryReport = { ...report, target: withoutUrlQueryAndFragment(withoutUrlUserinfo(report.target, 'fetch')) };
 
           if (options.versionId) {
             // Authenticated path: existing behavior (version-id + API key)
@@ -9039,19 +8863,17 @@ Examples:
             }
             const atcToken = process.env.ATC_TOKEN;
             const client = new core.RegistryClient({ registryUrl, apiKey: registryKey, atcToken });
-            const payload = core.buildAttackReport(options.versionId, registryReport);
-            await client.reportScanResult(payload);
+            await client.reportScanResult(attackVersionReport(options.versionId, report));
             console.log(`Registry: attack results reported for version ${options.versionId}`);
-          } else if (typeof core.buildCommunityAttackReport === 'function') {
+          } else {
             // Community path: request scan token, then submit results
             const client = new core.RegistryClient({ registryUrl, apiKey: '' });
-            const packageName = registryTargetName;
+            const submission = attackCommunityReport(report, registryTarget);
             const tokenResp = typeof client.requestScanToken === 'function'
-              ? await client.requestScanToken(packageName)
+              ? await client.requestScanToken(submission.packageName, submission.tokenOptions)
               : null;
-            const payload = core.buildCommunityAttackReport(packageName, registryReport);
             const resp = typeof client.reportCommunityResult === 'function'
-              ? await client.reportCommunityResult(payload, tokenResp?.scanToken)
+              ? await client.reportCommunityResult(submission.report, tokenResp?.scanToken)
               : { status: 'skipped' };
             if (resp.status === 'accepted') {
               console.log('Registry: attack results shared with OpenA2A community');
@@ -9081,20 +8903,14 @@ Examples:
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const regUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = registryTargetName;
 
           if (format === 'text') {
             console.log('\nPublishing results to registry...\n');
           }
 
-          // No `directory`: the target is a URL, and the publish path hashes
-          // the directory it is given as the content hash of what was scanned.
-          // The shell's working directory is not that, so the payload for a
-          // remote target carries no tree hash.
-          const publishData = {
-            packageName,
-            attackReport: report,
-          };
+          // No `directory` (src/registry/submissions.ts): the target is a URL,
+          // so the payload for a remote target carries no tree hash.
+          const publishData = attackPublishSubmission(report, registryTarget);
 
           const publishResult = await publishScanResults(publishData, regUrl);
           if (format === 'text') {
@@ -11089,6 +10905,8 @@ Examples:
         process.stderr.write(`\r${' '.repeat(52)}\r`);
       }
       const soulScanDurationMs = Date.now() - soulScanStartMs;
+      // The time of the scan: what its publish and its contribution carry.
+      const soulScanStartedAt = new Date(soulScanStartMs);
 
       // Links `findGovernanceFile` refused to follow because they resolve
       // outside the scanned tree. A policy skip, not a failure: announced on
@@ -11269,14 +11087,8 @@ Examples:
           try {
             const { publishScanResults } = await import('./registry/publish');
             const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-            const packageName = resolvePackageName(targetDir);
-            if (packageName) {
-              const publishData = {
-                packageName,
-                packageVersion: resolvePackageVersion(targetDir) ?? undefined,
-                directory: targetDir,
-                soulResult: result,
-              };
+            const publishData = soulPublishSubmission(targetDir, result, soulScanStartedAt);
+            if (publishData) {
               const publishResult = await publishScanResults(publishData, registryUrl);
               publishStatus = { ...publishResult, registryUrl };
             } else {
@@ -11315,7 +11127,7 @@ Examples:
         const jsonBaseSoul = { ...result, withheldLinks: soulWithheldLinks, ...soulGateJson };
         const jsonOutput = publishStatus ? { ...jsonBaseSoul, publish: publishStatus } : jsonBaseSoul;
         writeJsonStdout(jsonOutput);
-        await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, 'json');
+        await handleContribution(options.contribute, () => soulContributionEvent(targetDir, result, soulScanDurationMs, soulScanStartedAt), options.registryUrl, 'json');
         // #251 adversarial F3: the text path gates the --ci exit on
         // governance violations / profile HIGHs, but the JSON path
         // returned before reaching it — `scan-soul --json --ci` exited 0
@@ -11758,21 +11570,14 @@ Examples:
         try {
           const { publishScanResults, formatPublishOutput } = await import('./registry/publish');
           const registryUrl = validateRegistryUrl(options.registryUrl || process.env.REGISTRY_URL || 'https://api.oa2a.org');
-          const packageName = resolvePackageName(targetDir);
+          const publishData = soulPublishSubmission(targetDir, result, soulScanStartedAt);
 
-          if (!packageName) {
+          if (!publishData) {
             process.stderr.write('Could not determine package name. Publish requires a package.json with a name field.\n');
           } else {
             if (!options.json) {
               process.stdout.write('Publishing results to registry...\n\n');
             }
-
-            const publishData = {
-              packageName,
-              packageVersion: resolvePackageVersion(targetDir) ?? undefined,
-              directory: targetDir,
-              soulResult: result,
-            };
 
             const publishResult = await publishScanResults(publishData, registryUrl);
             if (!options.json) {
@@ -11789,7 +11594,7 @@ Examples:
 
       // Community contribution: share anonymized findings with OpenA2A Registry
       const soulFormat = options.json ? 'json' : 'text';
-      await handleSoulContribution(options.contribute, targetDir, result, soulScanDurationMs, options.registryUrl, soulFormat);
+      await handleContribution(options.contribute, () => soulContributionEvent(targetDir, result, soulScanDurationMs, soulScanStartedAt), options.registryUrl, soulFormat);
 
       // #390 — the reason on stderr, on every TEXT channel.
       //
@@ -13317,6 +13122,7 @@ Examples:
     // with secure/scan-soul). Outside CI the flag falls through to config.
     if (globalCiMode && options.contribute === undefined) options.contribute = false;
     const { detect: runDetect } = await import('./scanner/detect.js');
+    let detected: { result: import('./scanner/detect.js').DetectResult; scanMs: number } | undefined;
     const exitCode = await runDetect({
       targetDir,
       ci:        globalCiMode,
@@ -13325,16 +13131,18 @@ Examples:
       exportCsv: options.exportCsv,
       depth,
       workspace: options.workspace,
+      onResult:  (result, scanMs) => { detected = { result, scanMs }; },
     });
 
     // Wire detect scans into the community contribution pipeline.
     // Detect findings are agent/MCP/governance posture — relevant data for the registry.
     // Honors --contribute / --no-contribute (release-test P2); otherwise respects global config.
+    // The event is built from the run's own result; a run that reported no
+    // single-project result (a workspace listing, an unreadable target)
+    // contributes nothing.
     await handleContribution(
       options.contribute,
-      targetDir,
-      [],             // detect doesn't produce SecurityFinding[]; summary goes via contribute metadata
-      0,
+      () => detectContributionEvent(targetDir, detected?.result, detected?.scanMs ?? 0),
       undefined,
       options.json ? 'json' : 'text',
     );
@@ -13760,7 +13568,7 @@ Examples:
       evidence = buildEvidence(String(checkId), opts.sourceCommit!);
     }
 
-    const body = buildPatchBody({ status, reason: opts.reason, evidence });
+    const body = stubTransitionBody(status, opts.reason, evidence);
 
     if (opts.dryRun) {
       if (opts.json) {
@@ -14177,9 +13985,9 @@ async function flushPendingScans(): Promise<void> {
 
   const remaining: PendingScan[] = [];
   for (const queued of resendable) {
-    // A scan queued under a name with a git URL's user name and password is
-    // sent, and kept, under the name without them.
-    const scan = { ...queued, name: scanNameWithoutUserinfo(queued.name) };
+    // A scan queued under a name with a git URL's user name and password, or
+    // its query string, is sent, and kept, under the name without them.
+    const scan = queuedShareResend(queued);
     const ok = await publishToRegistry(scan);
     if (!ok) remaining.push(scan);
   }
@@ -14333,43 +14141,8 @@ function isScanStale(lastScannedAt?: string): boolean {
 }
 
 /**
- * The submission `check` sends to the community registry for a scan. A
- * publish that fails queues this same object (queuePendingScan), so the retry
- * sends what the first attempt sent.
- */
-function checkScanSubmission(
-  name: string,
-  result: { score: number; maxScore: number; projectType: string; findings: SecurityFinding[] },
-): PendingScan {
-  assertRedactionProvenance(result.findings, 'registry-publish-scan');
-  return {
-    name,
-    score: result.score,
-    maxScore: result.maxScore,
-    projectType: result.projectType,
-    toolVersion: VERSION,
-    findings: result.findings
-      .filter(f => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
-      // #458 — result.findings holds measured records only (the render filter in
-      // scanner.ts drops a not-applicable record, which has no pass/fail state
-      // and no severity); this narrows the type to say both and drops nothing:
-      // the parity test pins it.
-      .filter((f): f is MeasuredFinding & { passed: boolean } => typeof f.passed === 'boolean' && f.severity !== undefined)
-      .map(f => ({
-        checkId: f.checkId,
-        name: f.name,
-        severity: f.severity,
-        passed: f.passed,
-        message: f.message,
-        category: f.category,
-      })),
-    scanTimestamp: new Date().toISOString(),
-  };
-}
-
-/**
  * Publish a scan to the community registry: a new one from
- * checkScanSubmission, or a queued one being sent again.
+ * checkShareSubmission, or a queued one being sent again.
  */
 async function publishToRegistry(scan: PendingScan): Promise<boolean> {
   try {
@@ -14379,16 +14152,7 @@ async function publishToRegistry(scan: PendingScan): Promise<boolean> {
       userAgent: `hackmyagent/${VERSION}`,
       cache: false,
     });
-    await client.publishScan({
-      name: scan.name,
-      score: scan.score,
-      maxScore: scan.maxScore,
-      projectType: scan.projectType,
-      tool: 'hackmyagent',
-      toolVersion: scan.toolVersion,
-      findings: scan.findings,
-      scanTimestamp: scan.scanTimestamp,
-    });
+    await client.publishScan(checkSharePayload(scan));
     return true;
   } catch {
     return false;
@@ -14426,21 +14190,6 @@ function getFullScanHint(): string {
   return fullScanCommand(CLI_PREFIX);
 }
 
-/**
- * Categories that describe local dev-environment setup, not package security.
- * Findings in these categories are filtered from display when scanning a
- * *downloaded* package (npm pack, pip download, git clone to temp dir).
- * They remain visible when scanning a user's own project directory.
- */
-const PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES = new Set([
-  'git',
-  'permissions',
-  'environment',
-  'logging',
-  'claude-code',
-  'cursor',
-  'vscode',
-]);
 
 /**
  * Paths that are AI tooling artifacts, not package source code.
@@ -15152,7 +14901,7 @@ async function checkGitHubRepo(
       const tip = recordScanAndContributeTip(process.stdout.isTTY === true);
       if (tip) process.stdout.write(tip + '\n');
       if (isContributeEnabled()) {
-        await shareCheckScan(checkScanSubmission(displayName, result));
+        await shareCheckScan(checkShareSubmission(displayName, result));
       }
     }
 
@@ -15799,7 +15548,7 @@ async function checkRawUrl(
     // downloaded file is not shared (#1123).
     if (isGitUrl && process.stdin.isTTY && !globalCiMode) {
       if (isContributeEnabled()) {
-        await shareCheckScan(checkScanSubmission(displayName, result));
+        await shareCheckScan(checkShareSubmission(displayName, result));
       }
     }
 
@@ -16090,7 +15839,7 @@ async function checkNpmPackage(
       if (tip) process.stdout.write(tip + '\n');
       if (isContributeEnabled()) {
         // Auto-share silently, queue on failure
-        await shareCheckScan(checkScanSubmission(name, result));
+        await shareCheckScan(checkShareSubmission(name, result));
       }
     }
 
@@ -16364,17 +16113,14 @@ async function checkNpmPackage(
   // the only thing that knows how to build the event; `recordTelemetry` owns
   // when it fires and how long anyone waits for it.
   postTelemetry = async (name, startedAt, exitCode, reason) => {
-    await tele.track(name, {
-      // Exit 1 normally means "findings were detected and the command did its
-      // job", which is the security-tool convention `successFromExitCode`
-      // encodes. The exceptions are the commands whose exit 1 means "I did not
-      // do my job"; EXIT1_IS_FAILURE is the authoritative list (its entries
-      // carry the per-command reasoning — #350, #362). A reason from the
-      // settlement site outranks both (#350's remainder): the closed static
-      // vocabulary in command-success.ts, never derived from arguments.
-      success: commandSucceeded(name, exitCode, tele.successFromExitCode, reason),
-      durationMs: Date.now() - startedAt,
-    });
+    // Exit 1 normally means "findings were detected and the command did its
+    // job", which is the security-tool convention `successFromExitCode`
+    // encodes. The exceptions are the commands whose exit 1 means "I did not
+    // do my job"; EXIT1_IS_FAILURE is the authoritative list (its entries
+    // carry the per-command reasoning — #350, #362). A reason from the
+    // settlement site outranks both (#350's remainder): the closed static
+    // vocabulary in command-success.ts, never derived from arguments.
+    await tele.track(name, usageEvent(commandSucceeded(name, exitCode, tele.successFromExitCode, reason), startedAt, Date.now()));
   };
 
   // Telemetry subcommand: inspect or toggle usage telemetry.
