@@ -30,7 +30,7 @@ import {
   readEnrollmentRecord,
   type SignatureTelemetryConfig,
 } from '../index';
-import { invocation } from './invocation';
+import { invocation, scriptNote } from './invocation';
 
 const args = process.argv.slice(2);
 const command = args[0];
@@ -339,7 +339,7 @@ async function telemetryCommand(): Promise<void> {
     case '--help':
     case '-h':
       console.log(`
-  ${PROG} telemetry <subcommand>
+  ${PROG} telemetry <subcommand>${scriptNoteBlock('  ')}
 
     status        Show telemetry state, sensor identity, and send counts
     register      Enroll this sensor with the registry (pending admin approval)
@@ -507,12 +507,19 @@ function optOutReason(tcfg?: SignatureTelemetryConfig): string {
   return `local opt-out marker (${PROG} telemetry opt-in to clear)`;
 }
 
+// Under a usage line: what <script> stands for, when invocation() printed it
+// in place of the path (see ./invocation). Empty when it printed the path.
+function scriptNoteBlock(indent: string): string {
+  const lines = scriptNote(PROG);
+  return lines.length ? `\n\n${lines.map((l) => indent + l).join('\n')}` : '';
+}
+
 function showHelp(): void {
   console.log(`
   ARP Guard v${VERSION} — Agent Runtime Protection
 
   USAGE
-    ${PROG} <command> [options]
+    ${PROG} <command> [options]${scriptNoteBlock('    ')}
 
   COMMANDS
     start [--config <path>]   Start monitoring the agent
