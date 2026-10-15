@@ -50,7 +50,7 @@ import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One definition of which file each MCP client loads and which top-level key
 // it loads from, shared with the command that WRITES those files (#757,
 // HMA-71), so the writer and these readers cannot disagree on either.
-import { MCP_SERVER_MAP_KEYS, VSCODE_CLIENT } from '../mcp-clients';
+import { mcpServerEntries, VSCODE_CLIENT } from '../mcp-clients';
 // One vocabulary with `detect`'s permission-grant rule (#363, #364), so the two
 // commands cannot disagree in direction on the same `.claude/settings.json`.
 import { walkConfigForGrants } from '../scanner/permission-vocabulary';
@@ -784,6 +784,38 @@ async function readCheckSubject(filePath: string): Promise<SubjectRead> {
  */
 function serverArgs(server: { args?: unknown }): string[] {
   return Array.isArray(server.args) ? server.args.filter((a): a is string => typeof a === 'string') : [];
+}
+
+/**
+ * Whether a server name carries `term` as whole words (#669). The name and the
+ * term are lower-cased and split on every run of non-alphanumerics, and the
+ * term's words must appear consecutively: `execute-shell` carries `shell`,
+ * `run_command` carries `run_command`, and `filesystem` does not carry
+ * `system`. A substring test read every `filesystem` server as `system`.
+ */
+function serverNameHasTerm(name: string, term: string): boolean {
+  const words = (s: string): string[] => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const nameWords = words(name);
+  const termWords = words(term);
+  if (termWords.length === 0) return false;
+  for (let i = 0; i + termWords.length <= nameWords.length; i++) {
+    if (termWords.every((w, j) => nameWords[i + j] === w)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a server entry declares a tool whitelist (#669): `allowedTools` is a
+ * non-empty list of tool names and no name contains `*`. `["*"]` grants every
+ * tool, so it is not a whitelist.
+ */
+function serverHasToolWhitelist(server: { allowedTools?: unknown }): boolean {
+  const tools = server.allowedTools;
+  return (
+    Array.isArray(tools) &&
+    tools.length > 0 &&
+    tools.every((t) => typeof t === 'string' && t.length > 0 && !t.includes('*'))
+  );
 }
 
 /**
@@ -7211,7 +7243,7 @@ export class HardeningScanner {
       }
       // A document that parses to something other than an object (`null`,
       // a number, a string) has no servers to evaluate; treat it like an
-      // unparseable file rather than throwing on `config.servers`.
+      // unparseable file rather than throwing on its server map.
       if (!config || typeof config !== 'object' || Array.isArray(config)) {
         continue;
       }
@@ -7226,45 +7258,44 @@ export class HardeningScanner {
       // them. `.mcp.json` is keyed `mcpServers` — Claude Code's spelling, and
       // the one `init-mcp` writes there — so walking `servers` alone left a
       // live filesystem server scoped at `/` in a file the scan had already
-      // opened completely unreported.
-      for (const mapKey of MCP_SERVER_MAP_KEYS) {
-        const servers = config[mapKey];
-        if (!servers || typeof servers !== 'object' || Array.isArray(servers)) continue;
-        for (const [name, server] of Object.entries(servers as Record<string, { command?: string; args?: string[] }>)) {
-          // A server entry that is not an object (`null`, a string) carries
-          // no command or args to inspect.
-          if (!server || typeof server !== 'object') continue;
-          // Check for root filesystem access. `args` that is not a list
-          // declares no path (#869); the index is kept for the in-place fix.
-          if (Array.isArray(server.args)) {
-            const rootIndex = server.args.findIndex((arg: unknown) => arg === '/');
-            const homeIndex = server.args.findIndex((arg: unknown) => arg === '~');
+      // opened completely unreported. `mcpServerEntries` is the one reader
+      // of that key set, shared by the MCP, NET and TOOL checks that walk the
+      // servers of a root config (#669).
+      for (const [name, entry] of mcpServerEntries(config)) {
+        // A server entry that is not an object (`null`, a string) carries
+        // no command or args to inspect.
+        if (!entry || typeof entry !== 'object') continue;
+        const server = entry as { command?: string; args?: string[] };
+        // Check for root filesystem access. `args` that is not a list
+        // declares no path (#869); the index is kept for the in-place fix.
+        if (Array.isArray(server.args)) {
+          const rootIndex = server.args.findIndex((arg: unknown) => arg === '/');
+          const homeIndex = server.args.findIndex((arg: unknown) => arg === '~');
 
-            if (rootIndex !== -1 || homeIndex !== -1) {
-              hasRootAccess = true;
+          if (rootIndex !== -1 || homeIndex !== -1) {
+            hasRootAccess = true;
 
-              if (autoFix) {
-                // Replace "/" with "./data" and "~" with "./"
-                if (rootIndex !== -1) {
-                  server.args[rootIndex] = './data';
-                }
-                if (homeIndex !== -1) {
-                  server.args[homeIndex] = './';
-                }
-                mcp001Fixed = true;
+            if (autoFix) {
+              // Replace "/" with "./data" and "~" with "./"
+              if (rootIndex !== -1) {
+                server.args[rootIndex] = './data';
               }
+              if (homeIndex !== -1) {
+                server.args[homeIndex] = './';
+              }
+              mcp001Fixed = true;
             }
           }
+        }
 
-          // Check for unrestricted shell access
-          if (
-            name.includes('shell') ||
-            server.command?.includes('shell')
-          ) {
-            // Shell server without allowedCommands is dangerous
-            if (!serverArgs(server).some((arg) => arg.includes('allowed'))) {
-              hasUnrestrictedShell = true;
-            }
+        // Check for unrestricted shell access
+        if (
+          name.includes('shell') ||
+          server.command?.includes('shell')
+        ) {
+          // Shell server without allowedCommands is dangerous
+          if (!serverArgs(server).some((arg) => arg.includes('allowed'))) {
+            hasUnrestrictedShell = true;
           }
         }
       }
@@ -8583,13 +8614,11 @@ dist/
 
       // NET-001: Check for servers bound to 0.0.0.0
       let boundToAllInterfaces = false;
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (serverArgs(server).some((arg) => arg.includes('0.0.0.0'))) {
-            boundToAllInterfaces = true;
-            break;
-          }
+      for (const [, server] of mcpServerEntries(mcpConfig)) {
+        if (!server || typeof server !== 'object') continue;
+        if (serverArgs(server).some((arg) => arg.includes('0.0.0.0'))) {
+          boundToAllInterfaces = true;
+          break;
         }
       }
 
@@ -8620,13 +8649,12 @@ dist/
 
       // NET-002: Check for remote MCP servers without TLS
       let hasInsecureRemote = false;
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { url?: string }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (server.url && server.url.startsWith('http://')) {
-            hasInsecureRemote = true;
-            break;
-          }
+      for (const [, entry] of mcpServerEntries(mcpConfig)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const server = entry as { url?: string };
+        if (server.url && server.url.startsWith('http://')) {
+          hasInsecureRemote = true;
+          break;
         }
       }
 
@@ -8684,39 +8712,38 @@ dist/
       let hasHardcodedSecrets = false;
       let mcp003Fixed = false;
 
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { env?: Record<string, string> }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (server.env) {
-            for (const [key, value] of Object.entries(server.env)) {
-              // Check if value is a hardcoded secret (not a reference).
-              // #281 — the guard was `!value.includes('${')`, looser even than
-              // CRED-001's: ANY value containing `${` anywhere was exempt, so
-              // `"sk-ant-api03-<live> ${X}"` passed clean. Now each candidate
-              // match is tested for whether it sits outside a well-formed
-              // reference.
-              if (typeof value === 'string') {
-                for (const { pattern, envVar } of credPatterns) {
-                  if (hasCredentialOutsideEnvRef(value, pattern)) {
-                    hasHardcodedSecrets = true;
+      for (const [, entry] of mcpServerEntries(mcpConfig)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const server = entry as { env?: Record<string, string> };
+        if (server.env) {
+          for (const [key, value] of Object.entries(server.env)) {
+            // Check if value is a hardcoded secret (not a reference).
+            // #281 — the guard was `!value.includes('${')`, looser even than
+            // CRED-001's: ANY value containing `${` anywhere was exempt, so
+            // `"sk-ant-api03-<live> ${X}"` passed clean. Now each candidate
+            // match is tested for whether it sits outside a well-formed
+            // reference.
+            if (typeof value === 'string') {
+              for (const { pattern, envVar } of credPatterns) {
+                if (hasCredentialOutsideEnvRef(value, pattern)) {
+                  hasHardcodedSecrets = true;
 
-                    if (autoFix) {
-                      // Replace with env var reference
-                      server.env[key] = '${' + envVar + '}';
-                      mcp003Fixed = true;
-                    }
-                    break;
+                  if (autoFix) {
+                    // Replace with env var reference
+                    server.env[key] = '${' + envVar + '}';
+                    mcp003Fixed = true;
                   }
+                  break;
                 }
               }
             }
           }
         }
+      }
 
-        // Save fixed config
-        if (mcp003Fixed) {
-          mcp003Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(mcpConfig, null, 2), ['MCP-003']);
-        }
+      // Save fixed config
+      if (mcp003Fixed) {
+        mcp003Fixed = await this.applyFixWrite(cfg.path, JSON.stringify(mcpConfig, null, 2), ['MCP-003']);
       }
 
       // Only report if hardcoded secrets found
@@ -8740,16 +8767,15 @@ dist/
       // MCP-004: Check for default credentials
       const defaultPasswords = ['postgres', 'password', 'admin', 'root', '123456', 'default'];
       let hasDefaultCreds = false;
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (Array.isArray(server.args)) {
-            const argsStr = serverArgs(server).join(' ').toLowerCase();
-            for (const pwd of defaultPasswords) {
-              if (argsStr.includes(`password`) && argsStr.includes(pwd)) {
-                hasDefaultCreds = true;
-                break;
-              }
+      for (const [, entry] of mcpServerEntries(mcpConfig)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const server = entry as { args?: string[] };
+        if (Array.isArray(server.args)) {
+          const argsStr = serverArgs(server).join(' ').toLowerCase();
+          for (const pwd of defaultPasswords) {
+            if (argsStr.includes(`password`) && argsStr.includes(pwd)) {
+              hasDefaultCreds = true;
+              break;
             }
           }
         }
@@ -8774,13 +8800,12 @@ dist/
 
       // MCP-005: Check for wildcard tool access
       let hasWildcardTools = false;
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (server.allowedTools?.includes('*')) {
-            hasWildcardTools = true;
-            break;
-          }
+      for (const [, entry] of mcpServerEntries(mcpConfig)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const server = entry as { allowedTools?: string[] };
+        if (server.allowedTools?.includes('*')) {
+          hasWildcardTools = true;
+          break;
         }
       }
 
@@ -10852,16 +10877,15 @@ dist/
 
       // MCP-008: Check for localhost binding
       let allLocalhostBound = true;
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[]; url?: string }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (server.url && !server.url.includes('localhost') && !server.url.includes('127.0.0.1')) {
-            // Remote server is fine if using HTTPS
-            continue;
-          }
-          if (serverArgs(server).some((arg) => arg.includes('0.0.0.0'))) {
-            allLocalhostBound = false;
-          }
+      for (const [, entry] of mcpServerEntries(mcpConfig)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const server = entry as { args?: string[]; url?: string };
+        if (server.url && !server.url.includes('localhost') && !server.url.includes('127.0.0.1')) {
+          // Remote server is fine if using HTTPS
+          continue;
+        }
+        if (serverArgs(server).some((arg) => arg.includes('0.0.0.0'))) {
+          allLocalhostBound = false;
         }
       }
       findings.push({
@@ -10879,17 +10903,14 @@ dist/
         guidance: 'MCP servers running over network (SSE/HTTP) without authentication let any network-adjacent attacker connect and issue tool calls.',
       });
 
-      // MCP-009: Check for sensitive tool names
+      // MCP-009: Check for sensitive tool names, matched as whole words of
+      // the server name (#669): `execute-shell` matches, `filesystem` does not.
       const sensitiveTools = ['execute', 'shell', 'eval', 'system', 'exec', 'spawn'];
       let hasSensitiveTools = false;
-      if (mcpConfig?.servers) {
-        for (const [name] of Object.entries(mcpConfig.servers as Record<string, unknown>)) {
-          for (const tool of sensitiveTools) {
-            if (name.toLowerCase().includes(tool)) {
-              hasSensitiveTools = true;
-              break;
-            }
-          }
+      for (const [name] of mcpServerEntries(mcpConfig)) {
+        if (sensitiveTools.some((tool) => serverNameHasTerm(name, tool))) {
+          hasSensitiveTools = true;
+          break;
         }
       }
       findings.push({
@@ -10908,13 +10929,11 @@ dist/
       });
 
       // MCP-010 reads every root config: logging in any of them counts.
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { args?: string[] }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (serverArgs(server).some((arg) => arg.includes('log') || arg.includes('verbose'))) {
-            hasLogging = true;
-            break;
-          }
+      for (const [, server] of mcpServerEntries(mcpConfig)) {
+        if (!server || typeof server !== 'object') continue;
+        if (serverArgs(server).some((arg) => arg.includes('log') || arg.includes('verbose'))) {
+          hasLogging = true;
+          break;
         }
       }
     }
@@ -12710,17 +12729,17 @@ dist/
         mcpConfig = JSON.parse(cfg.content);
       } catch {}
 
-      // TOOL-001: Check for tool whitelisting.
-      let hasToolWhitelist = false;
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { allowedTools?: string[] }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (server.allowedTools && server.allowedTools.length > 0) {
-            hasToolWhitelist = true;
-            break;
-          }
-        }
-      }
+      // TOOL-001: Check for tool whitelisting. It passes only when the config
+      // has at least one server and EVERY server declares a whitelist (#669):
+      // one listed server used to pass the file for all of them, and a
+      // wildcard `["*"]` counted as a whitelist.
+      const tool001Servers = mcpServerEntries(mcpConfig).filter(([, server]) => server && typeof server === 'object');
+      const unlistedServers = tool001Servers
+        .filter(([, server]) => !serverHasToolWhitelist(server as { allowedTools?: unknown }))
+        .map(([name]) => name);
+      const hasToolWhitelist = tool001Servers.length > 0 && unlistedServers.length === 0;
+      const unlistedShown = unlistedServers.slice(0, 5).map((name) => `"${name}"`).join(', ');
+      const unlistedMore = unlistedServers.length > 5 ? ` and ${unlistedServers.length - 5} more` : '';
       findings.push({
         checkId: 'TOOL-001',
         name: 'Tool Whitelisting',
@@ -12730,7 +12749,9 @@ dist/
         passed: hasToolWhitelist,
         message: hasToolWhitelist
           ? 'Tool whitelisting configured'
-          : 'Configure allowedTools to restrict MCP server capabilities',
+          : unlistedServers.length > 0
+            ? `Configure allowedTools on ${unlistedShown}${unlistedMore}: each server needs a list of tool names with no "*" entry`
+            : 'Configure allowedTools to restrict MCP server capabilities',
         file: cfg.name,
         fixable: false,
         guidance: 'Without an explicit tool whitelist, MCP servers expose all available tools to the AI agent. A prompt injection attack can invoke any tool, including destructive ones.',
@@ -12738,13 +12759,12 @@ dist/
 
       // TOOL-002: Check for resource constraints
       let hasResourceConstraints = false;
-      if (mcpConfig?.servers) {
-        for (const [, server] of Object.entries(mcpConfig.servers as Record<string, { maxTokens?: number; timeout?: number }>)) {
-          if (!server || typeof server !== 'object') continue;
-          if (server.maxTokens || server.timeout) {
-            hasResourceConstraints = true;
-            break;
-          }
+      for (const [, entry] of mcpServerEntries(mcpConfig)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const server = entry as { maxTokens?: number; timeout?: number };
+        if (server.maxTokens || server.timeout) {
+          hasResourceConstraints = true;
+          break;
         }
       }
       findings.push({
@@ -12762,17 +12782,14 @@ dist/
         guidance: 'Without token limits and timeouts, a runaway or malicious tool call can consume unlimited API credits and block the agent indefinitely.',
       });
 
-      // TOOL-003: Check for dangerous tool usage
+      // TOOL-003: Check for dangerous tool usage, matched as whole words of
+      // the server name (#669): `execute-shell` matches, `filesystem` does not.
       let hasDangerousTools = false;
-      if (mcpConfig?.servers) {
-        const dangerousTools = ['shell', 'exec', 'system', 'eval', 'run_command'];
-        for (const [name] of Object.entries(mcpConfig.servers as Record<string, unknown>)) {
-          for (const dangerous of dangerousTools) {
-            if (name.toLowerCase().includes(dangerous)) {
-              hasDangerousTools = true;
-              break;
-            }
-          }
+      const dangerousTools = ['shell', 'exec', 'system', 'eval', 'run_command'];
+      for (const [name] of mcpServerEntries(mcpConfig)) {
+        if (dangerousTools.some((dangerous) => serverNameHasTerm(name, dangerous))) {
+          hasDangerousTools = true;
+          break;
         }
       }
       findings.push({

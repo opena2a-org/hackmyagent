@@ -6,6 +6,11 @@
  * 4.1 as unverified and carried no `suppressed` or `hmaignore` key, and
  * `-f sarif` had no `runs[0].properties`, while `secure --json` and the scan
  * SARIF (#465) on the same tree carried both.
+ *
+ * TOOL-001 fails on this fixture since #669 (two of its three servers declare
+ * no `allowedTools` and the third grants `["*"]`), so `!TOOL-001` withholds one
+ * record; before #669 the wildcard counted as a whitelist, TOOL-001 passed and
+ * the rule matched nothing.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -59,7 +64,7 @@ describe('#872 benchmark output discloses .hmaignore check rules', () => {
     const doc = jsonOf(run(withRules, ['secure', '.', '-b', 'oasb-1', '--json']).stdout);
     expect(doc.benchmark).toBeDefined();
     expect(doc.suppressed, 'suppressed missing').toBeDefined();
-    expect(doc.suppressed.map((r: { checkId: string }) => r.checkId).sort()).toEqual(['GIT-001', 'MCP-001', 'TOOL-002']);
+    expect(doc.suppressed.map((r: { checkId: string }) => r.checkId).sort()).toEqual(['GIT-001', 'MCP-001', 'TOOL-001', 'TOOL-002']);
     for (const row of doc.suppressed) {
       expect(Object.keys(row).sort()).toEqual(IDENTITY_KEYS);
       expect(row.suppressedBy).toBe('hmaignore-check');
@@ -68,14 +73,14 @@ describe('#872 benchmark output discloses .hmaignore check rules', () => {
     expect(doc).not.toHaveProperty('outOfScope');
     const rules = doc.hmaignore?.rules as Array<{ rule: string; matched: number }> | undefined;
     expect(rules?.map((r) => r.rule)).toEqual(['!MCP-001', '!TOOL-001', '!TOOL-002', '!GIT-001']);
-    expect(rules?.find((r) => r.rule === '!TOOL-001')?.matched).toBe(0);
+    expect(rules?.find((r) => r.rule === '!TOOL-001')?.matched).toBe(1);
   });
 
   it('SARIF carries the suppressed rows in runs[0].properties', () => {
     const doc = jsonOf(run(withRules, ['secure', '.', '-b', 'oasb-1', '-f', 'sarif']).stdout);
     const props = doc.runs[0].properties;
     expect(props, 'runs[0].properties missing').toBeDefined();
-    expect(props.suppressed.map((r: { checkId: string }) => r.checkId).sort()).toEqual(['GIT-001', 'MCP-001', 'TOOL-002']);
+    expect(props.suppressed.map((r: { checkId: string }) => r.checkId).sort()).toEqual(['GIT-001', 'MCP-001', 'TOOL-001', 'TOOL-002']);
     for (const row of props.suppressed) expect(Object.keys(row).sort()).toEqual(IDENTITY_KEYS);
     expect(props).not.toHaveProperty('outOfScope');
   });
