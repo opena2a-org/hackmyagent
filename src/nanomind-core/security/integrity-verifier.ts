@@ -4,6 +4,14 @@
  * Startup integrity verification that runs BEFORE any scanning or model loading.
  * Detects tampering of the CLI binary, NanoMind model files, and rule manifests.
  *
+ * Limit: the manifest is a file in the package and is not signed yet (the
+ * build writes it without a signing key and the CLI verifies without one).
+ * The check catches a dist/ file the manifest lists that was changed or
+ * deleted after the build, and a manifest whose version or hashes do not
+ * match the installed files. It does not catch a change made together with a
+ * regenerated manifest, and when no manifest is accepted (see loadManifest)
+ * it reports CLEAN as dev mode.
+ *
  * Three outcomes:
  *   CLEAN      -- All checks pass, proceed normally
  *   DEGRADE    -- Model integrity failed, fall back to heuristic scanning (warn user)
