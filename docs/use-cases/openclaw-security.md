@@ -33,8 +33,8 @@ NanoMind: 6 artifact(s) compiled, 11 semantic finding(s) added
   Security  ━━━━━━━━━━━━━━━━━━━━ 0/100
 
   ── Observations ────────────────────────────────────────────
-  Surfaces    openclaw · 6 semantic artifacts · 4 of 6 artifacts reached 0-2 of 7 analyzer families
-  Checks      261 static declared · 63 of 63 check groups ran · 6 semantic (NanoMind AST, 0-7 of 7 analyzer families) · 6 files read by static checks
+  Surfaces    openclaw · 6 semantic artifacts · 4 of 6 artifacts reached 2 of 7 analyzer families
+  Checks      261 static declared · 63 of 63 check groups ran · 6 semantic (NanoMind AST, 2-7 of 7 analyzer families) · 6 files read by static checks
   Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 5 checks reported an absent mitigation (not shown)
   Unexamined  A2A, governance, identity, injection, lifecycle, MCP, memory, sandbox-escape
   Artifacts   SKILL.md  skill · malicious · no inferred capabilities  (no declared constraints)

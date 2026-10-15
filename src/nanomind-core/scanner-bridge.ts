@@ -46,7 +46,7 @@ const { readFile, readdir, stat, open } = trackedFs;
 // with a `chmod` remedy naming a file that is not the problem. A citation
 // re-read may lose a line number; it may not invent a lost input.
 import { readFileSync } from 'node:fs';
-import { join, relative, extname, basename, isAbsolute } from 'node:path';
+import { join, relative, extname, isAbsolute } from 'node:path';
 
 import type { SecurityFinding, SecurityFindingDraft, Severity, ProjectType, NanoMindIntentSignal } from '../hardening/security-check.js';
 import { emitFinding, type RedactedFinding } from '../hardening/finding-emit.js';
@@ -67,7 +67,10 @@ import {
   ANALYZER_FAMILY_COUNT,
   analyzerFamiliesExamined,
   analyzerRouteFor,
+  isDocumentBasename,
+  lowerBasename,
 } from './analyzers/family-coverage.js';
+import { applyDocumentVendorTier } from './document-vendor-tier.js';
 import type { AnalyzerFamily, AnalyzerRoute } from './analyzers/family-coverage.js';
 import { resolveFindingLine } from '../types/finding-location.js';
 import { enrichFindings, scanEvasionFix } from './fix-generator.js';
@@ -200,9 +203,9 @@ export interface SemanticFamilyCoverageGroup {
    * the two reasons a family is blind — the route never invoked it, or it was
    * invoked and its own gate stopped it — which a consumer cannot otherwise
    * distinguish. `not_routed` means the artifact compiled and then left the loop
-   * before any analyzer returned — either the documentation/metadata skip, or an
-   * analyzer threw and its findings were discarded. A `skill` reported
-   * `not_routed` is the second case, never the first.
+   * before any analyzer returned — either it is a `package-lock.json`, which the
+   * bridge leaves out of the analyzers, or an analyzer threw and its findings
+   * were discarded. Any other file reported `not_routed` is the second case.
    */
   route: AnalyzerRoute;
   /** The families that examined every artifact in this class. */
@@ -367,9 +370,9 @@ export async function runNanoMindScan(
   // the same number the Surfaces line prints. Each row starts at the honest
   // worst case (`not_routed`, no family examined it) and is upgraded only once
   // the analyzers RETURN. A file that compiles and then leaves the loop early —
-  // the documentation/metadata skip, or a throw from an analyzer — keeps the
-  // starting row rather than silently vanishing from the ledger while still
-  // counting toward `compiledArtifacts`.
+  // `package-lock.json`, or a throw from an analyzer — keeps the starting row
+  // rather than silently vanishing from the ledger while still counting toward
+  // `compiledArtifacts`.
   const familyCoverageRows: Array<{
     path: string;
     artifactType: string;
@@ -424,12 +427,9 @@ export async function runNanoMindScan(
         if (intent) intentByPath.set(relativePath, intent);
       }
 
-      // Skip documentation and metadata files — these are not security artifacts.
-      // URLs in package.json are not exfiltration, "should" in README is not governance.
-      const fileName = basename(filePath).toLowerCase();
-      if (/^(readme|changelog|license|contributing|history|authors)/i.test(fileName) ||
-          fileName === 'package.json' || fileName === 'package-lock.json' ||
-          fileName === 'tsconfig.json' || fileName === '.npmrc') {
+      // `package-lock.json` is the one file left out of the analyzers (#1027):
+      // its `"integrity": "sha512-..."` values read as credential format.
+      if (lowerBasename(filePath) === 'package-lock.json') {
         continue;
       }
 
@@ -437,14 +437,18 @@ export async function runNanoMindScan(
       // - Agent artifacts (soul, system_prompt, skill, agent_config, a2a_card, mcp_config):
       //   ALL analyzers — governance, prompt, scope, capability checks are relevant
       // - Source code: credential + code analysis only (no governance/scope/exfil)
-      // - Everything else (docs, unknown, env_file, credential_file, ide configs):
-      //   credential + code + stego only — governance/prompt/scope/capability are FPs
+      // - Everything else (docs, unknown, env_file, credential_file, ide configs),
+      //   and package.json, tsconfig.json and the six document names whatever
+      //   they classified as: credential + code + stego only —
+      //   governance/prompt/scope/capability are FPs
       const verifier = (ast: SecurityAST) => compiler.verifyAST(ast);
       // #456 — one definition of the routing decision, shared with the coverage
       // measurement so the disclosure cannot describe a different route than the
       // one taken. It also carries the dev-instruction-file rule: CLAUDE.md and
       // .cursorrules classify `system_prompt` but are NOT agent artifacts.
-      const route = analyzerRouteFor(result.ast);
+      // The path passed is the one read here, not the AST's: a cache hit
+      // carries the path of the first byte-identical file compiled.
+      const route = analyzerRouteFor(result.ast, relativePath);
       const isAgent = route === 'agent';
       const isSourceCode = route === 'source_code';
       // Pass project constraints to agent analyzers — but not for soul artifacts themselves
@@ -453,11 +457,16 @@ export async function runNanoMindScan(
       const extraConstraints = (isAgent && !isSoulArtifact && projectConstraints.length > 0)
         ? projectConstraints
         : undefined;
-      const findings = isAgent
+      const routedFindings = isAgent
         ? runAllAnalyzers(result.ast, verifier, projectType, extraConstraints, content)
         : isSourceCode
           ? runCodeAnalyzers(result.ast, verifier, content)
           : runNonAgentAnalyzers(result.ast, verifier, content);
+      // The six document names report credentials at the vendor tier only
+      // (#1027, `document-vendor-tier.ts`): not full credential coverage.
+      const findings = isDocumentBasename(relativePath)
+        ? applyDocumentVendorTier(routedFindings, content)
+        : routedFindings;
       allASTFindings.push(...findings);
       // #456 — recorded only AFTER the analyzers returned. Assigning before the
       // call would let a throw inside an analyzer discard every finding for this
@@ -567,7 +576,7 @@ export function rollUpFamilyCoverage(
       continue;
     }
     // Key on the type AND the exact family set: two `unknown` files can differ
-    // when one of them is a README the doc skip routed past.
+    // when one of them is a `package-lock.json` the bridge routed past.
     const key = `${row.artifactType}|${row.route}|${[...row.familiesExamined].sort().join(',')}`;
     const existing = groups.get(key);
     if (existing) {
