@@ -16,7 +16,8 @@ breaking: true
   `shared-linux-docker-runner-1` and one-letter placeholders stay quiet.
   A slug that mixes cases, such as `glpat-` followed by
   `Shared-Linux-Docker-Runner-1`, is reported, and a real token whose body
-  happens to be single-case is not.
+  happens to be single-case is not. For a 20-character body drawn uniformly
+  from letters, digits, `-` and `_`, that miss is about 6 in 100,000.
   `hf_hub_download` and other
   `huggingface_hub` names are not reported.
 - The signal added is the vendor prefix. Key-name assignments such as
