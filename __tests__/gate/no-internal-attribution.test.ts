@@ -186,10 +186,11 @@ const PATTERN_BASELINE: Record<string, number> = {
 };
 
 // Frozen per-file counts of non-exempted lines matching the second expression,
-// measured on the delivered tree: 2 files, 6 lines.
+// measured on the delivered tree: 1 file, 3 lines. No file under __tests__ has
+// an entry, for the same reason as above: a matching line in a test file is
+// always reported, never pinned.
 const VENDOR_BASELINE: Record<string, number> = {
   'src/nanomind-core/security/defense-in-depth.ts': 3,
-  '__tests__/nanomind-core/defense-in-depth.test.ts': 3,
 };
 
 const PATTERN_GUIDANCE =
@@ -424,6 +425,12 @@ describe('internal attribution stays off the public surfaces', () => {
     }
   });
 
+  it('no frozen entry for the second expression names a file under __tests__: a test file is fixed, never pinned', () => {
+    for (const key of Object.keys(VENDOR_BASELINE)) {
+      expect(key.startsWith('__tests__/'), `frozen entry ${key} names a test file`).toBe(false);
+    }
+  });
+
   it('a governance tag in a test comment and a decision identifier in a test name both fail the frozen-map comparison', () => {
     // Planted through the same walk and the same comparison the tree
     // assertion uses, against the real frozen map: a test file has no entry,
@@ -464,7 +471,8 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC4 every public-surface file carries exactly the frozen number of non-exempted lines matching the second expression', () => {
-    expect(Object.values(VENDOR_BASELINE).reduce((a, b) => a + b, 0)).toBe(6);
+    expect(Object.keys(VENDOR_BASELINE)).toHaveLength(1);
+    expect(Object.values(VENDOR_BASELINE).reduce((a, b) => a + b, 0)).toBe(3);
     const { hits } = scan(REPO_ROOT, VENDOR);
     expect(compareToBaseline(hits, VENDOR_BASELINE, VENDOR_GUIDANCE)).toEqual([]);
   });
