@@ -1,6 +1,5 @@
 /**
- * #637 — the evaluator folds MULTIPLE records per checkId (CA ruling
- * 2026-08-27, ledger).
+ * #637 — the evaluator folds MULTIPLE records per checkId (#668).
  *
  * One checkId can carry several records: one per root MCP config spelling,
  * one per file for the per-file emitters. `generateBenchmarkReport` built its
