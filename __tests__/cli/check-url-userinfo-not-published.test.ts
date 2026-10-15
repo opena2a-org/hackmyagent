@@ -57,6 +57,7 @@ const SECRET = ['FAKE', 'secret', '123'].join('');
 const REPO = 'gitlab.com/example-org/example-repo';
 const LEGACY_REPO = 'gitlab.com/example-org/legacy-repo';
 const EMPTY_USERINFO_REPO = 'gitlab.com/example-org/empty-userinfo-repo';
+const EARLIER_FORM_REPO = 'gitlab.com/example-org/earlier-form-repo';
 const TYPED_URL = `https://${USER}:${SECRET}@${REPO}.git`;
 const SHOWN_URL = `https://${REPO}.git`;
 
@@ -256,16 +257,30 @@ beforeAll(async () => {
   textRun = run('text', []);
   jsonRun = run('json', ['--json']);
   failedCloneRun = run('failed-clone', ['--json'], { HMA_TEST_GIT_FAIL: '1' });
-  // The queue as an earlier version left it after failed shares, one of a
-  // URL with userinfo and one of a URL with an empty userinfo.
-  legacyQueueRun = run('legacy-queue', [], {}, [`${USER}:${SECRET}@${LEGACY_REPO}`, `@${EMPTY_USERINFO_REPO}`].map((name) => ({
-    name,
-    score: 90,
-    maxScore: 100,
-    projectType: 'library',
-    findingCount: 1,
-    timestamp: '2026-10-01T00:00:00.000Z',
-  })));
+  // A queue holding scans under the names an earlier version gave them, one
+  // of a URL with userinfo and one of a URL with an empty userinfo, each in
+  // the form a share is queued in now (the submission that failed), and one
+  // of a URL with userinfo in the form an earlier version queued it, with a
+  // finding count and no findings.
+  legacyQueueRun = run('legacy-queue', [], {}, [
+    ...[`${USER}:${SECRET}@${LEGACY_REPO}`, `@${EMPTY_USERINFO_REPO}`].map((name) => ({
+      name,
+      score: 90,
+      maxScore: 100,
+      projectType: 'library',
+      toolVersion: '0.0.1-queued',
+      scanTimestamp: '2026-10-01T00:00:00.000Z',
+      findings: [{ checkId: 'TEST-QUEUED-001', name: 'queued check', severity: 'low', passed: false, message: 'queued message', category: 'injection' }],
+    })),
+    {
+      name: `${USER}:${SECRET}@${EARLIER_FORM_REPO}`,
+      score: 90,
+      maxScore: 100,
+      projectType: 'library',
+      findingCount: 1,
+      timestamp: '2026-10-01T00:00:00.000Z',
+    },
+  ]);
   // URLs with no userinfo, where a query or a `\` puts an `@` after the host.
   // With no `.git`, `check` fetches them: its HEAD goes to the capture server,
   // which answers 503, and the run ends unmeasured.
@@ -403,10 +418,11 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     expect(publishPosts(failedCloneRun)).toHaveLength(0);
   });
 
-  it('a scan an earlier version queued under the userinfo name is sent and kept under the name without it', () => {
+  it('a scan queued under the userinfo name is sent and kept under the name without it', () => {
     const names = publishPosts(legacyQueueRun).map((p) => JSON.parse(p.body).name as string);
     // The scan queued for `https://@<repo>.git` under `@<repo>` is sent under
-    // the name a new scan of that URL gets.
+    // the name a new scan of that URL gets. The one queued in an earlier
+    // version's form, with no findings, is not sent under either name.
     expect(names.sort()).toEqual([REPO, LEGACY_REPO, EMPTY_USERINFO_REPO].sort());
     for (const post of publishPosts(legacyQueueRun)) {
       expect(post.body).not.toContain(SECRET);
@@ -419,6 +435,7 @@ describe('check <git URL> keeps the URL\'s userinfo out of what it prints and pu
     expect(queued.map((q) => q.name)).toContain(LEGACY_REPO);
     expect(queued.map((q) => q.name)).toContain(EMPTY_USERINFO_REPO);
     for (const q of queued) expect([REPO, LEGACY_REPO, EMPTY_USERINFO_REPO]).toContain(q.name);
+    expect(legacyQueueRun.pendingText).not.toContain(EARLIER_FORM_REPO);
     expect(legacyQueueRun.pendingText).not.toContain(SECRET);
     expect(legacyQueueRun.pendingText).not.toContain(USER);
   });
