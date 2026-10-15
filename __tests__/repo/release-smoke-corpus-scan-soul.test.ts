@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -102,6 +103,8 @@ afterAll(() => {
 function runHarness(fixtures: Fixture[]): { status: number | null; stdout: string; stderr: string } {
   const root = mkdtempSync(join(tmpdir(), 'hma-503-corpus-'));
   made.push(root);
+  // The harness refuses a corpus that is not a git clone (#1080).
+  initThrowawayRepo(root, false);
   writeFileSync(
     join(root, 'corpus-manifest.yaml'),
     [
@@ -126,7 +129,8 @@ function runHarness(fixtures: Fixture[]): { status: number | null; stdout: strin
   const r = spawnSync(TSX, [HARNESS], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
-    env: { ...process.env, OPENA2A_CORPUS_PATH: root, NO_COLOR: '1' },
+    // A hook-exported GIT_DIR would answer the harness's work-tree check for this repository.
+    env: { ...gitFreeEnv(), OPENA2A_CORPUS_PATH: root, NO_COLOR: '1' },
     timeout: 150_000,
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
