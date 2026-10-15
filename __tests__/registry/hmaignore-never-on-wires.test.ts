@@ -102,10 +102,11 @@ describe('HMA-21.AC4 — hmaignore never on a wire', () => {
     expect('hmaignore' in (event.scanSummary as object)).toBe(false);
   });
 
-  it('HMA-21.AC4 cli.ts publish arm: the ci rawReport is built from named keys and never references hmaignore', () => {
-    const cliSrc = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
-    const arm = cliSrc.match(/submitCIScanResult\(\{[\s\S]*?\}\);/);
+  it('HMA-21.AC4 ci publish arm: the ci rawReport is built from named keys and never references hmaignore', () => {
+    const src = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'registry', 'submissions.ts'), 'utf8');
+    const arm = src.match(/export function ciScanSubmission\([\s\S]*?\n\}\n/);
     expect(arm, 'the ci publish arm moved — re-point this guard').not.toBeNull();
+    expect(arm![0]).toContain('rawReport: {');
     expect(arm![0]).not.toContain('hmaignore');
     // and no wire builder spreads ScanResult wholesale
     expect(arm![0]).not.toMatch(/\.\.\.result\b/);

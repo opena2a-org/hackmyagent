@@ -50,6 +50,12 @@ export interface DetectOptions {
    * directory is the list.
    */
   workspace?: boolean;
+  /**
+   * Called with the single-project result and how long its scan took, once
+   * the scan has run. Not called for a workspace listing or an unreadable
+   * target. `detect --contribute` builds its event from it.
+   */
+  onResult?: (result: DetectResult, scanMs: number) => void;
 }
 
 export type RiskLevel = 'critical' | 'high' | 'medium' | 'low';
@@ -2587,6 +2593,7 @@ function exportNotice(options: DetectOptions): void {
 // ---------------------------------------------------------------------------
 
 export async function detect(options: DetectOptions): Promise<number> {
+  const startedMs = Date.now();
   const dir = path.resolve(options.targetDir ?? process.cwd());
 
   try {
@@ -2633,6 +2640,7 @@ export async function detect(options: DetectOptions): Promise<number> {
   }
 
   const { result, withheldLinks } = await scanProject(dir, machine);
+  options.onResult?.(result, Date.now() - startedMs);
 
   // #390 — `detect` printed `1 high-severity issue found` and returned 0, so
   // no CI job could ever fail on a shadow-AI finding. The exit code comes from

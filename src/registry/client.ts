@@ -505,6 +505,8 @@ export function buildScanReport(
   versionId: string,
   findings: SecurityFinding[],
   settled?: SettledOutcome,
+  // The end of the scan. Absent, the report is dated when it is built.
+  completedAt: Date = new Date(),
 ): ScanReportPayload {
   assertRedactionProvenance(findings, 'registry-scan-report');
   const failed = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
@@ -533,9 +535,9 @@ export function buildScanReport(
 
   return {
     versionId,
-    scanId: `hma-${Date.now()}`,
+    scanId: `hma-${completedAt.getTime()}`,
     status,
-    completedAt: new Date().toISOString(),
+    completedAt: completedAt.toISOString(),
     vulnerabilities,
     criticalCount: counts.critical,
     highCount: counts.high,
@@ -563,6 +565,8 @@ export function buildScanReport(
 export function buildAttackReport(
   versionId: string,
   report: AttackReport,
+  // The end of the attack. Absent, the report is dated when it is built.
+  completedAt: Date = new Date(),
 ): ScanReportPayload {
   const vulnerabilities: VulnerabilityFinding[] = report.results
     .filter(r => r.success)
@@ -584,9 +588,9 @@ export function buildAttackReport(
 
   return {
     versionId,
-    scanId: `hma-attack-${Date.now()}`,
+    scanId: `hma-attack-${completedAt.getTime()}`,
     status,
-    completedAt: new Date().toISOString(),
+    completedAt: completedAt.toISOString(),
     vulnerabilities,
     criticalCount: counts.critical,
     highCount: counts.high,
@@ -616,6 +620,8 @@ export function buildCommunityReport(
   findings: SecurityFinding[],
   options?: { packageType?: string; version?: string },
   settled?: SettledOutcome,
+  // The end of the scan. Absent, the report is dated when it is built.
+  completedAt: Date = new Date(),
 ): CommunityScanPayload {
   assertRedactionProvenance(findings, 'registry-community-report');
   const failed = findings.filter(isMeasured).filter(f => countsAgainstScore(f));
@@ -639,9 +645,9 @@ export function buildCommunityReport(
     packageName,
     packageType: options?.packageType,
     version: options?.version,
-    scanId: `hma-community-${Date.now()}`,
+    scanId: `hma-community-${completedAt.getTime()}`,
     status,
-    completedAt: new Date().toISOString(),
+    completedAt: completedAt.toISOString(),
     vulnerabilities,
     criticalCount: counts.critical,
     highCount: counts.high,
@@ -669,6 +675,8 @@ export function buildCommunityAttackReport(
   packageName: string,
   report: AttackReport,
   options?: { packageType?: string; version?: string },
+  // The end of the attack. Absent, the report is dated when it is built.
+  completedAt: Date = new Date(),
 ): CommunityScanPayload {
   const vulnerabilities: VulnerabilityFinding[] = report.results
     .filter(r => r.success)
@@ -692,9 +700,9 @@ export function buildCommunityAttackReport(
     packageName,
     packageType: options?.packageType,
     version: options?.version,
-    scanId: `hma-attack-community-${Date.now()}`,
+    scanId: `hma-attack-community-${completedAt.getTime()}`,
     status,
-    completedAt: new Date().toISOString(),
+    completedAt: completedAt.toISOString(),
     vulnerabilities,
     criticalCount: counts.critical,
     highCount: counts.high,
