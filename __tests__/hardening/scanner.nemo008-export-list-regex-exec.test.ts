@@ -134,4 +134,21 @@ describe('NEMO-008 on compiled export lists and regular-expression exec calls', 
     await writeFile(root, 'lib/apply.js', 'function apply(cmd) {\n  exec(cmd);\n}\n');
     expect(await nemo008(root)).toEqual([[path.join('lib', 'verify.js'), 3]]);
   });
+
+  // An unclosed list line that matches the verify chain and ends in a long
+  // run of spaces before a character outside the list class. The first
+  // export-list regex backtracked over that run from three quantifiers at
+  // once: the scan of one such 10 KB line took minutes.
+  it.each([
+    ['an unclosed export list', 'export {verify digest'],
+    ['an unclosed module.exports list', 'module.exports = {verify digest'],
+  ])('%s with ten thousand trailing spaces is scanned in bounded time', async (_name, head) => {
+    const root = tempDir('nemo008-long-line-');
+    await writeFile(root, 'lib.js', `${head}${' '.repeat(10_000)}(\n`);
+    const started = Date.now();
+    const found = await nemo008(root);
+    const elapsedMs = Date.now() - started;
+    expect(found).toEqual([]);
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 60_000);
 });
