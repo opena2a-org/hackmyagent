@@ -71,6 +71,18 @@ const UNATTRIBUTED = '(unattributed)';
 type FailingReaders = Map<string, string>;
 
 /**
+ * The readers behind one lost input (#510), as counts: `CoverageLedger.lostInputReaders`.
+ */
+export interface LostInputReaders {
+  /** Checks that read the file, or listed the directory, successfully in this scan. */
+  succeeded: number;
+  /** Checks whose counting failure on the path has no success of their own there. */
+  failedChecks: number;
+  /** True when a failure raised outside any check frame is among the failures that stand. */
+  failedOutsideChecks: boolean;
+}
+
+/**
  * True when a failed read means the scan lost an input it had discovered.
  *
  * Excludes by name rather than admitting a known-good list, which is the
@@ -1041,12 +1053,48 @@ export class CoverageLedger {
     readers: FailingReaders,
     successes: Map<string, Set<string>>,
   ): string | undefined {
+    return CoverageLedger.stillFailingReaders(resolved, readers, successes)[0]?.[1];
+  }
+
+  /** The readers `stillFailing` keeps a path lost for, each with its errno, in recording order. */
+  private static stillFailingReaders(
+    resolved: string,
+    readers: FailingReaders,
+    successes: Map<string, Set<string>>,
+  ): [string, string][] {
+    const out: [string, string][] = [];
     for (const [method, code] of readers) {
       if (!countsAsUnread(code)) continue;
       if (successes.get(method)?.has(resolved)) continue;
-      return code;
+      out.push([method, code]);
     }
-    return undefined;
+    return out;
+  }
+
+  /**
+   * Who got the bytes of one lost input and who did not (#510), for the
+   * finding that names it. `target` is a path `unreadablePaths()` returned,
+   * with its `kind`: a file is answered from the read channel, a directory
+   * from the listing channel.
+   *
+   * A path stays lost while any reader that failed on it has no success of
+   * its own there, however many other checks read it. The record alone then
+   * read as "its contents never reached a check", with a `chmod` remedy for a
+   * file another check had just read. These counts let the finding say which
+   * of the two it is.
+   */
+  lostInputReaders(target: string, kind: 'file' | 'directory'): LostInputReaders {
+    const failures = (kind === 'directory' ? this.listFailures : this.readFailures).get(target);
+    const successes = kind === 'directory' ? this.listedByMethod : this.readsByMethod;
+    let succeeded = 0;
+    for (const set of successes.values()) if (set.has(target)) succeeded++;
+    let failedChecks = 0;
+    let failedOutsideChecks = false;
+    for (const [method] of failures ? CoverageLedger.stillFailingReaders(target, failures, successes) : []) {
+      if (method === UNATTRIBUTED) failedOutsideChecks = true;
+      else failedChecks++;
+    }
+    return { succeeded, failedChecks, failedOutsideChecks };
   }
 
   /**

@@ -80,6 +80,7 @@ import {
   type CategoryCoverage,
   type CheckExecution,
   type CoverageTruncation,
+  type LostInputReaders,
   type WithheldLink,
   countsAsUnread,
   noteListFailure,
@@ -423,11 +424,12 @@ export function historyCredentialFinding(hit: HistoryCredentialHit): SecurityFin
  * obstruction. It also classifies the obstruction's kind before choosing
  * words (#617): an `lstat` on the record (gone since it was recorded), and a
  * read-bit, search-bit and `stat` probe on the obstruction (a denial its mode
- * does not explain). The probes are inspections of recorded paths and report
- * to no channel.
+ * does not explain), and, for a record another check read or listed (#510),
+ * an `access` probe on the record itself. The probes are inspections of
+ * recorded paths and report to no channel.
  */
 export function buildUnreadInputFinding(
-  u: { rel: string; code: string; kind?: 'file' | 'directory'; obstructedBy?: string; path?: string },
+  u: { rel: string; code: string; kind?: 'file' | 'directory'; obstructedBy?: string; path?: string; readers?: LostInputReaders },
   opts: { cliName: string; targetDir: string; command?: string },
 ): SecurityFinding {
   const { code, obstructedBy } = u;
@@ -473,7 +475,24 @@ export function buildUnreadInputFinding(
       vanished = c === 'ENOENT' || c === 'ENOTDIR';
     }
   }
-  const obstruction = vanished
+  // A record stays lost while any reader that failed on it has no success of
+  // its own there (#510), so another check may hold the very bytes this
+  // record says were lost. "Its contents never reached a check" is then
+  // false, and when this user can read the path NOW, a `chmod` changes
+  // nothing: the re-run is the remedy. `accessNow` stays undefined when it
+  // was not probed, and no sentence claims either answer then.
+  const readers = u.readers;
+  const readElsewhere = readers !== undefined && readers.succeeded > 0;
+  let accessNow: boolean | undefined;
+  if (readElsewhere && permission && u.path && !vanished) {
+    try {
+      fsSync.accessSync(u.path, isDir ? fsSync.constants.R_OK | fsSync.constants.X_OK : fsSync.constants.R_OK);
+      accessNow = true;
+    } catch (e) {
+      if (isPermissionDenial(e)) accessNow = false;
+    }
+  }
+  const obstruction = vanished || accessNow === true
     ? undefined
     : obstructedBy ?? (permission && u.path ? unsearchableAncestorSync(u.path, targetDir) : undefined);
   // A directory record whose only obstruction is itself (its listing failed and
@@ -571,7 +590,7 @@ export function buildUnreadInputFinding(
   // guidance names the directory, and the two must agree (#617).
   const fix = !permission
     ? `Resolve the ${code} on this path: ${cause}, then re-run this scan.`
-    : vanished
+    : vanished || accessNow === true
       ? rerun
       : ancestor
         ? (searchDeniedNotByMode
@@ -620,41 +639,84 @@ export function buildUnreadInputFinding(
   const pathLength = code === 'ENAMETOOLONG' && u.path
     ? `The absolute path is ${u.path.length} characters. `
     : '';
+  // #510 — who got the bytes and who did not, for a record another check read
+  // (or listed). A failure raised outside every check frame is named as such:
+  // it has no check name, and no check's success clears it.
+  const checks = (n: number, other: boolean): string => `${n} ${other ? 'other ' : ''}check${n === 1 ? '' : 's'}`;
+  const failedChecks = readers?.failedChecks ?? 0;
+  const failedOutside = readers?.failedOutsideChecks === true;
+  const failedReaders = (other: boolean): string => (failedChecks > 0 && failedOutside
+    ? `${checks(failedChecks, other)} and a reader outside any single check`
+    : failedChecks > 0
+      ? checks(failedChecks, other)
+      : failedOutside ? 'a reader outside any single check' : 'another reader');
+  const theirs = failedChecks + (failedOutside ? 1 : 0) > 1 ? 'those readers' : 'that reader';
+  const succeeded = readers?.succeeded ?? 0;
+  const accessNowSentence = accessNow === true
+    ? (isDir
+      ? 'It can be listed now, so `chmod` would change nothing: re-run the scan so every reader lists it. '
+      : 'It is readable now, so `chmod` would change nothing: re-run the scan so every reader gets its bytes. ')
+    : accessNow === false
+      ? `It ${isDir ? 'cannot be listed' : 'is not readable'} now. `
+      : '';
   // The directory kind opens with the ruled sentence — the same one `message`
   // carries — because the text channel renders `guidance`, not `message`, and
-  // the words the user sees must be the words that were ruled.
-  const listedSentence = `${shown} could not be listed (${code}) — its contents were not discovered, so nothing inside it reached any check.`;
+  // the words the user sees must be the words that were ruled. The ruled
+  // sentence says nothing inside reached any check, which is false once
+  // another check listed the directory, so that case carries its own.
+  const listedSentence = readElsewhere
+    ? `${shown} could not be listed (${code}) by ${failedReaders(false)}, though ${checks(succeeded, true)} `
+      + `listed it in this scan: the findings of ${theirs} do not cover anything inside it.`
+    : `${shown} could not be listed (${code}) — its contents were not discovered, so nothing inside it reached any check.`;
   const guidance = isDir
     ? vanishedSentence + ancestorSentence
       + (ancestor
         ? ''
         : (permission
-          ? `${listedSentence} `
+          ? `${listedSentence} ${accessNowSentence}`
           : `${listedSentence} Cause: ${cause}. ${pathLength}`))
-      + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled '
-      + 'out about anything beneath it, and a credential or an injected instruction there would '
-      + 'be invisible to this scan — leaving the score HIGHER than if it had been listable, '
-      + 'because the evidence simply left the assessment. Re-run once it can be listed. If it is '
-      + 'meant to stay closed, scan a narrower target that does not contain it — an `.hmaignore` '
-      + 'path rule will not clear this, because it scopes what is reported and cannot make an '
-      + 'unlisted directory listed.'
+      + (readElsewhere
+        ? `The score above is an upper bound, not a measurement of this tree: what ${theirs} would `
+          + 'have reported about anything beneath it is missing from it. Re-run once every reader can '
+          + 'list it. An `.hmaignore` path rule will not clear this: it scopes what is reported and '
+          + 'cannot make an unlisted directory listed.'
+        : 'The score above is an upper bound, not a measurement of this tree: nothing was ruled '
+          + 'out about anything beneath it, and a credential or an injected instruction there would '
+          + 'be invisible to this scan — leaving the score HIGHER than if it had been listable, '
+          + 'because the evidence simply left the assessment. Re-run once it can be listed. If it is '
+          + 'meant to stay closed, scan a narrower target that does not contain it — an `.hmaignore` '
+          + 'path rule will not clear this, because it scopes what is reported and cannot make an '
+          + 'unlisted directory listed.')
     : vanishedSentence + ancestorSentence
-      + `This file was discovered inside the target and the read failed with ${code}`
-      + (permission ? '' : ` (${cause})`)
-      + `, so its contents never reached a check. ${pathLength}`
-      + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled out '
-      + 'about this file, and a credential or an injected instruction in it would be invisible to '
-      + 'this scan — leaving the score HIGHER than if the file had been readable, because the '
-      + 'evidence simply left the assessment. Re-run once it can be read. If it is meant to be '
-      + 'unreadable, scan a narrower target that does not contain it — an `.hmaignore` path rule '
-      + 'will not clear this, because it scopes what is reported about a file and cannot make an '
-      + 'unread file read.';
+      + (readElsewhere
+        ? `This file was read by ${checks(succeeded, false)} in this scan, but the read by `
+          + `${failedReaders(true)} failed with ${code}`
+          + (permission ? '' : ` (${cause})`)
+          + `, so the findings of ${theirs} do not cover its contents. ${accessNowSentence}${pathLength}`
+          + `The score above is an upper bound, not a measurement of this tree: what ${theirs} would `
+          + 'have reported about this file is missing from it. Re-run once every reader can read it. '
+          + 'An `.hmaignore` path rule will not clear this: it scopes what is reported about a file '
+          + 'and cannot make an unread file read.'
+        : `This file was discovered inside the target and the read failed with ${code}`
+          + (permission ? '' : ` (${cause})`)
+          + `, so its contents never reached a check. ${pathLength}`
+          + 'The score above is an upper bound, not a measurement of this tree: nothing was ruled out '
+          + 'about this file, and a credential or an injected instruction in it would be invisible to '
+          + 'this scan — leaving the score HIGHER than if the file had been readable, because the '
+          + 'evidence simply left the assessment. Re-run once it can be read. If it is meant to be '
+          + 'unreadable, scan a narrower target that does not contain it — an `.hmaignore` path rule '
+          + 'will not clear this, because it scopes what is reported about a file and cannot make an '
+          + 'unread file read.');
   return {
     checkId: 'SCAN-UNREAD-001',
     name: 'Input Discovered But Not Read',
-    description: isDir
-      ? 'A directory inside the target was discovered and could not be listed, so nothing inside it reached any check'
-      : 'A file inside the target was discovered and its contents could not be read, so no check examined it',
+    description: readElsewhere
+      ? (isDir
+        ? 'A directory inside the target was listed by some checks and not by every reader, so a reader that could not list it examined nothing inside it'
+        : 'A file inside the target was read by some checks and not by every reader, so a reader that could not read it did not examine it')
+      : isDir
+        ? 'A directory inside the target was discovered and could not be listed, so nothing inside it reached any check'
+        : 'A file inside the target was discovered and its contents could not be read, so no check examined it',
     category: 'hardening',
     severity: 'medium',
     // `passed: false` so it is SHOWN. A `passed: true` finding is filtered
@@ -4550,7 +4612,7 @@ function describeSkillBundlePayload(line: string): string | null {
 }
 
 /** One input a run could not read, with the path its counts leave out. */
-type UnreadInput = { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string };
+type UnreadInput = { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string; readers?: LostInputReaders };
 
 /**
  * Everything one `scan()` builds its result from.
@@ -4986,7 +5048,7 @@ export class HardeningScanner {
    * that names the paths under its own header (`check`'s local arm, #508)
    * reads them here rather than re-walking the tree.
    */
-  get lastUnreadInputs(): ReadonlyArray<{ path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }> {
+  get lastUnreadInputs(): ReadonlyArray<UnreadInput> {
     return this.unreadableAll;
   }
 
@@ -5900,14 +5962,17 @@ export class HardeningScanner {
     // The exit-code unit (`allUnreadableInputs`) is then counted over this same
     // list, unscoped, so the finding, the count and the exit code cannot
     // disagree about a file (#590).
-    const unreadable: { path: string; code: string; kind: 'file' | 'directory'; rel: string; obstructedBy?: string }[] = [];
+    const unreadable: UnreadInput[] = [];
     for (const u of this.coverage.unreadablePaths()) {
       const rel = path.relative(targetDir, u.path) || path.basename(u.path);
       // A permission denial on a file inside a directory this user cannot
       // ENTER is the directory's fault, and the remedy has to say so (#515).
       const permission = u.code === 'EACCES' || u.code === 'EPERM';
       const obstructedBy = permission ? await this.unsearchableAncestor(u.path, targetDir) : undefined;
-      unreadable.push({ ...u, rel, ...(obstructedBy ? { obstructedBy } : {}) });
+      // Which checks got the bytes and which did not (#510), so the finding
+      // does not tell the user a file no check read when one did.
+      const readers = this.coverage.lostInputReaders(u.path, u.kind);
+      unreadable.push({ ...u, rel, ...(obstructedBy ? { obstructedBy } : {}), readers });
     }
     this.unreadableAll = unreadable;
     for (const u of unreadable) {
