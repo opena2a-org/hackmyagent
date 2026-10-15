@@ -122,15 +122,17 @@ describe('#1043 secure --help says where --fix keeps its backups', () => {
     expect(help.stdout).toContain('HMA_BACKUP_HOME');
     expect(help.stdout).toContain('hackmyagent rollback');
 
+    // The form for a base that carries #1039: --fix copies a file only when a
+    // fix is about to change it, and the permissions fix records a mode.
     const section = [
       'Backups (--fix):',
-      '  Before it changes anything, --fix copies every file a fix may change, .env',
-      '  included and whether or not a fix then changes it, into a per-user backup',
+      '  Before a fix changes a file, --fix copies the file into a per-user backup',
       '  store outside the project: $HMA_BACKUP_HOME if set, else',
-      '  $OPENA2A_HOME/backups, else ~/.opena2a/backups. The copies can hold a',
-      '  credential that is still in use. They stay until you delete them or rollback',
-      '  restores from them, and every text report of the project prints the command',
-      '  that deletes them.',
+      '  $OPENA2A_HOME/backups, else ~/.opena2a/backups. A fix that only narrows a',
+      "  file's permissions records the file's earlier mode instead of a copy. The",
+      '  copies can hold a credential that is still in use. They stay until you',
+      '  delete them or rollback restores from them, and every text report of the',
+      '  project prints the command that deletes them.',
       '  hackmyagent rollback restores the most recent backup. It reads',
       '  HMA_BACKUP_HOME and OPENA2A_HOME the same way, so run it with the values the',
       '  --fix run had, or it finds no backup.',
@@ -140,6 +142,10 @@ describe('#1043 secure --help says where --fix keeps its backups', () => {
     // the argument list.
     expect(help.stdout, 'the section is missing, reworded or not directly above Arguments:')
       .toContain(`\n\n${section.join('\n')}\n\nArguments:\n`);
+    // The sentence for a base without #1039 says .env is copied whether or not
+    // a fix changes it, which is no longer what --fix does.
+    expect(help.stdout).not.toContain('copies every file a fix may change');
+    expect(help.stdout).not.toContain('whether or not a fix then changes it');
 
     expect(help.stdout, 'the --fix option line changed')
       .toMatch(/^ {2}--fix +Automatically fix issues where possible$/m);
