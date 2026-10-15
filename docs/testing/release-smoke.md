@@ -43,7 +43,14 @@ Then the corpus gate, which is BLOCKING. It runs the built CLI over every fixtur
 opena2a-corpus checkout and compares scores against the manifest bands and the
 rendered output against `golden/hma/`. A red result here means either the scoring
 moved (re-bake the goldens in the same PR that moved it and say why) or the corpus
-checkout is stale; it never means "skip it":
+checkout is stale; it never means "skip it".
+
+The corpus must be a git clone (`git clone https://github.com/opena2a-org/opena2a-corpus.git`),
+not a `git archive` export or a tarball. The goldens are recorded against a clone, and
+GIT-003 reads `.gitignore` through `git check-ignore`: an export of a corpus commit failed
+`repo/malicious/kitchen-sink` as a golden mismatch while a clone of that commit passed it. The
+harness refuses a corpus that is not the root of its own git work tree with exit 2 and a
+message naming the clone requirement:
 
 ```bash
 git -C ~/.opena2a/corpus rev-parse --short HEAD   # record this in the release notes

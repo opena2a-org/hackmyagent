@@ -21,7 +21,7 @@
  * Exit code 0 = green, 1 = drift, 2 = setup error.
  */
 import { spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import yaml from 'js-yaml';
@@ -80,7 +80,37 @@ function loadCorpusManifest(): CorpusManifest {
         `or set OPENA2A_CORPUS_PATH to a local checkout.`,
     );
   }
+  assertCorpusIsGitClone();
   return yaml.load(readFileSync(path, 'utf8')) as CorpusManifest;
+}
+
+/**
+ * #1080 — the goldens are recorded against a git clone of the corpus. GIT-003
+ * asks `git check-ignore` whether a fixture's `.env` is committable and falls
+ * back to a heuristic outside a git work tree, so a `git archive` export of
+ * the same commit failed repo/malicious/kitchen-sink as `golden mismatch`,
+ * which reads as scoring drift. A corpus that is not the root of its own git
+ * work tree (no `.git`, or extracted inside another repository) is refused
+ * here as a setup error instead.
+ */
+function assertCorpusIsGitClone(): void {
+  const r = spawnSync('git', ['-C', CORPUS_ROOT, 'rev-parse', '--show-toplevel'], {
+    encoding: 'utf8',
+  });
+  const top = r.status === 0 ? r.stdout.trim() : '';
+  if (top !== '' && realpathSync(top) === realpathSync(CORPUS_ROOT)) return;
+  const why = r.error
+    ? `git could not be run (${r.error.message})`
+    : top !== ''
+      ? `it sits inside the git work tree at ${top} instead of being a clone of its own`
+      : `it has no .git directory`;
+  fail(
+    `corpus at ${CORPUS_ROOT} is not a git clone: ${why}\n` +
+      `the goldens are recorded against a git clone; GIT-003 reads .gitignore through ` +
+      `git check-ignore, so an export (git archive, a tarball) can fail a fixture as golden mismatch.\n` +
+      `clone it: git clone https://github.com/opena2a-org/opena2a-corpus.git <dir>\n` +
+      `then check out the commit under test and set OPENA2A_CORPUS_PATH=<dir>.`,
+  );
 }
 
 function loadFixtureManifest(path: string): FixtureManifest {
