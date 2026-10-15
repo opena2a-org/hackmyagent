@@ -289,6 +289,10 @@ function hermeticRun(nodeArgs, timeoutMs = 180_000) {
     USERPROFILE: home,
     TMPDIR: tmp,
     NO_COLOR: '1',
+    // This environment replaces the caller's, so it carries no CI marker even
+    // in the release job, and the installed CLI sent a usage event per run
+    // (#963).
+    OPENA2A_TELEMETRY: 'off',
     // Belt for the non-unshare arm: anything that honours proxy variables
     // dials a closed port instead of the world.
     HTTP_PROXY: 'http://127.0.0.1:9',

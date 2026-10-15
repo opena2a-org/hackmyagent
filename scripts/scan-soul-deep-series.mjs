@@ -221,6 +221,9 @@ function measure(opts, fixture, scratch) {
   const res = spawnSync(process.execPath, [opts.cli, 'scan-soul', fixture.dir, '--deep'], {
     env: {
       ...process.env,
+      // Every CLI run of the series has usage telemetry off (#963): a
+      // maintainer's shell carries no CI marker, and each run sent an event.
+      OPENA2A_TELEMETRY: 'off',
       [KEY_VAR]: PLACEHOLDER_KEY,
       [MEASURE_VAR]: file,
       NODE_OPTIONS: withPreload(process.env.NODE_OPTIONS),
@@ -292,7 +295,7 @@ function readSpend(file) {
 }
 
 function describeBuild(cli, timeoutMs) {
-  const env = { ...process.env };
+  const env = { ...process.env, OPENA2A_TELEMETRY: 'off' };
   delete env[KEY_VAR];
   const version = spawnSync(process.execPath, [cli, '--version'], { env, encoding: 'utf8', timeout: timeoutMs });
   let onnxruntimeNode = null;
@@ -412,7 +415,7 @@ function main() {
       console.log(`  charge: ${usd(costMicroUsd)} per run; ${usd(totalMicroUsd)} of ${usd(CAP_MICRO_USD)} already in ${opts.spend}`);
     }
 
-    const env = { ...process.env };
+    const env = { ...process.env, OPENA2A_TELEMETRY: 'off' };
     delete env[MEASURE_VAR];
     if (!keySet) delete env[KEY_VAR];
 

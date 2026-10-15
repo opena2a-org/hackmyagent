@@ -336,6 +336,20 @@ describe('HMA-40: release-artifact-review over poisoned and clean tarballs', { t
     expect(r.census).toContain('self-check-live=pass');
   });
 
+  it('#963 the installed CLI runs with usage telemetry off', () => {
+    // The review hands the CLI an environment that replaces the caller's, so
+    // no CI or test-runner marker reaches it, even in the release job. The
+    // stand-in prints the OPENA2A_TELEMETRY it was given on --version, and the
+    // review prints that line in the smoke-version detail.
+    const reporting = FIXTURE_CLI.replace(
+      "console.log('0.0.0-fixture'); process.exit(0);",
+      "console.log('0.0.0-fixture OPENA2A_TELEMETRY=' + (process.env.OPENA2A_TELEMETRY || 'unset')); process.exit(0);",
+    );
+    expect(reporting).not.toBe(FIXTURE_CLI); // the mutation applied; a no-op here would test nothing
+    const r = review(makeTarball('telemetry', { ...baseFiles(), 'dist/cli.js': reporting }));
+    expect(r.stdout).toMatch(/^check smoke-version: pass \S+ --version printed 0\.0\.0-fixture OPENA2A_TELEMETRY=off /m);
+  });
+
   it('HMA-40.AC2+AC3 the tarball packed from the delivered tree has no failing check, and exits 0 exactly when nothing was a precondition', () => {
     // `npm pack` exactly as the release build job runs it. Where a
     // precondition holds (no dist/ built, or no registry from this runner)

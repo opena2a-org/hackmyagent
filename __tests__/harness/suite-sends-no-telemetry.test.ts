@@ -27,6 +27,11 @@
  *     nothing reads in place of OPENA2A_TELEMETRY. The object is followed
  *     through a variable, and a marker counts only with a value the CLI reads
  *     as one (#999).
+ *
+ * And one for the release and measurement scripts under scripts/, which run
+ * outside this suite: each environment a script that runs the CLI builds for
+ * a child sets OPENA2A_TELEMETRY=off itself, because a maintainer's shell
+ * carries no marker to inherit.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -451,5 +456,123 @@ describe('a test that turns telemetry on keeps it on this machine (#963)', () =>
     const found = scan(bad);
     expect(found.every((f) => /^spawns the CLI with an environment that replaces/.test(f.problem))).toBe(true);
     expect(found.map((f) => f.line).sort((a, b) => a - b)).toEqual([2, 3, 4, 5, 6, 7, 8, 10, 11]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scripts: what a release or measurement script hands the CLI (#963).
+// ---------------------------------------------------------------------------
+
+/**
+ * The scripts that name the CLI's entry file. They run from a maintainer's
+ * shell as well as from CI, and a maintainer's shell carries no marker: the
+ * corpus gate handed each fixture run the caller's environment, and a fixture
+ * run sent a usage event; the release review built an environment that
+ * replaces the caller's, so no marker reached its runs even in CI.
+ */
+function cliScripts(dir = path.join(REPO_ROOT, 'scripts')): string[] {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && /\.(?:[cm]?js|ts)$/.test(e.name))
+    .map((e) => path.join(dir, e.name))
+    .filter((f) => CLI_FILE.test(readFileSync(f, 'utf8')));
+}
+
+/** Whether `expr` is an OPENA2A_TELEMETRY value the SDK reads as off, spelled out in the file. */
+function offValue(expr: ts.Expression | undefined, from: ts.Node): boolean {
+  if (!expr) return false;
+  let e = unwrap(expr);
+  if (ts.isIdentifier(e)) e = declaredValue(e.text, from) ?? e;
+  return ts.isStringLiteralLike(e) && OPT_OUT.has(e.text.trim().toLowerCase());
+}
+
+/**
+ * An object literal a script builds as a child's environment: the value of an
+ * `env` option, a variable named for one, or an object that spreads
+ * `process.env` or sets PATH.
+ */
+function childEnvironment(obj: ts.ObjectLiteralExpression): boolean {
+  const parent = obj.parent;
+  if (ts.isPropertyAssignment(parent) && parent.initializer === obj && keyName(parent.name) === 'env') return true;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name) && /^env$|Env$|_ENV$/.test(parent.name.text)) return true;
+  return obj.properties.some((p) => (ts.isSpreadAssignment(p) && p.expression.getText() === 'process.env')
+    || ((ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) && keyName(p.name) === 'PATH'));
+}
+
+/**
+ * Two problems: a child environment that does not set OPENA2A_TELEMETRY to
+ * off in the object itself or in an object literal it spreads, and a spawn
+ * of the CLI with no environment at all, which hands it the caller's. A
+ * `--version` run is exempt, as in the suite scan above.
+ */
+function scanScript(file: string): Finding[] {
+  const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  const rel = path.relative(REPO_ROOT, file);
+  const at = (node: ts.Node) => sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+  const findings: Finding[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isObjectLiteralExpression(node) && childEnvironment(node)
+      && !offValue(envShape(node, node)?.values.get('OPENA2A_TELEMETRY'), node)) {
+      findings.push({ file: rel, line: at(node), problem: 'builds a child environment without OPENA2A_TELEMETRY set to off' });
+    }
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText();
+      const isSpawn = SPAWN_CALL.test(callee);
+      const isExec = !isSpawn && EXEC_CALL.test(callee);
+      if ((isSpawn || isExec) && namesCli(node.arguments.slice(0, isExec ? 1 : 2), node)
+        && !(isSpawn && versionOnly(node.arguments[1], node))) {
+        const options = node.arguments.slice(1).map((a) => objectAt(a, node)).find((o) => o !== undefined);
+        const hasEnv = options?.properties.some((p) => (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))
+          && keyName(p.name) === 'env');
+        if (!hasEnv) {
+          findings.push({ file: rel, line: at(node), problem: 'runs the CLI with the caller\'s environment and no telemetry choice' });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return findings;
+}
+
+describe('a script that runs the CLI turns usage telemetry off for it (#963)', () => {
+  it('RED-ON-BASE: each child environment such a script builds sets OPENA2A_TELEMETRY=off, and each of its CLI spawns passes one', () => {
+    const scripts = cliScripts();
+    expect(scripts.map((f) => path.relative(REPO_ROOT, f))).toEqual(expect.arrayContaining([
+      'scripts/release-artifact-review.mjs',
+      'scripts/release-smoke-corpus.ts',
+      'scripts/scan-soul-deep-series.mjs',
+      'scripts/use-case-samples.mjs',
+    ]));
+    expect(scripts.flatMap(scanScript).map((f) => `${f.file}:${f.line} ${f.problem}`)).toEqual([]);
+  });
+
+  it('the script scan sees both problems and passes a script that names no CLI (non-vacuity)', () => {
+    const dir = tempDir('hma-963-scripts-');
+    writeFileSync(path.join(dir, 'runs-cli.mjs'), [
+      "const CLI = path.join(ROOT, 'dist', 'cli.js');",
+      "const inherited = { ...process.env, OPENA2A_CORPUS_DETERMINISTIC: '1' };",
+      "function hermetic(args) { return spawnSync(process.execPath, args, { env: { PATH: process.env.PATH, HOME: '' } }); }",
+      "spawnSync(process.execPath, [CLI, 'secure', '.']);",
+      "const CHILD_ENV = { HOME: '', OPENA2A_TELEMETRY: 'on' };",
+      // Not problems: off set in the object, in a literal it spreads, or
+      // through a constant; a --version run; an options object.
+      "const off = { ...process.env, OPENA2A_TELEMETRY: 'off' };",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: { ...off, HOME: '' } });",
+      "const OFF = 'off';",
+      "execFileSync(process.execPath, [CLI, 'secure', '.'], { env: { PATH: '', OPENA2A_TELEMETRY: OFF } });",
+      "spawnSync(process.execPath, [CLI, '--version']);",
+      "const options = { encoding: 'utf8', timeout: 5 };",
+      '',
+    ].join('\n'));
+    writeFileSync(path.join(dir, 'git-only.mjs'),
+      "spawnSync('git', ['status'], { env: { ...process.env, GIT_DIR: '.git' } });\n");
+    const scripts = cliScripts(dir);
+    expect(scripts.map((f) => path.basename(f))).toEqual(['runs-cli.mjs']);
+    expect(scanScript(scripts[0]).map((f) => `${f.line} ${f.problem}`).sort()).toEqual([
+      '2 builds a child environment without OPENA2A_TELEMETRY set to off',
+      '3 builds a child environment without OPENA2A_TELEMETRY set to off',
+      '4 runs the CLI with the caller\'s environment and no telemetry choice',
+      '5 builds a child environment without OPENA2A_TELEMETRY set to off',
+    ]);
   });
 });
