@@ -18575,18 +18575,30 @@ dist/
     const dirVerifyMap = new Map<string, { verifyFile: string; verifyLine: number }>();
     const dirExecMap = new Map<string, { execFile: string; execLine: number }>();
     const verifyIntegrity = new WordChainAlternationRegExp(/verify.*digest|validate.*hash|check.*integrity/i);
+    // An export or import list names functions without calling them, so the
+    // verify chain can match across two unrelated names on it (compiled
+    // `exports.validateX = ... = exports.hashY = void 0;`). No form takes a
+    // `(` outside a quoted module path, so a line that also calls a function
+    // is still a verify site.
+    const exportOrImportList = /^\s*(?:(?:exports\.[\w$]+\s*=\s*)+void 0|export\s+(?:type\s+)?\{[\s\w$,]*\}?|(?:import|export)\b[\s\w$,{}*]*\bfrom\s*(['"])[^'"]*\1|module\.exports\s*=\s*\{[\s\w$,:]*\}?)\s*;?\s*$/;
+    // `.exec(` is also RegExp.prototype.exec: as a method call it counts only
+    // in a file that imports child_process. A bare `exec(` counts as before.
+    const execCallNotMethod = /\bspawn\s*\(|(?<!\.\s*)\bexec\s*\(|\bexecSync\s*\(|\bexecFile\s*\(/;
+    const childProcessImport = /\brequire\s*\(\s*(['"`])(?:node:)?child_process\1\s*\)|\bfrom\s*(['"`])(?:node:)?child_process\2/;
     for (const file of cappedTsJs) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
         const dir = path.dirname(file);
+        let importsChildProcess: boolean | undefined;
         for (let i = 0; i < lines.length; i++) {
-          if (verifyIntegrity.test(lines[i])) {
+          if (verifyIntegrity.test(lines[i]) && !exportOrImportList.test(lines[i])) {
             if (!dirVerifyMap.has(dir)) {
               dirVerifyMap.set(dir, { verifyFile: file, verifyLine: i + 1 });
             }
           }
-          if (/\bspawn\s*\(|\bexec\s*\(|\bexecSync\s*\(|\bexecFile\s*\(/.test(lines[i])) {
+          if (/\bspawn\s*\(|\bexec\s*\(|\bexecSync\s*\(|\bexecFile\s*\(/.test(lines[i]) &&
+              (execCallNotMethod.test(lines[i]) || (importsChildProcess ??= childProcessImport.test(content)))) {
             if (!dirExecMap.has(dir)) {
               dirExecMap.set(dir, { execFile: file, execLine: i + 1 });
             }
