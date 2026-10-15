@@ -84,3 +84,26 @@ export const VSCODE_CLIENT = mcpClientTarget('VS Code');
 export const MCP_SERVER_MAP_KEYS: readonly string[] = [
   ...new Set(MCP_CLIENT_TARGETS.map((t) => t.mcpKey)),
 ];
+
+/**
+ * Every `[name, entry]` pair of a parsed MCP config, read under EVERY key in
+ * `MCP_SERVER_MAP_KEYS`, in that order. A map that is absent or not an object
+ * contributes nothing; a map written as a list yields its elements under
+ * their indexes, as the checks that read `servers` alone walked it. A file
+ * carrying both keys yields both maps, so each server is evaluated once under
+ * the key it was written under.
+ *
+ * Entries are returned as written: a caller that inspects fields skips an
+ * entry that is not an object itself. The entry objects are the parsed
+ * objects, so an in-place fix that mutates one is serialised with `config`.
+ */
+export function mcpServerEntries(config: unknown): Array<[string, unknown]> {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return [];
+  const entries: Array<[string, unknown]> = [];
+  for (const mapKey of MCP_SERVER_MAP_KEYS) {
+    const servers = (config as Record<string, unknown>)[mapKey];
+    if (!servers || typeof servers !== 'object') continue;
+    entries.push(...Object.entries(servers as Record<string, unknown>));
+  }
+  return entries;
+}
