@@ -174,7 +174,7 @@ export const SHAPE_FIXTURES: Readonly<Record<string, ShapeFixture>> = {
     nearMiss: 'Zx8Kq2' + 'Wm5Bn7Vc4Lp9Rt6Yu3Ij1Oe0Ad8Sf5Gh',
   },
   'pem-private-key': {
-    alternation: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PRIVATE)[A-Z ]*KEY-----',
+    alternation: '-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----',
     marker: '[REDACTED_PRIVATE_KEY]',
     sample: '-----B' + 'EGIN RSA PRIVATE KEY-----',
     nearMiss: '-----B' + 'EGIN CERTIFICATE-----',
