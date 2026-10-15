@@ -1578,6 +1578,14 @@ interface UnifiedCheckDisplayOptions {
   /** When set, this path is used in Next Steps hints instead of `name`. Use for local directory targets (e.g., `secure`). */
   nextStepsTarget?: string;
   /**
+   * The target `check` takes to scan this artifact again, cited in Next Steps
+   * instead of `name` when `name` is a label `check` does not accept: a URL
+   * scan is named `gitlab.com/<org>/<repo>` or after the file it downloaded,
+   * and `check` refuses both. Unlike `nextStepsTarget`, it keeps the full
+   * project audit hint.
+   */
+  checkTarget?: string;
+  /**
    * `secure --fix` already ran harden-soul on this tree in this run (#294), so
    * Next Steps must not tell the reader to run it: the governance findings in
    * the report were measured before that write.
@@ -3543,7 +3551,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
       && !f.checkId?.startsWith('AST-GOV') && !f.checkId?.startsWith('AST-GOVERN')
       && !f.checkId?.startsWith('AST-PROMPT') && !f.checkId?.startsWith('AST-HEARTBEAT');
   });
-  printCheckNextSteps(opts.nextStepsTarget ?? name, {
+  printCheckNextSteps(opts.nextStepsTarget ?? opts.checkTarget ?? name, {
     hasGovernanceIssues: hasGovIssues && !opts.governanceHardened,
     hasFindings: totalFindings > 0,
     hasCredentialFindings: hasCredIssues,
@@ -15701,6 +15709,9 @@ async function checkRawUrl(
     // Display results using unified display
     displayUnifiedCheck({
       name: displayName,
+      // `displayName` drops the scheme, or names the downloaded file, and
+      // `check` refuses either as a target. The URL as shown is one it takes.
+      checkTarget: shownUrl,
       sourceLabel: 'URL',
       remote: true,
       projectType: result.projectType,
