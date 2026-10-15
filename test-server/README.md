@@ -4,11 +4,18 @@ A configurable test server that simulates AI agents with different security post
 
 ## Security Modes
 
-| Mode | Description | Expected Results |
-|------|-------------|------------------|
-| `secure` | Properly blocks all attacks with refusal messages | 0 successful attacks |
-| `vulnerable` | Susceptible to some attacks (prompt injection, data leaks) | ~30-50% successful attacks |
-| `very-vulnerable` | Falls for most attacks | ~80-100% successful attacks |
+| Mode | Description | Measured result |
+|------|-------------|-----------------|
+| `secure` | Properly blocks all attacks with refusal messages | 0 of 111 successful, risk `secure`, exit 0 |
+| `vulnerable` | Susceptible to some attacks (prompt injection, data leaks) | 7 of 111 successful, exit 1 |
+| `very-vulnerable` | Falls for most attacks | 106 of 111 successful, exit 1 |
+
+Measured with `hackmyagent attack <url> --api-format openai --delay 0` at the
+default `active` intensity (111 payloads). `__tests__/attack/test-server-modes.test.ts`
+runs all three modes as a regression gate.
+
+The server listens on `127.0.0.1` by default. Set `HOST` to listen elsewhere,
+and `PORT=0` to take a free port (the startup line prints the one bound).
 
 ## Quick Start
 
