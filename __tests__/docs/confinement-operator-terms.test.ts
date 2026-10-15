@@ -1,5 +1,5 @@
 /**
- * The README and CHANGELOG state out-of-tree link confinement in the
+ * The command reference (docs/commands.md) and CHANGELOG state out-of-tree link confinement in the
  * operator's terms, and the report's retarget line uses the same phrase, so
  * the three cannot drift apart: a reader who sees the line in a report can
  * find the paragraph that explains it by searching for those words.
@@ -22,12 +22,14 @@ const PHRASE = /point the scan at/;
  */
 
 describe('out-of-tree link confinement is stated in the operator\'s terms', () => {
-  it('README says it in one sentence containing the retarget phrase', () => {
-    const readme = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-    // README paragraphs are one line each, so "one contiguous sentence" is
+  it('the command reference says it in one sentence containing the retarget phrase', () => {
+    // The `secure` section moved from the README to docs/commands.md when the
+    // README was cut to its reading-load limits.
+    const page = readFileSync(path.join(ROOT, 'docs', 'commands.md'), 'utf8');
+    // Its paragraphs are one line each, so "one contiguous sentence" is
     // "the phrase and its subject sit on one line".
-    const lines = readme.split('\n').filter((l) => PHRASE.test(l));
-    expect(lines, 'README line with "point the scan at"').toHaveLength(1);
+    const lines = page.split('\n').filter((l) => PHRASE.test(l));
+    expect(lines, 'docs/commands.md line with "point the scan at"').toHaveLength(1);
     expect(lines[0]).toMatch(/is not followed/);
     expect(lines[0]).toMatch(/hackmyagent secure /);
   });

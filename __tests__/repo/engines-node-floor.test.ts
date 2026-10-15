@@ -132,10 +132,12 @@ describe('engines.node names the floor the built CLI starts on (#686)', () => {
     expect(admits(pkg.engines.node, version)).toBe(true);
   });
 
-  it('the README states the same floor', () => {
-    const readme = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
-    const line = readme.split('\n').find((l) => l.startsWith('Requires Node.js'));
-    expect(line, 'README Install section: "Requires Node.js ..." line').toBeDefined();
+  // The Install details moved from the README to docs/install.md when the
+  // README was cut to its reading-load limits.
+  it('docs/install.md states the same floor', () => {
+    const page = readFileSync(path.join(REPO_ROOT, 'docs', 'install.md'), 'utf8');
+    const line = page.split('\n').find((l) => l.startsWith('Requires Node.js'));
+    expect(line, 'docs/install.md: "Requires Node.js ..." line').toBeDefined();
     const stated = [...line!.matchAll(/\b(\d+)\.(\d+)\b/g)].map((m) => `${m[1]}.${m[2]}`).sort();
     const floors = alternatives(pkg.engines.node).map(({ min }) => `${min[0]}.${min[1]}`).sort();
     expect(stated).toEqual(floors);

@@ -151,6 +151,9 @@ describe('check-count single source of truth', () => {
   // distinct check ids the seven analyzers emit (the published definition),
   // `check-metadata`'s semanticChecks is every AST-/SEM- taxonomy id. Hold each
   // published sentence to the source it names.
+  // When the README was cut to its reading-load limits, these sentences moved
+  // to docs/SECURITY_CHECKS.md (What the counts mean); the README keeps one
+  // count per category, and its semantic count is held to the same source.
   it('README and docs/SECURITY_CHECKS.md state the counts their sources produce', () => {
     const root = join(__dirname, '../..');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
@@ -172,13 +175,14 @@ describe('check-count single source of truth', () => {
     const sem = ids.filter(id => id.startsWith('SEM-'));
     const sharedWithStatic = [...emitted].filter(id => !id.startsWith('AST-'));
 
-    expect(figures(readme, /\*\*(\d+) static checks across (\d+) categories\*\* \((\d+) checks across (\d+) categories including the NanoMind semantic layer\)/))
+    expect(figures(checksDoc, /\*\*(\d+) static checks across (\d+) categories\*\* \((\d+) checks across (\d+) categories including the NanoMind semantic layer\)/))
       .toEqual([counts.static, counts.staticCategories, counts.total, counts.totalCategories]);
-    expect(figures(readme, /\*\*(\d+) NanoMind semantic checks\.\*\*/)).toEqual([emitted.size]);
-    expect(figures(readme, /\(This (\d+) is the fixed catalog of check ids the seven analyzers emit\./)).toEqual([emitted.size]);
-    expect(figures(readme, /reports `semanticChecks: (\d+)`/)).toEqual([counts.semantic]);
-    expect(figures(readme, /the structural layer's (\d+) `SEM-` checks/)).toEqual([sem.length]);
-    expect(figures(readme, /leaves out the (\d+) `UNICODE-STEGO` ids/)).toEqual([sharedWithStatic.length]);
+    expect(figures(checksDoc, /\*\*(\d+) NanoMind semantic checks\.\*\*/)).toEqual([emitted.size]);
+    expect(figures(checksDoc, /\(This (\d+) is the fixed catalog of check ids the seven analyzers emit\./)).toEqual([emitted.size]);
+    expect(figures(checksDoc, /reports `semanticChecks: (\d+)`/)).toEqual([counts.semantic]);
+    expect(figures(checksDoc, /the structural layer's (\d+) `SEM-` checks/)).toEqual([sem.length]);
+    expect(figures(checksDoc, /leaves out the (\d+) `UNICODE-STEGO` ids/)).toEqual([sharedWithStatic.length]);
+    expect(figures(readme, /: (\d+) semantic checks over /)).toEqual([emitted.size]);
     expect(sharedWithStatic.every(id => id.startsWith('UNICODE-STEGO-') && ids.includes(id))).toBe(true);
     expect(emitted.size - sharedWithStatic.length + sem.length).toBe(counts.semantic);
 

@@ -1,5 +1,6 @@
 /**
- * #985: the README's OpenClaw and NemoClaw paragraph said `secure` detects
+ * #985: the OpenClaw and NemoClaw paragraph (in the README then, in
+ * docs/commands.md since the README was cut to its reading-load limits) said `secure` detects
  * `.nemoclaw/` and `openclaw.plugin.json` and runs their check groups. Neither
  * marker was read anywhere: a tree holding only `openclaw.plugin.json` scanned
  * as a `library`, and a `~/.nemoclaw` install appeared only under Machine
@@ -19,13 +20,13 @@ beforeAll(assertDistFresh);
 
 const ROOT = path.resolve(__dirname, '../..');
 const CLI = path.join(ROOT, 'dist', 'cli.js');
-const README = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+const PAGE = readFileSync(path.join(ROOT, 'docs', 'commands.md'), 'utf8');
 
 /** The `### OpenClaw and NemoClaw` subsection, up to the next heading. */
 function paragraph(): string {
-  const start = README.indexOf('\n### OpenClaw and NemoClaw');
+  const start = PAGE.indexOf('\n### OpenClaw and NemoClaw');
   expect(start, 'the OpenClaw and NemoClaw subsection was not found').toBeGreaterThan(-1);
-  const rest = README.slice(start + 1);
+  const rest = PAGE.slice(start + 1);
   const end = rest.slice(1).search(/\n#/);
   return end === -1 ? rest : rest.slice(0, end + 1);
 }
@@ -60,7 +61,7 @@ function scan(dir: string, home: string): { projectType: string; machinePosture:
   return JSON.parse((r.stdout || '').trim());
 }
 
-describe('README OpenClaw and NemoClaw paragraph', () => {
+describe('OpenClaw and NemoClaw paragraph of the command reference', () => {
   it('names at least one target marker and one home runtime', () => {
     expect(TARGET_MARKERS.length).toBeGreaterThan(0);
     expect(HOME_RUNTIMES.length).toBeGreaterThan(0);

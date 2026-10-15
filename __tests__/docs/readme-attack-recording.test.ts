@@ -1,6 +1,7 @@
 /**
- * The README's `attack` section embeds a recording of a red-team run against a
- * live DVAA agent. The recording was made in June against an older build and
+ * The `attack` section of docs/commands.md (it moved there from the README
+ * when the README was cut to its reading-load limits) embeds a recording of a
+ * red-team run against a live DVAA agent. The recording was made in June against an older build and
  * its caption was never checked again: the build had since changed the report
  * (`Attacks: 28 total | ...` became `Attacks: 28 sent | 28 answered | ...`),
  * the tape only ran from one machine's checkout, and nothing in the repository
@@ -16,7 +17,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(__dirname, '../..');
-const README = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+/** The page that embeds the recording. Its links resolve against its own directory. */
+const PAGE_PATH = 'docs/commands.md';
+const PAGE = readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 const GIF = 'docs/vhs/attack-dvaa.gif';
 const TAPE = 'docs/vhs/attack-dvaa.tape';
 const CAPTURE = 'docs/vhs/attack-dvaa-capture.txt';
@@ -27,18 +30,23 @@ function read(rel: string): string {
   return readFileSync(file, 'utf8');
 }
 
-/** The alt text of the README image that embeds `src`. */
+/** `src`, a path from the repository root, as the page links it. */
+function href(src: string): string {
+  return path.posix.relative(path.posix.dirname(PAGE_PATH), src);
+}
+
+/** The alt text of the page image that embeds `src`. */
 function altText(src: string): string {
-  const m = new RegExp(`!\\[([^\\]]*)\\]\\(${src.replace(/[.]/g, '\\.')}\\)`).exec(README);
-  expect(m, `README does not embed ${src}`).not.toBeNull();
+  const m = new RegExp(`!\\[([^\\]]*)\\]\\(${href(src).replace(/[.]/g, '\\.')}\\)`).exec(PAGE);
+  expect(m, `${PAGE_PATH} does not embed ${src}`).not.toBeNull();
   return m![1];
 }
 
 /** The paragraph directly after the image that embeds `src`. */
 function paragraphAfter(src: string): string {
-  const at = README.indexOf(`](${src})`);
+  const at = PAGE.indexOf(`](${href(src)})`);
   expect(at).toBeGreaterThan(-1);
-  const rest = README.slice(at).split('\n\n');
+  const rest = PAGE.slice(at).split('\n\n');
   return rest[1] ?? '';
 }
 
@@ -50,7 +58,7 @@ function report(): string {
   return capture.slice(start + 1);
 }
 
-describe('README attack recording', () => {
+describe('attack recording on the command reference page', () => {
   it('the caption states the risk score and attack counts the captured report prints', () => {
     const alt = altText(GIF);
     const out = report();
@@ -77,7 +85,7 @@ describe('README attack recording', () => {
     }
   });
 
-  it('the caption and the capture name the same version, and the README dates the recording', () => {
+  it('the caption and the capture name the same version, and the page dates the recording', () => {
     const version = /Tool: +hackmyagent (\d+\.\d+\.\d+)/.exec(read(CAPTURE));
     expect(version, `${CAPTURE} does not name the version it ran`).not.toBeNull();
     expect(altText(GIF)).toContain(`hackmyagent ${version![1]}`);
@@ -87,15 +95,15 @@ describe('README attack recording', () => {
     expect(provenance).toContain(CAPTURE);
   });
 
-  it('the README, the tape and the capture run the same command against the same DVAA image', () => {
+  it('the page, the tape and the capture run the same command against the same DVAA image', () => {
     const typed = /^Type "(hackmyagent attack [^"|]+?)(?: \| head -\d+)?"$/m.exec(read(TAPE));
     expect(typed, `${TAPE} types no hackmyagent attack command`).not.toBeNull();
     const command = typed![1];
-    expect(README).toContain(command);
+    expect(PAGE).toContain(command);
     expect(report().split('\n')[0]).toBe(`$ ${command}`);
 
-    const image = /opena2a\/dvaa:\d+\.\d+\.\d+/.exec(README);
-    expect(image, 'README names no DVAA image').not.toBeNull();
+    const image = /opena2a\/dvaa:\d+\.\d+\.\d+/.exec(PAGE);
+    expect(image, `${PAGE_PATH} names no DVAA image`).not.toBeNull();
     expect(read(CAPTURE)).toContain(image![0]);
     expect(read(TAPE)).toContain(image![0]);
   });

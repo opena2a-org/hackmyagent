@@ -9,6 +9,11 @@
  * README, there was no section saying how a scan works, and `--version` printed
  * `Telemetry: on` while the README never used the word. Each rule below holds
  * one of those as structure, so a later edit cannot quietly undo it.
+ *
+ * When the README was cut to its reading-load limits, How it works moved to
+ * docs/how-it-works.md, the `detect` sample to the Usage section, and the
+ * capture's version and date to the capture file it links. The rules follow
+ * each one to where it now lives.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -76,10 +81,9 @@ describe('README front door', () => {
     expect(outputOpens + 1).toBeLessThan(30);
   });
 
-  it('Quick start runs secure and detect, each followed by its captured output', () => {
-    const blocks = fences(section('## Quick start'));
-    const secure = outputAfter(blocks, 'npx hackmyagent secure');
-    const detect = outputAfter(blocks, 'npx hackmyagent detect');
+  it('Quick start runs secure and Usage runs detect, each followed by its captured output', () => {
+    const secure = outputAfter(fences(section('## Quick start')), 'npx hackmyagent secure');
+    const detect = outputAfter(fences(section('## Usage')), 'npx hackmyagent detect');
     expect(secure, 'no output block after `npx hackmyagent secure`').toBeDefined();
     expect(detect, 'no output block after `npx hackmyagent detect`').toBeDefined();
     expect(secure!).toMatch(/files analyzed/);
@@ -88,14 +92,20 @@ describe('README front door', () => {
     expect(detect!).toMatch(/── Shadow AI agents/);
   });
 
-  it('Quick start says when the captures were taken and from which version', () => {
+  it('the capture Quick start links says when it was taken and from which version', () => {
     const quickStart = section('## Quick start');
-    expect(quickStart).toMatch(/\b20\d\d-\d\d-\d\d\b/);
-    expect(quickStart).toMatch(/hackmyagent \d+\.\d+\.\d+/);
+    const link = /\]\((docs\/[\w./-]+-capture\.txt)\)/.exec(quickStart);
+    expect(link, 'Quick start links no capture file').not.toBeNull();
+    const capture = readFileSync(path.join(ROOT, link![1]), 'utf8');
+    // The capture records the run as an ISO 8601 timestamp, `2026-10-10T04:11:29Z`.
+    expect(capture).toMatch(/\b20\d\d-\d\d-\d\d(?:T\d\d:\d\d|\b)/);
+    expect(capture).toMatch(/hackmyagent \d+\.\d+\.\d+/);
   });
 
-  it('has exactly one How it works section', () => {
-    expect(README.match(/^## How it works$/gm) ?? []).toHaveLength(1);
+  it('has exactly one How it works page, and the README links it', () => {
+    const page = readFileSync(path.join(ROOT, 'docs', 'how-it-works.md'), 'utf8');
+    expect(page.match(/^# How it works$/gm) ?? []).toHaveLength(1);
+    expect(README).toContain('](docs/how-it-works.md)');
   });
 
   it('has a Telemetry section naming what --version prints and the opt-out the CLI help names', () => {
