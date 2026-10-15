@@ -6829,9 +6829,12 @@ Backups (--fix):
           if (hardenResult.writeRefused) {
             // Never silent. A refused write with a composed section list is the
             // shape of report this repo has spent six rounds removing.
+            // #1063 — the reason can quote an `.hmaignore` rule as written, so
+            // its control characters are escaped the way the `Not fixed` line
+            // escapes the same rule text.
             process.stderr.write(
               `\nGovernance auto-fix: NOT applied to ${escapePathForDisplay(hardenResult.writeRefused.path)}\n`
-              + `  ${hardenResult.writeRefused.reason}\n`
+              + `  ${escapeForDisplay(hardenResult.writeRefused.reason)}\n`
               + `  The file is unchanged and the governance findings above still stand.\n\n`,
             );
           }
