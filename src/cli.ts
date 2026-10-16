@@ -15719,8 +15719,13 @@ async function checkRawUrl(
       artifactSummaries,
     });
 
-    // Community contribution (auto-share if opted in, no first-time prompt for URLs)
-    if (process.stdin.isTTY && !globalCiMode) {
+    // Community contribution (auto-share if opted in, no first-time prompt for URLs).
+    // Only a cloned repository is shared, named by its host and path. A
+    // downloaded file is named by the last segment of its URL path, or
+    // `download` when that is empty, and nothing in the submission tells the
+    // registry it is not the package of that name, so a scan of a
+    // downloaded file is not shared (#1123).
+    if (isGitUrl && process.stdin.isTTY && !globalCiMode) {
       if (isContributeEnabled()) {
         await shareCheckScan(checkScanSubmission(displayName, result));
       }

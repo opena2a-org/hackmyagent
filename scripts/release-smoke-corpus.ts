@@ -54,8 +54,19 @@ interface CorpusManifest {
   surfaceIndex: Record<string, Record<string, string[]>>;
 }
 
-const CORPUS_ROOT =
+/** The corpus directory as given; the messages about it name this path. */
+const CORPUS_PATH_GIVEN =
   process.env.OPENA2A_CORPUS_PATH ?? join(homedir(), '.opena2a', 'corpus');
+/**
+ * #1123: the same directory spelled as it is stored on disk, which the clone
+ * check and every scan use. On a case-insensitive file system a path can name
+ * the clone in another letter case, or in NFC for a name stored in NFD.
+ * `git rev-parse --show-toplevel` prints the spelling on disk and
+ * `fs.realpathSync` keeps the one it is given, so the clone was refused as a
+ * directory inside itself. `fs.realpathSync.native` returns the spelling on
+ * disk for both, and the scans are run on that path rather than the one given.
+ */
+const CORPUS_ROOT = spelledOnDisk(CORPUS_PATH_GIVEN);
 const HMA_CLI = resolve(__dirname, '..', 'dist', 'cli.js');
 const CONSUMER_NAME = 'hackmyagent';
 
@@ -71,12 +82,21 @@ function fail(msg: string, code = 2): never {
   process.exit(code);
 }
 
+/** `path` spelled as on disk, or `path` itself when it does not resolve. */
+function spelledOnDisk(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return path;
+  }
+}
+
 function loadCorpusManifest(): CorpusManifest {
   const path = join(CORPUS_ROOT, 'corpus-manifest.yaml');
   if (!existsSync(path)) {
     fail(
-      `corpus not found at ${CORPUS_ROOT}\n` +
-        `clone it: git clone https://github.com/opena2a-org/opena2a-corpus.git ${CORPUS_ROOT}\n` +
+      `corpus not found at ${CORPUS_PATH_GIVEN}\n` +
+        `clone it: git clone https://github.com/opena2a-org/opena2a-corpus.git ${CORPUS_PATH_GIVEN}\n` +
         `or set OPENA2A_CORPUS_PATH to a local checkout.`,
     );
   }
@@ -98,14 +118,14 @@ function assertCorpusIsGitClone(): void {
     encoding: 'utf8',
   });
   const top = r.status === 0 ? r.stdout.trim() : '';
-  if (top !== '' && realpathSync(top) === realpathSync(CORPUS_ROOT)) return;
+  if (top !== '' && spelledOnDisk(top) === CORPUS_ROOT) return;
   const why = r.error
     ? `git could not be run (${r.error.message})`
     : top !== ''
       ? `it sits inside the git work tree at ${top} instead of being a clone of its own`
       : `it has no .git directory`;
   fail(
-    `corpus at ${CORPUS_ROOT} is not a git clone: ${why}\n` +
+    `corpus at ${CORPUS_PATH_GIVEN} is not a git clone: ${why}\n` +
       `the goldens are recorded against a git clone; GIT-003 reads .gitignore through ` +
       `git check-ignore, so an export (git archive, a tarball) can fail a fixture as golden mismatch.\n` +
       `clone it: git clone https://github.com/opena2a-org/opena2a-corpus.git <dir>\n` +

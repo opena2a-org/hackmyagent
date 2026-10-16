@@ -151,7 +151,9 @@ repository has none at its root on purpose:
 
 The finding is left visible rather than suppressed. If a `Dockerfile` is added at the root,
 `SANDBOX-001` passes on it and `SANDBOX-002` then checks it for a non-root `USER`, and
-`__tests__/docs/contributing-self-scan.test.ts` fails until this section is updated.
+`__tests__/docs/contributing-self-scan.test.ts` fails. That test checks the tree, not this
+section: the change that adds a container file updates both this section and the expectations
+in that test.
 
 ## Code style
 
