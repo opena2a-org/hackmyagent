@@ -20,7 +20,10 @@ import { gitFreeEnv } from '../helpers/throwaway-repo';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CONTRIBUTING = path.join(REPO_ROOT, 'CONTRIBUTING.md');
-const UPDATE = 'update the "Scanning this repository" section of CONTRIBUTING.md';
+const SELF = '__tests__/docs/contributing-self-scan.test.ts';
+// #1123: the three tree checks below read the tree, not the section, so
+// rewriting the section alone leaves them failing. The message names both.
+const UPDATE = `update the "Scanning this repository" section of CONTRIBUTING.md and the expectation in ${SELF} that this message comes from`;
 
 // The subjects SANDBOX-001 reads at the scanned root (checkSandboxing).
 const ROOT_CONTAINER_FILES = ['Dockerfile', 'docker-compose.yml', 'docker-compose.yaml'];
@@ -42,6 +45,16 @@ describe('CONTRIBUTING.md records why the self-scan reports SANDBOX-001', () => 
     expect(text).toContain('`SANDBOX-001` Container Isolation');
     for (const name of ROOT_CONTAINER_FILES) expect(text).toContain(`\`${name}\``);
     expect(text).toContain(`\`${VHS_DOCKERFILE}\``);
+  });
+
+  it('tells the reader that a container file at the root needs both the section and this test changed', () => {
+    const prose = text.replace(/\s+/g, ' ');
+    expect(prose).toContain(`\`${SELF}\` fails. That test checks the tree, not this section:`);
+    expect(prose).toContain('updates both this section and the expectations in that test.');
+    expect(prose).not.toContain('fails until this section is updated');
+    expect(UPDATE).toContain('section of CONTRIBUTING.md');
+    expect(UPDATE).toContain(SELF);
+    expect(existsSync(path.join(REPO_ROOT, SELF))).toBe(true);
   });
 
   it('the root holds none of the files SANDBOX-001 reads', () => {

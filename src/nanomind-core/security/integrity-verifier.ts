@@ -27,9 +27,9 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import {
   readFileSync, existsSync, appendFileSync, mkdirSync, readdirSync, lstatSync,
-  openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync,
+  openSync, fstatSync, readSync, closeSync, renameSync, unlinkSync, statSync,
 } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { escapePathForDisplay, escapeForDisplay } from '../../ui/display-safe';
 
@@ -73,12 +73,20 @@ export interface TamperEvent {
 
 const NANOMIND_DIR = join(homedir(), '.nanomind');
 const MODELS_DIR = join(NANOMIND_DIR, 'models');
-const EVENT_CHAIN_PATH = join(NANOMIND_DIR, 'integrity-events.jsonl');
+/** Moves the event log off ~/.nanomind when it holds an absolute path. */
+export const EVENT_CHAIN_PATH_ENV = 'NANOMIND_EVENT_CHAIN_PATH';
 // About 5,000 events per segment at roughly 200 bytes each; one rotated
 // segment is kept, so after the first rotation the log never holds much more
 // than 2 MiB on disk.
 export const EVENT_CHAIN_MAX_BYTES = 1024 * 1024;
 const TAIL_CHUNK_BYTES = 4096;
+// An append holds `<path>.lock` from reading the last event to writing the
+// next. It waits up to EVENT_CHAIN_LOCK_WAIT_MS for another process's lock,
+// checking every EVENT_CHAIN_LOCK_RETRY_MS, and removes a lock older than
+// EVENT_CHAIN_LOCK_STALE_MS, which a process that ended mid-append left.
+const EVENT_CHAIN_LOCK_WAIT_MS = 2000;
+const EVENT_CHAIN_LOCK_RETRY_MS = 2;
+const EVENT_CHAIN_LOCK_STALE_MS = 5000;
 // No leading dot: the release artifact review (scripts/release-artifact-review.mjs)
 // refuses any dotfile entry in the published tarball, and this file ships in it.
 const MANIFEST_FILENAME = 'integrity-manifest.json';
@@ -276,6 +284,25 @@ export interface EventChainOptions {
 }
 
 /**
+ * The log an EventChain opens when it is given no path: the absolute path in
+ * $NANOMIND_EVENT_CHAIN_PATH, else ~/.nanomind/integrity-events.jsonl. A
+ * relative value is ignored, so the log is never written under the directory
+ * a scan runs in. The test suite sets it per test file (vitest.setup.ts), so
+ * a CLI run it spawns with the worker's environment does not append to the
+ * developer's own log.
+ */
+export function defaultEventChainPath(): string {
+  const fromEnv = process.env[EVENT_CHAIN_PATH_ENV];
+  if (fromEnv && isAbsolute(fromEnv)) return fromEnv;
+  return join(homedir(), '.nanomind', 'integrity-events.jsonl');
+}
+
+/** Blocks this thread for `ms` milliseconds. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
  * Append-only JSONL log of startup integrity results. Each event carries the
  * SHA-256 of the previous one, so verify() can find a corrupted, dropped or
  * edited line. The hash is unkeyed and nothing verifies the log at startup:
@@ -290,12 +317,18 @@ export interface EventChainOptions {
  * handled at its first rotation: past 2 x maxBytes it is removed rather than
  * kept as `<path>.1`; between maxBytes and 2 x maxBytes it is kept, so the
  * two files can total up to 3 x maxBytes until the next rotation.
+ *
+ * Processes that share the log (several scans started together under one
+ * HOME) take turns: an append holds `<path>.lock` from reading the last event
+ * to writing its own, so two appends that hold it do not link to the same
+ * event. An append that cannot take the lock appends without it (see
+ * acquireLock).
  */
 export class EventChain {
   private chainPath: string;
   private maxBytes: number;
 
-  constructor(chainPath: string = EVENT_CHAIN_PATH, options: EventChainOptions = {}) {
+  constructor(chainPath: string = defaultEventChainPath(), options: EventChainOptions = {}) {
     this.chainPath = chainPath;
     this.maxBytes = options.maxBytes ?? EVENT_CHAIN_MAX_BYTES;
   }
@@ -305,32 +338,86 @@ export class EventChain {
     return `${this.chainPath}.1`;
   }
 
+  /** Path of the file an append holds while it reads the tail and writes. */
+  get lockPath(): string {
+    return `${this.chainPath}.lock`;
+  }
+
   /**
    * Append an event. Reads only the tail of the log to link to the previous
    * event, and rotates the log first when this line would exceed maxBytes.
+   * The read, the rotation and the write happen under the append lock.
    */
   append(eventType: TamperEvent['eventType'], detail: string): TamperEvent {
-    const { last, size } = this.readTail();
-    const timestamp = new Date().toISOString();
-    const linkTo = (prev: TamperEvent | null): TamperEvent => ({
-      seq: prev ? prev.seq + 1 : 0,
-      timestamp,
-      eventType,
-      detail,
-      prevHash: prev ? sha256(JSON.stringify(prev)) : GENESIS_PREV_HASH,
-    });
-
-    let event = linkTo(last);
-    if (size > 0 && size + Buffer.byteLength(JSON.stringify(event)) + 1 > this.maxBytes && this.rotate(size)) {
-      event = linkTo(null);
-    }
-
     const dir = dirname(this.chainPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    appendFileSync(this.chainPath, JSON.stringify(event) + '\n', 'utf-8');
-    return event;
+    const release = this.acquireLock();
+    try {
+      const { last, size } = this.readTail();
+      const timestamp = new Date().toISOString();
+      const linkTo = (prev: TamperEvent | null): TamperEvent => ({
+        seq: prev ? prev.seq + 1 : 0,
+        timestamp,
+        eventType,
+        detail,
+        prevHash: prev ? sha256(JSON.stringify(prev)) : GENESIS_PREV_HASH,
+      });
+
+      let event = linkTo(last);
+      if (size > 0 && size + Buffer.byteLength(JSON.stringify(event)) + 1 > this.maxBytes && this.rotate(size)) {
+        event = linkTo(null);
+      }
+
+      appendFileSync(this.chainPath, JSON.stringify(event) + '\n', 'utf-8');
+      return event;
+    } finally {
+      release?.();
+    }
+  }
+
+  /**
+   * Take the append lock by creating `<path>.lock` exclusively, and return
+   * the function that releases it. Returns null, and the caller appends
+   * without the lock as it did before the lock existed, when the lock file
+   * cannot be created (the directory is not writable) or another process
+   * still holds it after EVENT_CHAIN_LOCK_WAIT_MS. Nothing is thrown, for
+   * the reason rotate() gives.
+   */
+  private acquireLock(): (() => void) | null {
+    const deadline = Date.now() + EVENT_CHAIN_LOCK_WAIT_MS;
+    for (;;) {
+      try {
+        closeSync(openSync(this.lockPath, 'wx'));
+        return () => {
+          try {
+            unlinkSync(this.lockPath);
+          } catch {
+            // Already removed as stale by another process.
+          }
+        };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return null;
+      }
+      if (this.removeStaleLock()) continue;
+      if (Date.now() >= deadline) return null;
+      sleepSync(EVENT_CHAIN_LOCK_RETRY_MS);
+    }
+  }
+
+  /**
+   * Remove the lock file when it is older than EVENT_CHAIN_LOCK_STALE_MS.
+   * Returns true when this call removed it.
+   */
+  private removeStaleLock(): boolean {
+    try {
+      if (Date.now() - statSync(this.lockPath).mtimeMs <= EVENT_CHAIN_LOCK_STALE_MS) return false;
+      unlinkSync(this.lockPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -662,7 +749,7 @@ export interface VerifyOptions {
   packageRoot?: string;
   /** HMAC signing key for manifest signature verification */
   signingKey?: string;
-  /** Path to event chain file (defaults to ~/.nanomind/integrity-events.jsonl) */
+  /** Path to event chain file (defaults to defaultEventChainPath()) */
   eventChainPath?: string;
   /** Custom manifest (for testing) */
   manifest?: IntegrityManifest;

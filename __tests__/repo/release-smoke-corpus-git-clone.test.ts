@@ -14,7 +14,8 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
@@ -27,6 +28,9 @@ const TSX = join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
 const HARNESS = join(REPO_ROOT, 'scripts', 'release-smoke-corpus.ts');
 const CLI = join(REPO_ROOT, 'dist', 'cli.js');
 const CLONE_HINT = 'clone it: git clone https://github.com/opena2a-org/opena2a-corpus.git <dir>';
+// Whether the file system under the temporary directory finds a name in
+// another letter case (the macOS default does).
+const CASE_INSENSITIVE_TMP = tmpdir().toUpperCase() !== tmpdir() && existsSync(tmpdir().toUpperCase());
 
 function writeCorpus(root: string): void {
   mkdirSync(root, { recursive: true });
@@ -98,6 +102,23 @@ describe('#1080 release-smoke-corpus refuses a corpus that is not a git clone', 
     const r = runHarness(corpus, dirname(corpus));
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stderr).not.toContain('is not a git clone');
+    expect(r.stdout).toContain('0 passed, 0 failed, 1 skipped\n');
+  });
+
+  // #1123: `git rev-parse --show-toplevel` prints the name as stored on disk,
+  // and the harness compared it with the path it was given, resolved by
+  // `fs.realpathSync`, which keeps the letter case it is given. The clone was
+  // refused as a directory inside itself. A case-sensitive file system has no
+  // second spelling of a name to give.
+  it.skipIf(!CASE_INSENSITIVE_TMP)('runs a clone named in another letter case, through the name as stored on disk', () => {
+    const parent = tempDir('hma-1123-case-');
+    const corpus = join(parent, 'corpus-clone');
+    writeCorpus(corpus);
+    initThrowawayRepo(corpus, false);
+    const r = runHarness(join(parent, 'CORPUS-CLONE'), parent);
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stderr).not.toContain('is not a git clone');
+    expect(r.stdout).toContain(`corpus path: ${realpathSync.native(corpus)}\n`);
     expect(r.stdout).toContain('0 passed, 0 failed, 1 skipped\n');
   });
 });

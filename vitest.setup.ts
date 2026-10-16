@@ -114,6 +114,21 @@ afterAll(() => {
   fs.rmSync(backupHome, { recursive: true, force: true });
 });
 
+// The same for the NanoMind integrity event log. A CLI start appends an event
+// to it, by default in ~/.nanomind/integrity-events.jsonl, so a spawn in this
+// suite that kept the worker's HOME appended to the developer's own log
+// (#1123). Each test file
+// gets a log of its own through NANOMIND_EVENT_CHAIN_PATH, which a spawn that
+// passes `{ ...process.env }` inherits, removed when the file finishes. As
+// with the backup store, the path is reserved and nothing is created here:
+// the first append creates the directory. Pinned by
+// __tests__/harness/suite-leaves-integrity-log-alone.test.ts.
+const eventChainHome = path.join(os.tmpdir(), `hma-event-chain-${crypto.randomBytes(8).toString('hex')}`);
+process.env.NANOMIND_EVENT_CHAIN_PATH = path.join(eventChainHome, 'integrity-events.jsonl');
+afterAll(() => {
+  fs.rmSync(eventChainHome, { recursive: true, force: true });
+});
+
 // Fifth: a test file leaves nothing in the temporary directory. `tempDir` in
 // __tests__/helpers/temp-dir.ts removes what it creates when the creating test
 // finishes; this hook removes what was created outside a test, and anything

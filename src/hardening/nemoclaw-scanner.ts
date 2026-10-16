@@ -16,6 +16,7 @@ import type { SecurityFinding, SecurityFindingDraft, Severity } from './security
 import { emitFinding, type RedactedFinding } from './finding-emit';
 import { countsAsUnread } from './coverage-ledger';
 import { credentialValueMarker } from '../types/credential-format';
+import { PROCESS_LIST_MAX_BYTES } from '../scanner/process-list';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,6 +47,9 @@ function safeExec(cmd: string): string | null {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      // `ps aux` is read through here, and prints more than the 1 MiB default
+      // on a host with many processes or long command lines.
+      maxBuffer: PROCESS_LIST_MAX_BYTES,
     }).trim();
   } catch {
     return null;

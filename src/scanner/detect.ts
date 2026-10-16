@@ -20,6 +20,7 @@ import { citationTarget as safeCitationTarget, citationPath } from '../ui/shell-
 import { credentialValueMarker } from '../types/credential-format';
 import { escapePathForDisplay, escapeForDisplay, escapeJsonDisplayHazards } from '../ui/display-safe';
 import { findPermissionGrant } from './permission-grant';
+import { PROCESS_LIST_MAX_BYTES } from './process-list';
 import { deriveCheckVerdict, fullCoverage, unmeasuredBanner, coverageJson, unmeasured, EXIT_UNMEASURED } from '../check/verdict';
 import { readStaysInsideTree } from '../hardening/contain';
 import { withheldLinkRecords, withheldLinkLines } from '../hardening/withheld-links';
@@ -596,7 +597,7 @@ export function scanProcesses(psOutput?: string): DetectedAgent[] {
     output = psOutput;
   } else {
     try {
-      output = execSync('ps aux', { encoding: 'utf-8', timeout: 5000 });
+      output = execSync('ps aux', { encoding: 'utf-8', timeout: 5000, maxBuffer: PROCESS_LIST_MAX_BYTES });
     } catch {
       // The process surface could not be read. Returning `[]` here is
       // indistinguishable from "looked and found nothing", and a caller that
