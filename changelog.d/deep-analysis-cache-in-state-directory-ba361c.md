@@ -1,7 +1,7 @@
 ---
 type: fixed
 ---
-#### Deep analysis keeps its cache in the tool's state directory and redacts what it stores
+#### Deep analysis keeps its cache and daily budget in the scanned tree's state directory and redacts what it stores
 
 - `secure --deep` and `secure --scan-depth deep` keep the deep analysis cache
   and its daily budget record in the state directory of the scanned tree,
@@ -19,7 +19,8 @@ type: fixed
   written.
 - When the state directory would sit inside the scanned tree, as in a scan of
   the home directory with the default `~/.opena2a`, deep analysis keeps no
-  cache between runs.
+  cache and no budget record between runs, so `HACKMYAGENT_LLM_BUDGET` limits
+  each run of that scan rather than each day.
 - A `.hackmyagent-cache/` directory in a project is no longer read or written
   by deep analysis and can be deleted, for example with
   `rm -rf .hackmyagent-cache` in the directory that holds it.
