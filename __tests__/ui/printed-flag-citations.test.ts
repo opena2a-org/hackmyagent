@@ -31,6 +31,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
+import { recordScanAndMaybeShowTip, _resetBackend } from '../../src/telemetry/opt-in';
 import {
   collectPrintedFlags,
   collectMarkdownFlags,
@@ -315,6 +317,35 @@ describe('#372 the walker sees what it claims to see', () => {
     expect(hit?.inferred).toBe(true);
   });
 
+  it('reads a launcher that runs this CLI as this CLI', () => {
+    // `npx` is a foreign executable, so `npx hackmyagent scan --contribute` in
+    // the consent tip was skipped and the dead citation shipped. A launcher
+    // in front of this CLI must not hide the flags that follow it.
+    for (const line of [
+      'Enable: npx hackmyagent scan --not-a-real-flag',
+      'Run: npx -y hackmyagent@latest secure --not-a-real-flag',
+      'Run: pnpm dlx hackmyagent check --not-a-real-flag',
+      'Run: bunx hackmyagent detect --not-a-real-flag',
+    ]) {
+      const planted = printedFlagsInSource({
+        src: `lines.push('${line}');`,
+        file: 'planted-launcher.ts',
+        verbs,
+      });
+      const hit = planted.find((f) => f.flag === '--not-a-real-flag');
+      expect(hit, `${line}: the launcher hid the flag`).toBeDefined();
+      expect(hit!.command, `${line}: attributed to the wrong command`).toBe(line.match(/hackmyagent(?:@\S+)? (\S+)/)![1]);
+    }
+    // The other direction: a launcher running another tool stays foreign.
+    for (const line of [
+      'Run: npx opena2a-cli protect --not-a-real-flag',
+      'Run: npx @modelcontextprotocol/inspector --not-a-real-flag',
+    ]) {
+      const planted = printedFlagsInSource({ src: `lines.push('${line}');`, file: 'planted-launcher.ts', verbs });
+      expect(planted.map((f) => f.flag), line).toEqual([]);
+    }
+  });
+
   it('does not claim another tool\'s flags', () => {
     // The other direction. A walker that flags every `--word` in every string
     // turns red on `npm audit --audit-level=high` and gets switched off.
@@ -383,5 +414,33 @@ describe('#372 every printed flag is registered where it is printed', () => {
     expect(registry, 'the real flag is --no-registry').not.toContain('--skip-registry');
     expect(oasb, '`secure --check` is not a registered option').not.toContain('secure --check');
     expect(help(['wild']) ?? '', 'if `wild` gains --model the advice may name it directly again').not.toMatch(/--model\b/);
+  });
+
+  it('the contribution tip shown on the third scan names a command that runs', () => {
+    // The tip as a user receives it, not as the source spells it: the scan
+    // counter is driven to the threshold in a scratch home and every
+    // `hackmyagent <verb> --flag` the returned text cites is run with --help.
+    if (!existsSync(CLI)) return;
+    const home = tempDir('contribute-tip-');
+    const saved = process.env.OPENA2A_HOME;
+    process.env.OPENA2A_HOME = home;
+    _resetBackend();
+    let tip: string | null = null;
+    try {
+      for (let i = 0; i < 3 && tip === null; i++) tip = recordScanAndMaybeShowTip();
+    } finally {
+      if (saved === undefined) delete process.env.OPENA2A_HOME;
+      else process.env.OPENA2A_HOME = saved;
+      _resetBackend();
+    }
+    expect(tip, 'no tip was returned on the third scan').not.toBeNull();
+
+    const cited = [...tip!.matchAll(/hackmyagent(?:@\S+)?\s+([a-z][a-z0-9-]*)\s+(--[a-z][a-z0-9-]+)/g)];
+    expect(cited.length, 'the tip cites no hackmyagent command').toBeGreaterThan(0);
+    for (const [, verb, flag] of cited) {
+      expect(verbs.has(verb), `the tip cites \`${verb}\`, which is not a registered command`).toBe(true);
+      expect(flagsOn(verb) ?? new Set(), `the tip cites \`${verb} ${flag}\`, which ${verb} does not accept`).toContain(flag);
+      expect(help([...(paths.get(verb) ?? [verb]), flag]), `\`hackmyagent ${verb} ${flag} --help\` did not run`).not.toBeNull();
+    }
   });
 });
