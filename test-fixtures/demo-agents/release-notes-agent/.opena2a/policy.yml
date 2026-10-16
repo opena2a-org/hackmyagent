@@ -1,0 +1,21 @@
+# Capabilities of release-notes-agent. Anything not listed here is denied.
+agent: release-notes-agent
+tools:
+  github:
+    allow:
+      - pulls.list
+      - pulls.get
+      - pulls.create
+    deny:
+      - repos.delete
+      - secrets.*
+      - actions.*
+  filesystem:
+    write:
+      - docs/release-notes/**
+network:
+  egress:
+    - api.github.com
+    - api.anthropic.com
+requires_approval:
+  - a pull request that targets the default branch

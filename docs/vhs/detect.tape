@@ -1,6 +1,6 @@
 # hackmyagent detect on five sample agent projects: the workspace root, then the worst project.
 # Render inside the docs-record container from the published hackmyagent@0.33.0 (see docs/vhs/detect.json).
-# Record: docs/vhs/record-detect.sh <path-to-demo-agents-checkout>
+# Record: docs/vhs/record-detect.sh   (materializes test-fixtures/demo-agents into a temporary directory)
 Output docs/vhs/detect.gif
 Output docs/vhs/detect.mp4
 Require hackmyagent

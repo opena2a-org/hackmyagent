@@ -1,0 +1,306 @@
+/**
+ * The demo-agents walkthrough fixture: five agent projects that the `detect`
+ * recording (docs/vhs/detect.tape) is rendered from.
+ *
+ * Its credential-carrying files are not committed. test-fixtures/demo-agents/
+ * templates.json holds each fake value as fragments, and materialize.mjs joins
+ * them at run time into a directory outside any git work tree. These cells pin
+ * what the built CLI reports on the materialized tree, that a value carrying
+ * the FAKE marker is still reported, that the report follows the template it
+ * comes from, that the script refuses a target inside a work tree, and that
+ * docs/vhs/record-detect.sh with no argument renders from that materialized
+ * copy.
+ *
+ * No cell prints or reads a materialized value: every assertion goes through
+ * the scanner's findings, counts and the line numbers of the templates.
+ */
+import { describe, it, expect, beforeAll } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { tempDir } from '../helpers/temp-dir';
+import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const FIXTURE_DIR = path.join(REPO_ROOT, 'test-fixtures', 'demo-agents');
+const MATERIALIZE = path.join(FIXTURE_DIR, 'materialize.mjs');
+const RECORD = path.join(REPO_ROOT, 'docs', 'vhs', 'record-detect.sh');
+
+/** The order `detect` sorts these projects in: severity counts, then governance score. */
+const WORST_FIRST = [
+  'deploy-runbook-agent',
+  'invoice-reconciliation-agent',
+  'hr-onboarding-assistant',
+  'support-triage-agent',
+  'release-notes-agent',
+];
+
+const SEVERITY_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, ok: 0 };
+
+/** Variables the clean run removes: provider keys, tokens and the CI switch. */
+const UNSET = new Set(['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN', 'INTERNAL_API_KEY', 'CI']);
+
+function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const home = tempDir('hma-demo-agents-home-');
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!UNSET.has(key) && !key.startsWith('GIT_')) env[key] = value;
+  }
+  return {
+    ...env,
+    HOME: home,
+    OPENA2A_HOME: path.join(home, '.opena2a'),
+    HMA_BACKUP_HOME: path.join(home, '.hma-backup'),
+    OPENA2A_TELEMETRY: 'off',
+    NO_COLOR: '1',
+    ...extra,
+  };
+}
+
+function materialize(target: string, omit: string[] = []) {
+  return spawnSync(process.execPath, [MATERIALIZE, target, ...omit.flatMap((p) => ['--omit', p])], {
+    encoding: 'utf-8',
+    env: cleanEnv(),
+    timeout: 60_000,
+  });
+}
+
+function materialized(omit: string[] = []): string {
+  const target = tempDir('hma-demo-agents-');
+  const res = materialize(target, omit);
+  expect(res.stderr).toBe('');
+  expect(res.status).toBe(0);
+  expect(res.stdout).toBe(`${target}\n`);
+  return target;
+}
+
+function runCli(args: string[], cwd: string) {
+  return spawnSync(process.execPath, [BUILT_CLI, ...args], {
+    cwd,
+    encoding: 'utf-8',
+    env: cleanEnv(),
+    timeout: 170_000,
+  });
+}
+
+interface DetectProject {
+  scanDirectory: string;
+  findings: { severity: string; title: string }[];
+  aiConfigs: { file: string; risk: string }[];
+  agents: { governanceStatus: string }[];
+  identity: { governanceFile: string | null };
+  summary: { governanceScore: number; ungoverned: number };
+}
+
+interface Row {
+  name: string;
+  verdict: string;
+  cred: boolean;
+  gov: number;
+  project: DetectProject;
+}
+
+/** The per-project rows, computed the way the workspace table computes them. */
+function detectRows(root: string): { exit: number | null; projectsNeedingAction: number; projects: number; rows: Row[] } {
+  const res = runCli(['detect', root, '--json', '--no-contribute'], root);
+  const report = JSON.parse(res.stdout) as {
+    summary: { projects: number; projectsNeedingAction: number };
+    projects: DetectProject[];
+  };
+  const rows = report.projects.map((project) => {
+    const worst = project.findings.reduce((w, f) => (SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), 'ok');
+    return {
+      name: path.basename(project.scanDirectory),
+      verdict: worst,
+      cred: project.aiConfigs.some((cfg) => cfg.risk === 'critical'),
+      gov: project.summary.governanceScore,
+      project,
+    };
+  });
+  return { exit: res.status, projectsNeedingAction: report.summary.projectsNeedingAction, projects: report.summary.projects, rows };
+}
+
+/** 1-based line of the template line that carries `{{value}}`. */
+function templateLine(file: string, value: string): number {
+  const data = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, 'templates.json'), 'utf-8')) as {
+    files: { path: string; lines: string[] }[];
+  };
+  const template = data.files.find((f) => f.path === file);
+  if (!template) throw new Error(`no template ${file}`);
+  const index = template.lines.findIndex((line) => line.includes(`{{${value}}}`));
+  if (index === -1) throw new Error(`${file} does not carry {{${value}}}`);
+  return index + 1;
+}
+
+let fixtureRoot = '';
+let baseline: ReturnType<typeof detectRows>;
+
+beforeAll(() => {
+  assertDistFresh();
+  fixtureRoot = materialized();
+  baseline = detectRows(fixtureRoot);
+});
+
+describe('demo-agents fixture', () => {
+  it('(a) detect on the materialized fixture: five projects worst first, 4 of 5 need action, release-notes-agent governed (per-project rows only; detect has no option that leaves out machine-wide discovery)', () => {
+    expect(baseline.projects).toBe(5);
+    expect(baseline.rows.map((r) => r.name)).toEqual(WORST_FIRST);
+    expect(baseline.rows.map((r) => r.verdict)).toEqual(['critical', 'critical', 'critical', 'high', 'medium']);
+    for (let i = 1; i < baseline.rows.length; i++) {
+      expect(SEVERITY_RANK[baseline.rows[i].verdict]).toBeLessThanOrEqual(SEVERITY_RANK[baseline.rows[i - 1].verdict]);
+    }
+    expect(baseline.projectsNeedingAction).toBe(4);
+    expect(baseline.exit).toBe(1);
+    expect(baseline.rows.map((r) => r.cred)).toEqual([true, true, true, false, false]);
+
+    const governed = baseline.rows[4].project;
+    expect(governed.identity.governanceFile).toBe('SOUL.md');
+    expect(governed.summary.governanceScore).toBe(100);
+    expect(governed.summary.ungoverned).toBe(0);
+    expect(governed.agents.length).toBeGreaterThan(0);
+    expect(governed.agents.every((a) => a.governanceStatus === 'governed')).toBe(true);
+  });
+
+  it('(b) secure reports a credential finding on each value line the rows name, FAKE marker included, and none for release-notes-agent', () => {
+    // [project, file, template value]; the QuickBooks token in the skill is not detected yet and is not listed.
+    const expected: [string, string, string][] = [
+      ['deploy-runbook-agent', '.claude/settings.json', 'deployAnthropicKey'],
+      ['deploy-runbook-agent', '.mcp.json', 'deployGithubToken'],
+      ['hr-onboarding-assistant', '.cursorrules', 'hrOpenaiKey'],
+      ['hr-onboarding-assistant', 'mcp.json', 'hrSlackToken'],
+      ['invoice-reconciliation-agent', 'CLAUDE.md', 'invoiceAnthropicKey'],
+      ['invoice-reconciliation-agent', '.mcp.json', 'invoiceDbPassword'],
+      ['invoice-reconciliation-agent', '.mcp.json', 'invoiceSlackToken'],
+      ['invoice-reconciliation-agent', '.env', 'invoiceDbPassword'],
+      ['invoice-reconciliation-agent', '.env', 'invoiceSlackToken'],
+      ['support-triage-agent', '.mcp.json', 'supportZendeskToken'],
+    ];
+    const isCredential = (checkId: string) => /(^|-)CRED-\d+$/.test(checkId);
+    const findingsOf = new Map<string, { checkId: string; file?: string; line?: number }[]>();
+    for (const project of WORST_FIRST) {
+      const res = runCli(['secure', path.join(fixtureRoot, project), '--json', '--no-contribute'], fixtureRoot);
+      const report = JSON.parse(res.stdout) as { findings: { checkId: string; file?: string; line?: number }[] };
+      findingsOf.set(project, report.findings);
+    }
+
+    const missing: string[] = [];
+    for (const [project, file, value] of expected) {
+      const line = templateLine(`${project}/${file}`, value);
+      const hit = findingsOf.get(project)!.some((f) => isCredential(f.checkId) && f.file === file && f.line === line);
+      if (!hit) missing.push(`${project}/${file}:${line} (${value})`);
+    }
+    expect(missing).toEqual([]);
+
+    // The env file of invoice-reconciliation-agent is not ignored and holds secrets.
+    expect(findingsOf.get('invoice-reconciliation-agent')!.some((f) => f.checkId === 'GIT-003' && f.file === '.env')).toBe(true);
+
+    expect(findingsOf.get('release-notes-agent')!.filter((f) => isCredential(f.checkId))).toEqual([]);
+  });
+
+  it('(c) omitting the .cursorrules template changes the hr-onboarding-assistant row: credential cell and verdict', () => {
+    const omittedRoot = materialized(['hr-onboarding-assistant/.cursorrules']);
+    expect(fs.existsSync(path.join(omittedRoot, 'hr-onboarding-assistant', '.cursorrules'))).toBe(false);
+    const omitted = detectRows(omittedRoot);
+
+    const before = baseline.rows.find((r) => r.name === 'hr-onboarding-assistant')!;
+    const after = omitted.rows.find((r) => r.name === 'hr-onboarding-assistant')!;
+    expect({ cred: before.cred, verdict: before.verdict }).toEqual({ cred: true, verdict: 'critical' });
+    expect(after.cred).toBe(false);
+    expect(after.verdict).not.toBe('critical');
+    expect(after.project.findings.map((f) => f.title)).not.toContain('AI config files contain credential references');
+    expect(before.project.findings.map((f) => f.title)).toContain('AI config files contain credential references');
+
+    // The other four rows are unchanged.
+    const others = (rows: Row[]) =>
+      rows.filter((r) => r.name !== 'hr-onboarding-assistant').map((r) => [r.name, r.verdict, r.cred]);
+    expect(others(omitted.rows)).toEqual(others(baseline.rows));
+  });
+
+  it('(d) materialize.mjs refuses a target inside this work tree: exit 2 and nothing written', () => {
+    const inside = path.join(FIXTURE_DIR, 'materialized-here');
+    const before = fs.readdirSync(FIXTURE_DIR).sort();
+    const res = materialize(inside);
+    expect(res.status).toBe(2);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toContain('inside a git work tree');
+    expect(fs.existsSync(inside)).toBe(false);
+
+    // With no target, a temporary directory that lies inside a work tree is refused the same way.
+    const noTarget = spawnSync(process.execPath, [MATERIALIZE], {
+      encoding: 'utf-8',
+      env: cleanEnv({ TMPDIR: FIXTURE_DIR }),
+      timeout: 60_000,
+    });
+    expect(noTarget.status).toBe(2);
+    expect(noTarget.stdout).toBe('');
+    expect(noTarget.stderr).toContain('inside a git work tree');
+    expect(fs.readdirSync(FIXTURE_DIR).sort()).toEqual(before);
+
+    // A target outside any work tree that already holds files is refused too.
+    const occupied = tempDir('hma-demo-agents-occupied-');
+    fs.writeFileSync(path.join(occupied, 'keep.txt'), 'keep\n');
+    const full = materialize(occupied);
+    expect(full.status).toBe(2);
+    expect(fs.readdirSync(occupied)).toEqual(['keep.txt']);
+  });
+
+  it('(e) record-detect.sh with no argument renders from a materialized copy outside every work tree', () => {
+    const stubDir = tempDir('hma-demo-agents-docker-');
+    const stub = path.join(stubDir, 'docker');
+    const out = path.join(stubDir, 'run.json');
+    fs.writeFileSync(
+      stub,
+      [
+        '#!/usr/bin/env node',
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const { spawnSync } = require('node:child_process');",
+        'const args = process.argv.slice(2);',
+        "if (args[0] === 'image' && args[1] === 'inspect') process.exit(0);",
+        "if (args[0] !== 'run') process.exit(3);",
+        "const suffix = ':/work/fixture:ro';",
+        "const mount = args.find((a, i) => args[i - 1] === '-v' && a.endsWith(suffix));",
+        'const source = mount ? mount.slice(0, -suffix.length) : null;',
+        "const probe = source ? spawnSync('git', ['-C', source, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }) : null;",
+        'const list = (dir) => fs.readdirSync(dir, { withFileTypes: true })',
+        '  .flatMap((e) => (e.isDirectory() ? list(path.join(dir, e.name)).map((f) => `${e.name}/${f}`) : [e.name]));',
+        'fs.writeFileSync(process.env.STUB_OUT, JSON.stringify({',
+        '  argv: args,',
+        '  source,',
+        "  insideWorkTree: probe ? probe.status === 0 && probe.stdout.trim() === 'true' : null,",
+        '  files: source ? list(source).sort() : [],',
+        '}));',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const tmp = tempDir('hma-demo-agents-tmp-');
+    const res = spawnSync('bash', [RECORD], {
+      cwd: REPO_ROOT,
+      encoding: 'utf-8',
+      env: cleanEnv({ DOCKER: stub, STUB_OUT: out, TMPDIR: tmp }),
+      timeout: 120_000,
+    });
+    expect(res.stderr).toBe('');
+    expect(res.status).toBe(0);
+
+    const run = JSON.parse(fs.readFileSync(out, 'utf-8')) as {
+      argv: string[];
+      source: string | null;
+      insideWorkTree: boolean | null;
+      files: string[];
+    };
+    expect(run.source).not.toBeNull();
+    expect(path.dirname(run.source!)).toBe(tmp);
+    expect(run.insideWorkTree).toBe(false);
+    const projects = [...new Set(run.files.map((f) => f.split('/')[0]).filter((f) => !f.startsWith('.')))].sort();
+    expect(projects).toEqual([...WORST_FIRST].sort());
+    for (const project of WORST_FIRST) {
+      expect(run.files.filter((f) => f.startsWith(`${project}/`)).length).toBeGreaterThan(3);
+    }
+    expect(run.files).toContain('hr-onboarding-assistant/.cursorrules');
+    expect(run.argv).toContain('FIXTURE_NAME=test-fixtures/demo-agents');
+    // The materialized copy is removed when the script exits.
+    expect(fs.existsSync(run.source!)).toBe(false);
+  });
+});

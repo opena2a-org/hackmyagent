@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Renders docs/vhs/detect.tape inside the docs-record container and writes the provenance sidecar.
 #
-#   docs/vhs/record-detect.sh <path-to-demo-agents-checkout>
-#   DOCKER=~/.docker/bin/docker docs/vhs/record-detect.sh ~/workspace/demo-agents   (Docker Desktop on macOS)
+#   docs/vhs/record-detect.sh                       renders the fixture in test-fixtures/demo-agents
+#   docs/vhs/record-detect.sh <fixture-directory>   renders an existing copy of the five projects
+#   DOCKER=/path/to/docker docs/vhs/record-detect.sh   when the docker client is not on PATH
+#
+# With no argument, test-fixtures/demo-agents/materialize.mjs writes the five projects into a new
+# temporary directory outside any git work tree, the only place their fake credentials exist; the
+# render reads that directory and it is removed on exit. The sidecar then names the fixture by its
+# path in this repository, with the commit that last changed it and its uncommitted changes.
 #
 # The container (docs/vhs/docker/Dockerfile) carries VHS 0.12.0 with its encode regression patched,
 # ffmpeg, ttyd, Chromium, JetBrains Mono, gifsicle, Node 22, procps and hackmyagent@0.33.0 installed
@@ -12,17 +18,31 @@
 # runs both commands once more with NO_COLOR=1 into detect-capture.txt (the text version of the
 # recording), optimises the GIF, and writes detect.json.
 set -euo pipefail
-FIXTURE="${1:?path to the demo-agents checkout}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE="${HMA_VHS_IMAGE:-hma-vhs:0.33.0}"
 DOCKER="${DOCKER:-docker}"
-FIXTURE_SHA="$(git -C "$FIXTURE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-FIXTURE_DIRTY="$(git -C "$FIXTURE" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+if [ "$#" -gt 0 ]; then
+  FIXTURE="$1"
+  FIXTURE_NAME="demo-agents"
+  FIXTURE_SHA="$(git -C "$FIXTURE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  FIXTURE_DIRTY="$(git -C "$FIXTURE" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+else
+  FIXTURE="$(node "$REPO_ROOT/test-fixtures/demo-agents/materialize.mjs")"
+  if [ -z "$FIXTURE" ] || [ ! -d "$FIXTURE" ]; then
+    echo "record-detect: materialize.mjs printed no directory" >&2
+    exit 1
+  fi
+  cleanup_fixture() { rm -rf "$FIXTURE"; }
+  trap cleanup_fixture EXIT
+  FIXTURE_NAME="test-fixtures/demo-agents"
+  FIXTURE_SHA="$(git -C "$REPO_ROOT" log -1 --format=%h -- test-fixtures/demo-agents 2>/dev/null || echo unknown)"
+  FIXTURE_DIRTY="$(git -C "$REPO_ROOT" status --porcelain -- test-fixtures/demo-agents 2>/dev/null | wc -l | tr -d ' ')"
+fi
 if ! "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
   "$DOCKER" build -t "$IMAGE" "$REPO_ROOT/docs/vhs/docker"
 fi
 "$DOCKER" run --rm --hostname laptop --shm-size=1g \
-  -e FIXTURE_SHA="$FIXTURE_SHA" -e FIXTURE_DIRTY="$FIXTURE_DIRTY" \
+  -e FIXTURE_NAME="$FIXTURE_NAME" -e FIXTURE_SHA="$FIXTURE_SHA" -e FIXTURE_DIRTY="$FIXTURE_DIRTY" \
   -v "$REPO_ROOT/docs/vhs":/work/docs/vhs \
   -v "$FIXTURE":/work/fixture:ro \
   --entrypoint bash "$IMAGE" -c '
@@ -71,7 +91,7 @@ const out = {
   version,
   npmIntegrity: integrity,
   ranAtUtc,
-  fixture: "demo-agents",
+  fixture: process.env.FIXTURE_NAME,
   fixtureSha: process.env.FIXTURE_SHA,
   fixtureUncommittedChanges: Number(process.env.FIXTURE_DIRTY),
   fixturePath: "/work/demo-agents",
