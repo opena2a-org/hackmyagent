@@ -361,7 +361,7 @@ Rows without "governance" are findings outside the governance categories; rows w
 - **Severity:** High
 - **Fixable:** No
 - **Description:** MCP servers lack explicit tool whitelists
-- **Remediation:** Configure allowedTools for each server
+- **Remediation:** Configure allowedTools for each server, as a list of tool names without `*`
 
 ### TOOL-002: Tool Resource Constraints
 - **Severity:** Medium
