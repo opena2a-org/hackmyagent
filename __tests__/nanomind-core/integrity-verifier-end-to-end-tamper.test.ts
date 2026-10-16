@@ -124,6 +124,60 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
     60000,
   );
 
+  // #1110: the check used to run after cli.js had loaded its static imports,
+  // so deleting one of those modules crashed module resolution (exit 1,
+  // `Cannot find module`) before the check could report it.
+  it.each(['explain-registry.js', join('attack', 'index.js')])(
+    'deleting dist/%s, which cli.js imports at startup, exits 3 with the missing file named',
+    (rel) => {
+      const target = join(tmpRoot, 'dist', rel);
+      const original = readFileSync(target);
+      try {
+        rmSync(target);
+
+        const result = spawnSync(process.execPath, [tmpCli, '--version'], {
+          encoding: 'utf-8',
+          timeout: 30000,
+        });
+
+        expect(result.stderr).not.toContain('Cannot find module');
+        expect(result.status).toBe(3);
+        expect(result.stderr).toContain('INTEGRITY CHECK FAILED');
+        expect(result.stderr).toContain(`Missing file: dist/${rel.split('\\').join('/')}`);
+      } finally {
+        writeFileSync(target, original);
+      }
+    },
+    60000,
+  );
+
+  it(
+    'a changed module cli.js imports at startup is not run before the check quarantines it (#1110)',
+    () => {
+      const target = join(tmpRoot, 'dist', 'explain-registry.js');
+      const original = readFileSync(target);
+      try {
+        writeFileSync(
+          target,
+          Buffer.concat([original, Buffer.from('\nprocess.stderr.write("CHANGED MODULE RAN\\n");\n')]),
+        );
+
+        const result = spawnSync(process.execPath, [tmpCli, '--version'], {
+          encoding: 'utf-8',
+          timeout: 30000,
+        });
+
+        expect(result.status).toBe(3);
+        expect(result.stderr).toContain('INTEGRITY CHECK FAILED');
+        expect(result.stderr).toContain('explain-registry.js');
+        expect(result.stderr).not.toContain('CHANGED MODULE RAN');
+      } finally {
+        writeFileSync(target, original);
+      }
+    },
+    60000,
+  );
+
   it(
     'replacing the manifest with a symlink writes INTEGRITY MANIFEST REJECTED to stderr',
     () => {
