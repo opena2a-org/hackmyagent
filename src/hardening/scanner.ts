@@ -7277,7 +7277,7 @@ export class HardeningScanner {
         // A server entry that is not an object (`null`, a string) carries
         // no command or args to inspect.
         if (!entry || typeof entry !== 'object') continue;
-        const server = entry as { command?: string; args?: string[] };
+        const server = entry as { command?: unknown; args?: string[] };
         // Check for root filesystem access. `args` that is not a list
         // declares no path (#869); the index is kept for the in-place fix.
         if (Array.isArray(server.args)) {
@@ -7300,10 +7300,13 @@ export class HardeningScanner {
           }
         }
 
-        // Check for unrestricted shell access
+        // Check for unrestricted shell access. A `command` that is neither a
+        // string nor a list (`7`, an object) names no program and is skipped
+        // instead of ending the scan.
         if (
           name.includes('shell') ||
-          server.command?.includes('shell')
+          ((typeof server.command === 'string' || Array.isArray(server.command)) &&
+            server.command.includes('shell'))
         ) {
           // Shell server without allowedCommands is dangerous
           if (!serverArgs(server).some((arg) => arg.includes('allowed'))) {
@@ -8663,6 +8666,7 @@ dist/
       let hasInsecureRemote = false;
       for (const [, entry] of mcpServerEntries(mcpConfig)) {
         if (!entry || typeof entry !== 'object') continue;
+        // A `url` that is not a string (`7`, an object) is no address.
         const server = entry as { url?: unknown };
         if (typeof server.url === 'string' && server.url.startsWith('http://')) {
           hasInsecureRemote = true;

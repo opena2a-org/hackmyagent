@@ -279,3 +279,55 @@ describe('TOOL-003 and MCP-009 match whole words of the server name (#669)', { t
     });
   }
 });
+
+// A server field of the wrong type used to end the whole scan with no report:
+// `"url": 7` with "server.url.startsWith is not a function", `"command": 7`
+// with "server.command?.includes is not a function" and `"allowedTools": 7`
+// with "server.allowedTools?.includes is not a function". The field is now
+// skipped and every other server is still evaluated.
+describe('a server field of the wrong type does not end the scan', { timeout: 120_000 }, () => {
+  const MALFORMED: Array<[string, Record<string, unknown>]> = [
+    ['url: 7', { url: 7 }],
+    ['url: an object', { url: { href: 'http://mcp.example.test/rpc' } }],
+    ['command: 7', { command: 7 }],
+    ['command: an object', { command: { path: 'sh' } }],
+    ['allowedTools: 7', { allowedTools: 7 }],
+    ['allowedTools: an object', { allowedTools: { '*': true } }],
+  ];
+  for (const key of ['mcpServers', 'servers']) {
+    for (const [label, fields] of MALFORMED) {
+      it(`${key}: ${label} is skipped, and a well-formed server beside it is still evaluated`, async () => {
+        const records = await scanConfig({
+          [key]: {
+            odd: fields,
+            remote: { url: 'http://mcp.example.test/rpc', allowedTools: ['*'] },
+          },
+        });
+        expect(failed(records, 'NET-002')).toBe(true);
+        expect(failed(records, 'MCP-005')).toBe(true);
+        const tool001 = records.find((r) => r.checkId === 'TOOL-001');
+        expect(tool001?.passed).toBe(false);
+        expect(tool001?.message).toContain('"odd"');
+      });
+    }
+  }
+
+  it('every malformed field and entry at once under mcpServers', async () => {
+    const records = await scanConfig({
+      mcpServers: { a: { command: 7, url: 7, allowedTools: 7, env: 'x', args: '--x' }, b: null, c: 'str' },
+    });
+    expect(failed(records, 'NET-002')).toBe(false);
+    expect(failed(records, 'MCP-005')).toBe(false);
+    expect(failed(records, 'TOOL-001')).toBe(true);
+  });
+
+  it('a command written as a list is still read for shell, as before', async () => {
+    const records = await scanConfig({ mcpServers: { runner: { command: ['shell'] } } });
+    expect(failed(records, 'MCP-002')).toBe(true);
+  });
+
+  it('an allowedTools written as the string "*" is still a wildcard grant, as before', async () => {
+    const records = await scanConfig({ mcpServers: { runner: { command: 'node', allowedTools: '*' } } });
+    expect(failed(records, 'MCP-005')).toBe(true);
+  });
+});
