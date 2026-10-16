@@ -57,7 +57,7 @@ export async function trustAapGate(options: TrustAapGateOptions): Promise<number
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
       process.stderr.write(`ATX file not found: ${escapePathForDisplay(options.atxPath)}\n`);
-      process.stderr.write('  Pass --atx <path> pointing to a JSON ATX issued by your AIM identity.\n');
+      process.stderr.write('  Pass --atx "${ATX_FILE:?set ATX_FILE to the path of a JSON ATX issued by your AIM identity}"\n');
     } else if (code === 'EACCES') {
       process.stderr.write(`Permission denied reading ATX file: ${escapePathForDisplay(options.atxPath)}\n`);
     } else {

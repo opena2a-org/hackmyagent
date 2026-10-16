@@ -138,7 +138,7 @@ describe('#481 secure on a missing target is unmeasured, exit 2', { timeout: 300
       expect(r.stdout).toBe('');
       expect(r.stderr).toMatch(/NOT MEASURED — .* does not exist, so nothing was scanned\./);
       expect(r.stderr).toContain(`No report was written to ${report}`);
-      expect(r.stderr).toContain('use --format json -o <file>');
+      expect(r.stderr).toContain('add: --format json -o "${REPORT:?set REPORT to the path for the json report}"');
       expect(r.stderr).not.toContain('Report written to');
     });
   }

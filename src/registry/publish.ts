@@ -23,6 +23,10 @@ import { reportFindings, reportRemediation } from './remediation';
 import type { SettledOutcome } from '../hardening/settled-outcome';
 import { firstPartySignerFromEnv } from '@opena2a/registry-client';
 
+/** Printed when a publish has no signing key and goes in as a community contribution. */
+export const COMMUNITY_SUBMISSION_NOTICE =
+  "No signing keys found at ~/.opena2a/keys/. Run 'opena2a claim \"${PACKAGE:?set PACKAGE to the name of the agent package you publish}\"' to create keys for full-weight publishing. Submitting as community contribution (0.5x weight).";
+
 /**
  * Compute a deterministic tree hash of a directory's contents.
  * Used by the CAAT pipeline to deduplicate scans across forks:
@@ -420,7 +424,7 @@ export async function publishScanResults(
   // Status lines go to stderr (#999): `attack --json --publish` writes its JSON
   // document to stdout, and a line after it there broke every parser reading it.
   if (isCommunity) {
-    console.error("No signing keys found at ~/.opena2a/keys/. Run 'opena2a claim <package>' to create keys for full-weight publishing. Submitting as community contribution (0.5x weight).");
+    console.error(COMMUNITY_SUBMISSION_NOTICE);
   }
 
   // Compute CAAT tree hash from the scanned directory if not already set

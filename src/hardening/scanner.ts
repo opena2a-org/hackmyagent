@@ -10401,7 +10401,7 @@ dist/
           : 'npm scripts appear safe',
         fixable: false,
         fix: hasDangerousScripts
-          ? 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact <package>  or vendor the script with a pinned checksum.'
+          ? 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact "${PACKAGE:?set PACKAGE to the package the script installs}"  or vendor the script with a pinned checksum.'
           : undefined,
         guidance: 'Scripts that pipe curl/wget to sh execute arbitrary remote code during npm install. An attacker who compromises the URL controls your build environment.',
       });
@@ -13533,7 +13533,7 @@ dist/
       throw new RollbackNothingRestoredError([
         `${escapePathForDisplay(targetDir)} does not exist or cannot be accessed, so rollback has nothing to restore into.`,
         'Nothing was restored. The backups of a directory that was deleted stay in its backup store.',
-        `  If the path is wrong, run: ${cliName} rollback <dir>`,
+        `  If the path is wrong, run: ${cliName} rollback "\${DIR:?set DIR to the directory to restore}"`,
       ]);
     }
 
@@ -18377,7 +18377,7 @@ dist/
               fixable: false,
               file: path.relative(targetDir, file),
               line: i + 1,
-              fix: 'sha256sum <artifact>',
+              fix: 'sha256sum "${ARTIFACT:?set ARTIFACT to the artifact whose digest field is empty}"',
               guidance: 'Empty digest fields bypass integrity verification entirely. Require non-empty digests and fail builds when they are missing, so tampered artifacts cannot pass.',
             });
           }
