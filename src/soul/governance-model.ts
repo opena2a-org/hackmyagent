@@ -100,7 +100,7 @@ export function renderGovernanceModel(): string {
     lines.push(`  ${profile.padEnd(15)} → ${names.join(', ')}`);
   }
   lines.push('');
-  lines.push('Run `hackmyagent scan-soul <directory>` to evaluate a target against this model.');
+  lines.push('Run `hackmyagent scan-soul "${DIR:?set DIR to the directory that holds SOUL.md}"` to evaluate a target against this model.');
 
   return lines.join('\n');
 }

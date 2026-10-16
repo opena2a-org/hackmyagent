@@ -1448,7 +1448,7 @@ export class NemoClawScanner {
         'OpenClaw security checks should also be run inside the sandbox environment for full coverage',
         'openclaw-layer', 'medium', true,
         'Run hackmyagent scan inside the sandbox to check for OpenClaw-specific misconfigurations', {
-          fix: 'docker exec <sandbox-container> npx hackmyagent scan --ci /app',
+          fix: 'docker exec "${CONTAINER:?set CONTAINER to the sandbox container name shown by docker ps}" npx hackmyagent scan --ci /app',
         }),
     );
 

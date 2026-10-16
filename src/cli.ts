@@ -493,6 +493,7 @@ import { UsageError, usageError, isRefusal, networkTimeoutError } from './checke
 import { RootRefusalError } from './mcp/roots';
 import { OTHER_BIRTH_STORE_MEANING } from './store/archive-store';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
+import { fullScanCommand, markStubNextStep, wildAttackCommand } from './ui/fail-closed-commands';
 import { describeArchiveStore } from './store/archive-store';
 import { RollbackNothingRestoredError } from './hardening/scanner';
 import {
@@ -5544,7 +5545,7 @@ Backups (--fix):
           // looks for it is not left guessing why.
           if (options.output) {
             console.error(`  No report was written to ${escapePathForDisplay(String(options.output))}: only the json format records a target that does not exist.`);
-            console.error('  For a record of this run, use --format json -o <file>.');
+            console.error('  For a record of this run, add: --format json -o "${REPORT:?set REPORT to the path for the json report}"');
           }
         }
         process.exit(verdict.exitCode); // exit-unsettled(#350/S002): pre-work refusal; events await the schema reason field (#525)
@@ -10557,7 +10558,7 @@ Examples:
       console.log(`    hackmyagent_scan       — ${CHECK_COUNT} checks + structural analysis (read-only)`);
       console.log(`    hackmyagent_deep_scan  — Full analysis with LLM reasoning`);
       console.log(`    hackmyagent_benchmark  — OASB-1 compliance assessment\n`);
-      console.log(`  Fixes are applied from a terminal: ${CLI_PREFIX} secure --fix <directory>\n`);
+      console.log(`  Fixes are applied from a terminal: ${CLI_PREFIX} secure --fix "\${DIR:?set DIR to the project directory to fix}"\n`);
       console.log(`  Try: "Run a deep security scan on this project"\n`);
     } catch (error) {
       // Only OUR OWN refusal text prints as lines. It is multi-line by design and
@@ -13188,9 +13189,10 @@ function printWildReport(report: WildScanReport): void {
   console.log(`${colors.dim}Duration:${colors.reset} ${(report.duration / 1000).toFixed(1)}s`);
 
   console.log(`\n${colors.dim}Note: This score reflects the attack surface coverage of the target`);
-  console.log(`site. To test your actual agent's resilience, run`);
-  console.log(`${CLI_PREFIX} attack <endpoint> --model <model> to pipe page content`);
-  console.log(`through an LLM. For static config scanning, use:${colors.reset}`);
+  console.log(`site. To test your actual agent's resilience, pipe page content`);
+  console.log(`through an LLM with:${colors.reset}`);
+  console.log(`  ${colors.cyan}${wildAttackCommand(CLI_PREFIX)}${colors.reset}`);
+  console.log(`${colors.dim}For static config scanning, use:${colors.reset}`);
   console.log(`  ${colors.cyan}${npxCitation('secure')}${colors.reset}`);
 }
 
@@ -13507,7 +13509,7 @@ Examples:
       console.log(`    ${sc}${escapeForDisplay(sev)}${colors.reset}: ${count}`);
     }
 
-    console.log(`\n  Next step: record a transition with ${CLI_PREFIX} mark-stub <stub-id> <status> (add --dry-run to preview it)`);
+    console.log(`\n  Next step: record a transition with ${markStubNextStep(CLI_PREFIX)}`);
 
     console.log('');
   });
@@ -14351,12 +14353,12 @@ function getCheckCommand(): string {
  *
  * Precedence:
  *   1. HMA_FULL_SCAN_HINT env var (full command string, e.g. "opena2a review")
- *   2. `${CLI_PREFIX} secure <dir>` — default.
+ *   2. `fullScanCommand(CLI_PREFIX)`, which fails closed until DIR is set — default.
  */
 function getFullScanHint(): string {
   const override = process.env.HMA_FULL_SCAN_HINT?.trim();
   if (override) return override;
-  return `${CLI_PREFIX} secure <dir>`;
+  return fullScanCommand(CLI_PREFIX);
 }
 
 /**

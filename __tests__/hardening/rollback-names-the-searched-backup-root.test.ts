@@ -260,7 +260,7 @@ describe('#1043 rollback names the backup root it searched', () => {
     expect(screenLines(run.stderr)).toEqual([
       `Error: ${escapePathForDisplay(missing)} does not exist or cannot be accessed, so rollback has nothing to restore into.`,
       'Nothing was restored. The backups of a directory that was deleted stay in its backup store.',
-      '  If the path is wrong, run: hackmyagent rollback <dir>',
+      '  If the path is wrong, run: hackmyagent rollback "${DIR:?set DIR to the directory to restore}"',
     ]);
     expect(run.stderr).not.toContain('No backup found');
     expect(run.stderr).not.toContain('secure --fix');
