@@ -738,4 +738,20 @@ describe('recordScanAndMaybeShowTip', () => {
     const tip2 = recordScanAndMaybeShowTip();
     expect(tip2).toBeNull();
   });
+
+  // #1111 — a run that cannot print the tip (pipe, --json) used to start the
+  // 30-day cooldown anyway, so the user never saw it.
+  it('counts a run that will not print the tip, without starting the cooldown', () => {
+    expect(recordScanAndMaybeShowTip({ willPrint: false })).toBeNull(); // scan 1
+    expect(recordScanAndMaybeShowTip({ willPrint: false })).toBeNull(); // scan 2
+    expect(recordScanAndMaybeShowTip({ willPrint: false })).toBeNull(); // scan 3
+
+    const config = JSON.parse(fs.readFileSync(path.join(tmpHome, 'config.json'), 'utf-8'));
+    expect(config.telemetry.scanCount).toBe(3);
+    expect(config.telemetry.contributePromptDismissedAt).toBeUndefined();
+
+    // The next run that prints the tip still gets it.
+    const tip = recordScanAndMaybeShowTip({ willPrint: true });
+    expect(tip).toContain('community trust data');
+  });
 });
