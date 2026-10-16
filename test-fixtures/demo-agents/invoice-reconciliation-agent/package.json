@@ -1,0 +1,16 @@
+{
+  "name": "invoice-reconciliation-agent",
+  "version": "0.5.0",
+  "private": true,
+  "description": "Matches supplier invoices to purchase orders and drafts ledger adjustments",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "close": "node src/index.js --month current"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.60.0",
+    "@slack/web-api": "^7.8.0",
+    "pg": "^8.13.3"
+  }
+}

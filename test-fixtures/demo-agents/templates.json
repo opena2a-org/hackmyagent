@@ -1,0 +1,244 @@
+{
+  "about": "Files materialize.mjs writes at run time. Each {{name}} in a file's lines is replaced by values[name], its fragments joined. Every value is fake and carries the FAKE marker; no value is stored whole in this repository.",
+  "values": {
+    "deployAnthropicKey": ["sk", "-ant-", "api03-", "FAKE", "0deployRunbookAgent0notAKey0", "000000000000000000000000000000000000000000000000000000000000000000AA"],
+    "deployGithubToken": ["gh", "p_", "FAKE", "0deployRunbookAgent", "0000000000000"],
+    "hrOpenaiKey": ["sk", "-proj-", "FAKE", "0hrOnboardingAssistant0notAKey0", "0000000000000000000000000000"],
+    "hrSlackToken": ["xox", "b-", "1000000001", "-", "2000000002", "-", "FAKE", "0hrOnboarding", "0000000"],
+    "invoiceAnthropicKey": ["sk", "-ant-", "api03-", "FAKE", "0invoiceReconciliationAgent0notAKey0", "00000000000000000000000000000000000000000000000000000000AA"],
+    "invoiceDbPassword": ["FAKE", "0ledgerReadWrite0"],
+    "invoiceSlackToken": ["xox", "b-", "1000000003", "-", "2000000004", "-", "FAKE", "0invoiceRecon", "0000000"],
+    "invoiceQuickbooksToken": ["qb", "_live_", "FAKE", "0monthEndBills0notAToken0"],
+    "supportZendeskToken": ["FAKE", "0supportTriageZendesk0notAToken0"]
+  },
+  "files": [
+    {
+      "path": ".gitignore",
+      "lines": [
+        "node_modules/",
+        ".hackmyagent-backup/",
+        "inventory.csv"
+      ]
+    },
+    {
+      "path": "deploy-runbook-agent/.claude/settings.json",
+      "lines": [
+        "{",
+        "  \"env\": {",
+        "    \"ANTHROPIC_API_KEY\": \"{{deployAnthropicKey}}\",",
+        "    \"KUBECONFIG\": \"/etc/kubernetes/admin.conf\"",
+        "  },",
+        "  \"permissions\": {",
+        "    \"allow\": [\"Bash(kubectl rollout *)\", \"Bash(kubectl get *)\", \"Bash(git pull *)\"]",
+        "  }",
+        "}"
+      ]
+    },
+    {
+      "path": "deploy-runbook-agent/.mcp.json",
+      "lines": [
+        "{",
+        "  \"mcpServers\": {",
+        "    \"shell\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"mcp-shell-server\"]",
+        "    },",
+        "    \"kubernetes\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"mcp-server-kubernetes\"],",
+        "      \"env\": { \"KUBECONFIG\": \"/etc/kubernetes/admin.conf\" }",
+        "    },",
+        "    \"github\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-github\"],",
+        "      \"env\": { \"GITHUB_PERSONAL_ACCESS_TOKEN\": \"{{deployGithubToken}}\" }",
+        "    }",
+        "  }",
+        "}"
+      ]
+    },
+    {
+      "path": "hr-onboarding-assistant/.cursorrules",
+      "lines": [
+        "You draft onboarding documents for the People Operations team.",
+        "",
+        "Where the data comes from",
+        "- New hire records are exported from the HRIS into the shared drive folder",
+        "  \"People Ops/HRIS\". A record holds the legal name, home address, date of",
+        "  birth, national ID number, salary band and start date.",
+        "- Offer letters start from templates/offer-letter.md. Fill in every field.",
+        "",
+        "How to work",
+        "- Check the salary band against the hiring manager's message in Slack before",
+        "  an offer letter is final.",
+        "- Never write to a candidate. Post drafts to the #people-ops channel.",
+        "",
+        "Connector setup (keep this, the drive connector reads it)",
+        "OPENAI_API_KEY = \"{{hrOpenaiKey}}\""
+      ]
+    },
+    {
+      "path": "hr-onboarding-assistant/mcp.json",
+      "lines": [
+        "{",
+        "  \"mcpServers\": {",
+        "    \"google-drive\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-gdrive\"],",
+        "      \"env\": { \"GDRIVE_CREDENTIALS_PATH\": \"/srv/people-ops/drive-service-account.json\" }",
+        "    },",
+        "    \"slack\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-slack\"],",
+        "      \"env\": {",
+        "        \"SLACK_BOT_TOKEN\": \"{{hrSlackToken}}\",",
+        "        \"SLACK_TEAM_ID\": \"T0DEMOPEOPLE\"",
+        "      }",
+        "    },",
+        "    \"filesystem\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/srv/people-ops/hris-exports\"]",
+        "    }",
+        "  }",
+        "}"
+      ]
+    },
+    {
+      "path": "invoice-reconciliation-agent/.claude/settings.json",
+      "lines": [
+        "{",
+        "  \"permissions\": {",
+        "    \"allow\": [\"Bash(*)\", \"Read\", \"Edit\", \"Write\"],",
+        "    \"deny\": []",
+        "  }",
+        "}"
+      ]
+    },
+    {
+      "path": "invoice-reconciliation-agent/.claude/skills/reconcile-ledger/SKILL.md",
+      "lines": [
+        "---",
+        "name: reconcile-ledger",
+        "description: Matches the month's open supplier invoices against the bills in the accounting system",
+        "---",
+        "",
+        "# Reconcile the ledger",
+        "",
+        "1. Query the open invoices for the closing month through the postgres server.",
+        "2. Fetch the bills for the same month from QuickBooks:",
+        "",
+        "       curl -s -H \"Authorization: Bearer {{invoiceQuickbooksToken}}\" \\",
+        "         \"https://sandbox-quickbooks.api.intuit.com/v3/company/0000000000/query?query=select%20*%20from%20Bill\"",
+        "",
+        "3. Match each invoice to a bill on supplier and an amount within 2 percent.",
+        "4. Post the invoices left without a match with the slack server."
+      ]
+    },
+    {
+      "path": "invoice-reconciliation-agent/.env",
+      "lines": [
+        "# Settings for a local reconciliation run",
+        "DATABASE_URL=postgresql://finance_rw:{{invoiceDbPassword}}@finance-db.internal:5432/ledger",
+        "SLACK_BOT_TOKEN={{invoiceSlackToken}}",
+        "RECONCILE_MONTH=current"
+      ]
+    },
+    {
+      "path": "invoice-reconciliation-agent/.mcp.json",
+      "lines": [
+        "{",
+        "  \"mcpServers\": {",
+        "    \"postgres\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-postgres\", \"postgresql://finance_rw:{{invoiceDbPassword}}@finance-db.internal:5432/ledger\"]",
+        "    },",
+        "    \"filesystem\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"./data\"]",
+        "    },",
+        "    \"slack\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-slack\"],",
+        "      \"env\": {",
+        "        \"SLACK_BOT_TOKEN\": \"{{invoiceSlackToken}}\",",
+        "        \"SLACK_TEAM_ID\": \"T0DEMOFINANCE\"",
+        "      }",
+        "    }",
+        "  }",
+        "}"
+      ]
+    },
+    {
+      "path": "invoice-reconciliation-agent/CLAUDE.md",
+      "lines": [
+        "# Invoice reconciliation agent",
+        "",
+        "You reconcile accounts payable for the finance team.",
+        "",
+        "## Tasks",
+        "- Load the supplier invoices for the closing month from the finance database.",
+        "- Match each invoice to its purchase order by supplier and amount.",
+        "- Post every invoice without a match to #ap-reconciliation with the likely reason.",
+        "- When an invoice is a duplicate, draft the reversing journal entry.",
+        "",
+        "## How to work",
+        "- Close week is busy. Finish the run without stopping to ask the team; any",
+        "  command needed to complete the reconciliation is fine to run.",
+        "- Use the postgres server for ledger queries and the filesystem server for the",
+        "  exports in data/.",
+        "",
+        "## Setup",
+        "Temporary key until the team account is approved.",
+        "ANTHROPIC_API_KEY={{invoiceAnthropicKey}}"
+      ]
+    },
+    {
+      "path": "release-notes-agent/.gitignore",
+      "lines": [
+        "node_modules/",
+        ".env",
+        ".env.*"
+      ]
+    },
+    {
+      "path": "release-notes-agent/.mcp.json",
+      "lines": [
+        "{",
+        "  \"mcpServers\": {",
+        "    \"github\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"@modelcontextprotocol/server-github\"],",
+        "      \"env\": { \"GITHUB_PERSONAL_ACCESS_TOKEN\": \"${GITHUB_TOKEN}\" }",
+        "    }",
+        "  }",
+        "}"
+      ]
+    },
+    {
+      "path": "support-triage-agent/.env",
+      "lines": [
+        "ZENDESK_SUBDOMAIN=demo-support",
+        "ZENDESK_EMAIL=triage-bot@example.com",
+        "ZENDESK_API_TOKEN={{supportZendeskToken}}"
+      ]
+    },
+    {
+      "path": "support-triage-agent/.mcp.json",
+      "lines": [
+        "{",
+        "  \"mcpServers\": {",
+        "    \"zendesk\": {",
+        "      \"command\": \"npx\",",
+        "      \"args\": [\"-y\", \"zendesk-mcp-server\"],",
+        "      \"env\": {",
+        "        \"ZENDESK_SUBDOMAIN\": \"demo-support\",",
+        "        \"ZENDESK_EMAIL\": \"triage-bot@example.com\",",
+        "        \"ZENDESK_API_TOKEN\": \"{{supportZendeskToken}}\"",
+        "      }",
+        "    }",
+        "  }",
+        "}"
+      ]
+    }
+  ]
+}

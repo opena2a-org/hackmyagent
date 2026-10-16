@@ -1,0 +1,14 @@
+{
+  "name": "deploy-runbook-agent",
+  "version": "0.3.1",
+  "private": true,
+  "description": "Runs the steps of a production runbook when on-call asks for them",
+  "main": "scripts/agent.js",
+  "scripts": {
+    "start": "node scripts/agent.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.60.0",
+    "@octokit/rest": "^21.1.0"
+  }
+}
