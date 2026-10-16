@@ -18,9 +18,12 @@
  */
 
 import type { Evidence, PositiveEvidence, AbsenceEvidence } from '../types/finding-evidence';
-import type { ShapeId } from '../types/credential-format';
+import { redactDetectedCredentialShapesReporting, type ShapeId } from '../types/credential-format';
 import type { SecurityFinding, SecurityFindingDraft } from './security-check';
-import { redactSecretsForReportReporting } from '../nanomind-core/security/defense-in-depth';
+import {
+  MAX_REDACTION_INPUT_BYTES,
+  redactSecretsForReportReporting,
+} from '../nanomind-core/security/defense-in-depth';
 import { FIX_LINES } from './fix-lines';
 
 /**
@@ -72,6 +75,28 @@ const BYTE_CARRYING_FIELDS = [
   'fixMessage',
 ] as const satisfies readonly (keyof SecurityFindingDraft)[];
 
+/**
+ * The report boundary for one string: every shape the detector can recognise,
+ * read off the shape registry, then the report table's own rules.
+ *
+ * The registry pass runs FIRST. The report table removes several vendor
+ * tokens at a fixed width, and once it has consumed a head, the rest of a
+ * longer token no longer starts with one and nothing can find it. The size
+ * gate runs before both: oversized content is withheld unread by the report
+ * table, and the registry pass never sees it.
+ *
+ * Exported for the producers that compose finding text from scanned content
+ * and redact it where they build it, so the row can say it was redacted.
+ */
+export function redactForReport(value: string): { text: string; shapes: ShapeId[] } {
+  if (Buffer.byteLength(value, 'utf-8') > MAX_REDACTION_INPUT_BYTES) {
+    return redactSecretsForReportReporting(value);
+  }
+  const detected = redactDetectedCredentialShapesReporting(value);
+  const report = redactSecretsForReportReporting(detected.text);
+  return { text: report.text, shapes: [...new Set([...detected.shapes, ...report.shapes])].sort() };
+}
+
 /** Accumulates redaction outcomes across every field of one finding. */
 class RedactionPass {
   private changed = false;
@@ -80,7 +105,7 @@ class RedactionPass {
   /** Redact one string; undefined passes through so optional fields stay optional. */
   run<T extends string | undefined>(value: T): T {
     if (value === undefined) return value;
-    const { text, shapes } = redactSecretsForReportReporting(value);
+    const { text, shapes } = redactForReport(value);
     if (text !== value) this.changed = true;
     for (const s of shapes) this.shapes.add(s);
     return text as T;

@@ -18,6 +18,7 @@ import type { ProjectType } from '../../hardening/security-check.js';
 import type { ShapeId } from '../../types/credential-format.js';
 import { nonAgentGateApplies } from './family-coverage.js';
 import { FIX_LINES } from '../../hardening/fix-lines.js';
+import { redactForReport } from '../../hardening/finding-emit.js';
 import { resolveFindingLine } from '../../types/finding-location.js';
 import { lineFromOffset } from '../../types/text-position.js';
 
@@ -191,7 +192,7 @@ export function analyzeCapabilities(
   findings.push(...checkRemoteInstructionFetch(ast));
 
   // Check 6: Credential harvesting patterns
-  findings.push(...checkCredentialHarvesting(ast, projectType));
+  findings.push(...checkCredentialHarvesting(ast, projectType, artifactContent));
 
   // Check 7: Memory/persistence attack patterns
   findings.push(...checkPersistencePatterns(ast));
@@ -381,7 +382,11 @@ function checkRemoteInstructionFetch(ast: SecurityAST): ASTFinding[] {
   return findings;
 }
 
-function checkCredentialHarvesting(ast: SecurityAST, projectType?: ProjectType): ASTFinding[] {
+function checkCredentialHarvesting(
+  ast: SecurityAST,
+  projectType?: ProjectType,
+  artifactContent?: string,
+): ASTFinding[] {
   const findings: ASTFinding[] = [];
   const isSDK = projectType === 'sdk';
 
@@ -390,8 +395,17 @@ function checkCredentialHarvesting(ast: SecurityAST, projectType?: ProjectType):
   );
 
   for (const surface of credSurfaces) {
+    // The surface's evidence is the request clause verbatim, and a clause that
+    // asks for a credential can carry one. The row is composed from a redacted
+    // copy, and carries the fact of removal. Its line is located from the
+    // clause as written, BEFORE redaction: the redacted clause is not artifact
+    // text, so nothing downstream could find it.
+    const line = surfaceLine(surface, ast.artifactPath, artifactContent);
+    const redacted = redactForReport(surface.evidence);
+    const removed = redacted.text !== surface.evidence;
     // For SDKs, reading an API key from env and sending it to the API is
     findings.push({
+      ...(removed ? { redactionStatus: 'applied' as const, redactedShapes: redacted.shapes } : {}),
       checkId: `AST-CRED-001`,
       name: 'Credential Harvesting Pattern',
       description: isSDK
@@ -400,15 +414,16 @@ function checkCredentialHarvesting(ast: SecurityAST, projectType?: ProjectType):
       category: 'Credential Security',
       severity: isSDK ? 'low' : 'critical',
       passed: false,
-      message: `Credential risk: ${surface.evidence}`,
+      message: `Credential risk: ${redacted.text}`,
       fixable: false,
       file: ast.artifactPath,
+      ...(line !== undefined ? { line } : {}),
       fix: isSDK
         ? 'Expected behavior for an SDK. Credentials are sent to the service API over HTTPS.'
         : 'Never request, store, or retransmit credentials. Direct users to official credential management flows.',
       attackClass: 'CRED-HARVEST',
       confidence: isSDK ? Math.min(surface.confidence, 0.3) : surface.confidence,
-      evidence: surface.evidence,
+      evidence: redacted.text,
     });
   }
 
