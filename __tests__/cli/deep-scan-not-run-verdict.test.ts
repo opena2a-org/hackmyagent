@@ -43,7 +43,9 @@ interface Run { code: number; stdout: string; stderr: string; notRun: any[] }
 function runSecure(content: string | null, args: string[], env: Record<string, string> = {}): Run {
   const dir = tempDir('hma-479-');
   try {
-    if (content !== null) writeFileSync(path.join(dir, 'config.json'), content);
+    // `mcp.json` and not `config.json`: Layer 3 never sends a config file and
+    // does not count one among the files it would have analyzed.
+    if (content !== null) writeFileSync(path.join(dir, 'mcp.json'), content);
     // The key and any preload the parent carries are removed, so "no key"
     // means no key whatever the machine running the suite has set.
     const {

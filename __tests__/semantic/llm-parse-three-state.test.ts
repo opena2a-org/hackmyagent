@@ -22,7 +22,6 @@ import { LLMAnalyzer } from '../../src/semantic/llm';
 import { AnthropicClient, type AnthropicToolResponse } from '../../src/semantic/llm/client';
 import {
   REPORT_FINDINGS_TOOL,
-  CREDENTIAL_DETECTION_PROMPT,
   MCP_THREAT_ANALYSIS_PROMPT,
   INSTRUCTION_ANALYSIS_PROMPT,
 } from '../../src/semantic/llm/prompts';
@@ -125,7 +124,9 @@ describe('#462 the request asks for a tool call, not for text', () => {
   it('no longer tells the analyst to answer with a JSON array', () => {
     // The instruction scanned content was competing to override leaves the
     // prompt with the extractor: the format is the tool's schema now.
-    for (const prompt of [CREDENTIAL_DETECTION_PROMPT, MCP_THREAT_ANALYSIS_PROMPT, INSTRUCTION_ANALYSIS_PROMPT]) {
+    // Every Layer 3 system prompt. The credential-detection prompt is retired:
+    // env and config files are never sent (`src/semantic/egress.ts`).
+    for (const prompt of [MCP_THREAT_ANALYSIS_PROMPT, INSTRUCTION_ANALYSIS_PROMPT]) {
       expect(prompt).not.toMatch(/JSON array/i);
       expect(prompt).not.toMatch(/respond with/i);
       expect(prompt).toContain(REPORT_FINDINGS_TOOL.name);

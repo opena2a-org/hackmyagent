@@ -649,6 +649,15 @@ export interface ScanResult {
      * policy, not lost to an error, so they do not move the exit code.
      */
     skippedDirectories?: SkippedDirectoryRecord[];
+    /**
+     * Env and config files deep analysis found and did not send to the
+     * analysis provider, by target-relative path, with the reason. Withheld by
+     * design: Layers 1 and 2 examined each one on this machine, so it is not an
+     * unread input, not counted as analysed by Layer 3, and not a failed
+     * analysis. Absent when the run did not ask for deep analysis or found no
+     * such file.
+     */
+    withheldFromLayer3?: Array<{ path: string; reason: string }>;
   };
 }
 

@@ -8,6 +8,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { UNTRUSTED_DATA_RULE, newBoundaryId, wrapUntrusted } from '../semantic/llm/untrusted';
+import {
+  redactForEgress,
+  providerSendNotice,
+  announceProviderSend,
+  SCAN_SOUL_STOP_SENDING,
+} from '../semantic/egress';
 
 /**
  * Whether the deep layer said the control IS addressed.
@@ -1843,25 +1849,43 @@ export class SoulScanner {
   }
 
   /**
-   * Semantic analysis for a single control.
-   * Tier 1: NanoMind local inference (free, fast)
-   * Tier 2: Claude CLI (if available)
-   * Tier 3: Anthropic API (if key set)
+   * Tier 1 of the deep pass, for every control at once: the ids of the
+   * controls NanoMind's local analysis finds addressed. The governance text is
+   * compiled once rather than once per control, since the text and so the
+   * tree are the same for every control.
+   *
+   * Run before any request is made, so the run knows how many controls are
+   * left for the provider and can say so before the first request.
    */
-  private async analyzeControlDeep(content: string, def: ControlDef): Promise<boolean> {
-    // Tier 1: NanoMind local semantic analysis
+  private async settleControlsLocally(content: string, defs: readonly ControlDef[]): Promise<Set<string>> {
+    const settled = new Set<string>();
     try {
       const { SemanticCompiler } = await import('../nanomind-core/compiler/semantic-compiler.js');
       const compiler = new SemanticCompiler({ useNanoMind: true });
       const result = await compiler.compile(content, 'SOUL.md');
       if (result.ast) {
         const governance = result.ast.declaredConstraints || [];
-        const keywords = def.keywords.map(k => k.toLowerCase());
         const govText = governance.map((c: any) => `${c.domain || ''} ${c.description || ''}`).join(' ').toLowerCase();
-        const matched = keywords.some(k => govText.includes(k));
-        if (matched) return true;
+        for (const def of defs) {
+          if (def.keywords.map(k => k.toLowerCase()).some(k => govText.includes(k))) settled.add(def.id);
+        }
       }
-    } catch { /* NanoMind unavailable, fall through */ }
+    } catch { /* NanoMind unavailable: every control falls through to the provider tier */ }
+    return settled;
+  }
+
+  /**
+   * Semantic analysis for a single control the local tier did not settle.
+   * Tier 1, NanoMind local inference, ran first (`settleControlsLocally`).
+   * Tier 2, the Claude CLI, is gone (below). Tier 3 is the Anthropic API,
+   * when the key is set.
+   *
+   * `content` is the governance text AFTER credential redaction; `scanSoul`
+   * redacts it once, before the first request is built, and passes null when
+   * it is over the redaction's size limit, in which case nothing is sent.
+   */
+  private async analyzeControlDeep(content: string | null, def: ControlDef): Promise<boolean> {
+    if (content === null) return false;
 
     // Tier 2+3: LLM fallback for ambiguous cases.
     //
@@ -2379,11 +2403,26 @@ export class SoulScanner {
       // command reads as a hang. Same class as the `wild` spinner in #253,
       // and the same shape: stderr, caller-supplied, so JSON and CI output
       // are untouched.
+      //
+      // The local tier runs for every control first, so the number of
+      // requests is known before the first one is made. The governance text is
+      // redacted once, before any request is built, and a text over the
+      // redaction's size limit is not sent at all.
+      const settled = await this.settleControlsLocally(content, failedControls);
+      const { text: redacted, overLimit } = redactForEgress(content);
+      const sendable = overLimit ? null : redacted;
+      const requests = sendable !== null && process.env.ANTHROPIC_API_KEY
+        ? failedControls.filter((def) => !settled.has(def.id)).length
+        : 0;
+      if (requests > 0) {
+        announceProviderSend(providerSendNotice('[Deep analysis]', 1, requests, SCAN_SOUL_STOP_SENDING));
+      }
+
       let analyzed = 0;
       for (const def of failedControls) {
         options?.onProgress?.(analyzed, failedControls.length);
         analyzed++;
-        const llmPassed = await this.analyzeControlDeep(content, def);
+        const llmPassed = settled.has(def.id) || await this.analyzeControlDeep(sendable, def);
         deepAnalysisResults.push({
           controlId: def.id,
           llmPassed,

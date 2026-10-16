@@ -149,12 +149,40 @@ export async function runDeepSimulation(input: DeepSimulationInput): Promise<Dee
     // the limit is named in this run and not only once an executor exists.
     let noExecutor = false;
 
+    // Every artifact is read before the first probe, so a run whose executor
+    // is the analysis provider can say how many files and requests it will
+    // send before it sends any. A read that fails stops the reading there: the
+    // files before it are probed as before, and the run then ends with that
+    // error at the same point it always did.
+    const contents: string[] = [];
+    let readError: { error: unknown } | undefined;
     for (const file of batch) {
+      try {
+        contents.push(input.read(file));
+      } catch (error) {
+        readError = { error };
+        break;
+      }
+    }
+    const sendable = contents.filter((c) => Buffer.byteLength(c, 'utf-8') <= MAX_REDACTION_INPUT_BYTES).length;
+    if (sendable > 0) {
+      const { LAYER3_PROBES } = await import('./probes.js');
+      const { providerSendNotice, SECURE_STOP_SENDING } = await import('../semantic/egress.js');
+      // `anthropic` is the executor that sends to the provider; a NanoMind
+      // daemon or Ollama on this machine sends nothing off it.
+      if ((await engine.resolveExecutor()) === 'anthropic') {
+        write(providerSendNotice('[Simulation]', sendable, sendable * LAYER3_PROBES.length, SECURE_STOP_SENDING) + '\n');
+      }
+    }
+
+    for (let i = 0; i < batch.length; i++) {
+      const file = batch[i];
+      if (i >= contents.length) throw readError?.error;
       const name = path.basename(file);
       // The progress lines name the file as `--json` does: two `SKILL.md`
       // files in different directories read the same by basename (#1024).
       const relative = path.relative(input.targetDir, file).split(path.sep).join('/');
-      const content = input.read(file);
+      const content = contents[i];
 
       // The prompt carries the file only through the credential redaction,
       // which withholds content over its size limit whole. Probing that would

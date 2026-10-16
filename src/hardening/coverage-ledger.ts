@@ -424,6 +424,8 @@ export class CoverageLedger {
    * errno list for listings would be a second predicate for one fact.
    */
   private readonly listFailures = new Map<string, FailingReaders>();
+  /** Env and config files Layer 3 withheld by design, path to reason. See `noteWithheldFromLayer3`. */
+  private readonly layer3Withheld = new Map<string, string>();
 
   constructor(targetRoot: string) {
     this.targetRoot = path.resolve(targetRoot);
@@ -818,6 +820,23 @@ export class CoverageLedger {
   /** Every link withheld during this scan, in first-seen order. */
   get withheldLinks(): WithheldLink[] {
     return [...this.withheld.values()];
+  }
+
+  /**
+   * Record a file deep analysis withheld from Layer 3 by design: an env or
+   * config file, which never leaves the machine. Kept apart from every other
+   * channel on purpose. It is not a read failure (Layers 1 and 2 read it), not
+   * a truncation (nothing was cut short), and not an unanalysed file (sending
+   * it was never an option), so it moves no category and no exit code. Deduped
+   * by path; the first reason wins.
+   */
+  noteWithheldFromLayer3(rel: string, reason: string): void {
+    if (!this.layer3Withheld.has(rel)) this.layer3Withheld.set(rel, reason);
+  }
+
+  /** Every file withheld from Layer 3 by design, in first-seen order. */
+  get withheldFromLayer3(): Array<{ path: string; reason: string }> {
+    return [...this.layer3Withheld].map(([rel, reason]) => ({ path: rel, reason }));
   }
 
   private memoizedRealpath(lexical: string): string | null {

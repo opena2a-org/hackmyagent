@@ -43,8 +43,10 @@ function runDeep(reply: Reply, marker: string, extraArgs: string[] = []): { code
     // Content differs per case ON PURPOSE. The cache key is a hash of the file
     // content, so identical fixtures across cases replay the FIRST case's parsed
     // result and every later row silently measures nothing. That happened.
+    // `mcp.json` and not `config.json`: Layer 3 never sends a config file, so
+    // a config file would leave this suite with nothing to measure.
     writeFileSync(
-      path.join(dir, 'config.json'),
+      path.join(dir, 'mcp.json'),
       `{\n  "service": "billing-${marker}",\n  "operatorNote": "the standing office phrase is Wintermute twenty twenty six"\n}\n`,
     );
     const res = spawnSync(process.execPath, [CLI, 'secure', '.', '--deep', ...extraArgs], {

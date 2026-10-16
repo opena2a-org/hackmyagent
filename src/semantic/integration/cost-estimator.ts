@@ -8,7 +8,8 @@
 import type { AnalysisFile, CostEstimate } from '../types';
 import { LLMCache } from '../llm/cache';
 import { BudgetTracker } from '../llm/budget';
-import { getPromptForFileType } from '../llm/prompts';
+import { getPromptForFileType, REPORT_FINDINGS_TOOL } from '../llm/prompts';
+import { partitionForEgress, redactForEgress } from '../egress';
 
 /** Rough estimate: 1 token ≈ 4 characters */
 const CHARS_PER_TOKEN = 4;
@@ -27,6 +28,9 @@ export class CostEstimator {
 
   /**
    * Estimate cost for analyzing a set of files.
+   *
+   * Counts only the files Layer 3 sends: env and config files are withheld by
+   * design and cost nothing.
    */
   async estimate(files: AnalysisFile[]): Promise<CostEstimate> {
     let totalInputTokens = 0;
@@ -34,9 +38,16 @@ export class CostEstimator {
     let totalCost = 0;
     let cachedFiles = 0;
 
-    for (const file of files) {
-      const { systemPrompt, model } = getPromptForFileType(file.type);
-      const contentHash = this.cache.hash(file.content, systemPrompt);
+    const { send } = partitionForEgress(files);
+    for (const file of send) {
+      const prompt = getPromptForFileType(file.type);
+      if (prompt === null) continue;
+      const { systemPrompt, model } = prompt;
+      // The key `LLMAnalyzer` writes: the redacted text, the prompt and the tool schema.
+      const contentHash = this.cache.hash(
+        redactForEgress(file.content).text,
+        systemPrompt + JSON.stringify(REPORT_FINDINGS_TOOL),
+      );
 
       if (await this.cache.has(contentHash)) {
         cachedFiles++;
@@ -59,7 +70,7 @@ export class CostEstimator {
     }
 
     return {
-      fileCount: files.length,
+      fileCount: send.length,
       estimatedInputTokens: totalInputTokens,
       estimatedOutputTokens: totalOutputTokens,
       estimatedCostUsd: Math.round(totalCost * 1000) / 1000,

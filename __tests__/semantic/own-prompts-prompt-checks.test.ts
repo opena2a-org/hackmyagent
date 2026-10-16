@@ -24,11 +24,13 @@ import { UNTRUSTED_DATA_RULE } from '../../src/semantic/llm/untrusted';
 import { buildControlCoveragePrompt } from '../../src/soul/scanner';
 import { tempDir } from '../helpers/temp-dir';
 
-const { CREDENTIAL_DETECTION_PROMPT, MCP_THREAT_ANALYSIS_PROMPT, INSTRUCTION_ANALYSIS_PROMPT } = llmPrompts;
+const { MCP_THREAT_ANALYSIS_PROMPT, INSTRUCTION_ANALYSIS_PROMPT } = llmPrompts;
 
-/** The system prompts the LLM layer selects from. */
+/**
+ * The system prompts the LLM layer selects from. There is no credential
+ * prompt: env and config files are never sent (`src/semantic/egress.ts`).
+ */
 const SYSTEM_PROMPTS: Record<string, string> = {
-  CREDENTIAL_DETECTION_PROMPT,
   MCP_THREAT_ANALYSIS_PROMPT,
   INSTRUCTION_ANALYSIS_PROMPT,
 };
@@ -87,8 +89,12 @@ describe("HackMyAgent's own analysis prompts pass the checks it runs on other pr
 
   it('the prompt selected for each file type is one of the measured prompts', () => {
     const measured = new Set(Object.values(SYSTEM_PROMPTS));
-    for (const type of ['config_file', 'env_file', 'mcp_config', 'claude_settings', 'agent_instructions']) {
-      expect(measured.has(llmPrompts.getPromptForFileType(type).systemPrompt)).toBe(true);
+    for (const type of ['mcp_config', 'claude_settings', 'agent_instructions']) {
+      expect(measured.has(llmPrompts.getPromptForFileType(type)?.systemPrompt ?? '')).toBe(true);
+    }
+    // Env and config files are never sent, so nothing is selected for them.
+    for (const type of ['config_file', 'env_file']) {
+      expect(llmPrompts.getPromptForFileType(type)).toBeNull();
     }
   });
 
