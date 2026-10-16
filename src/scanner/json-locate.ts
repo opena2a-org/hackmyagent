@@ -49,6 +49,25 @@ export function lineOfJsonValue(
   const start = text.charCodeAt(0) === 0xfeff ? 1 : 0;
   const at = seek(text, start, path, 0);
   if (at === undefined || !valueIs(text, at, expected)) return undefined;
+  return lineAt(text, at);
+}
+
+/**
+ * The 1-indexed line on which the value at `path` starts, by structure alone,
+ * or `undefined` when the path does not resolve. For a value `lineOfJsonValue`
+ * cannot compare (an object, an array, `null`, a number), and so only for text
+ * `JSON.parse` accepted exactly as it stands: the walk then follows the same
+ * keys, indices and last-duplicate rule the parser did, and the path that
+ * resolves is the value the caller judged. Never call it on text that was
+ * rewritten before parsing (the JSONC retry); use `lineOfJsonValue` there.
+ */
+export function lineOfJsonPath(text: string, path: JsonPath): number | undefined {
+  const start = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const at = seek(text, start, path, 0);
+  return at === undefined ? undefined : lineAt(text, at);
+}
+
+function lineAt(text: string, at: number): number {
   let line = 1;
   for (let i = 0; i < at; i++) if (text.charCodeAt(i) === 10) line++;
   return line;

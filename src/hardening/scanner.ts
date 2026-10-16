@@ -43,7 +43,7 @@ import {
   readStaysInsideTree,
 } from './contain';
 import { withheldLinkRecords } from './withheld-links';
-import { privateKeyFieldsInJson } from './embedded-private-key';
+import { firstPrivateKeyField, privateKeyFieldsInJson } from './embedded-private-key';
 import { onlyRegExpExecCalls, regExpIdentifiers } from './regexp-exec';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One definition of which file each MCP client loads and which top-level key
@@ -54,7 +54,7 @@ import { mcpServerEntries, VSCODE_CLIENT } from '../mcp-clients';
 // commands cannot disagree in direction on the same `.claude/settings.json`.
 import { walkConfigForGrants } from '../scanner/permission-vocabulary';
 import { parseAiConfig, proseAllowEntry, forReport, MAX_TEXT } from '../scanner/permission-grant';
-import { lineOfJsonValue } from '../scanner/json-locate';
+import { lineOfJsonPath, lineOfJsonValue } from '../scanner/json-locate';
 
 /** Redact, escape and cap a value out of a scanned config before quoting it. */
 const forFinding = (s: string): string => forReport(s, MAX_TEXT);
@@ -3414,6 +3414,13 @@ export function buildHmaIgnoreDisclosure(
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB max file size to prevent memory exhaustion
 const MAX_LINE_LENGTH = 10000; // 10KB max line length for regex safety
+
+/** Read cap for a `.json` key-file candidate (#577). */
+const MAX_KEY_JSON_BYTES = 256 * 1024;
+/** Read cap for locating a key file's PEM header; the cap `pemLooksPrivate` reads to. */
+const MAX_KEY_PEM_BYTES = 5 * 1024 * 1024;
+/** A PEM private-key header line: PKCS#1, PKCS#8, EC, OpenSSH, PGP and the encrypted forms. */
+const PEM_PRIVATE_KEY_HEADER = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----/;
 
 /**
  * Walk depth for the shell-script checks (INSTALL-001, SHELL-EXFIL-001,
@@ -8662,32 +8669,63 @@ dist/
   /**
    * Content gate for `.json` files (#577): the names of the fields that hold
    * a private key as a value, or none. Bounded like `pemLooksPrivate` — a
-   * read capped at `MAX_JSON_BYTES`, confined to `boundsRoot`, never following
+   * read capped at `MAX_KEY_JSON_BYTES`, confined to `boundsRoot`, never following
    * a link — but the error direction is the opposite one. Every JSON document
    * is a candidate, so an unreadable, oversized or unparseable file is "no
    * key" rather than "suspect"; failing safe here would call every lockfile a
    * key.
    */
   private async jsonPrivateKeyFields(filePath: string, boundsRoot: string): Promise<string[]> {
-    const MAX_JSON_BYTES = 256 * 1024;
+    const text = await this.readKeyCandidate(filePath, boundsRoot, MAX_KEY_JSON_BYTES);
+    return text === undefined ? [] : privateKeyFieldsInJson(text);
+  }
+
+  /**
+   * A key-file candidate's text, read capped at `maxBytes`, confined to
+   * `boundsRoot` and never through a link; `undefined` for a file that is
+   * outside the root, not a regular file, over the cap or unreadable.
+   */
+  private async readKeyCandidate(filePath: string, boundsRoot: string, maxBytes: number): Promise<string | undefined> {
     const rootResolved = path.resolve(boundsRoot);
     const resolved = path.resolve(filePath);
-    if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) return [];
+    if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) return undefined;
     let fh;
     try {
       fh = await fs.open(resolved, fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW ?? 0));
       const st = await fh.stat();
-      if (!st.isFile() || st.size > MAX_JSON_BYTES) return [];
+      if (!st.isFile() || st.size > maxBytes) return undefined;
       // Sized from the stat, so a file that grows afterwards cannot push the
       // read past the cap.
       const buf = Buffer.alloc(st.size + 1);
       const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-      return privateKeyFieldsInJson(buf.subarray(0, bytesRead).toString('utf-8'));
+      return buf.subarray(0, bytesRead).toString('utf-8');
     } catch {
-      return [];
+      return undefined;
     } finally {
       try { await fh?.close(); } catch { /* ignore */ }
     }
+  }
+
+  /**
+   * The line CRED-002 cites for the key file it names: the field holding the
+   * key in a JSON document, or the PEM `PRIVATE KEY` header of any other key
+   * file, wherever in the file it sits. The file is read again under the
+   * bounds of the gate that admitted it. A file that no longer holds what the
+   * gate saw, or a key file with no PEM header (binary DER, or a file the gate
+   * flagged fail-safe without reading it), gets no line rather than one that
+   * names something else.
+   */
+  private async privateKeyLine(rel: string, targetDir: string, isJson: boolean): Promise<number | undefined> {
+    const abs = path.join(targetDir, rel);
+    if (isJson) {
+      const text = await this.readKeyCandidate(abs, targetDir, MAX_KEY_JSON_BYTES);
+      const field = text === undefined ? undefined : firstPrivateKeyField(text);
+      return field === undefined ? undefined : lineOfJsonValue(text!, field.path, field.value);
+    }
+    const text = await this.readKeyCandidate(abs, targetDir, MAX_KEY_PEM_BYTES);
+    if (text === undefined) return undefined;
+    const index = text.split('\n').findIndex((l) => PEM_PRIVATE_KEY_HEADER.test(l));
+    return index < 0 ? undefined : index + 1;
   }
 
   /**
@@ -8889,6 +8927,13 @@ dist/
     const hasEmbeddedKey = Object.keys(embeddedKeyFields).length > 0;
 
     if (foundKeys.length > 0) {
+      // The line of the key in the file named, so the finding renders
+      // `file:line` and a `Verify:` like every other present-pattern finding.
+      const keyLine = await this.privateKeyLine(
+        foundKeys[0],
+        targetDir,
+        Object.prototype.hasOwnProperty.call(embeddedKeyFields, foundKeys[0]),
+      );
       findings.push({
         checkId: 'CRED-002',
         name: 'Private Key Files',
@@ -8898,6 +8943,7 @@ dist/
         passed: false,
         message: `Private key files found: ${foundKeys.slice(0, 5).map(keyListing).join(', ')}${foundKeys.length > 5 ? ` (+${foundKeys.length - 5} more)` : ''} - move to secure location`,
         file: foundKeys[0],
+        ...(keyLine !== undefined ? { line: keyLine } : {}),
         fixable: false,
         fix: 'Move the key outside the repository or into a secrets manager. If it was ever committed, rotate it, then run: '
           + (commandNaming(foundKeys[0], (q) => `git rm --cached ${q}`)
@@ -9595,16 +9641,20 @@ dist/
     ];
     const pkgJsonPath = path.join(targetDir, 'package.json');
     const pkgReadDep004 = await readCheckSubject(pkgJsonPath);
+    // The line of the first script that matched, located by its key under
+    // `scripts` and checked against its value.
+    let dangerousScriptLine: number | undefined;
     if (pkgReadDep004.state === 'read') {
       // A present but unparseable manifest keeps today's verdict.
       try {
         const pkgJson = pkgReadDep004.content;
         const pkg = JSON.parse(pkgJson);
         if (pkg.scripts) {
-          for (const [, script] of Object.entries(pkg.scripts)) {
+          for (const [name, script] of Object.entries(pkg.scripts)) {
             if (typeof script === 'string') {
               for (const pattern of dangerousScriptRegexes) {
                 if (pattern.test(script)) {
+                  if (!hasDangerousScripts) dangerousScriptLine = lineOfJsonValue(pkgJson, ['scripts', name], script);
                   hasDangerousScripts = true;
                   break;
                 }
@@ -9626,6 +9676,7 @@ dist/
         severity: 'critical',
         passed: !hasDangerousScripts,
         file: hasDangerousScripts ? 'package.json' : undefined,
+        ...(hasDangerousScripts && dangerousScriptLine !== undefined ? { line: dangerousScriptLine } : {}),
         message: hasDangerousScripts
           ? 'Dangerous patterns in npm scripts (curl|sh, eval) - review carefully'
           : 'npm scripts appear safe',
@@ -13532,6 +13583,20 @@ dist/
   }
 
   /**
+   * The line GATEWAY-002 cites in a gateway config with no origin validation:
+   * `security.websocketOrigins` itself when it is present and empty, else the
+   * `security` block the setting belongs in, else the `gateway` block it would
+   * protect. A config with none of the three has nothing to point at and gets
+   * no line. `text` is the document `JSON.parse` accepted as it stands, so the
+   * structural lookup lands on the values the check read.
+   */
+  private websocketOriginsLine(text: string): number | undefined {
+    return lineOfJsonPath(text, ['security', 'websocketOrigins'])
+      ?? lineOfJsonPath(text, ['security'])
+      ?? lineOfJsonPath(text, ['gateway']);
+  }
+
+  /**
    * Find OpenClaw gateway configuration files
    */
   private async findGatewayConfigFiles(dir: string): Promise<string[]> {
@@ -13644,7 +13709,8 @@ dist/
       // GATEWAY-002: Missing WebSocket Origin Validation (not auto-fixable - requires user to specify allowed origins)
       const security = config.security as Record<string, unknown> | undefined;
       const hasWebSocketOrigins = security && security.websocketOrigins;
-      findings.push({
+      const gateway002Line = hasWebSocketOrigins ? undefined : this.websocketOriginsLine(content);
+      const gateway002: SecurityFindingDraft = {
         checkId: 'GATEWAY-002',
         name: 'Missing WebSocket Origin Validation',
         description: 'Gateway lacks WebSocket origin validation (GHSA-g8p2)',
@@ -13655,10 +13721,12 @@ dist/
           ? 'WebSocket origin validation is configured'
           : 'Missing security.websocketOrigins - vulnerable to GHSA-g8p2 cross-origin attacks',
         file: relativePath,
+        ...(gateway002Line !== undefined ? { line: gateway002Line } : {}),
         fixable: false,
         fix: 'Add security.websocketOrigins: ["http://localhost:3000"] to the gateway config',
         guidance: 'Without origin validation, any website can connect to the gateway via WebSocket (GHSA-g8p2). This enables cross-origin command execution attacks.',
-      });
+      };
+      findings.push(gateway002);
 
       // GATEWAY-003: Token Exposed in Config
       const gatewayAuth = gateway?.auth as Record<string, unknown> | undefined;
@@ -13923,15 +13991,23 @@ dist/
         // through the choke point; the failure branch is unchanged, since a
         // refused write and a failed write have the same consequence for the
         // findings already pushed against this file.
+        const rewritten = JSON.stringify(config, null, 2) + '\n';
         const gatewayWritten = await this.applyFixWrite(
           configFile,
-          JSON.stringify(config, null, 2) + '\n',
+          rewritten,
           // Every gateway check whose fix this one write carries (#1033).
           findings
             .filter((f) => f.category === 'gateway' && f.fixed && f.file === relativePath)
             .map((f) => f.checkId),
         );
         if (gatewayWritten) {
+          // GATEWAY-002 is not fixed by this write, and the write re-lays the
+          // file out, so its line is taken again from the text now on disk.
+          if (gateway002.line !== undefined) {
+            const relocated = this.websocketOriginsLine(rewritten);
+            if (relocated !== undefined) gateway002.line = relocated;
+            else delete gateway002.line;
+          }
           // Add a summary finding about what was fixed
           findings.push({
             checkId: 'FIX-SUMMARY',
