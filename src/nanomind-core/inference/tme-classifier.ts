@@ -19,6 +19,7 @@ import https from 'node:https';
 import type { IncomingMessage } from 'node:http';
 import { escapeForDisplay } from '../../ui/display-safe';
 import { modelProxyNotice, proxiedRequestOptions, resolveModelProxy } from './model-proxy';
+import { loadOnnxRuntime } from './onnx-runtime';
 
 // Pinned to the model repository commit the sha256 values below were taken
 // from. A branch URL follows every later commit to that repository, so a new
@@ -656,7 +657,7 @@ export class TMEClassifier {
         this.useOnnx = false;
         return;
       }
-      const ort = require('onnxruntime-node');
+      const ort = loadOnnxRuntime();
       // Before `create`, because that is what triggers the enumeration — and
       // in its OWN try, because the catch below disables neural inference for
       // the whole run. `env.logLevel` is a plain settable property today; if a
@@ -749,7 +750,7 @@ export class TMEClassifier {
       while (padded.length < 128) padded.push(0);
 
       try {
-        const ort = require('onnxruntime-node');
+        const ort = loadOnnxRuntime();
         const inputTensor = new ort.Tensor('int64', BigInt64Array.from(padded.map(BigInt)), [1, 128]);
         const output = await this.onnxSession.run({ input_ids: inputTensor });
         const logits = Array.from(output.logits.data as Float32Array);
