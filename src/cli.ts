@@ -5439,11 +5439,11 @@ Backups (--fix):
   .option('-b, --benchmark <name>', 'Run benchmark compliance check (e.g., oasb-1)')
   .option('-l, --level <level>', 'Benchmark level: L1 (Essential), L2 (Standard), L3 (Hardened)', 'L1')
   .option('-c, --category <name>', 'Filter to specific benchmark category')
-  .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation (~30s per file)')
+  .option('--deep', 'Maximum analysis: static + semantic + behavioral simulation (~30s per file). With ANTHROPIC_API_KEY set, sends the agent instruction and MCP config files it analyzes and the .md and .yaml files it simulates, with credential values removed, to api.anthropic.com, and says so on stderr first; .env and config files are never sent')
   .option('--nanomind', 'Per-finding AI threat analysis on HIGH/CRITICAL findings only (~15-30s per finding; specialist model, no effect on clean or LOW/MEDIUM-only scans; requires nanomind setup)')
   .option('--analm', '[deprecated alias for --nanomind] AI-powered threat analysis')
   .option('--static-only', 'Disable semantic analysis and simulation (static checks only, fast, deterministic)')
-  .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation)', 'standard')
+  .option('--scan-depth <depth>', 'CAAT scan depth: quick (config+creds only), standard (default), deep (+ simulation; with ANTHROPIC_API_KEY set, sends files to api.anthropic.com as --deep does)', 'standard')
   .option('--include-dist', 'Also walk dist/ with the static checks. Skipped by default as build output; use it on an extracted package, where dist/ is the code that runs. Without it, coverage.skippedDirectories names each dist/ left out')
   .option('--scan-history', 'Also read every commit reachable from any ref and report credentials committed there as <commit>:<file>:<line>, including ones since deleted from the tree (needs a git work tree; not with -b)')
   .option('--since <ref>', 'With --scan-history: read only commits not reachable from <ref>')
@@ -6207,8 +6207,12 @@ Backups (--fix):
         try {
           const { readFileSync, readdirSync, statSync } = await import('node:fs');
           const { join } = await import('node:path');
+          const { discoveryTypeOf } = await import('./semantic/structural/index.js');
+          const { isSentFileType } = await import('./semantic/egress.js');
 
-          // Find skill files in target directory
+          // Find skill files in target directory. `config.yaml` and
+          // `config.yml` match the extensions and are config files, which
+          // deep analysis never sends, so the walk leaves them out.
           const skillFiles: string[] = [];
           // Raw walk, site-confined like every raw reader on the scan path:
           // an entry that is a link resolving outside the scanned tree is
@@ -6228,7 +6232,8 @@ Backups (--fix):
                 if (stat.isDirectory() && !entry.startsWith('.') && entry !== 'node_modules') {
                   findSkills(fullPath);
                 } else if (entry.endsWith('.md') || entry.endsWith('.yaml') || entry.endsWith('.yml')) {
-                  skillFiles.push(fullPath);
+                  const kind = discoveryTypeOf(entry);
+                  if (kind === undefined || isSentFileType(kind)) skillFiles.push(fullPath);
                 }
               }
             } catch { /* skip inaccessible dirs */ }
@@ -10941,7 +10946,7 @@ Examples:
   .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
   .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
   .option('--fail-below <score>', 'Exit 1 if score below threshold (0-100)')
-  .option('--deep', 'Maximum analysis: semantic + SOUL governance simulation (~15s)')
+  .option('--deep', 'Maximum analysis: semantic + SOUL governance simulation (~15s). With ANTHROPIC_API_KEY set, sends the governance file, with credential values removed, to api.anthropic.com, and says so on stderr first')
   .option('--static-only', 'Disable semantic analysis (static governance checks only)')
   .option('--publish', 'Push scan results to the OpenA2A Registry')
   .option('--registry-url <url>', 'Registry URL (default: REGISTRY_URL env)', validateRegistryUrl(process.env.REGISTRY_URL || 'https://api.oa2a.org'))

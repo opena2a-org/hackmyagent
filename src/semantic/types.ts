@@ -97,6 +97,12 @@ export interface LLMAnalysisOptions {
   cacheDir?: string;
   /** Progress callback */
   onProgress?: (message: string) => void;
+  /**
+   * Called once, before the first provider request, with the number of files
+   * that will be sent and the number of requests that will carry them. Not
+   * called when nothing will be sent.
+   */
+  onSend?: (plan: { files: number; requests: number }) => void;
 }
 
 export interface CostEstimate {
@@ -118,6 +124,12 @@ export interface DeepScanResult {
   layer2Findings: SemanticFinding[];
   /** Security-relevant files with analysis guidance for the host LLM */
   filesForDeepAnalysis: DeepAnalysisFile[];
+  /**
+   * Env and config files found and NOT included, each with the reason. Their
+   * contents are covered by the Layer 1 and Layer 2 findings only. Absent when
+   * none was found.
+   */
+  filesWithheld?: Array<{ path: string; type: FileType; reason: string }>;
   /** Overall guidance for the host LLM */
   overallGuidance: string;
 }
@@ -127,7 +139,7 @@ export interface DeepAnalysisFile {
   path: string;
   /** File type classification */
   type: FileType;
-  /** File content (truncated to ~4KB) */
+  /** File content after credential redaction (truncated to ~4KB) */
   content: string;
   /** Per-file analysis guidance */
   analysisGuidance: string;

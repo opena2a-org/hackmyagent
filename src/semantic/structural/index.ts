@@ -76,6 +76,18 @@ const FILE_DISCOVERY: Array<{ glob: string; type: FileType }> = [
   { glob: 'settings.json', type: 'config_file' },
 ];
 
+/**
+ * The kind discovery gives a file with this name, or undefined when discovery
+ * does not select a file of that name. Matches the root-level entries only, so
+ * a bare `settings.json` is a config file and not `.claude/settings.json`.
+ *
+ * For walks that select by extension, such as the behavioural simulation's,
+ * so they can leave out the kinds deep analysis never sends.
+ */
+export function discoveryTypeOf(fileName: string): FileType | undefined {
+  return FILE_DISCOVERY.find((d) => d.glob === fileName)?.type;
+}
+
 export class StructuralAnalyzer {
   private credentialAnalyzer = new CredentialContextAnalyzer();
   private mcpAnalyzer = new McpConfigAnalyzer();

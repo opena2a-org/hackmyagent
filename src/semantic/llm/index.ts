@@ -12,6 +12,12 @@ import { AnthropicClient, type AnthropicToolResponse } from './client';
 import { LLMCache } from './cache';
 import { BudgetTracker } from './budget';
 import { getPromptForFileType, buildFileAnalysisMessage, REPORT_FINDINGS_TOOL } from './prompts';
+import {
+  partitionForEgress,
+  redactForEgress,
+  OVER_REDACTION_LIMIT_REASON,
+  type WithheldFile,
+} from '../egress';
 
 /**
  * #462 — what came back, as three states rather than two.
@@ -50,16 +56,24 @@ export class LLMAnalyzer {
   private cache: LLMCache;
   private budget: BudgetTracker;
   private onProgress?: (message: string) => void;
+  private onSend?: (plan: { files: number; requests: number }) => void;
 
   constructor(options: LLMAnalysisOptions) {
     this.client = new AnthropicClient(options.apiKey);
     this.cache = new LLMCache(options.cacheDir);
     this.budget = new BudgetTracker(options.budgetCap, options.cacheDir);
     this.onProgress = options.onProgress;
+    this.onSend = options.onSend;
   }
 
   /**
    * Analyze files using LLM. Respects cache and budget.
+   *
+   * Env and config files are withheld here, whatever the caller passes, and
+   * every file that is sent is redacted before its cache key is computed and
+   * before the request is built (`../egress.ts`). `onSend` is called once,
+   * before the first request, with the number of files that will be sent;
+   * each is one request, and a file answered from the cache is not counted.
    */
   async analyze(files: AnalysisFile[]): Promise<{
     findings: SemanticFinding[];
@@ -67,23 +81,52 @@ export class LLMAnalyzer {
     cachedResults: number;
     /** Files Layer 3 could not read an answer for. NEVER silently empty (#462). */
     unanalyzed: Array<{ path: string; reason: string }>;
+    /** Env and config files, not sent by design. Not analysed and not a failed analysis. */
+    withheld: WithheldFile[];
   }> {
     const allFindings: SemanticFinding[] = [];
     const unanalyzed: Array<{ path: string; reason: string }> = [];
     let totalCost = 0;
     let cachedResults = 0;
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const { systemPrompt, model } = getPromptForFileType(file.type);
+    const { send, withheld } = partitionForEgress(files);
 
-      // Check cache. The tool schema is part of the key with the prompt: the
-      // two together are what the cached answer was given in reply to.
+    // Plan every file before the first request, so the notice can state the
+    // number of requests the run will make.
+    const plan: Array<{
+      file: AnalysisFile;
+      text: string;
+      systemPrompt: string;
+      model: 'haiku' | 'sonnet';
+      contentHash: string;
+      cached: Awaited<ReturnType<LLMCache['get']>>;
+    }> = [];
+    for (const file of send) {
+      const prompt = getPromptForFileType(file.type);
+      if (prompt === null) {
+        withheld.push({ path: file.path, type: file.type, reason: 'Layer 3 has no analysis for this kind of file' });
+        continue;
+      }
+      const { text, overLimit } = redactForEgress(file.content);
+      if (overLimit) {
+        unanalyzed.push({ path: file.path, reason: OVER_REDACTION_LIMIT_REASON });
+        continue;
+      }
+      // The cache key is the REDACTED text with the prompt and the tool schema:
+      // the three together are what the cached answer was given in reply to.
       const contentHash = this.cache.hash(
-        file.content,
-        systemPrompt + JSON.stringify(REPORT_FINDINGS_TOOL)
+        text,
+        prompt.systemPrompt + JSON.stringify(REPORT_FINDINGS_TOOL)
       );
       const cached = await this.cache.get(contentHash);
+      plan.push({ file, text, systemPrompt: prompt.systemPrompt, model: prompt.model, contentHash, cached });
+    }
+
+    const toSend = plan.filter((p) => !isUsableCacheEntry(p.cached)).length;
+    if (toSend > 0) this.onSend?.({ files: toSend, requests: toSend });
+
+    for (let i = 0; i < plan.length; i++) {
+      const { file, text, systemPrompt, model, contentHash, cached } = plan[i];
 
       // An entry written by 0.27.0 or earlier holds the raw `response` text and
       // no `findings`. It is treated as a MISS and re-analysed, not as a failure:
@@ -91,9 +134,9 @@ export class LLMAnalyzer {
       // replay this fix exists to end) or reporting every previously-cached file
       // as unanalysed on first upgrade, which would be a false alarm on a
       // machine where nothing is wrong.
-      if (cached && Array.isArray(cached.findings)) {
+      if (cached && isUsableCacheEntry(cached)) {
         this.onProgress?.(
-          `[${i + 1}/${files.length}] ${file.path} .............. (cached)`
+          `[${i + 1}/${plan.length}] ${file.path} .............. (cached)`
         );
         // The cache holds a PARSED result, so a response that could not be read
         // is not replayed. Before #462 the raw text was cached BEFORE the parse
@@ -108,7 +151,7 @@ export class LLMAnalyzer {
       const withinBudget = await this.budget.isWithinBudget();
       if (!withinBudget) {
         this.onProgress?.(
-          `[${i + 1}/${files.length}] ${file.path} .............. skipped (budget exceeded)`
+          `[${i + 1}/${plan.length}] ${file.path} .............. skipped (budget exceeded)`
         );
         unanalyzed.push({ path: file.path, reason: 'the Layer 3 budget was exhausted before this file' });
         continue;
@@ -116,13 +159,14 @@ export class LLMAnalyzer {
 
       // Call LLM
       this.onProgress?.(
-        `[${i + 1}/${files.length}] ${file.path} ..............`
+        `[${i + 1}/${plan.length}] ${file.path} ..............`
       );
 
       try {
+        // `text`, never `file.content`: the request carries the redacted file.
         const userMessage = buildFileAnalysisMessage(
           file.path,
-          file.content,
+          text,
           file.type
         );
 
@@ -175,7 +219,7 @@ export class LLMAnalyzer {
       }
     }
 
-    return { findings: allFindings, cost: totalCost, cachedResults, unanalyzed };
+    return { findings: allFindings, cost: totalCost, cachedResults, unanalyzed, withheld };
   }
 
   /**
@@ -268,6 +312,14 @@ export class LLMAnalyzer {
     if (lower === 'medium') return 'medium';
     return 'low';
   }
+}
+
+/**
+ * A cache entry that answers for its file. An entry written by 0.27.0 or
+ * earlier holds no parsed `findings` and is a miss (see `analyze`).
+ */
+function isUsableCacheEntry(entry: { findings?: unknown } | null): boolean {
+  return entry !== null && Array.isArray(entry.findings);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

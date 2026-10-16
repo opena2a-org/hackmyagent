@@ -47,7 +47,10 @@ afterEach(async () => {
 });
 
 async function scan(deep: boolean) {
+  // `settings.json` is a config file, which Layer 3 never sends and does not
+  // count among the files it would have analyzed; `mcp.json` is the one it does.
   await writeFile(path.join(dir, 'settings.json'), JSON.stringify({ apiUrl: 'https://example.test' }, null, 2));
+  await writeFile(path.join(dir, 'mcp.json'), JSON.stringify({ mcpServers: { docs: { command: 'node', args: ['docs.js'] } } }, null, 2));
   await writeFile(path.join(dir, 'app.ts'), 'export const port = 8080;\n');
   const result = await new HardeningScanner().scan({ targetDir: dir, deep });
   return result.findings.filter((f) => f.checkId === 'SEM-LLM-NOT-ANALYZED');
@@ -89,6 +92,20 @@ describe('#479 Layer 3 that could not run is reported once for the run', () => {
   it('not a deep scan: no record, even with no key', async () => {
     delete process.env.ANTHROPIC_API_KEY;
     expect(await scan(false)).toHaveLength(0);
+  });
+
+  it('only env and config files: no record, and each is on the coverage ledger as withheld by design', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    await writeFile(path.join(dir, '.env'), 'GREETING=hello\n');
+    await writeFile(path.join(dir, 'config.json'), JSON.stringify({ region: 'eu' }, null, 2));
+    const result = await new HardeningScanner().scan({ targetDir: dir, deep: true });
+    expect(result.findings.filter((f) => f.checkId === 'SEM-LLM-NOT-ANALYZED')).toHaveLength(0);
+    const withheld = result.coverage?.withheldFromLayer3 ?? [];
+    expect(withheld.map((w) => w.path).sort()).toEqual(['.env', 'config.json']);
+    for (const w of withheld) expect(w.reason).toContain('withheld from Layer 3 by design');
+    // Not a deep scan: nothing was withheld from a layer that did not run.
+    const shallow = await new HardeningScanner().scan({ targetDir: dir, deep: false });
+    expect(shallow.coverage?.withheldFromLayer3).toBeUndefined();
   });
 
   it('no key and nothing for Layer 3 to analyze: no record', async () => {

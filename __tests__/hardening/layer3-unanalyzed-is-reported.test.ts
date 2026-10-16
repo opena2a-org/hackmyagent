@@ -75,13 +75,17 @@ afterEach(async () => {
 });
 
 async function scanWithUnreadableLayer3() {
+  // `settings.json` is a config file, which Layer 3 never sends, so the file
+  // Layer 3 is handed here is `mcp.json`.
   await writeFile(path.join(dir, 'settings.json'), JSON.stringify({ apiUrl: 'https://example.test' }, null, 2));
+  await writeFile(path.join(dir, 'mcp.json'), JSON.stringify({ mcpServers: { docs: { command: 'node', args: ['docs.js'] } } }, null, 2));
   await writeFile(path.join(dir, 'app.ts'), 'export const port = 8080;\n');
   const result = await new HardeningScanner().scan({ targetDir: dir, deep: true });
   // Loud, not silent: if discovery hands Layer 3 nothing, every assertion below
   // would pass vacuously against a scanner that emits nothing at all.
   expect(analyzed.length, 'Layer 3 was never reached — this test measured nothing').toBeGreaterThan(0);
   expect(analyzed[0].length, 'Layer 3 was reached with zero files — nothing could be unanalysed').toBeGreaterThan(0);
+  expect(analyzed[0], 'a config file was handed to Layer 3').not.toContain('settings.json');
   return result;
 }
 

@@ -9,10 +9,12 @@
  * `scanSoul` with `deepAnalysis` and a callback. No spawn test can reach it
  * either: the deep tier needs an analysis backend, and the counter is TTY-only.
  *
- * The backend is stubbed at the two private seams the deep pass calls, so the
- * run is offline and deterministic. The assertion is the counter's contract:
- * one call per analysed control, counting from 0, with a constant total equal
- * to the number of controls actually sent for analysis.
+ * The backend is stubbed at the private seams the deep pass calls, so the run
+ * is offline and deterministic: availability, the local tier that settles
+ * controls before any request (here it settles none), and the per-control
+ * request. The assertion is the counter's contract: one call per analysed
+ * control, counting from 0, with a constant total equal to the number of
+ * controls actually sent for analysis.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -20,7 +22,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { SoulScanner } from '../../src/soul/scanner';
 
-type DeepSeams = { isLlmAvailable(): boolean; analyzeControlDeep(): Promise<boolean> };
+type DeepSeams = {
+  isLlmAvailable(): boolean;
+  settleControlsLocally(): Promise<Set<string>>;
+  analyzeControlDeep(): Promise<boolean>;
+};
 const seams = SoulScanner.prototype as unknown as DeepSeams;
 
 function soulDir(): string {
@@ -36,6 +42,7 @@ afterEach(() => { vi.restoreAllMocks(); });
 describe('#285 scanSoul reports deep-pass progress per analysed control', () => {
   it('calls onProgress once per control sent for analysis, counting up to the total', async () => {
     vi.spyOn(seams, 'isLlmAvailable').mockReturnValue(true);
+    vi.spyOn(seams, 'settleControlsLocally').mockResolvedValue(new Set());
     const deep = vi.spyOn(seams, 'analyzeControlDeep').mockResolvedValue(false);
     const calls: Array<[number, number]> = [];
 

@@ -20,6 +20,7 @@ import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, Proje
 import { isScopeChannel } from './security-check';
 import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
+import { partitionForEgress, providerSendNotice, announceProviderSend, SECURE_STOP_SENDING } from '../semantic/egress';
 import { enrichWithTaxonomy, TAXONOMY_EXEMPT_CHECKIDS } from './taxonomy';
 import { lineFromOffset } from '../types/text-position';
 import { HeadTailRegExp, WordChainAlternationRegExp, WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
@@ -5511,17 +5512,26 @@ export class HardeningScanner {
         const structural = new StructuralAnalyzer();
         // Same exclusion as Layer 2 above, and it costs money here: every
         // duplicated backup copy would be a billed LLM call.
-        const files = await structural.discoverFiles(targetDir, {
+        const discovered = await structural.discoverFiles(targetDir, {
           isExcludedDir: (dir) => this.isOwnBackupDir(dir),
           confineTo: this.structuralConfinement(),
         });
+        // Env and config files never leave the machine, with or without a
+        // key, so they are on the ledger as withheld by design and are not
+        // counted among the files Layer 3 would have analyzed.
+        const { send: files, withheld } = partitionForEgress(discovered);
+        for (const w of withheld) this.coverage.noteWithheldFromLayer3(w.path, w.reason);
         discoveredCount = files.length;
         if (!process.env.ANTHROPIC_API_KEY) {
           notRunCause = 'ANTHROPIC_API_KEY is not set';
-        } else {
+        } else if (files.length > 0) {
           const llm = new LLMAnalyzer({
             apiKey: process.env.ANTHROPIC_API_KEY,
             onProgress: options.onProgress,
+            // In every output format, before the first request.
+            onSend: ({ files: sent, requests }) => announceProviderSend(
+              providerSendNotice('[Deep analysis]', sent, requests, SECURE_STOP_SENDING),
+            ),
           });
           const llmResult = await llm.analyze(files);
           const converted = toSecurityFindings(
@@ -6506,6 +6516,12 @@ export class HardeningScanner {
         // #1010 — absent when no `dist/` was skipped, so a tree without one
         // produces the document it produced before this key existed.
         ...(skippedDirectories.length > 0 ? { skippedDirectories } : {}),
+        // Env and config files deep analysis did not send, by design. Absent
+        // when there were none, so a run without --deep is an unchanged
+        // document. Target-relative paths, never the target itself.
+        ...(this.coverage.withheldFromLayer3.length > 0
+          ? { withheldFromLayer3: this.coverage.withheldFromLayer3 }
+          : {}),
       },
       // Links the scan refused to follow, with the retarget instruction.
       // Absent when nothing was withheld, so an unchanged tree produces an

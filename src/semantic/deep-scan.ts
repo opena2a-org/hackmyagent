@@ -4,6 +4,13 @@
  * Prepares the structured response for the MCP server's deep_scan tool.
  * Collects Layer 1+2 findings, security-relevant file contents, and
  * analysis guidance for the host LLM to reason about.
+ *
+ * The result goes to whichever model serves the calling assistant, so it is
+ * built under the same rules as a Layer 3 request (`./egress.ts`): env and
+ * config files are named in `filesWithheld` and their contents are left out,
+ * and every file that is included passes through the credential redaction
+ * before it is truncated, so a cut cannot leave half a value the redaction no
+ * longer recognises.
  */
 
 import type {
@@ -14,12 +21,13 @@ import type {
   ExistingFinding,
   FileType,
 } from './types';
+import { partitionForEgress, redactForEgress } from './egress';
 
 /** Max content size per file for deep analysis (prevents token bloat) */
 const MAX_DEEP_CONTENT_SIZE = 4096;
 
-/** Analysis guidance per file type */
-const GUIDANCE: Record<FileType, string> = {
+/** Analysis guidance for each kind of file the result includes. */
+const GUIDANCE: Partial<Record<FileType, string>> = {
   agent_instructions:
     'This is an AI agent instruction file loaded into the LLM context window. ANY credential in this file is critical severity because it will be sent to the AI provider and can be extracted via prompt injection. Also check for: overly permissive instructions (e.g., "always execute", "never refuse"), missing security boundaries, prompt injection vectors, and instructions that could enable data exfiltration.',
 
@@ -28,18 +36,14 @@ const GUIDANCE: Record<FileType, string> = {
 
   claude_settings:
     'This is a Claude Code settings file. Check for: wildcard permission grants (allow: ["*"]), unrestricted Bash access, write permissions outside the project directory, and MCP servers with overprivileged scope. Also check for secrets in any env blocks.',
-
-  env_file:
-    'This is an environment file. Check for: hardcoded credentials of ANY type (not just known API key patterns), database connection strings with embedded passwords, generic tokens and secrets, and values that should be rotated. If this file is committed to git, ALL credentials are exposed.',
-
-  config_file:
-    'This is a configuration file. Check for: hardcoded API keys, tokens, passwords, and secrets in any format. Look for key names that suggest secrets (token, key, secret, password, auth) with non-placeholder values.',
-
-  other:
-    'Analyze this file for any security-relevant content including credentials, configuration issues, and potential vulnerabilities.',
 };
 
+const FALLBACK_GUIDANCE =
+  'Analyze this file for any security-relevant content including credentials, configuration issues, and potential vulnerabilities.';
+
 const OVERALL_GUIDANCE = `You are a security analyst reviewing an AI agent project. The automated scan (Layer 1 + Layer 2) has already run. Now review the files below for threats that automated tools miss.
+
+Credential values in these files were replaced with a [REDACTED...] marker before this result was built. A marker shows that a credential was written at that position: report it as a credential in that file, never as a safe value. Env and config files are not included; they are listed under filesWithheld, and the Layer 1 and Layer 2 findings are what covers them.
 
 For each file, identify:
 1. **Credentials in ANY format** — not just known API key patterns. Look for passwords, tokens, secrets, connection strings, auth headers, and any string that looks like it should be kept secret.
@@ -67,17 +71,21 @@ export function buildDeepScanResult(
   layer2Findings: SemanticFinding[],
   files: AnalysisFile[]
 ): DeepScanResult {
-  const filesForDeepAnalysis: DeepAnalysisFile[] = files.map((file) => {
+  const { send, withheld } = partitionForEgress(files);
+  const filesForDeepAnalysis: DeepAnalysisFile[] = send.map((file) => {
+    // Redact the whole file, then cut. Over the redaction's size limit the
+    // text is the withheld marker alone, which says so to the reader.
+    const { text } = redactForEgress(file.content);
     const content =
-      file.content.length > MAX_DEEP_CONTENT_SIZE
-        ? file.content.substring(0, MAX_DEEP_CONTENT_SIZE) + '\n... (truncated)'
-        : file.content;
+      text.length > MAX_DEEP_CONTENT_SIZE
+        ? text.substring(0, MAX_DEEP_CONTENT_SIZE) + '\n... (truncated)'
+        : text;
 
     return {
       path: file.path,
       type: file.type,
       content,
-      analysisGuidance: GUIDANCE[file.type] || GUIDANCE.other,
+      analysisGuidance: GUIDANCE[file.type] ?? FALLBACK_GUIDANCE,
     };
   });
 
@@ -85,6 +93,7 @@ export function buildDeepScanResult(
     layer1Findings,
     layer2Findings,
     filesForDeepAnalysis,
+    ...(withheld.length > 0 ? { filesWithheld: withheld } : {}),
     overallGuidance: OVERALL_GUIDANCE,
   };
 }
