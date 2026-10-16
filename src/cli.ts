@@ -7889,6 +7889,43 @@ Examples:
   });
 
 
+/**
+ * The not-measured verdict for a directory operand the command cannot use, or
+ * `null` when it is a readable directory.
+ *
+ * `init-mcp` created a missing directory to hold the client file it wrote,
+ * and `secure-nemoclaw` printed a risk level and a check count over one, both
+ * at exit 0. Each now ends before any work, the way `secure` ends on a missing
+ * target: the sentence names what was not done (`written`, `scanned`).
+ *
+ * A path through a file (`afile/sub`, ENOTDIR) has no entry, so it reads as
+ * missing. A file, or a directory that cannot be opened, exists and is
+ * `target-unreadable` as a directory.
+ */
+function directoryOperandRefusal(target: string, nothingWas: 'written' | 'scanned'): CheckVerdict | null {
+  const fs = require('fs');
+  const shown = escapePathForDisplay(target);
+  let stats;
+  try {
+    stats = fs.statSync(target);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      return unmeasured('target-not-found', `${shown} does not exist, so nothing was ${nothingWas}.`);
+    }
+    return unmeasured('target-unreadable', `${shown} could not be read, so nothing was ${nothingWas}.`);
+  }
+  if (!stats.isDirectory()) {
+    return unmeasured('target-unreadable', `${shown} is not a directory, so nothing was ${nothingWas}.`);
+  }
+  try {
+    fs.opendirSync(target).closeSync();
+  } catch {
+    return unmeasured('target-unreadable', `${shown} could not be read, so nothing was ${nothingWas}.`);
+  }
+  return null;
+}
+
 function detectNemoClawDirectory(providedDir: string): string {
   const os = require('os');
   const fs = require('fs');
@@ -7984,6 +8021,30 @@ Examples:
   .action(async (directory: string, options: { json?: boolean; verbose?: boolean }) => {
     try {
       const targetDir = detectNemoClawDirectory(directory);
+
+      // Settled before any output, like the measured arm below. The document
+      // has the shape `secure --json` writes for a missing target, and no
+      // risk level or check count: nothing was scanned.
+      const targetRefusal = directoryOperandRefusal(targetDir, 'scanned');
+      if (targetRefusal) {
+        await settleCheckVerdict(targetRefusal);
+        if (options.json) {
+          writeJsonStdout({
+            hackmyagentVersion: VERSION,
+            target: targetDir,
+            verdict: null,
+            exitCode: targetRefusal.exitCode,
+            measured: false,
+            coverage: coverageJson(targetRefusal),
+          });
+        } else {
+          console.error(unmeasuredBanner(targetRefusal));
+          // Omitted when the path cannot be cited in a runnable command (#273).
+          const verify = commandNaming(targetDir, cited => `  Verify: ls -ld ${cited}`);
+          if (verify) console.error(verify);
+        }
+        return;
+      }
 
       if (!options.json) {
         console.log(`\nNemoClaw Security Report`);
@@ -10540,6 +10601,17 @@ Examples:
   .action(async (directory: string, options: { tool?: string; root?: string[] }) => {
     try {
       const targetDir = require("path").resolve(directory);
+      // Checked before `initMcp`, which creates the client file's directory
+      // and with it a missing project directory. Nothing is created or
+      // written for a target that is not a readable directory.
+      const targetRefusal = directoryOperandRefusal(targetDir, 'written');
+      if (targetRefusal) {
+        console.error(unmeasuredBanner(targetRefusal));
+        // Omitted when the path cannot be cited in a runnable command (#273).
+        const verify = commandNaming(targetDir, cited => `  Verify: ls -ld ${cited}`);
+        if (verify) console.error(verify);
+        await exitRecorded(targetRefusal.exitCode, 'unmeasured');
+      }
       const { initMcp } = await import('./init-mcp');
       const result = initMcp(targetDir, options.tool, options.root ?? []);
 
