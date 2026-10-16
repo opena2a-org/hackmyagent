@@ -11,6 +11,7 @@ import {
   HardeningScanner,
   calculateSecurityScore,
   ExternalScanner,
+  DEFAULT_PORTS,
   resolvePorts,
   type PublisherInfo,
   type RiskLevel,
@@ -8168,7 +8169,7 @@ Examples:
   $ ${CLI_PREFIX} scan example.com --json`)
   .argument('<target>', 'Target hostname or IP address')
   .option('--json', 'Output as JSON (for scripting/CI)')
-  .option('-p, --ports <ports>', 'Comma-separated ports to scan (default: common MCP ports)')
+  .option('-p, --ports <ports>', `Comma-separated ports to scan (default: ${DEFAULT_PORTS.join(',')})`)
   .option('-t, --timeout <ms>', 'Connection timeout in milliseconds', '2000')
   .option('-v, --verbose', 'Show detailed finding information')
   .action(
