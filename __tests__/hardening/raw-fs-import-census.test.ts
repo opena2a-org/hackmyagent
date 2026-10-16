@@ -46,6 +46,7 @@ const ALLOWLIST: Record<string, string> = {
   'mcp/roots.ts': 'resolves the granted roots and the requested directory against them; the entry-path confinement',
   'soul/scanner.ts': 'governance --fix path (hardenSoul), write side, contained by #270 resolveInsideTree; read side (findGovernanceFile routing plus the scanSoul and hardenSoul reads) confined by readStaysInsideTree against the scanned tree root, resolved-first so a file target never stats through an out-of-tree link',
   'nanomind-core/security/integrity-verifier.ts': 'reads HMA\'s own dist manifest, never a target path',
+  'startup-integrity.ts': 'reads HMA\'s own package.json for the version of the INTEGRITY_FAIL event, only on a QUARANTINE result; never a target path',
   'nanomind-core/inference/tme-classifier.ts': 'HMA\'s own model cache under the home directory, never a target path',
   'nanomind-core/inference/tme-neural.ts': 'HMA\'s own model files, never a target path',
   'nanomind-core/inference/security-analyst.ts': 'HMA\'s own model files, never a target path',

@@ -33,8 +33,13 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const src = readFileSync(path.join(__dirname, '..', '..', 'src', 'cli.ts'), 'utf8');
-const lines = src.split('\n');
+// src/startup-integrity.ts holds the QUARANTINE report that ran at the end of
+// cli.ts until #1110 moved the check ahead of cli.ts's imports; it is read
+// with cli.ts so that print stays under the same allowlist.
+const SOURCES = ['cli.ts', 'startup-integrity.ts'];
+const lines = SOURCES.flatMap((file) =>
+  readFileSync(path.join(__dirname, '..', '..', 'src', file), 'utf8').split('\n'),
+);
 
 const PRINT = /console\.(log|error|warn)\(|process\.std(out|err)\.write\(/;
 // The non-path fields a finding / registry / analyst object carries that can
@@ -92,7 +97,7 @@ const analystSrc = readFileSync(
   'utf8',
 );
 
-describe('#601 field-interpolation render source (src/cli.ts)', () => {
+describe('#601 field-interpolation render source (src/cli.ts, src/startup-integrity.ts)', () => {
   it('every print interpolating an attacker-channel field escapes it, or is an allowlisted authored/sanitized constant', () => {
     const offenders: string[] = [];
     lines.forEach((l) => {
@@ -115,7 +120,7 @@ describe('#601 field-interpolation render source (src/cli.ts)', () => {
   it('the allowlist has no dead entries — every allowlisted line still exists verbatim', () => {
     const present = new Set(lines.map((l) => l.trim()));
     const dead = [...ALLOW.keys()].filter((k) => !present.has(k));
-    expect(dead, 'allowlisted lines no longer in src/cli.ts (delete the stale entry): ' + dead.join(' | ')).toEqual([]);
+    expect(dead, 'allowlisted lines no longer in src/cli.ts or src/startup-integrity.ts (delete the stale entry): ' + dead.join(' | ')).toEqual([]);
   });
 
   it('the analyst boundary sanitizer still strips terminal control bytes', () => {

@@ -58,7 +58,7 @@ export const UNSETTLED_EXIT_IDS: ReadonlySet<string> = new Set([
 export const NO_EVENT_EXIT_SITES: ReadonlyMap<string, string> = new Map([
   // Lifecycle sites in src/cli.ts that run before any command action arms
   // telemetry (`recordTelemetry` no-ops without `currentCommandName`):
-  ['L001', 'pre-action'], // integrity self-check failure, exit 3
+  ['L001', 'pre-action'], // integrity self-check failure, exit 3 (src/startup-integrity.ts, #1110)
   ['L002', 'pre-action'], // option:version handler
   ['L003', 'pre-action'], // no-args help path
   // The ARP standalone binary (src/arp/cli/index.ts) — never imported into

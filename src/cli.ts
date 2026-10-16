@@ -4,6 +4,10 @@
  * Find it. Break it. Fix it.
  */
 
+// Must stay the first import: it verifies the package before any other
+// module of it is loaded, so a deleted or changed one is reported as
+// QUARANTINE (exit 3), not as a module-resolution crash (#1110).
+import { startupIntegrity } from './startup-integrity';
 import { Command } from 'commander';
 import {
   VERSION,
@@ -16072,7 +16076,7 @@ async function checkNpmPackage(
 // fire-and-forget sweep on startup protects against future regressions or
 // non-graceful exits we can't intercept (OOM, SIGKILL, host eviction).
 //
-// Never blocks, never throws. Runs concurrently with the integrity check below.
+// Never blocks, never throws.
 (async () => {
   try {
     const { readdir, rm, stat } = await import('node:fs/promises');
@@ -16097,12 +16101,10 @@ async function checkNpmPackage(
 // Self-securing: verify own integrity before running any command
 // A security tool that doesn't verify itself is worse than no security tool
 (async () => {
-  // Initialize telemetry FIRST so an integrity failure can fire a distinct
-  // INTEGRITY_FAIL event before the process exits. By ruling,
-  // supply-chain integrity violations get their own
-  // dashboard event row (not a generic command failure) and a per-event
-  // pager threshold of 1. tele.init() is silent on file-I/O failures
-  // (sandboxed envs) so this never blocks startup.
+  // Initialize telemetry first. A QUARANTINE result never reaches this
+  // point: ./startup-integrity sends its INTEGRITY_FAIL event and exits 3
+  // while this file's imports are still loading. tele.init() is silent on
+  // file-I/O failures (sandboxed envs) so this never blocks startup.
   //
   // Under a CI or test-runner marker the session starts with telemetry off
   // unless OPENA2A_TELEMETRY turns it on (#963): an automated run is not
@@ -16114,53 +16116,26 @@ async function checkNpmPackage(
   const telemetryEnabledOtherwise = tele.status().enabled;
   await initWithAutomationOptOut(() => tele.init({ tool: TELEMETRY_TOOL, version: VERSION }));
 
-  try {
-    const { verifyAll } = await import('./nanomind-core/security/integrity-verifier.js');
-    const integrity = await verifyAll();
-
-    if (integrity.status === 'QUARANTINE') {
-      // Binary tampered -- refuse to run
-      process.stderr.write(
-        '\nINTEGRITY CHECK FAILED: HackMyAgent binary may have been tampered with.\n' +
-        'This could indicate a supply chain attack.\n\n' +
-        'Actions:\n' +
-        '  1. Reinstall: npm install -g hackmyagent\n' +
-        '  2. Verify: npm audit signatures\n' +
-        '  3. Report: https://github.com/opena2a-org/hackmyagent/security\n\n'
-      );
-      for (const check of integrity.checks.filter(c => !c.passed)) {
-        process.stderr.write(`  Failed: ${check.name} -- ${check.reason}\n`);
-      }
-      // Fire INTEGRITY_FAIL telemetry event before exit.
-      // process.exit() does NOT trigger Node's beforeExit drain, so we
-      // flush explicitly. tele.flush is bounded by the SDK's 2s per-event
-      // timeout — worst-case CLI delay is small and capped.
-      try {
-        tele.error('startup', 'INTEGRITY_FAIL');
-        await tele.flush();
-      } catch { /* never block integrity exit on a telemetry failure */ }
-      process.exit(3); // exit-no-event(pre-action/L001): fires and flushes its own INTEGRITY_FAIL event before exit. Exit code 3 = integrity failure.
-    }
-
-    if (integrity.status === 'DEGRADE') {
-      // Model or rules tampered -- warn but continue with fallback
-      process.stderr.write(
-        '\nIntegrity warning: some components could not be verified.\n' +
-        'Continuing with baseline analysis (reduced accuracy).\n\n'
-      );
-    }
-  } catch (err) {
-    // The integrity check itself threw. Don't block CLI usage in dev mode
-    // where the verifier may be unavailable (no manifest, missing module),
+  // The check ran when ./startup-integrity was imported, before the rest of
+  // this file's imports (#1110). A QUARANTINE result never gets here: that
+  // module reports it, sends INTEGRITY_FAIL and exits 3 itself.
+  if ('error' in startupIntegrity) {
+    // The integrity check itself threw. Don't block CLI usage in dev mode,
     // but DO surface the error to stderr so a real failure (EACCES on
-    // dist/, malformed manifest JSON, ESM import failure of the verifier
-    // itself) is visible rather than silently swallowed. Set HMA_INTEGRITY_DEBUG=1
-    // to see the full stack.
+    // dist/, malformed manifest JSON) is visible rather than silently
+    // swallowed. Set HMA_INTEGRITY_DEBUG=1 to see the full stack.
+    const err = startupIntegrity.error;
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`hackmyagent: integrity check skipped (${escapeForDisplay(msg)})\n`);
     if (process.env.HMA_INTEGRITY_DEBUG && err instanceof Error && err.stack) {
       process.stderr.write(err.stack + '\n');
     }
+  } else if (startupIntegrity.result.status === 'DEGRADE') {
+    // Model or rules tampered -- warn but continue with fallback
+    process.stderr.write(
+      '\nIntegrity warning: some components could not be verified.\n' +
+      'Continuing with baseline analysis (reduced accuracy).\n\n'
+    );
   }
 
   // Global --ci flag: strip from argv so individual commands don't reject it.
@@ -16182,8 +16157,8 @@ async function checkNpmPackage(
   // Tier-1 usage telemetry — default ON; opt-out via
   // OPENA2A_TELEMETRY=off or `hackmyagent telemetry off`. See README §Telemetry.
   // Disclosure surfaces: README, --version line, telemetry subcommand,
-  // opena2a.org/telemetry. The `tele` import + init happened above (before
-  // the integrity check) so INTEGRITY_FAIL can fire. CommonJS / ESM bridge:
+  // opena2a.org/telemetry. The `tele` import + init happened above.
+  // CommonJS / ESM bridge:
   // dynamic import inside async main, type-only `TelemetryAction` import
   // with resolution-mode: 'import'.
   const { versionLineParts, runTelemetryCommand } = await import('@opena2a/cli-ui');
