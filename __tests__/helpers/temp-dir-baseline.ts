@@ -26,7 +26,6 @@ export const RAW_MKDTEMP_BASELINE: Record<string, number> = {
   '__tests__/cli/check-late-error-after-settle.test.ts': 2,
   '__tests__/cli/check-url-unmeasured-exit.test.ts': 3,
   '__tests__/cli/ci-mode-contract.test.ts': 4,
-  '__tests__/cli/deep-scan-incomplete-verdict.test.ts': 1,
   '__tests__/cli/eval-oracle-format-validation.test.ts': 2,
   '__tests__/cli/evidence-redaction-every-format.test.ts': 2,
   '__tests__/cli/exit-event-emission.test.ts': 1,
