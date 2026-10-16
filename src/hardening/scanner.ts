@@ -5527,6 +5527,7 @@ export class HardeningScanner {
         } else if (files.length > 0) {
           const llm = new LLMAnalyzer({
             apiKey: process.env.ANTHROPIC_API_KEY,
+            scanRoot: targetDir,
             onProgress: options.onProgress,
             // In every output format, before the first request.
             onSend: ({ files: sent, requests }) => announceProviderSend(

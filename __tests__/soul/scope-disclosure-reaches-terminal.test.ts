@@ -43,11 +43,16 @@ let dir: string;
 const SPAWN_BUDGET_MS = 600_000;
 
 function scanSoul(extraArgs: string[]): string {
+  // No ANTHROPIC_API_KEY in the child: with it, `--deep` sends SOUL.md to the
+  // provider from any shell that exports one. What this file measures is the
+  // rendering, and the local tier produces the semantic pass on its own.
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' };
+  delete env.ANTHROPIC_API_KEY;
   try {
     return execFileSync(
       process.execPath,
       [BUILT_CLI, 'scan-soul', dir, '--profile', 'conversational', ...extraArgs],
-      { encoding: 'utf8', timeout: SPAWN_BUDGET_MS, env: { ...process.env, NO_COLOR: '1' } },
+      { encoding: 'utf8', timeout: SPAWN_BUDGET_MS, env },
     );
   } catch (e: unknown) {
     const err = e as { stdout?: string; signal?: string; code?: string };

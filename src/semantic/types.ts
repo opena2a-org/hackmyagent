@@ -93,8 +93,14 @@ export interface LLMAnalysisOptions {
   apiKey: string;
   /** Max daily spend in USD (default: 1.0) */
   budgetCap?: number;
-  /** Cache directory (default: .hackmyagent-cache/) */
-  cacheDir?: string;
+  /**
+   * Root of the tree the files come from. Keys the cache and budget record,
+   * which are kept in that tree's state directory (`layer3CacheDir`), never
+   * inside it. Default: the working directory.
+   */
+  scanRoot?: string;
+  /** Cache directory, in place of the state directory of `scanRoot`; `null` keeps nothing. */
+  cacheDir?: string | null;
   /** Progress callback */
   onProgress?: (message: string) => void;
   /**
