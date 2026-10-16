@@ -386,6 +386,7 @@ import {
 } from './check/verdict';
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
 import { isLocalGitRemote, scanNameWithoutUserinfo, withoutUrlQueryAndFragment, withoutUrlUserinfo } from './check/url-userinfo';
+import { formatRegistryDeps } from './check/registry-deps';
 import { FIX_LINES } from './hardening/fix-lines';
 import {
   summarizeCoverage,
@@ -1884,18 +1885,14 @@ function renderRegistryOnlyCheck(
     console.log(`  ${colors.dim}${label}${RESET()}${paintCheckTone(line.tone, line.value)}`);
   }
 
-  // Dependencies (registry-sourced — adjacent to the Trust block)
-  if (registry.dependencies && (registry.dependencies.totalDeps ?? 0) > 0) {
-    const d = registry.dependencies;
-    const depParts: string[] = [];
-    if (d.totalDeps !== undefined) depParts.push(`${d.totalDeps} total`);
-    if (d.vulnerableDeps !== undefined && d.vulnerableDeps > 0) {
-      depParts.push(`${colors.red}${d.vulnerableDeps} vulnerable${RESET()}`);
-    }
-    if (d.minTrustLevel !== undefined) depParts.push(`min trust ${d.minTrustLevel}/4`);
-    if (depParts.length > 0) {
-      console.log(`  ${colors.dim}${'Deps'.padEnd(CHECK_LABEL_WIDTH)}${RESET()}${depParts.join(`${colors.dim} · ${RESET()}`)}`);
-    }
+  // Dependencies (registry-sourced — adjacent to the Trust block). Omitted
+  // unless the record counts at least one dependency.
+  const depsValue = formatRegistryDeps(registry.dependencies, {
+    vulnerable: (text) => `${colors.red}${text}${RESET()}`,
+    separator: `${colors.dim} · ${RESET()}`,
+  });
+  if (depsValue) {
+    console.log(`  ${colors.dim}${'Deps'.padEnd(CHECK_LABEL_WIDTH)}${RESET()}${depsValue}`);
   }
 
   // CVEs
@@ -3246,15 +3243,14 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     if (registry.cveCount !== undefined && registry.cveCount > 0) {
       console.log(`  CVEs      ${colors.brightRed}${colors.bold}${registry.cveCount}${RESET()}`);
     }
-    if (registry.dependencies) {
-      const d = registry.dependencies;
-      const depParts: string[] = [];
-      if (d.totalDeps !== undefined) depParts.push(`${d.totalDeps} total`);
-      if (d.vulnerableDeps !== undefined && d.vulnerableDeps > 0) depParts.push(`${colors.red}${d.vulnerableDeps} vulnerable${RESET()}`);
-      if (d.minTrustLevel !== undefined) depParts.push(`min trust ${d.minTrustLevel}/4`);
-      if (depParts.length > 0) {
-        console.log(`  Deps      ${depParts.join(`${colors.dim} · ${RESET()}`)}`);
-      }
+    // Omitted unless the record counts at least one dependency: a `min trust`
+    // over zero dependencies states a measurement that was not made.
+    const depsValue = formatRegistryDeps(registry.dependencies, {
+      vulnerable: (text) => `${colors.red}${text}${RESET()}`,
+      separator: `${colors.dim} · ${RESET()}`,
+    });
+    if (depsValue) {
+      console.log(`  Deps      ${depsValue}`);
     }
 
     // Trust level legend (when not fully verified)
