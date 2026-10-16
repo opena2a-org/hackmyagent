@@ -75,30 +75,62 @@ export function isPrivateKeyValue(value: string): boolean {
  * depth and node count so a hostile document cannot stall the scan.
  */
 export function privateKeyFieldsInJson(text: string): string[] {
-  if (!PRIVATE_KEY_FIELD_HINT.test(text)) return [];
+  const found = new Set<string>();
+  walkPrivateKeyFields(text, (key) => {
+    found.add(key);
+    return false;
+  });
+  return [...found];
+}
+
+/**
+ * The first field, in the parser's key order, that holds a private key by the
+ * same gate: the path to it and its value, for CRED-002 to cite the line the
+ * value sits on (`lineOfJsonValue`, which re-checks the value). The path is
+ * for locating the value in the same text and never for display: a parent
+ * key is arbitrary text from the scanned file.
+ */
+export function firstPrivateKeyField(text: string): { path: Array<string | number>; value: string } | undefined {
+  let first: { path: Array<string | number>; value: string } | undefined;
+  walkPrivateKeyFields(text, (_key, value, path) => {
+    first = { path, value };
+    return true;
+  });
+  return first;
+}
+
+/**
+ * Calls `onField` for each field holding a private key, until it returns true.
+ * Bounded in depth and node count so a hostile document cannot stall the scan.
+ */
+function walkPrivateKeyFields(
+  text: string,
+  onField: (key: string, value: string, path: Array<string | number>) => boolean,
+): void {
+  if (!PRIVATE_KEY_FIELD_HINT.test(text)) return;
   let root: unknown;
   try {
     root = JSON.parse(text.replace(/^\uFEFF/, ''));
   } catch {
-    return [];
+    return;
   }
-  const found = new Set<string>();
   let nodes = 0;
-  const visit = (node: unknown, depth: number): void => {
-    if (++nodes > MAX_NODES || depth > MAX_DEPTH) return;
+  let done = false;
+  const visit = (node: unknown, depth: number, at: Array<string | number>): void => {
+    if (done || ++nodes > MAX_NODES || depth > MAX_DEPTH) return;
     if (Array.isArray(node)) {
-      for (const item of node) visit(item, depth + 1);
+      node.forEach((item, i) => visit(item, depth + 1, [...at, i]));
       return;
     }
     if (node === null || typeof node !== 'object') return;
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (done) return;
       if (typeof value === 'string') {
-        if (isPrivateKeyFieldName(key) && isPrivateKeyValue(value)) found.add(key);
+        if (isPrivateKeyFieldName(key) && isPrivateKeyValue(value)) done = onField(key, value, [...at, key]);
       } else {
-        visit(value, depth + 1);
+        visit(value, depth + 1, [...at, key]);
       }
     }
   };
-  visit(root, 0);
-  return [...found];
+  visit(root, 0, []);
 }

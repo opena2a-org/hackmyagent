@@ -319,7 +319,7 @@ const MUTATION_CENSUS: Record<string, Record<string, Site>> = {
     'applyFixWrite:writeFile': { reason: 'every fix write to the target', gate: 'this.ensureBackupCovers(' },
     'checkFilePermissions:chmod': { reason: 'the permissions fix on the target', gate: 'this.ensureModeRecorded(' },
     'pemLooksPrivate:open': { reason: 'read-only open' },
-    'jsonPrivateKeyFields:open': { reason: 'read-only open' },
+    'readKeyCandidate:open': { reason: 'read-only open' },
     'startsWithShebang:open': { reason: 'read-only open' },
     'checkEncodedPayloads:mkdtemp': { reason: 'a scratch directory under the OS temp directory' },
     'checkEncodedPayloads:mkdir': { reason: 'inside that scratch directory' },
