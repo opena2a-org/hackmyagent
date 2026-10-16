@@ -17,7 +17,10 @@
 # The fixture is copied into the container filesystem (a bind mount is slow to walk) with its .git and
 # session files removed; the hostname is `laptop`; HOME is fresh. After the tape, the same container
 # runs both commands once more with NO_COLOR=1 into detect-capture.txt (the text version of the
-# recording), optimises the GIF, and writes detect.json.
+# recording), optimises the GIF, and writes detect.json. The last line is the sidecar line
+# (docs/vhs/sidecar-line.mjs): the sidecar's path and sha256, the build, the render time, the wall
+# clock and the metered cost, for the release record. The script exits 1 instead when the sidecar
+# carries no measured wall clock or a metered cost other than 0.
 #
 # A fixture passed as the argument has to be a git checkout with a commit: the sidecar names it by
 # that commit.
@@ -192,4 +195,4 @@ const out = {
 console.log(JSON.stringify(out, null, 2));
 NODE
 '
-echo "rendered: $(ls -la "$REPO_ROOT"/docs/vhs/detect.* | awk '{print $5, $9}' | tr '\n' ';')"
+(cd "$REPO_ROOT" && node docs/vhs/sidecar-line.mjs docs/vhs/detect.json)

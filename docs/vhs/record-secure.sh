@@ -29,6 +29,10 @@
 # <tape-name>.json. The MP4 goes to docs/vhs/out/, which is not committed; its size and sha256 are
 # in the sidecar.
 #
+# The last line is the sidecar line (docs/vhs/sidecar-line.mjs): the sidecar's path and sha256, the
+# build, the render time, the wall clock and the metered cost, for the release record. The script
+# exits 1 instead when the sidecar carries no measured wall clock or a metered cost other than 0.
+#
 # A recording never runs with a metered key in reach, so the script refuses to start when one is set.
 set -euo pipefail
 if [ -n "${ANTHROPIC_API_KEY+set}" ] || [ -n "${OPENAI_API_KEY+set}" ]; then
@@ -282,3 +286,4 @@ node -e '
 const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 console.log(`rendered ${s.tape} with hackmyagent ${s.version}: ${s.durationSeconds} s of video, ${s.wallClockSeconds} s wall clock, GIF ${s.outputs.gif.bytes} bytes, MP4 ${s.outputs.mp4.bytes} bytes`);
 ' "$REPO_ROOT/docs/vhs/$TAPE_NAME.json"
+(cd "$REPO_ROOT" && node docs/vhs/sidecar-line.mjs "docs/vhs/$TAPE_NAME.json")
