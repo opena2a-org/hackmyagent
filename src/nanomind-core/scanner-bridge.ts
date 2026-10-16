@@ -387,7 +387,7 @@ export async function runNanoMindScan(
       const content = await readFile(filePath, 'utf-8');
       const relativePath = relative(targetDir, filePath);
 
-      const result = await compiler.compile(content, relativePath);
+      const result = attributedTo(await compiler.compile(content, relativePath), relativePath);
       compiledCount++;
       coverageCandidates.push({ path: relativePath, artifactType: result.ast.artifactType, provenance: 'compiled' });
       const familyCoverage = {
@@ -446,8 +446,8 @@ export async function runNanoMindScan(
       // measurement so the disclosure cannot describe a different route than the
       // one taken. It also carries the dev-instruction-file rule: CLAUDE.md and
       // .cursorrules classify `system_prompt` but are NOT agent artifacts.
-      // The path passed is the one read here, not the AST's: a cache hit
-      // carries the path of the first byte-identical file compiled.
+      // The path passed is the one read here. A cache hit carries the path of
+      // the first byte-identical file compiled, which `attributedTo` replaced.
       const route = analyzerRouteFor(result.ast, relativePath);
       const isAgent = route === 'agent';
       const isSourceCode = route === 'source_code';
@@ -613,6 +613,22 @@ function emptyFamilyCoverage(): SemanticFamilyCoverage {
     fullyExamined: 0,
     partial: [],
   };
+}
+
+/**
+ * The compilation with its AST naming the file that was read (#1119).
+ *
+ * The compiler caches on artifact type and content hash, so a byte-identical
+ * file of the same type is served the AST of the first one compiled, and that
+ * AST's `artifactPath` names the first file. The analyzers attribute their
+ * findings to `ast.artifactPath`, so the second file's findings named the
+ * first file and the per-file rollup then merged them into its findings. The
+ * copy keeps the cached AST untouched, and `artifactPath` is not among the
+ * fields `signAST` hashes, so the copy still passes `verifyAST`.
+ */
+function attributedTo(result: CompilationResult, path: string): CompilationResult {
+  if (result.ast.artifactPath === path) return result;
+  return { ...result, ast: { ...result.ast, artifactPath: path } };
 }
 
 /**
