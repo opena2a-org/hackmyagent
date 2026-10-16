@@ -21,7 +21,7 @@
 # The verdict lives in the check run named "Gate file approval" posted against
 # the head commit — that is the context branch protection must require, never
 # this job's own context. The states are encoded asymmetrically on purpose:
-# awaiting-owner-approval is the EXPECTED state of a gate-file pull request,
+# awaiting-approval is the EXPECTED state of a gate-file pull request,
 # so it posts conclusion=action_required, which blocks a required check
 # exactly like failure while the run itself succeeds — the run evaluated and
 # posted its verdict, and the run record says so, with no failure email for a
@@ -66,33 +66,79 @@ jobs:
       - name: Evaluate and post the check run
         run: |
           set -euo pipefail
-          # The approver set. Changing it is itself a gate-file change, so the
-          # change is judged by the current set. This ONE variable feeds both
-          # the review-event early exit and the evaluation filter below — the
-          # two predicates cannot diverge because they share it.
-          approvers="thebenignhacker"
+          # The approver set: whitespace-separated logins, the owner and the
+          # gate-reviewer App's bot. Changing it is itself a gate-file change,
+          # so the change is judged by the current set. This ONE variable
+          # feeds both the review-event early exit and the evaluation filter
+          # below, through the one membership definition in approver_jq, so
+          # the two predicates cannot diverge: they share both.
+          approvers="thebenignhacker benign-gate-reviewer[bot]"
 
-          # A review from anyone but the approver is not an input to the
-          # verdict, so re-evaluating on it would produce nothing new. Early
-          # exit posts nothing; the standing check run against the head commit
-          # remains the verdict. Only pull_request_review events may exit
-          # here — every pull_request_target event still evaluates. The
-          # approver's own events (including dismissal of their approval,
-          # whose review author is the approver) always evaluate.
-          if [ "$EVENT_NAME" = "pull_request_review" ] && [ "$REVIEW_AUTHOR" != "$approvers" ]; then
-            echo "Review by $REVIEW_AUTHOR is not an input to the verdict; nothing posted."
-            exit 0
+          # --- BEGIN REVIEW SELECT (lifted and executed verbatim by __tests__/gate/gate-file-verdict.test.ts) ---
+          # Inputs:  approvers EVENT_NAME REVIEW_AUTHOR
+          # Defines: approver_jq, and select_latest_review, which sets
+          #          review_state and review_commit from the raw review list
+          #
+          # Membership, defined once in jq; both predicates below call it with
+          # the same $approvers. A login is a member only when it equals one
+          # whole word of the set: never a prefix, a substring or a pattern.
+          # Each entry also fixes the account type a review must come from:
+          # an entry ending in [bot] counts only from a Bot account, any other
+          # entry only from a User account.
+          approver_jq='
+            def approver_set(raw): raw | [splits("[[:space:]]+")] | map(select(length > 0));
+            def is_approver(raw; login): login | IN(approver_set(raw)[]);
+            def kind_matches(login; type):
+              if (login | endswith("[bot]")) then type == "Bot" else type == "User" end;
+          '
+
+          # A review from outside the set is not an input to the verdict, so
+          # re-evaluating on it would produce nothing new. Early exit posts
+          # nothing; the standing check run against the head commit remains
+          # the verdict. Only pull_request_review events may exit here;
+          # every pull_request_target event still evaluates. A member's own
+          # events (including dismissal of their approval, whose review
+          # author is that member) always evaluate. Only an affirmative "not
+          # a member" exits: a jq error aborts under set -e rather than
+          # reading as one. This exit reads only the review author's login,
+          # so a member login from the wrong account type evaluates and the
+          # filter below finds nothing new in it: the safe direction.
+          if [ "$EVENT_NAME" = "pull_request_review" ]; then
+            author_is_approver=$(jq -n -r --arg approvers "$approvers" --arg login "$REVIEW_AUTHOR" \
+              "$approver_jq"' is_approver($approvers; $login)')
+            if [ "$author_is_approver" = "false" ]; then
+              echo "Review by $REVIEW_AUTHOR is not an input to the verdict; nothing posted."
+              exit 0
+            fi
           fi
+
+          # Latest state-changing review from an approver, over the raw
+          # paginated review list (one JSON array per page) passed as $1.
+          # Membership and the entry's account type must both hold. A stale
+          # approval (older head commit) does not count: the verdict compares
+          # review_commit with HEAD_SHA, so an approval cannot survive a
+          # later push.
+          select_latest_review() {
+            local latest
+            latest=$(printf '%s' "$1" | jq -s -c --arg approvers "$approvers" "$approver_jq"'
+              add
+              | [.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
+                     | select(is_approver($approvers; .user.login) and kind_matches(.user.login; .user.type))]
+              | last // empty')
+            review_state=$(printf '%s' "$latest" | jq -r '.state // empty')
+            review_commit=$(printf '%s' "$latest" | jq -r '.commit_id // empty')
+          }
+          # --- END REVIEW SELECT ---
 
           # ---- API reads. Everything the verdict needs is fetched here, so
           # the verdict itself is pure shell over the variables these reads
-          # leave behind. That purity is load-bearing: the block between the
-          # VERDICT markers below is lifted out of this file and executed
-          # verbatim against planted inputs by
-          # __tests__/gate/gate-file-verdict.test.ts — the same discipline as
-          # pr-review-partition.test.ts, because a workflow's bash is the one
-          # kind of code in this repository that nothing else executes before
-          # it reaches main.
+          # leave behind. That purity is load-bearing: the REVIEW SELECT
+          # region above and the block between the VERDICT markers below are
+          # lifted out of this file and executed verbatim against planted
+          # inputs by __tests__/gate/gate-file-verdict.test.ts, the same
+          # discipline as pr-review-partition.test.ts, because a workflow's
+          # bash is the one kind of code in this repository that nothing else
+          # executes before it reaches main.
 
           # The files listing endpoint is capped at 3000 entries; a gate file
           # hidden past the cap would otherwise pass unseen. The count is read
@@ -117,18 +163,12 @@ jobs:
             head_copy=$(gh api "repos/$REPO/contents/.github/workflows/gate-file-approval.yml?ref=$HEAD_SHA" --jq .content | base64 -d)
           fi
 
-          # Latest state-changing review from an approver. A stale approval
-          # (older head commit) does not count: approval must be on the
-          # current head, so it cannot survive a later push. Fetched
-          # unconditionally — one extra read on pull requests that turn out to
-          # touch no gate file — so the verdict needs no API access at all.
-          latest=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate \
-            | jq -s -c --arg u "$approvers" 'add
-                | [.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
-                       | select(.user.login == $u)]
-                | last // empty')
-          review_state=$(printf '%s' "$latest" | jq -r '.state // empty')
-          review_commit=$(printf '%s' "$latest" | jq -r '.commit_id // empty')
+          # The review list, selected by the REVIEW SELECT region above.
+          # Fetched unconditionally (one extra read on pull requests that turn
+          # out to touch no gate file), so the verdict needs no API access at
+          # all.
+          reviews=$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" --paginate)
+          select_latest_review "$reviews"
 
           # --- BEGIN VERDICT (pure shell; lifted and executed verbatim by __tests__/gate/gate-file-verdict.test.ts) ---
           # Inputs:  approvers HEAD_SHA changed_count files workflow_modified
@@ -150,8 +190,8 @@ jobs:
           # the credential analyzer, the semantic compiler (evidence-span
           # extraction), the report-redaction module and the stego analyzer.
           # Weakening any of these changes what the scanner can see or say
-          # about credentials, so changes to them require the same human
-          # approval as changes to the gate itself. The changelog assembler
+          # about credentials, so changes to them require the same approval
+          # as changes to the gate itself. The changelog assembler
           # is in the same class: it decides the changelog step of the test
           # matrix and runs in the release workflow. Each file pattern is
           # anchored at both ends: a lookalike path above, below or beside a
@@ -202,15 +242,15 @@ jobs:
             if [ "$review_state" = "APPROVED" ] && [ "$review_commit" = "$HEAD_SHA" ]; then
               conclusion="success"
               title="Gate-file change approved"
-              summary="This pull request changes gate files and carries an approving review from $approvers on the current head commit."
+              summary="This pull request changes gate files and carries an approving review on the current head commit from one of: $approvers."
             else
               # The expected state of a gate-file pull request: evaluated,
-              # verdict posted, a human must act. action_required blocks a
-              # required check like failure, but the run itself succeeds, so
-              # no failure email fires for a routine state.
+              # verdict posted, a listed approver must act. action_required
+              # blocks a required check like failure, but the run itself
+              # succeeds, so no failure email fires for a routine state.
               conclusion="action_required"
               title="Gate-file change needs approval"
-              summary="This pull request changes gate files: paths under .github/, the credential-boundary sources or scripts/changelog.mjs. It requires an approving review from $approvers on the current head commit ($HEAD_SHA). Automation can author gate-file changes; it cannot approve them."
+              summary="This pull request changes gate files: paths under .github/, the credential-boundary sources or scripts/changelog.mjs. It requires an approving review on the current head commit ($HEAD_SHA) from one of: $approvers. A review from any other account is not an input to this verdict."
             fi
           fi
           # --- END VERDICT ---

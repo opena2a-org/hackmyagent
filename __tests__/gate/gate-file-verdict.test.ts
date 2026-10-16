@@ -25,6 +25,14 @@ import * as yaml from 'js-yaml';
  * the workflow file at run time, "the workflow carries different text than
  * the text tested" is not a reachable state.
  *
+ * Which review is "the latest approver review" is decided by a second lifted
+ * region, REVIEW SELECT: the approver-membership definition, the review-event
+ * early exit and the selection over the raw paginated review list. The
+ * harness plants the raw list where the workflow's API read leaves it, runs
+ * that region, the workflow's own call line and then the verdict block, so a
+ * row about who may approve is answered by the workflow's text from the
+ * review list to the conclusion.
+ *
  * What the rows pin, per the HMA-25 criteria:
  *   AC1 — each of the four credential-boundary paths, and the existing
  *         .github/ class, evaluates to action_required (the blocking
@@ -41,8 +49,17 @@ import * as yaml from 'js-yaml';
 
 const WORKFLOW = path.join(__dirname, '..', '..', '.github', 'workflows', 'gate-file-approval.yml');
 
-/** The approver set the workflow carries; the harness plants the same one. */
-const APPROVERS = 'thebenignhacker';
+/**
+ * The approver set the workflow carries; the harness plants the same one, and
+ * a row below fails if the two differ. The owner, then the gate-reviewer
+ * App's bot login exactly as the reviews API returns it on that App's
+ * reviews: user.login benign-gate-reviewer[bot], user.type Bot.
+ */
+const APPROVERS = 'thebenignhacker benign-gate-reviewer[bot]';
+const [OWNER, GATE_BOT] = APPROVERS.split(' ');
+
+/** The App that opens gate-file pull requests. Its approval never counts. */
+const FLEET_BOT = 'benignhacker-fleet[bot]';
 
 const HEAD = 'aaaa1111bbbb2222cccc3333dddd4444eeee5555';
 const STALE = 'ffff0000ffff0000ffff0000ffff0000ffff0000';
@@ -72,19 +89,42 @@ function evaluateScript(): string {
 
 const BEGIN = /^# --- BEGIN VERDICT\b.* ---$/;
 const END = /^# --- END VERDICT ---$/;
+const SELECT_BEGIN = /^# --- BEGIN REVIEW SELECT\b.* ---$/;
+const SELECT_END = /^# --- END REVIEW SELECT ---$/;
 
-/** The verdict block, lifted between its markers. Exactly one of each marker. */
-function verdictBlock(): string {
+/** The lines strictly between a region's markers. Exactly one of each marker. */
+function liftRegion(name: string, begin: RegExp, end: RegExp): string {
   const lines = evaluateScript().split('\n');
-  const begins = lines.filter((l) => BEGIN.test(l));
-  const ends = lines.filter((l) => END.test(l));
+  const begins = lines.filter((l) => begin.test(l));
+  const ends = lines.filter((l) => end.test(l));
   if (begins.length !== 1 || ends.length !== 1) {
-    throw new Error(`expected exactly one BEGIN and one END marker, found ${begins.length}/${ends.length}`);
+    throw new Error(`expected exactly one BEGIN and one END ${name} marker, found ${begins.length}/${ends.length}`);
   }
-  const b = lines.findIndex((l) => BEGIN.test(l));
-  const e = lines.findIndex((l) => END.test(l));
-  if (e <= b) throw new Error('END marker precedes BEGIN marker');
+  const b = lines.findIndex((l) => begin.test(l));
+  const e = lines.findIndex((l) => end.test(l));
+  if (e <= b) throw new Error(`END ${name} marker precedes BEGIN ${name} marker`);
   return lines.slice(b + 1, e).join('\n');
+}
+
+/** The verdict block, lifted between its markers. */
+function verdictBlock(): string {
+  return liftRegion('VERDICT', BEGIN, END);
+}
+
+/** The review-selection region: approver membership, the review-event early exit, the selection. */
+function reviewSelectRegion(): string {
+  return liftRegion('REVIEW SELECT', SELECT_BEGIN, SELECT_END);
+}
+
+/** The workflow's own call of the selection, lifted rather than retyped. */
+const SELECT_CALL = /^select_latest_review "/;
+
+function selectCallLine(): string {
+  const calls = evaluateScript()
+    .split('\n')
+    .filter((l) => SELECT_CALL.test(l));
+  if (calls.length !== 1) throw new Error(`expected exactly one call of select_latest_review, found ${calls.length}`);
+  return calls[0];
 }
 
 /** Everything after the END marker — the check-run post and the exit mirror. */
@@ -160,21 +200,41 @@ function runChild(shell: string, scriptPath: string): ChildRun {
  * return 1. It changes no control flow, so the block still runs verbatim.
  */
 function runBlock(block: string, i: VerdictInputs, shell = 'bash'): Verdict {
+  const header = [
+    '#!/bin/bash',
+    'set -euo pipefail',
+    `approvers=${sq(APPROVERS)}`,
+    `HEAD_SHA=${sq(HEAD)}`,
+    `changed_count=${sq(String(i.changedCount ?? i.files.length))}`,
+    `files=${sq(i.files.join('\n'))}`,
+    `workflow_modified=${sq(i.workflowModified ? 'true' : 'false')}`,
+    `head_copy=${sq(i.headCopy ?? '')}`,
+    `review_state=${sq(i.reviewState ?? '')}`,
+    `review_commit=${sq(i.reviewCommit ?? '')}`,
+  ];
+  const { child, grab } = runScript(header, block, 'verdict block', shell);
+  return {
+    ...child,
+    conclusion: grab('conclusion') ?? '',
+    title: grab('title') ?? '',
+    summary: grab('summary') ?? '',
+  };
+}
+
+/**
+ * Write `header`, the ERR trap, `body` and the three verdict output lines to
+ * a script, run it, and hand back how it ended plus a reader for each
+ * `OUT key=value` line it printed (undefined when the line never printed).
+ */
+function runScript(
+  header: readonly string[],
+  body: string,
+  label: string,
+  shell: string,
+): { child: ChildRun; grab: (key: string) => string | undefined } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-gate-verdict-'));
   try {
-    const header = [
-      '#!/bin/bash',
-      'set -euo pipefail',
-      `approvers=${sq(APPROVERS)}`,
-      `HEAD_SHA=${sq(HEAD)}`,
-      `changed_count=${sq(String(i.changedCount ?? i.files.length))}`,
-      `files=${sq(i.files.join('\n'))}`,
-      `workflow_modified=${sq(i.workflowModified ? 'true' : 'false')}`,
-      `head_copy=${sq(i.headCopy ?? '')}`,
-      `review_state=${sq(i.reviewState ?? '')}`,
-      `review_commit=${sq(i.reviewCommit ?? '')}`,
-    ];
-    // The block's first line is script line `offset + 1`.
+    // The body's first line is script line `offset + 1`.
     const offset = header.length + 1;
     // The trap's first statement records the exit status and the failing
     // command together: bash 3.2 (macOS /bin/bash) resets BASH_COMMAND to
@@ -182,12 +242,12 @@ function runBlock(block: string, i: VerdictInputs, shell = 'bash'): Verdict {
     // would name itself; bash 5 holds the command that raised the trap.
     const trap =
       `trap '__harness_rc=$? __harness_cmd=$BASH_COMMAND; if [[ $- == *e* ]]; then ` +
-      `printf "verdict block exited %s at block line %s: %s\\n" "$__harness_rc" "$((LINENO - ${offset}))" "$__harness_cmd" >&2; ` +
+      `printf "${label} exited %s at block line %s: %s\\n" "$__harness_rc" "$((LINENO - ${offset}))" "$__harness_cmd" >&2; ` +
       `fi' ERR`;
     const script = [
       ...header,
       trap,
-      block,
+      body,
       "printf 'OUT conclusion=%s\\n' \"$conclusion\"",
       "printf 'OUT title=%s\\n' \"$title\"",
       "printf 'OUT summary=%s\\n' \"$summary\"",
@@ -197,19 +257,103 @@ function runBlock(block: string, i: VerdictInputs, shell = 'bash'): Verdict {
     fs.writeFileSync(scriptPath, script);
 
     const child = runChild(shell, scriptPath);
-    const grab = (key: string): string => {
+    const grab = (key: string): string | undefined => {
       const line = child.stdout.split('\n').find((l) => l.startsWith(`OUT ${key}=`));
-      return line ? line.slice(`OUT ${key}=`.length) : '';
+      return line === undefined ? undefined : line.slice(`OUT ${key}=`.length);
     };
-    return {
-      ...child,
-      conclusion: grab('conclusion'),
-      title: grab('title'),
-      summary: grab('summary'),
-    };
+    return { child, grab };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** One review as the reviews endpoint returns it; `login: null` is a deleted account. */
+interface ReviewFixture {
+  login: string | null;
+  type?: string;
+  state: string;
+  commit: string;
+}
+
+interface ChainInputs {
+  /** Changed files; every chain fixture keeps gate-file-approval.yml out of it. */
+  files: readonly string[];
+  /** The review list, one array per page, as `gh api --paginate` prints it. */
+  pages: ReadonlyArray<ReadonlyArray<ReviewFixture>>;
+  eventName?: string;
+  reviewAuthor?: string;
+}
+
+interface ChainRun extends Verdict {
+  /** True once the REVIEW SELECT region finished without exiting early. */
+  evaluated: boolean;
+  reviewState: string;
+  reviewCommit: string;
+}
+
+/** The raw review pages, concatenated the way `gh api --paginate` prints arrays. */
+function reviewPages(pages: ChainInputs['pages']): string {
+  return pages
+    .map((page) =>
+      JSON.stringify(
+        page.map((r, n) => ({
+          id: n + 1,
+          user: r.login === null ? null : { login: r.login, type: r.type },
+          state: r.state,
+          commit_id: r.commit,
+        })),
+      ),
+    )
+    .join('');
+}
+
+/**
+ * The approval decision from the raw review list to the conclusion, in the
+ * workflow's own text: the REVIEW SELECT region, the workflow's call line and
+ * the verdict block, with the event, the review author, the changed files and
+ * the raw review pages planted where the workflow's env and API reads leave
+ * them.
+ */
+function runChain(i: ChainInputs): ChainRun {
+  const header = [
+    '#!/bin/bash',
+    'set -euo pipefail',
+    `approvers=${sq(APPROVERS)}`,
+    `HEAD_SHA=${sq(HEAD)}`,
+    `EVENT_NAME=${sq(i.eventName ?? 'pull_request_target')}`,
+    `REVIEW_AUTHOR=${sq(i.reviewAuthor ?? '')}`,
+    `changed_count=${sq(String(i.files.length))}`,
+    `files=${sq(i.files.join('\n'))}`,
+    "workflow_modified='false'",
+    "head_copy=''",
+    `reviews=${sq(reviewPages(i.pages))}`,
+  ];
+  const body = [
+    reviewSelectRegion(),
+    "printf 'OUT evaluated=yes\\n'",
+    selectCallLine(),
+    "printf 'OUT review_state=%s\\n' \"$review_state\"",
+    "printf 'OUT review_commit=%s\\n' \"$review_commit\"",
+    verdictBlock(),
+  ].join('\n');
+  const { child, grab } = runScript(header, body, 'lifted regions', 'bash');
+  return {
+    ...child,
+    evaluated: grab('evaluated') === 'yes',
+    reviewState: grab('review_state') ?? '',
+    reviewCommit: grab('review_commit') ?? '',
+    conclusion: grab('conclusion') ?? '',
+    title: grab('title') ?? '',
+    summary: grab('summary') ?? '',
+  };
+}
+
+/** A gated change for the approver rows: a workflow edit beside ordinary files. */
+const GATED = ['src/cli.ts', '.github/workflows/test-matrix.yml'] as const;
+
+/** The account type GitHub gives a login: a [bot] suffix is an App's bot account. */
+function naturalType(login: string): string {
+  return login.endsWith('[bot]') ? 'Bot' : 'User';
 }
 
 /** The workflow's own verdict block, lifted and run. */
@@ -449,5 +593,186 @@ describe('gate-file verdict: AC3 — the conclusion vocabulary blocks auto-merge
 
   it('HMA-25.AC3 no executable line of the evaluate step names the neutral conclusion', () => {
     expect(executableLines(evaluateScript())).not.toContain('neutral');
+  });
+});
+
+describe('gate-file verdict: the approver set is the owner and the gate-reviewer bot, matched by exact login and account type', () => {
+  it('the workflow assigns the approver set once, and the harness plants that same set', () => {
+    const assigns = evaluateScript()
+      .split('\n')
+      .filter((l) => /\bapprovers=/.test(l));
+    expect(assigns).toEqual([`approvers="${APPROVERS}"`]);
+  });
+
+  it('the review-selection region appears once and carries no workflow expressions and no API calls, so it runs verbatim outside Actions', () => {
+    const region = reviewSelectRegion();
+    expect(region).not.toContain('${{');
+    expect(region).not.toMatch(/\bgh api\b/);
+    expect(region).not.toMatch(/\bcurl\b/);
+  });
+
+  it('the workflow reads the raw review list after the selection region and hands it to the lifted selection before the verdict', () => {
+    const lines = evaluateScript().split('\n');
+    const at = (re: RegExp): number[] => lines.flatMap((l, n) => (re.test(l) ? [n] : []));
+    const reads = at(/^reviews=\$\(gh api "repos\/\$REPO\/pulls\/\$PR_NUMBER\/reviews" --paginate\)$/);
+    const calls = at(/^select_latest_review "\$reviews"$/);
+    expect(reads).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+    const selectEnd = at(SELECT_END)[0];
+    const verdictBegin = at(BEGIN)[0];
+    expect(selectEnd).toBeLessThan(reads[0]);
+    expect(reads[0]).toBeLessThan(calls[0]);
+    expect(calls[0]).toBeLessThan(verdictBegin);
+  });
+
+  it('an approving review by the gate-reviewer bot, from a Bot account, on the current head lifts the gate to success', () => {
+    const r = runChain({ files: GATED, pages: [[{ login: GATE_BOT, type: 'Bot', state: 'APPROVED', commit: HEAD }]] });
+    expect(r.status, r.report).toBe(0);
+    expect(r.reviewState).toBe('APPROVED');
+    expect(r.reviewCommit).toBe(HEAD);
+    expect(r.conclusion).toBe('success');
+    expect(r.title).toBe('Gate-file change approved');
+  });
+
+  it('an approving review by the fleet bot on the current head leaves the gate at action_required', () => {
+    const r = runChain({ files: GATED, pages: [[{ login: FLEET_BOT, type: 'Bot', state: 'APPROVED', commit: HEAD }]] });
+    expect(r.status, r.report).toBe(0);
+    expect(r.reviewState).toBe('');
+    expect(r.conclusion).toBe('action_required');
+  });
+
+  it('an approving review by the gate-reviewer bot on an older head leaves the gate at action_required', () => {
+    const r = runChain({ files: GATED, pages: [[{ login: GATE_BOT, type: 'Bot', state: 'APPROVED', commit: STALE }]] });
+    expect(r.status, r.report).toBe(0);
+    expect(r.reviewCommit).toBe(STALE);
+    expect(r.conclusion).toBe('action_required');
+  });
+
+  it('the gate-reviewer login carried by a User account does not count', () => {
+    const r = runChain({ files: GATED, pages: [[{ login: GATE_BOT, type: 'User', state: 'APPROVED', commit: HEAD }]] });
+    expect(r.status, r.report).toBe(0);
+    expect(r.reviewState).toBe('');
+    expect(r.conclusion).toBe('action_required');
+  });
+
+  it('the owner approves as before from a User account; the owner login carried by a Bot account does not count', () => {
+    const asUser = runChain({ files: GATED, pages: [[{ login: OWNER, type: 'User', state: 'APPROVED', commit: HEAD }]] });
+    expect(asUser.status, asUser.report).toBe(0);
+    expect(asUser.conclusion).toBe('success');
+
+    const asBot = runChain({ files: GATED, pages: [[{ login: OWNER, type: 'Bot', state: 'APPROVED', commit: HEAD }]] });
+    expect(asBot.status, asBot.report).toBe(0);
+    expect(asBot.conclusion).toBe('action_required');
+  });
+
+  it('the last state-changing review across the whole set wins, across pages; reviews from outside the set and comments are not inputs', () => {
+    const botApproves: ReviewFixture = { login: GATE_BOT, type: 'Bot', state: 'APPROVED', commit: HEAD };
+    const ownerRequests: ReviewFixture = { login: OWNER, type: 'User', state: 'CHANGES_REQUESTED', commit: HEAD };
+
+    const requestedLast = runChain({ files: GATED, pages: [[botApproves], [ownerRequests]] });
+    expect(requestedLast.status, requestedLast.report).toBe(0);
+    expect(requestedLast.reviewState).toBe('CHANGES_REQUESTED');
+    expect(requestedLast.conclusion).toBe('action_required');
+
+    // The same two reviews in the other order: the bot's approval is now the
+    // last state-changing review of the set, so it decides.
+    const approvedLast = runChain({ files: GATED, pages: [[ownerRequests], [botApproves]] });
+    expect(approvedLast.status, approvedLast.report).toBe(0);
+    expect(approvedLast.conclusion).toBe('success');
+
+    const outsiderAfter = runChain({
+      files: GATED,
+      pages: [[botApproves, { login: FLEET_BOT, type: 'Bot', state: 'CHANGES_REQUESTED', commit: HEAD }]],
+    });
+    expect(outsiderAfter.conclusion).toBe('success');
+
+    const commentAfter = runChain({
+      files: GATED,
+      pages: [[botApproves, { login: OWNER, type: 'User', state: 'COMMENTED', commit: HEAD }]],
+    });
+    expect(commentAfter.conclusion).toBe('success');
+
+    const dismissed = runChain({ files: GATED, pages: [[{ ...botApproves, state: 'DISMISSED' }]] });
+    expect(dismissed.conclusion).toBe('action_required');
+  });
+
+  it('membership is exact: a login that extends, truncates, recases or pattern-matches an entry does not count, whatever its account type', () => {
+    const lookalikes = [
+      `${OWNER}2`,
+      GATE_BOT.replace(/\[bot\]$/, ''),
+      // `[bot]` read as a shell bracket pattern matches one of b, o, t.
+      GATE_BOT.replace(/\[bot\]$/, 'b'),
+      OWNER.toUpperCase(),
+      '*',
+      APPROVERS,
+      '',
+    ];
+    for (const login of lookalikes) {
+      for (const type of ['User', 'Bot']) {
+        const r = runChain({ files: GATED, pages: [[{ login, type, state: 'APPROVED', commit: HEAD }]] });
+        expect(r.status, `${login} / ${type}: ${r.report}`).toBe(0);
+        expect(r.conclusion, `${login} / ${type}`).toBe('action_required');
+      }
+    }
+  });
+
+  it('a review with no user (a deleted account) is skipped, not an error', () => {
+    const r = runChain({
+      files: GATED,
+      pages: [[{ login: null, state: 'APPROVED', commit: HEAD }, { login: GATE_BOT, type: 'Bot', state: 'APPROVED', commit: HEAD }]],
+    });
+    expect(r.status, r.report).toBe(0);
+    expect(r.conclusion).toBe('success');
+  });
+
+  it('a review event from outside the set exits without evaluating; a review event from either member evaluates', () => {
+    const pages = [[{ login: GATE_BOT, type: 'Bot', state: 'APPROVED', commit: HEAD }]];
+
+    const outsider = runChain({ files: GATED, pages, eventName: 'pull_request_review', reviewAuthor: FLEET_BOT });
+    expect(outsider.status, outsider.report).toBe(0);
+    expect(outsider.stdout).toContain(`Review by ${FLEET_BOT} is not an input to the verdict; nothing posted.`);
+    expect(outsider.evaluated).toBe(false);
+    expect(outsider.conclusion).toBe('');
+
+    for (const member of [GATE_BOT, OWNER]) {
+      const r = runChain({ files: GATED, pages, eventName: 'pull_request_review', reviewAuthor: member });
+      expect(r.status, `${member}: ${r.report}`).toBe(0);
+      expect(r.stdout, member).not.toContain('is not an input to the verdict');
+      expect(r.evaluated, member).toBe(true);
+      expect(r.conclusion, member).toBe('success');
+    }
+
+    // Every pull_request_target event evaluates, whatever the review author reads.
+    const target = runChain({ files: GATED, pages, eventName: 'pull_request_target', reviewAuthor: FLEET_BOT });
+    expect(target.evaluated).toBe(true);
+    expect(target.conclusion).toBe('success');
+  });
+
+  it('the early exit and the filter agree: a review event evaluates exactly when that login, with its own account type, can approve', () => {
+    const candidates = [
+      OWNER,
+      GATE_BOT,
+      FLEET_BOT,
+      `${OWNER}2`,
+      GATE_BOT.replace(/\[bot\]$/, ''),
+      GATE_BOT.replace(/\[bot\]$/, 'b'),
+      OWNER.toUpperCase(),
+      '*',
+      APPROVERS,
+      '',
+    ];
+    const seen = new Set<boolean>();
+    for (const login of candidates) {
+      const pages = [[{ login, type: naturalType(login), state: 'APPROVED', commit: HEAD }]];
+      const onReview = runChain({ files: GATED, pages, eventName: 'pull_request_review', reviewAuthor: login });
+      const onTarget = runChain({ files: GATED, pages, eventName: 'pull_request_target' });
+      expect(onReview.status, `${login}: ${onReview.report}`).toBe(0);
+      expect(onTarget.status, `${login}: ${onTarget.report}`).toBe(0);
+      const counts = onTarget.conclusion === 'success';
+      expect(onReview.evaluated, `early exit for ${JSON.stringify(login)}`).toBe(counts);
+      seen.add(counts);
+    }
+    // Non-vacuous: both answers are reached.
+    expect([...seen].sort()).toEqual([false, true]);
   });
 });
