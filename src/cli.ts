@@ -5276,9 +5276,10 @@ async function handleContribution(
       queueAndMaybeFlush,
     } = await import('./telemetry');
 
-    // Record scan count and maybe show the delayed consent tip
-    const tip = recordScanAndMaybeShowTip();
-    if (tip && format === 'text' && process.stdout.isTTY) {
+    // Record scan count and maybe show the delayed consent tip. A run that
+    // will not print it leaves the cooldown alone (#1111).
+    const tip = recordScanAndMaybeShowTip({ willPrint: format === 'text' && process.stdout.isTTY === true });
+    if (tip) {
       process.stdout.write(tip + '\n');
     }
 
@@ -12907,7 +12908,7 @@ program
 
       console.log(`Attack surface (static, from the artifact's own text):`);
       console.log(`  Data access:       ${dataAccess}`);
-      console.log(`  Governance ment.:  ${governance}`);
+      console.log(`  Governance terms:  ${governance}`);
       console.log(`  Modal statements:  ${modalCount}  (shape only — not counted as defenses)`);
       console.log(`  Surfaces mapped:   ${surfaceCount}${surfaceCategories ? ` (${surfaceCategories})` : ''}`);
 
@@ -14072,12 +14073,13 @@ function isContributeEnabled(): boolean {
  * Count this scan and return the delayed contribution tip when it is due, the
  * same tip, on the same cadence, that `secure`, `scan-soul` and `detect` show.
  * `check` asks no question and never turns the stored setting on.
+ * `willPrint` false counts the scan without starting the tip's cooldown (#1111).
  */
-function recordScanAndContributeTip(): string | null {
+function recordScanAndContributeTip(willPrint: boolean): string | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { recordScanAndMaybeShowTip } = require('./telemetry/opt-in.js');
-    return recordScanAndMaybeShowTip();
+    return recordScanAndMaybeShowTip({ willPrint });
   } catch {
     return null;
   }
@@ -15084,8 +15086,8 @@ async function checkGitHubRepo(
     // Community contribution: shared when the stored setting is on, never
     // asked for. The delayed tip is shown instead, as on `secure`.
     if (process.stdin.isTTY && !globalCiMode) {
-      const tip = recordScanAndContributeTip();
-      if (tip && process.stdout.isTTY) process.stdout.write(tip + '\n');
+      const tip = recordScanAndContributeTip(process.stdout.isTTY === true);
+      if (tip) process.stdout.write(tip + '\n');
       if (isContributeEnabled()) {
         await shareCheckScan(checkScanSubmission(displayName, result));
       }
@@ -16016,8 +16018,8 @@ async function checkNpmPackage(
     // Community contribution: shared when the stored setting is on, never
     // asked for. The delayed tip is shown instead, as on `secure`.
     if (process.stdin.isTTY && !globalCiMode) {
-      const tip = recordScanAndContributeTip();
-      if (tip && process.stdout.isTTY) process.stdout.write(tip + '\n');
+      const tip = recordScanAndContributeTip(process.stdout.isTTY === true);
+      if (tip) process.stdout.write(tip + '\n');
       if (isContributeEnabled()) {
         // Auto-share silently, queue on failure
         await shareCheckScan(checkScanSubmission(name, result));
@@ -16340,17 +16342,27 @@ async function checkNpmPackage(
   program
     .command('telemetry [action]')
     .description('Inspect or toggle usage telemetry: on | off | status')
-    .action((action: TelemetryAction | undefined) => {
+    .action((rawAction: string | undefined) => {
       // #999 — under a CI or test-runner marker `telemetry on` stores the
       // choice, but this run and the next one under the marker still send
       // nothing. The state printed is the one the run has, and the line after
       // it says why, so `on` and the `status` after it agree.
       const offForRun = automationOptOut(process.env) !== undefined;
+      // Commander passes whatever was typed; the renderer's type names the
+      // actions it knows and answers anything else with its refusal line.
+      const action = rawAction as TelemetryAction;
       const out = runTelemetryCommand(action, {
         tool: 'hackmyagent',
         getStatus: () => (offForRun ? { ...tele.status(), enabled: false } : tele.status()),
         setOptOut: tele.setOptOut,
       });
+      // #1111 — an action the renderer does not know is refused: its message
+      // goes to stderr and the run exits 1, not 0.
+      if (rawAction !== undefined && !['on', 'off', 'status', '--help', '-h'].includes(rawAction)) {
+        console.error(out);
+        raiseExitCode(1);
+        return;
+      }
       const storedOn = action === 'on' || ((action === undefined || action === 'status') && telemetryEnabledOtherwise);
       const reason = storedOn ? automationOffReason(process.env, true) : undefined;
       console.log(reason ? `${out}\n  why off:     ${reason}` : out);

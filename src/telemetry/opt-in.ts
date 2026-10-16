@@ -217,10 +217,16 @@ export function saveContributeChoice(enabled: boolean): void {
  * After the 3rd scan, returns a non-interactive tip encouraging the user
  * to enable contribution. Returns null if tip should not be shown.
  * This replaces the previous interactive Y/N prompt.
+ *
+ * `willPrint: false` is for a run that has nowhere to show the tip (a pipe,
+ * `--json`, a non-text format): the scan is still counted, but the tip is not
+ * returned and the 30-day cooldown is not started, so the next run that can
+ * print it still does (#1111).
  */
-export function recordScanAndMaybeShowTip(): string | null {
+export function recordScanAndMaybeShowTip(options: { willPrint?: boolean } = {}): string | null {
   incrementScanCount();
 
+  if (options.willPrint === false) return null;
   if (!shouldPromptContribute()) return null;
 
   // Mark as shown so we respect the 30-day cooldown

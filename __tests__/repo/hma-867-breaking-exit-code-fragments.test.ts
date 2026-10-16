@@ -36,6 +36,7 @@ const EXIT_CODE_CHANGES: Record<number, string> = {
   969: '`attack` on an agent whose only keyword successes were refusals: exit 1 -> exit 0; on one whose quoted system prompt was read as inconclusive: exit 0 -> exit 1',
   1049: '`rollback` after the directory\'s reported creation time moved back, with an older archive in the tree: exit 0 -> exit 1',
   1051: '`secure --fix` with `HMA_BACKUP_HOME` at a mode 0775 directory, and `rollback` after that store root was made 0775: exit 0 -> exit 1',
+  1111: '`telemetry <unknown action>`: exit 0 -> exit 1',
 };
 
 interface Fragment { name: string; issues: number[]; breaking: string | undefined }
