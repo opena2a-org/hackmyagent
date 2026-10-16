@@ -819,6 +819,16 @@ function serverHasToolWhitelist(server: { allowedTools?: unknown }): boolean {
 }
 
 /**
+ * A server name, quoted, as part of a finding message. The name is file
+ * content on its way to a terminal, so it is escaped the way `decodedExcerpt`
+ * escapes decoded text, and capped because a message is a sentence.
+ */
+function serverNameForMessage(name: string): string {
+  const capped = name.length > 60 ? `${name.slice(0, 57)}...` : name;
+  return `"${escapeForDisplay(capped)}"`;
+}
+
+/**
  * #458 — fold the classified reads of a check whose subject is ANY of several
  * candidate files: `read` if any candidate was read, else `unread` if any
  * candidate failed for a reason other than not-there (the coverage ledger
@@ -12742,7 +12752,7 @@ dist/
         .filter(([, server]) => !serverHasToolWhitelist(server as { allowedTools?: unknown }))
         .map(([name]) => name);
       const hasToolWhitelist = tool001Servers.length > 0 && unlistedServers.length === 0;
-      const unlistedShown = unlistedServers.slice(0, 5).map((name) => `"${name}"`).join(', ');
+      const unlistedShown = unlistedServers.slice(0, 5).map(serverNameForMessage).join(', ');
       const unlistedMore = unlistedServers.length > 5 ? ` and ${unlistedServers.length - 5} more` : '';
       findings.push({
         checkId: 'TOOL-001',
