@@ -47,7 +47,14 @@ let markers: string;
 let markerSeq = 0;
 
 function baseEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1', HMA_TEST_CANARY: CANARY };
+  // The `--deep` cells record Layer 3 spend in the user store, so the store
+  // is kept in the fixture, which `afterAll` removes, not in the real home.
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    NO_COLOR: '1',
+    HMA_TEST_CANARY: CANARY,
+    OPENA2A_HOME: path.join(fx.base, 'opena2a-home'),
+  };
   delete env.ANTHROPIC_API_KEY;
   return env;
 }

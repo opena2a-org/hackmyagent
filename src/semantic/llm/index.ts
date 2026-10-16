@@ -9,7 +9,7 @@
 
 import type { SemanticFinding, AnalysisFile, LLMAnalysisOptions } from '../types';
 import { AnthropicClient, type AnthropicToolResponse } from './client';
-import { LLMCache } from './cache';
+import { LLMCache, layer3CacheDir } from './cache';
 import { BudgetTracker } from './budget';
 import { getPromptForFileType, buildFileAnalysisMessage, REPORT_FINDINGS_TOOL } from './prompts';
 import {
@@ -60,8 +60,11 @@ export class LLMAnalyzer {
 
   constructor(options: LLMAnalysisOptions) {
     this.client = new AnthropicClient(options.apiKey);
-    this.cache = new LLMCache(options.cacheDir);
-    this.budget = new BudgetTracker(options.budgetCap, options.cacheDir);
+    const cacheDir = options.cacheDir !== undefined
+      ? options.cacheDir
+      : layer3CacheDir(options.scanRoot ?? process.cwd());
+    this.cache = new LLMCache(cacheDir);
+    this.budget = new BudgetTracker(options.budgetCap, cacheDir);
     this.onProgress = options.onProgress;
     this.onSend = options.onSend;
   }

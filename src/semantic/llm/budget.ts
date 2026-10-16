@@ -3,10 +3,13 @@
  *
  * Tracks daily LLM API spend and enforces budget cap.
  * Default: $1/day (configurable via HACKMYAGENT_LLM_BUDGET env var).
+ * The record sits beside the Layer 3 cache, in the state directory of the
+ * scanned tree (`layer3CacheDir`).
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { ensurePrivateDir, layer3CacheDir } from './cache';
 
 /** Anthropic API pricing (per 1M tokens) */
 const PRICING = {
@@ -22,12 +25,19 @@ export interface BudgetState {
 
 export class BudgetTracker {
   private budgetCap: number;
-  private cacheDir: string;
+  private cacheDir: string | null;
+  /** Today's record when there is no directory to keep it in. */
+  private memory: BudgetState | null = null;
 
-  constructor(budgetCapUsd?: number, cacheDir: string = '.hackmyagent-cache') {
+  /**
+   * `cacheDir` is the directory to keep the record in. Left out, it is the
+   * state directory of the working directory's tree; `null` keeps the record
+   * for the life of this tracker only.
+   */
+  constructor(budgetCapUsd?: number, cacheDir?: string | null) {
     this.budgetCap = budgetCapUsd ??
       parseFloat(process.env.HACKMYAGENT_LLM_BUDGET || '1.0');
-    this.cacheDir = cacheDir;
+    this.cacheDir = cacheDir === undefined ? layer3CacheDir(process.cwd()) : cacheDir;
   }
 
   /**
@@ -105,14 +115,15 @@ export class BudgetTracker {
     return new Date().toISOString().split('T')[0];
   }
 
-  private budgetFilePath(): string {
-    return path.join(this.cacheDir, 'budget.json');
-  }
-
   private async loadState(): Promise<BudgetState> {
     const today = this.todayKey();
+    if (this.cacheDir === null) {
+      return this.memory?.date === today
+        ? { ...this.memory }
+        : { date: today, totalCostUsd: 0, requests: 0 };
+    }
     try {
-      const data = await fs.readFile(this.budgetFilePath(), 'utf-8');
+      const data = await fs.readFile(path.join(this.cacheDir, 'budget.json'), 'utf-8');
       const state = JSON.parse(data) as BudgetState;
       // Reset if it's a new day
       if (state.date !== today) {
@@ -125,9 +136,13 @@ export class BudgetTracker {
   }
 
   private async saveState(state: BudgetState): Promise<void> {
+    if (this.cacheDir === null) {
+      this.memory = { ...state };
+      return;
+    }
     try {
-      await fs.mkdir(this.cacheDir, { recursive: true });
-      await fs.writeFile(this.budgetFilePath(), JSON.stringify(state, null, 2));
+      await ensurePrivateDir(this.cacheDir);
+      await fs.writeFile(path.join(this.cacheDir, 'budget.json'), JSON.stringify(state, null, 2), { mode: 0o600 });
     } catch {
       // Budget write failures are non-fatal
     }
