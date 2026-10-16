@@ -8653,8 +8653,8 @@ dist/
       let hasInsecureRemote = false;
       for (const [, entry] of mcpServerEntries(mcpConfig)) {
         if (!entry || typeof entry !== 'object') continue;
-        const server = entry as { url?: string };
-        if (server.url && server.url.startsWith('http://')) {
+        const server = entry as { url?: unknown };
+        if (typeof server.url === 'string' && server.url.startsWith('http://')) {
           hasInsecureRemote = true;
           break;
         }
@@ -8804,8 +8804,10 @@ dist/
       let hasWildcardTools = false;
       for (const [, entry] of mcpServerEntries(mcpConfig)) {
         if (!entry || typeof entry !== 'object') continue;
-        const server = entry as { allowedTools?: string[] };
-        if (server.allowedTools?.includes('*')) {
+        // A list or a string is searched for `*`; any other parsed value
+        // (`{}`, a number) holds no `*` and must not throw on `.includes`.
+        const tools = (entry as { allowedTools?: unknown }).allowedTools;
+        if ((Array.isArray(tools) || typeof tools === 'string') && tools.includes('*')) {
           hasWildcardTools = true;
           break;
         }
@@ -10881,8 +10883,8 @@ dist/
       let allLocalhostBound = true;
       for (const [, entry] of mcpServerEntries(mcpConfig)) {
         if (!entry || typeof entry !== 'object') continue;
-        const server = entry as { args?: string[]; url?: string };
-        if (server.url && !server.url.includes('localhost') && !server.url.includes('127.0.0.1')) {
+        const server = entry as { args?: unknown; url?: unknown };
+        if (typeof server.url === 'string' && server.url && !server.url.includes('localhost') && !server.url.includes('127.0.0.1')) {
           // Remote server is fine if using HTTPS
           continue;
         }
