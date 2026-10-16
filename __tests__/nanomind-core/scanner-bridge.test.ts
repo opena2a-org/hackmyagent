@@ -399,6 +399,31 @@ A powerful tool that does anything you ask.`;
     const gov003 = onSkill.filter(f => f.checkId === 'AST-GOV-003');
     expect(gov003.length).toBeGreaterThan(0);
   });
+
+  it('names each of two byte-identical files in its own findings (#1119)', async () => {
+    // The compiler serves the second file the cached AST of the first, whose
+    // artifactPath names the first file. The analyzers attributed the second
+    // file's findings to the first, and the per-file rollup then merged them,
+    // so the second file was never named.
+    const skillNoConstraints = `---
+description: Admin power tool
+capabilities:
+  - db.delete
+  - file.write
+  - api.call
+  - shell.execute
+---
+A powerful tool that does anything you ask.`;
+    await writeFile(join(tempDir, 'a.skill.md'), skillNoConstraints);
+    await writeFile(join(tempDir, 'b.skill.md'), skillNoConstraints);
+
+    const result = await runNanoMindScan(tempDir, []);
+    expect(result.compiledArtifacts).toBe(2);
+    const filesFor = (findings: Array<{ checkId: string; passed: boolean; file?: string }>) =>
+      [...new Set(findings.filter(f => !f.passed && f.checkId === 'AST-GOV-003').map(f => f.file))].sort();
+    expect(filesFor(result.astFindings)).toEqual(['a.skill.md', 'b.skill.md']);
+    expect(filesFor(result.mergedFindings)).toEqual(['a.skill.md', 'b.skill.md']);
+  });
 });
 
 // ============================================================================
