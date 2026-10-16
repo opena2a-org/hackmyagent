@@ -251,7 +251,14 @@ export function printedFlagsInSource(opts: {
         // them. Under-attribution is the dangerous direction here: it turns a
         // per-command assertion back into the union check that #372 measured
         // as insufficient.
-        const segment = before.split(/[`'"\n]|(?<=[A-Za-z0-9)])\.\s|;\s|\|\s/).pop() ?? before;
+        // A launcher that runs THIS CLI is not another tool's command line.
+        // `npx` is on FOREIGN_EXECUTABLE, so the consent tip's
+        // `npx hackmyagent scan --contribute` was skipped as npx's own flag
+        // and `scan`, which has no `--contribute`, shipped as a dead end
+        // printed on every user's third scan. The markdown walk below already
+        // reads these launchers as ours; the source walk now does the same.
+        const segment = (before.split(/[`'"\n]|(?<=[A-Za-z0-9)])\.\s|;\s|\|\s/).pop() ?? before)
+          .replace(/\b(?:npx|pnpm dlx|bunx)\s+(?:(?:-y|--yes)\s+)?(hackmyagent|hma)(?:@[\w.\-]+)?(?=\s)/g, '$1');
         if (FOREIGN_EXECUTABLE.test(segment)) continue;
 
         // An explicitly named command wins over the enclosing registration.

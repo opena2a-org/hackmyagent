@@ -236,7 +236,7 @@ export function recordScanAndMaybeShowTip(options: { willPrint?: boolean } = {})
     '',
     '  Tip: Your scans help build community trust data for MCP servers and AI agents.',
     '  Share anonymized results so other developers can make informed security decisions.',
-    '  Enable: npx hackmyagent scan --contribute  (or: opena2a config contribute on)',
+    '  Enable: npx hackmyagent secure --contribute  (or: opena2a config contribute on)',
     '',
   ].join('\n');
 }
