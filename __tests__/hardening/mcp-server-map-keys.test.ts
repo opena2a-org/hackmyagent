@@ -205,6 +205,39 @@ describe('TOOL-001 passes only when every server lists tool names without "*" (#
   });
 });
 
+describe('an allowedTools or url that is not a list or a string does not end the scan (#669)', { timeout: 120_000 }, () => {
+  // Before: `allowedTools: {}` threw "server.allowedTools?.includes is not a
+  // function" in MCP-005, and `url: 7` threw "server.url.startsWith is not a
+  // function" in NET-002 (MCP-008 threw on `.includes` the same way), so
+  // `secure` exited 1 with no report.
+  for (const key of ['mcpServers', 'servers']) {
+    it(`${key}: such a value declares no tools and no URL`, async () => {
+      const records = await scanConfig({
+        [key]: {
+          a: { command: 'npx', allowedTools: {}, url: 7 },
+          b: { command: 'npx', allowedTools: 3, url: { href: 'http://x' } },
+        },
+      });
+      expect(records.some((r) => r.checkId === 'MCP-005')).toBe(false);
+      expect(records.some((r) => r.checkId === 'NET-002')).toBe(false);
+      expect(passed(records, 'MCP-008')).toBe(true);
+      expect(failed(records, 'TOOL-001')).toBe(true);
+    });
+
+    it(`${key}: a non-list or empty allowedTools is not a whitelist`, async () => {
+      for (const allowedTools of ['read_file', [], {}]) {
+        const records = await scanConfig({ [key]: { fs: { command: 'npx', allowedTools } } });
+        expect(failed(records, 'TOOL-001'), `allowedTools ${JSON.stringify(allowedTools)}`).toBe(true);
+      }
+    });
+
+    it(`${key}: a string allowedTools and a string url are still read`, async () => {
+      expect(failed(await scanConfig({ [key]: { a: { command: 'npx', allowedTools: '*' } } }), 'MCP-005')).toBe(true);
+      expect(failed(await scanConfig({ [key]: { a: { url: 'http://mcp.example.test/sse' } } }), 'NET-002')).toBe(true);
+    });
+  }
+});
+
 describe('TOOL-003 and MCP-009 match whole words of the server name (#669)', { timeout: 120_000 }, () => {
   // The corpus benign fixture's shape: one read-only filesystem server.
   const FILESYSTEM = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', './docs'] };
