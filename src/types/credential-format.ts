@@ -1263,6 +1263,218 @@ export function hasAnchoredVendorCredential(text: string): boolean {
 }
 
 /* ------------------------------------------------------------------ *
+ * Report redaction read off the registry
+ * ------------------------------------------------------------------ */
+
+/**
+ * Heads whose first two letters also end ordinary words (`task-`, `risk_`,
+ * `disk-`). The detector matches these heads unanchored, so a hyphenated word
+ * of twenty characters after one of them reads as a key; at the report
+ * boundary that would rewrite a user's prose. These heads take the left anchor
+ * the detector uses to positively identify a vendor credential
+ * (`hasAnchoredVendorCredential`), waived where the head is glued to a token
+ * already being removed. Every other head is matched unanchored, as the
+ * detector matches it.
+ */
+const WORD_TAIL_HEAD = /^sk[-_]/;
+
+/** One vendor shape as the report redactor applies it. */
+interface DetectedShapeRule {
+  readonly id: ShapeId;
+  readonly headSource: string;
+  /** Sticky, so it is tested at exactly one position. */
+  readonly head: RegExp;
+  readonly leftAnchored: boolean;
+  /**
+   * The body, segment by segment: the class (as a membership table over the
+   * ASCII range every registry class is drawn from) and its length. A
+   * non-final segment must be exactly `length`, because the separator after it
+   * is outside the class; the final one is at least `length`.
+   */
+  readonly segments: ReadonlyArray<{ readonly members: Uint8Array; readonly length: number; readonly exact: boolean }>;
+  /** The separator between segments, as a character code. */
+  readonly separator?: number;
+}
+
+function classMembers(cls: string): Uint8Array {
+  const re = new RegExp(`^${cls}$`);
+  const members = new Uint8Array(128);
+  for (let c = 0; c < 128; c++) members[c] = re.test(String.fromCharCode(c)) ? 1 : 0;
+  return members;
+}
+
+/**
+ * Every vendor shape, at the detector's own head, body class and floor, in
+ * registry order (which is the precedence: the anthropic and project heads are
+ * tried before the legacy OpenAI head at the same position).
+ *
+ * The floor is `body.min` and there is no ceiling: a run longer than a fixed
+ * width is removed whole, because a rule that consumes only the first N
+ * characters of a longer run prints the rest.
+ */
+const DETECTED_SHAPE_RULES: readonly DetectedShapeRule[] = CREDENTIAL_SHAPES.flatMap(shape => {
+  if (shape.kind !== 'vendor') return [];
+  const { body } = shape;
+  let separator: number | undefined;
+  if (body.kind === 'segments') {
+    const literal = body.separator.replace(/\\(.)/g, '$1');
+    if (literal.length !== 1) {
+      throw new Error(`credential-format: shape ${shape.id} separator is not one literal character`);
+    }
+    separator = literal.charCodeAt(0);
+  }
+  const segments =
+    body.kind === 'run'
+      ? [{ members: classMembers(body.class), length: body.min, exact: false }]
+      : body.segments.map((s, i) => ({
+          members: classMembers(s.class),
+          length: s.length,
+          exact: i < body.segments.length - 1,
+        }));
+  return [
+    {
+      id: shape.id,
+      headSource: shape.head,
+      head: new RegExp(shape.head, 'y'),
+      leftAnchored: WORD_TAIL_HEAD.test(shape.head),
+      segments,
+      separator,
+    },
+  ];
+});
+
+const ANY_DETECTED_HEAD_SOURCE = DETECTED_SHAPE_RULES.map(r => `(?:${r.headSource})`).join('|');
+
+/** End of the maximal run of `members` starting at `pos`, memoised per class. */
+function runEndFrom(
+  members: Uint8Array,
+  text: string,
+  pos: number,
+  memo: Map<Uint8Array, { start: number; end: number }>,
+): number {
+  // Heads are visited left to right, so a later body that starts inside a run
+  // already measured ends where that run ends. Without this, a long run of
+  // repeated heads costs a scan to its end from every one of them.
+  const known = memo.get(members);
+  if (known && pos >= known.start && pos < known.end) return known.end;
+  let end = pos;
+  while (end < text.length) {
+    const c = text.charCodeAt(end);
+    if (c >= 128 || members[c] === 0) break;
+    end++;
+  }
+  memo.set(members, { start: pos, end });
+  return end;
+}
+
+function detectedBodyEnd(
+  rule: DetectedShapeRule,
+  text: string,
+  start: number,
+  memo: Map<Uint8Array, { start: number; end: number }>,
+): number | undefined {
+  let pos = start;
+  for (let k = 0; k < rule.segments.length; k++) {
+    if (k > 0) {
+      if (text.charCodeAt(pos) !== rule.separator) return undefined;
+      pos++;
+    }
+    const seg = rule.segments[k];
+    const end = runEndFrom(seg.members, text, pos, memo);
+    const len = end - pos;
+    if (seg.exact ? len !== seg.length : len < seg.length) return undefined;
+    pos = end;
+  }
+  return pos;
+}
+
+/**
+ * Remove every credential the detector can recognise by its shape, reporting
+ * which shapes were resolved FROM THE VALUE. `shapes` is sorted and deduped.
+ *
+ * This is the registry's second consumer: the detector reads `CREDENTIAL_SHAPES`
+ * to find a credential, and this reads the same records to remove one, so the
+ * report boundary cannot fall behind the detector's floor or class. It covers
+ * every vendor shape and the JWT. The structural shapes it leaves to the
+ * report boundary's own rules (key blocks, name-gated secrets and connection
+ * strings, all of which that table already removes), except `entropy-blob`,
+ * which no redactor applies: an anonymous 40-character run is a git SHA, a
+ * content hash or an integrity value as often as a secret, and reports carry
+ * those.
+ *
+ * The JWT is matched in its anchored form (`findJwtMatch(text, true)`):
+ * `eyJ` also occurs inside camel-case identifiers and dotted file names
+ * (`monkeyJar.config.json`), which a report quotes and must not rewrite.
+ *
+ * Tokens are found first and removed afterwards, so two tokens glued together
+ * are both removed: the second head is still in the text when it is looked
+ * for. Overlapping or adjacent tokens are removed as one span under the shape
+ * of the leftmost.
+ *
+ * Linear in the input: every head is a fixed-length pattern and every body is
+ * a character-class run measured once.
+ */
+export function redactDetectedCredentialShapesReporting(text: string): {
+  text: string;
+  shapes: ShapeId[];
+} {
+  const spans: Array<{ start: number; end: number; id: ShapeId }> = [];
+  const memo = new Map<Uint8Array, { start: number; end: number }>();
+  let coveredEnd = -1;
+
+  const heads = new RegExp(ANY_DETECTED_HEAD_SOURCE, 'g');
+  for (let m = heads.exec(text); m !== null; m = heads.exec(text)) {
+    const start = m.index;
+    // Every position is a candidate, including those inside a token already
+    // found: that is where a glued second token's head is.
+    heads.lastIndex = start + 1;
+    const glued = start <= coveredEnd;
+    for (const rule of DETECTED_SHAPE_RULES) {
+      if (rule.leftAnchored && !glued && start > 0 && isAlphanumericCode(text.charCodeAt(start - 1))) {
+        continue;
+      }
+      rule.head.lastIndex = start;
+      const head = rule.head.exec(text);
+      if (head === null) continue;
+      const end = detectedBodyEnd(rule, text, start + head[0].length, memo);
+      if (end === undefined) continue;
+      spans.push({ start, end, id: rule.id });
+      coveredEnd = Math.max(coveredEnd, end);
+      break;
+    }
+  }
+
+  for (let offset = 0; offset < text.length; ) {
+    const hit = findJwtMatch(offset === 0 ? text : text.slice(offset), true);
+    if (hit === undefined) break;
+    const start = offset + hit.index;
+    spans.push({ start, end: start + hit.value.length, id: 'jwt' });
+    offset = start + hit.value.length;
+  }
+
+  if (spans.length === 0) return { text, shapes: [] };
+
+  spans.sort((a, b) => a.start - b.start);
+  const shapes = new Set<ShapeId>();
+  let out = '';
+  let cursor = 0;
+  for (let i = 0; i < spans.length; ) {
+    const { start, id } = spans[i];
+    let end = spans[i].end;
+    i++;
+    while (i < spans.length && spans[i].start <= end) {
+      end = Math.max(end, spans[i].end);
+      i++;
+    }
+    out += text.slice(cursor, start) + CREDENTIAL_REDACTION_MARKERS[id];
+    shapes.add(id);
+    cursor = end;
+  }
+  out += text.slice(cursor);
+  return { text: out, shapes: [...shapes].sort() };
+}
+
+/* ------------------------------------------------------------------ *
  * Form blanks in KEY-NAMED config values
  * ------------------------------------------------------------------ */
 

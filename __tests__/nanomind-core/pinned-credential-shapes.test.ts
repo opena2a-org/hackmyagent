@@ -26,6 +26,8 @@ import { describe, it, expect } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { redactSecretsForNanoMind } from '../../src/nanomind-core/security/defense-in-depth';
+import { emitFinding } from '../../src/hardening/finding-emit';
+import type { SecurityFindingDraft } from '../../src/hardening/security-check';
 import {
   scanCanonicalCredentialFormatsForTest,
   canonicalCredentialLabelsForTest,
@@ -98,6 +100,12 @@ const REDACT_ONLY: Array<{ label: string; value: string }> = [
  * band is detected and forwarded verbatim. The finding itself never quotes the
  * key (`OpenAI-style sk- key: [REDACTED]`). The last test in the block below
  * pins the gap so that closing it goes red and moves this entry into `SHAPES`.
+ *
+ * Findings are past it: the finding boundary (`emitFinding`) removes every
+ * shape at the detector's own floor and class, read off the shape registry,
+ * and the test after the pin holds it to that for these entries. The daemon
+ * path, and the other callers of the redactor's own table, keep the gap until
+ * that table is read off the registry as well.
  */
 const DETECTED_NOT_YET_REDACTED: Array<{ label: string; value: string }> = [
   { label: 'OpenAI-style sk- key', value: `sk-${fill(32)}` },
@@ -255,6 +263,23 @@ describe('credential shapes: detected and redacted, never one without the other'
     for (const { label, value } of DETECTED_NOT_YET_REDACTED) {
       expect(scanCanonicalCredentialFormatsForTest(asSource(value)).map(h => h.label)).toContain(label);
       expect(redactSecretsForNanoMind(asProse(value)), `${label} is now redacted`).toContain(value);
+    }
+  });
+
+  it('the report boundary already removes the detected-not-yet-redacted shapes', () => {
+    for (const { label, value } of DETECTED_NOT_YET_REDACTED) {
+      const emitted = emitFinding({
+        checkId: 'TEST-PIN-001',
+        name: 'name',
+        description: asProse(value),
+        category: 'credentials',
+        severity: 'high',
+        passed: false,
+        message: asProse(value),
+        fixable: false,
+      } as unknown as SecurityFindingDraft);
+      expect(JSON.stringify(emitted), `${label} reached a finding`).not.toContain(value);
+      expect(emitted.redactionStatus).toBe('applied');
     }
   });
 });
