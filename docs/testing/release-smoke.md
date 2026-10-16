@@ -605,6 +605,44 @@ is scanned instead of refused.
 
 ---
 
+## 6.7 Recorded walkthroughs (needs Docker)
+
+The README links walkthroughs rendered from tapes under `docs/vhs/`. Each has
+a sidecar JSON naming the hackmyagent version it ran, and
+`__tests__/docs/recording-sidecars.test.ts` fails when a sidecar it pins names
+a version other than the one in `package.json`. Re-render each pinned
+walkthrough after the version bump is committed and before the tag push, with
+the command its tape names on its `# Record:` line:
+
+```bash
+# Unset ANTHROPIC_API_KEY and OPENAI_API_KEY first: the render scripts exit 2 when either is set.
+docs/vhs/record-secure.sh --dry-run   # the build, the image and the files a render writes; writes nothing
+docs/vhs/record-secure.sh             # renders docs/vhs/secure.tape; its last line is the sidecar line
+```
+
+A version npm does not have yet is packed from this checkout, so build first
+(§0) and commit the changes under `src/` and `package.json`; the sidecar then
+names `packedFromCommit` instead of `npmIntegrity`. The last line of the render
+has this shape:
+
+```
+sidecar docs/vhs/secure.json sha256 <hex>: hackmyagent <version> (packed from <commit>), rendered <UTC time>, wall clock <seconds> s, metered cost $0
+```
+
+Copy that line into the release notes, then commit the sidecar, the GIF, the
+frames and the capture by name. From the repository root,
+`node docs/vhs/sidecar-line.mjs docs/vhs/secure.json` prints the same line
+again; it exits 1 and prints no line when the sidecar carries no measured wall
+clock or a metered cost other than 0.
+
+`docs/vhs/record-detect.sh` still renders the hackmyagent build its image
+carries, 0.33.0, and not the version in `package.json`, so
+`docs/vhs/detect.json` stays at the version it was recorded with, and the test
+lists it with that reason.
+
+Fail the release if: a render exits non-zero, the version in the sidecar line is
+not the version being tagged, or `recording-sidecars.test.ts` fails.
+
 ---
 
 ## 7. Cleanup

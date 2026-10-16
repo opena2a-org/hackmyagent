@@ -14,8 +14,12 @@
  *    and the README line no version and no date: those live in the sidecar.
  *
  * It also holds the render scripts: each refuses to start when a metered key
- * is set, and `--dry-run` prints what a render would use and write, then
- * exits 0 with docs/vhs as it was.
+ * is set, `--dry-run` prints what a render would use and write, then exits 0
+ * with docs/vhs as it was, and a render ends with the sidecar line (the
+ * sidecar's path, sha256, build, wall clock and metered cost) or exits 1 when
+ * the sidecar carries no measured wall clock or a cost other than 0. The
+ * release checklist re-renders each pinned recording with the command its tape
+ * names and records that line.
  *
  * Re-render with the script the README line names; the sidecar is written by
  * the render, never by hand.
@@ -23,7 +27,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { parseTape } from '../helpers/tape';
 import { tempDir } from '../helpers/temp-dir';
@@ -208,6 +212,9 @@ describe('recording sidecars', () => {
 
 });
 
+/** Prints the one-line record of a sidecar; each render script ends with it. */
+const SIDECAR_LINE = 'docs/vhs/sidecar-line.mjs';
+
 /**
  * The render scripts, with the tape each renders, the files it writes beside
  * the tape's own outputs, and the image a dry run names: record-secure.sh
@@ -239,17 +246,18 @@ function treeState(rel: string): string[] {
 
 /**
  * A scratch directory with stand-ins for docker and npm that append each call
- * to a log. docker answers every call with exit 1, so an image is never
- * present and a build or a run fails the script; npm answers `view` with an
- * integrity and every other call with exit 1. The directory is removed when
- * the test that made it finishes.
+ * to a log. docker answers every call with `dockerStatus`: 1 by default, so an
+ * image is never present and a build or a run fails the script; with 0 the
+ * image is present and a run succeeds without writing anything. npm answers
+ * `view` with an integrity and every other call with exit 1. The directory is
+ * removed when the test that made it finishes.
  */
-function stubs(): { dir: string; log: string; env: Record<string, string> } {
+function stubs(dockerStatus = 1): { dir: string; log: string; env: Record<string, string> } {
   const dir = tempDir('hma-render-');
   const bin = path.join(dir, 'bin');
   const log = path.join(dir, 'calls.log');
   mkdirSync(bin);
-  writeFileSync(path.join(bin, 'docker'), '#!/bin/sh\necho "docker $*" >> "$STUB_LOG"\nexit 1\n');
+  writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\necho "docker $*" >> "$STUB_LOG"\nexit ${dockerStatus}\n`);
   writeFileSync(
     path.join(bin, 'npm'),
     '#!/bin/sh\nif [ "$1" = view ]; then echo sha512-FAKE; exit 0; fi\necho "npm $*" >> "$STUB_LOG"\nexit 1\n',
@@ -318,6 +326,72 @@ describe.each(RENDER_SCRIPTS)('$script', (entry) => {
     if (fixture) expect(run.stdout).toContain(fixture.sha);
     expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toEqual([`docker image inspect ${entry.image}`]);
     expect(treeState('docs/vhs')).toEqual(before);
+  });
+
+  it('a render ends, after the container run, with the sidecar line of the sidecar on disk, or exits 1 as that line does', () => {
+    // docker has the image and its run writes nothing, so the sidecar on disk is the one the line reads.
+    const { dir, log, env } = stubs(0);
+    const fixture = entry.takesFixture ? fixtureCheckout(dir, env) : undefined;
+    const outDir = 'docs/vhs/out';
+    const outExisted = existsSync(at(outDir));
+    try {
+      const run = spawnSync('/bin/bash', [at(entry.script), ...(fixture ? [fixture.path] : [])], { env, encoding: 'utf8' });
+      const direct = spawnSync(process.execPath, [at(SIDECAR_LINE), entry.sidecar], { cwd: REPO_ROOT, encoding: 'utf8' });
+      const calls = readFileSync(log, 'utf8').split('\n').filter(Boolean);
+      expect(calls[0]).toBe(`docker image inspect ${entry.image}`);
+      expect(calls.filter((call) => call.startsWith('docker run '))).toHaveLength(1);
+      expect(calls.filter((call) => call.startsWith('docker build '))).toEqual([]);
+      expect(run.status, run.stderr).toBe(direct.status);
+      expect(run.stdout.trimEnd().split('\n').at(-1)).toBe(direct.stdout.trimEnd());
+      expect(run.stderr).toContain(direct.stderr.trim());
+    } finally {
+      if (!outExisted && existsSync(at(outDir)) && readdirSync(at(outDir)).length === 0) rmdirSync(at(outDir));
+    }
+  });
+});
+
+describe('docs/vhs/sidecar-line.mjs', () => {
+  const line = (file: string, cwd = REPO_ROOT) => spawnSync(process.execPath, [at(SIDECAR_LINE), file], { cwd, encoding: 'utf8' });
+
+  it.each(SIDECARS)('prints %s with its sha256, its build, when it was rendered, its wall clock and its metered cost', (sidecarPath) => {
+    const sidecar = JSON.parse(text(sidecarPath)) as Sidecar & { ranAtUtc: string };
+    const build = sidecar.npmIntegrity !== undefined ? 'from npm' : `packed from ${sidecar.packedFromCommit}`;
+    const run = line(sidecarPath);
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toBe(
+      `sidecar ${sidecarPath} sha256 ${sha256(sidecarPath)}: ${sidecar.tool} ${sidecar.version} (${build}), ` +
+        `rendered ${sidecar.ranAtUtc}, wall clock ${sidecar.wallClockSeconds} s, metered cost $0\n`,
+    );
+  });
+
+  it.each([
+    { name: 'no wallClockSeconds', change: { wallClockSeconds: undefined }, says: 'carries no wallClockSeconds' },
+    { name: 'a zero wall clock', change: { wallClockSeconds: 0 }, says: 'has wallClockSeconds 0, not a measured number of seconds' },
+    { name: 'a wall clock written as text', change: { wallClockSeconds: '39.8' }, says: 'has wallClockSeconds "39.8", not a measured number of seconds' },
+    { name: 'no meteredCostUsd', change: { meteredCostUsd: undefined }, says: 'carries no meteredCostUsd' },
+    { name: 'a metered cost', change: { meteredCostUsd: 0.42 }, says: 'has meteredCostUsd 0.42, not 0' },
+  ])('exits 1 and prints no line for a sidecar with $name', ({ change, says }) => {
+    const dir = tempDir('hma-sidecar-line-');
+    const file = path.join(dir, 'walkthrough.json');
+    // JSON.stringify drops a key whose value is undefined, which is how a field goes missing here.
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(text('docs/vhs/secure.json')), ...change }, null, 2));
+    const run = line(file);
+    expect(run.status).toBe(1);
+    expect(run.stdout).toBe('');
+    expect(run.stderr).toContain(`${file} ${says}`);
+  });
+});
+
+describe('the release checklist', () => {
+  const smoke = text('docs/testing/release-smoke.md');
+
+  it.each(SIDECARS)('re-renders %s with the command its tape names, and records its sidecar line', (sidecarPath) => {
+    const sidecar = JSON.parse(text(sidecarPath)) as Sidecar;
+    const record = text(sidecar.tape).match(/^# Record: (\S.*)$/m);
+    expect(record, `${sidecar.tape} names no render command on a "# Record:" line`).not.toBeNull();
+    const command = record![1].trim();
+    expect(smoke.split('\n').some((l) => l.trim().startsWith(command)), `release-smoke.md does not run ${command}`).toBe(true);
+    expect(smoke).toContain(`node ${SIDECAR_LINE} ${sidecarPath}`);
   });
 });
 

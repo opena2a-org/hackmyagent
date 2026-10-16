@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../helpers/temp-dir';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
+import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const FIXTURE_DIR = path.join(REPO_ROOT, 'test-fixtures', 'demo-agents');
@@ -147,6 +148,30 @@ function templateLine(file: string, value: string): number {
   const index = template.lines.findIndex((line) => line.includes(`{{${value}}}`));
   if (index === -1) throw new Error(`${file} does not carry {{${value}}}`);
   return index + 1;
+}
+
+/**
+ * A copy, under `dir`, of what docs/vhs/record-detect.sh reads on the host:
+ * the scripts, tapes and sidecars in docs/vhs, package.json and this fixture.
+ * The fixture is committed in a throwaway repository, as the script names it
+ * by the commit that last changed it. The commit runs with a scratch HOME and
+ * no system configuration, so no global git setting or hook takes part.
+ */
+function renderCopy(dir: string): string {
+  const repo = path.join(dir, 'repo');
+  const copy = (rel: string) => fs.cpSync(path.join(REPO_ROOT, rel), path.join(repo, rel), { recursive: true });
+  for (const name of fs.readdirSync(path.join(REPO_ROOT, 'docs', 'vhs'))) {
+    if (/\.(sh|mjs|tape|json)$/.test(name)) copy(`docs/vhs/${name}`);
+  }
+  copy('package.json');
+  copy(path.relative(REPO_ROOT, FIXTURE_DIR));
+  initThrowawayRepo(repo);
+  const git = (...args: string[]) => spawnSync('git', ['-C', repo, ...args], {
+    env: { ...gitFreeEnv(), HOME: dir, GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf-8',
+  });
+  expect(git('add', '--', path.relative(REPO_ROOT, FIXTURE_DIR)).status).toBe(0);
+  expect(git('commit', '-q', '--no-verify', '-m', 'fixture').status).toBe(0);
+  return repo;
 }
 
 let fixtureRoot = '';
@@ -292,6 +317,9 @@ describe('demo-agents fixture', () => {
     const stubDir = tempDir('hma-demo-agents-docker-');
     const stub = path.join(stubDir, 'docker');
     const out = path.join(stubDir, 'run.json');
+    // The render writes its sidecar into docs/vhs, so it runs in a copy, never in this checkout.
+    const repo = renderCopy(stubDir);
+    const committedSidecar = fs.readFileSync(path.join(REPO_ROOT, 'docs', 'vhs', 'detect.json'));
     fs.writeFileSync(
       stub,
       [
@@ -302,9 +330,8 @@ describe('demo-agents fixture', () => {
         'const args = process.argv.slice(2);',
         "if (args[0] === 'image' && args[1] === 'inspect') process.exit(0);",
         "if (args[0] !== 'run') process.exit(3);",
-        "const suffix = ':/work/fixture:ro';",
-        "const mount = args.find((a, i) => args[i - 1] === '-v' && a.endsWith(suffix));",
-        'const source = mount ? mount.slice(0, -suffix.length) : null;',
+        "const mountOf = (suffix) => { const m = args.find((a, i) => args[i - 1] === '-v' && a.endsWith(suffix)); return m ? m.slice(0, -suffix.length) : null; };",
+        "const source = mountOf(':/work/fixture:ro');",
         "const probe = source ? spawnSync('git', ['-C', source, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }) : null;",
         'const list = (dir) => fs.readdirSync(dir, { withFileTypes: true })',
         '  .flatMap((e) => (e.isDirectory() ? list(path.join(dir, e.name)).map((f) => `${e.name}/${f}`) : [e.name]));',
@@ -314,19 +341,26 @@ describe('demo-agents fixture', () => {
         "  insideWorkTree: probe ? probe.status === 0 && probe.stdout.trim() === 'true' : null,",
         '  files: source ? list(source).sort() : [],',
         '}));',
+        // What the container writes for the host to read: the sidecar, with a measured wall clock and no metered cost.
+        "const sidecar = path.join(mountOf(':/work/docs/vhs'), 'detect.json');",
+        "const written = { ...JSON.parse(fs.readFileSync(sidecar, 'utf8')), wallClockSeconds: 1, meteredCostUsd: 0 };",
+        'fs.writeFileSync(sidecar, JSON.stringify(written, null, 2));',
         '',
       ].join('\n'),
       { mode: 0o755 },
     );
     const tmp = tempDir('hma-demo-agents-tmp-');
-    const res = spawnSync('bash', [RECORD], {
-      cwd: REPO_ROOT,
+    const res = spawnSync('bash', [path.join(repo, path.relative(REPO_ROOT, RECORD))], {
+      cwd: repo,
       encoding: 'utf-8',
       env: cleanEnv({ DOCKER: stub, STUB_OUT: out, TMPDIR: tmp }),
       timeout: 120_000,
     });
     expect(res.stderr).toBe('');
     expect(res.status).toBe(0);
+    // The render ends with the sidecar line of the sidecar the container wrote, and this checkout's is untouched.
+    expect(res.stdout.trimEnd().split('\n').at(-1)).toMatch(/^sidecar docs\/vhs\/detect\.json sha256 [0-9a-f]{64}: hackmyagent /);
+    expect(fs.readFileSync(path.join(REPO_ROOT, 'docs', 'vhs', 'detect.json'))).toEqual(committedSidecar);
 
     const run = JSON.parse(fs.readFileSync(out, 'utf-8')) as {
       argv: string[];
