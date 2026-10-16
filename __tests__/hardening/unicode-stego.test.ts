@@ -487,6 +487,29 @@ describe('UNICODE-STEGO checks', () => {
       expect(stego002[0].file).toBe('decoder-tags.ts');
     });
 
+    // #959: a decoder whose only range literals lie in 0xE01F0-0xE01FF, the
+    // unassigned end of the range UNICODE-STEGO-001 reports, was not counted.
+    it('detects a decoder whose only range literals are in U+E01F0-E01FF', async () => {
+      const content = [
+        'function decode(s) {',
+        '  const out = [];',
+        '  for (let i = 0; i < s.length; i++) {',
+        '    const cp = s.codePointAt(i);',
+        '    if (cp >= 0xE01F0 && cp <= 0xE01FF) { out.push(cp - 0xE01F0); }',
+        '  }',
+        '  return String.fromCodePoint(...out);',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'decoder-unassigned.ts'), content);
+
+      const findings = await scanForUnicodeStego();
+      const stego002 = findings.filter((f) => f.checkId === 'UNICODE-STEGO-002' && !f.passed);
+
+      expect(stego002.length).toBe(1);
+      expect(stego002[0].file).toBe('decoder-unassigned.ts');
+      expect(stego002[0].line).toBe(4);
+    });
+
     // The fixture above used to end `if (cp >= 0xE0100) { return cp; }` with no
     // reconstitution at all, and asserted the check fired on it. That is inspector
     // shaped code, not a decoder, and asserting a finding on it was asserting the
