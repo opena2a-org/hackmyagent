@@ -599,7 +599,8 @@ import { CLI_PREFIX, RAW_CLI_PREFIX, rebrandCommandCitations, OPENA2A_PACKAGE, s
 // The explain command's knowledge lives in src/explain-registry.ts: the
 // static explanations and category labels moved there so the unknown-id
 // refusal predicate and the known-id sweep test share one inventory.
-import { STATIC_EXPLANATIONS, SOUL_SCAN_EXPLANATIONS, PREFIX_DESCRIPTIONS, REMOVED_CHECKS, isKnownExplainId, suggestExplainIds } from './explain-registry';
+import { PREFIX_DESCRIPTIONS, REMOVED_CHECKS, explainBody, isKnownExplainId, suggestExplainIds } from './explain-registry';
+import { getCheckDefinition } from './hardening/check-definitions';
 
 let nanomindDeprecationWarned = false;
 /**
@@ -12611,13 +12612,15 @@ program
 
     // Add every counted check from the taxonomy (the authoritative source of
     // check IDs). The keys no command can report are listed under
-    // `notCounted` instead, so `checks` and `totalChecks` agree.
+    // `notCounted` instead, so `checks` and `totalChecks` agree. The name is
+    // the one the check's findings carry, from the check-definition table
+    // `explain` also answers from; it used to be the id repeated.
     for (const checkId of getCountedCheckIds() as string[]) {
       const prefix = checkId.split('-').slice(0, -1).join('-') || checkId.split('-')[0];
       const attackClass = taxMap[checkId] || '';
       metadata[checkId] = {
         checkId,
-        name: checkId,
+        name: getCheckDefinition(checkId)?.name ?? checkId,
         category: prefix.toLowerCase(),
         attackClass,
         canonicalClass: canonicalOf(attackClass),
@@ -12740,37 +12743,24 @@ program
       }
     }
 
-    // Static explanation lookup — tables live in src/explain-registry.ts
-    // alongside the refusal predicate they feed.
-    const staticExplanations = STATIC_EXPLANATIONS;
+    // The body comes from src/explain-registry.ts: the hand-written
+    // explanation, the scan-soul control, or the check-definition table
+    // (name, description, why it matters, fix).
     const prefixDescriptions = PREFIX_DESCRIPTIONS;
 
     const { getAttackClass } = require('./hardening/taxonomy');
     const attackClass = getAttackClass(checkId);
     const explainPrefix = checkId.split('-')[0];
-    const categoryLabel = prefixDescriptions[explainPrefix] || 'security check';
-    // scan-soul's own findings (SOUL-PROFILE-MISMATCH, SOUL-VIOLATION-*)
-    // render like the hand-written table (#760).
-    const staticExplanation = staticExplanations[checkId] ?? SOUL_SCAN_EXPLANATIONS[checkId];
-
-    // Per-control lookup for governance catalog IDs (SOUL-TH-001, SOUL-IH-003,
-    // …). Without this, `explain SOUL-IH-003` falls through to the generic
-    // "behavioral governance finding" line (release-test P3). The catalog
-    // carries the control name + remediation, so render those instead.
-    const soulControl = CONTROL_DEFS.find((c) => c.id === checkId);
-    const soulControlExplanation = soulControl
-      ? `${soulControl.name} — ${soulControl.domain} domain (scan-soul control ${soulControl.id}).${soulControl.remediation ? ` ${soulControl.remediation}` : ''} Run: ${CLI_PREFIX} harden-soul <dir> to add governance that satisfies this control.`
-      : undefined;
+    const categoryLabel = prefixDescriptions[explainPrefix] || getCheckDefinition(checkId)?.category || 'security check';
+    const body = explainBody(checkId);
 
     // ── Header ──────────────────────────────────────────────────────
     console.log();
     console.log(`  ${colors.bold}${colors.white}${checkId}${RESET()}  ${colors.dim}${categoryLabel}${RESET()}`);
     console.log();
 
-    if (staticExplanation) {
-      console.log(`  ${staticExplanation}`);
-    } else if (soulControlExplanation) {
-      console.log(`  ${soulControlExplanation}`);
+    if (body) {
+      for (const line of body) console.log(line === '' ? '' : `  ${line}`);
       if (attackClass) {
         console.log();
         console.log(`  ${colors.dim}Attack class:${RESET()} ${attackClass}`);
