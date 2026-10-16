@@ -4918,6 +4918,12 @@ interface BenchmarkRunFlags {
   staticOnly?: boolean;
   /** The scan's own `coverage.filesExamined`; `0` is the zero-read floor. */
   filesExamined?: number;
+  /**
+   * The directory a failing record's `file` resolves against (#286), for the
+   * `Verify:` and `Fix:` lines `--verbose` prints under a failed control. Not
+   * `targetDir` for a lone-file target, which is scanned as an isolated copy.
+   */
+  citationRoot?: string;
 }
 
 /**
@@ -5064,6 +5070,52 @@ function unverifiedReason(controlId: string): 'manual/forward' | 'no scanner dat
     : 'no scanner data';
 }
 
+/**
+ * The `Verify:` text for one failing record a failed control cites. The
+ * command is the plain scan's (`generateVerifyCommand`, joined onto the scan
+ * root so it runs from any directory). A record with no line gets no command
+ * and says so: a command that does not read the cited line verifies nothing.
+ */
+function benchmarkRecordVerify(record: { file?: string; line?: number } | undefined, scanRoot: string): string {
+  const cmd = record ? generateVerifyCommand(record, scanRoot) : undefined;
+  if (cmd) return cmd;
+  const lined = record?.file !== undefined && Number.isInteger(record.line) && (record.line as number) >= 1;
+  return lined
+    ? 'not available (the file path cannot be written as a shell operand)'
+    : 'not available (the record carries no line)';
+}
+
+/**
+ * A failed control's remediation, through the fix renderer the plain scan
+ * uses: `→  <cmd>` for a command, `Fix: <text>` for prose. The catalogue's
+ * remediation is text this tool authored, so its lines render as lines. A
+ * failing record's own `fix` can carry bytes from the scanned tree and reaches
+ * the control result without its line structure, so `fixParts` returns it as
+ * one part, escaped whole (#367); a citation of a record's own file is
+ * rebased onto the scan root like the plain scan's (#524).
+ */
+function printBenchmarkControlFix(ctrl: BenchmarkControlResult, scanRoot: string): void {
+  if (!ctrl.remediation) return;
+  const authored = OASB_1_CATEGORIES
+    .flatMap((c: BenchmarkCategory) => c.controls)
+    .find((c: BenchmarkControl) => c.id === ctrl.controlId)?.remediation;
+  if (ctrl.remediation === authored) {
+    const authoredLines = authored.split('\n').filter((l) => l.trim() !== '');
+    if (authoredLines.length === 0) return;
+    console.log(`        ${formatFixLine(cleanFixText(escapeForDisplay(authoredLines[0])))}`);
+    for (const line of authoredLines.slice(1)) {
+      console.log(`        ${fixContinuationIndent(authoredLines[0])}${escapeForDisplay(rebrandCommandCitations(line))}`);
+    }
+    return;
+  }
+  const files = [...new Set((ctrl.failingRecords ?? []).map((r) => r.file).filter((f): f is string => !!f))];
+  const parts = fixParts({ fix: ctrl.remediation }).map((p) => files.reduce((text, file) => rebaseOwnFileCitation(text, file, scanRoot), p));
+  console.log(`        ${formatFixLine(cleanFixText(escapeForDisplay(parts[0])))}`);
+  for (const part of parts.slice(1)) {
+    console.log(part === '' ? '' : `        ${fixContinuationIndent(parts[0])}${escapeForDisplay(rebrandCommandCitations(part))}`);
+  }
+}
+
 function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetDir: string, flags?: BenchmarkRunFlags): void {
   const ratingColors: Record<BenchmarkResult['rating'], string> = {
     'Certified': colors.green,
@@ -5121,6 +5173,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
   console.log();
 
   // Category breakdown
+  const citationRoot = flags?.citationRoot ?? targetDir;
   console.log(`Categories:`);
   for (const catResult of result.categories) {
     const total = catResult.passed + catResult.failed;
@@ -5147,9 +5200,13 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
         if (ctrl.status === 'failed') {
           console.log(`     [-] ${ctrl.controlId}: ${ctrl.name}`);
           if (verbose) {
-            for (const finding of ctrl.findings) {
+            // `failingRecords[i]` is the record behind `findings[i]` (#673):
+            // each evidence line is followed by the Verify for its record.
+            ctrl.findings.forEach((finding, i) => {
               console.log(`        └─ ${finding}`);
-            }
+              console.log(`           ${colors.dim}Verify: ${benchmarkRecordVerify(ctrl.failingRecords?.[i], citationRoot)}${RESET()}`);
+            });
+            printBenchmarkControlFix(ctrl, citationRoot);
           }
         } else if (verbose && ctrl.status === 'passed') {
           console.log(`     [+] ${ctrl.controlId}: ${ctrl.name}`);
@@ -6270,6 +6327,7 @@ Backups (--fix):
             deep: options.deep === true,
             staticOnly: isStaticOnly,
             filesExamined: result.coverage?.filesExamined,
+            citationRoot,
           });
           printBenchmarkUnreadDisclosure(result);
 
@@ -6379,6 +6437,7 @@ Backups (--fix):
           deep: options.deep === true,
           staticOnly: isStaticOnly,
           filesExamined: result.coverage?.filesExamined,
+          citationRoot,
         };
 
         // Output based on format
