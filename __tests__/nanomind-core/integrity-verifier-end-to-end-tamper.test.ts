@@ -124,6 +124,61 @@ describe('integrity-verifier: end-to-end tamper gate', () => {
     60000,
   );
 
+  // #1145: the Homebrew formula install rewrote the first line of dist/cli.js
+  // from `#!/usr/bin/env node` to the path of its own node, and
+  // `hackmyagent --version` exited 3 with INTEGRITY CHECK FAILED.
+  const withFirstLine = (file: Buffer, firstLine: string): Buffer =>
+    Buffer.concat([Buffer.from(firstLine), file.subarray(file.indexOf('\n'))]);
+
+  it(
+    'rewriting the #! line of the built cli.js to another node path still runs --version (#1145)',
+    () => {
+      // The case only means something while the built file starts with a #! line.
+      expect(originalCli.subarray(0, 2).toString()).toBe('#!');
+      const { version } = JSON.parse(readFileSync(SRC_PKG_JSON, 'utf-8'));
+      try {
+        writeFileSync(tmpCli, withFirstLine(originalCli, '#!/opt/homebrew/opt/node/bin/node'));
+
+        const result = spawnSync(process.execPath, [tmpCli, '--version'], {
+          encoding: 'utf-8',
+          timeout: 30000,
+        });
+
+        expect(result.stderr).not.toContain('INTEGRITY CHECK FAILED');
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(`hackmyagent ${version}`);
+      } finally {
+        writeFileSync(tmpCli, originalCli);
+      }
+    },
+    60000,
+  );
+
+  it.each([
+    ['another interpreter', '#!/bin/sh', ''],
+    ['node with a preload argument', '#!/opt/homebrew/opt/node/bin/node --require ./preload.js', ''],
+    ['node, with a byte appended to the rest of the file', '#!/opt/homebrew/opt/node/bin/node', '\n'],
+  ])(
+    'rewriting the #! line of the built cli.js to run %s exits 3 with cli.js named (#1145)',
+    (_label, firstLine, appended) => {
+      try {
+        writeFileSync(tmpCli, Buffer.concat([withFirstLine(originalCli, firstLine), Buffer.from(appended)]));
+
+        const result = spawnSync(process.execPath, [tmpCli, '--version'], {
+          encoding: 'utf-8',
+          timeout: 30000,
+        });
+
+        expect(result.status).toBe(3);
+        expect(result.stderr).toContain('INTEGRITY CHECK FAILED');
+        expect(result.stderr).toContain('1 files tampered: cli.js');
+      } finally {
+        writeFileSync(tmpCli, originalCli);
+      }
+    },
+    60000,
+  );
+
   // #1110: the check used to run after cli.js had loaded its static imports,
   // so deleting one of those modules crashed module resolution (exit 1,
   // `Cannot find module`) before the check could report it.

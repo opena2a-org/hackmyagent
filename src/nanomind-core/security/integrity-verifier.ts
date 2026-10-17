@@ -10,7 +10,11 @@
  * deleted after the build, and a manifest whose version or hashes do not
  * match the installed files. It does not catch a change made together with a
  * regenerated manifest, and when no manifest is accepted (see loadManifest)
- * it reports CLEAN as dev mode.
+ * it reports CLEAN as dev mode. A listed file whose first line
+ * `#!/usr/bin/env node` was replaced by another `#!` line that runs node with
+ * no arguments passes when the rest of the file is unchanged, because a
+ * package manager can rewrite that line on install (see
+ * differsOnlyInNodeShebang).
  *
  * Three outcomes:
  *   CLEAN      -- All checks pass, proceed normally
@@ -91,6 +95,14 @@ const EVENT_CHAIN_LOCK_STALE_MS = 5000;
 // refuses any dotfile entry in the published tarball, and this file ships in it.
 const MANIFEST_FILENAME = 'integrity-manifest.json';
 const GENESIS_PREV_HASH = '0'.repeat(64);
+// The first line of the built entry files (dist/cli.js, dist/arp/cli/index.js).
+// tsc copies it from the source file, and the manifest hashes it with the rest
+// of the file.
+const BUILD_SHEBANG = Buffer.from('#!/usr/bin/env node');
+// A `#!` line that runs node with no arguments: an absolute path whose last
+// segment is node or nodejs, or one whose last segment is env followed by
+// node or nodejs.
+const NODE_SHEBANG = /^#![ \t]*\/(?:[^\s/]*\/)*(?:env[ \t]+)?node(?:js)?[ \t]*\r?$/;
 
 // ============================================================================
 // SHA-256 Utilities
@@ -546,8 +558,32 @@ export class EventChain {
 // ============================================================================
 
 /**
+ * True when `content` differs from the build only in a first line that runs
+ * node: the file starts with a `#!` line matching NODE_SHEBANG, and the file
+ * with that line put back to BUILD_SHEBANG hashes to `expectedHash`.
+ *
+ * A package manager can rewrite the `#!` line of an installed CLI to name its
+ * own node: the Homebrew formula install in #1145 changed dist/cli.js to start
+ * with `#!/opt/homebrew/opt/node/bin/node`, and the check reported the file as
+ * tampered. A first line that runs another interpreter, or node with an
+ * argument such as `--require`, does not match NODE_SHEBANG, and a change
+ * after the first line does not reproduce the hash, so both are still
+ * reported. If the source files' first line changes, BUILD_SHEBANG has to
+ * follow it; the end-to-end tamper test that rewrites the built dist/cli.js
+ * fails until it does.
+ */
+function differsOnlyInNodeShebang(content: Buffer, expectedHash: string): boolean {
+  if (content[0] !== 0x23 || content[1] !== 0x21) return false; // '#!'
+  const newline = content.indexOf(0x0a);
+  if (newline === -1) return false;
+  if (!NODE_SHEBANG.test(content.subarray(0, newline).toString('latin1'))) return false;
+  return sha256(Buffer.concat([BUILD_SHEBANG, content.subarray(newline)])) === expectedHash;
+}
+
+/**
  * Verify package dist/ files against the manifest.
- * If any file hash differs, the package has been tampered with.
+ * If any file hash differs, the package has been tampered with, except for a
+ * first line rewritten to run another node (see differsOnlyInNodeShebang).
  */
 export function checkPackageIntegrity(
   packageRoot: string,
@@ -589,8 +625,8 @@ export function checkPackageIntegrity(
         reason: `Missing file: dist/${relativePath}`,
       };
     }
-    const actualHash = sha256File(fullPath);
-    if (actualHash !== expectedHash) {
+    const content = readFileSync(fullPath);
+    if (sha256(content) !== expectedHash && !differsOnlyInNodeShebang(content, expectedHash)) {
       tamperedFiles.push(relativePath);
     }
   }
