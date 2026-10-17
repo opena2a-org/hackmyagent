@@ -19,5 +19,3 @@ type: added
   `--json` run as `<version>`. It applies to runs with `--json` only, and the
   captures and sidecars of the six examples that were already there are
   unchanged.
-- `attack`, `detect` and `scan`, and the next commands of `attack` and
-  `detect`, still have no example.

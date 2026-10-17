@@ -20,5 +20,3 @@ type: added
   the `shadow ai audit` line as `<host>`; it applies to runs of `detect`
   only. The captures and sidecars of the eight examples that were already
   there are unchanged.
-- `attack` and `scan`, and the next command of `attack`, still have no
-  example.
