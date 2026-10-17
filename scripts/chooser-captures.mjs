@@ -8,7 +8,9 @@
  * same for the entry's next command. For each example this script copies the
  * fixture into a new temporary folder under the fixture's own name, runs
  * `node dist/cli.js <args>` inside that copy, and holds the run to three
- * files:
+ * files. An example whose `args` have the operand `-` names the file of the
+ * fixture the run reads on standard input (`stdin`); every other run reads
+ * nothing there.
  *
  *   - docs/chooser.json: the run ends with the exit code the example declares;
  *   - the capture: standard output and standard error, in the order the CLI
@@ -25,12 +27,15 @@
  *   home-folder          (--fix runs) the HOME folder of the run prints as `~`
  *   backup-store         (--fix runs) the backup folder names print as `<directory>` and `<run>`
  *   tool-version         the version on the `Scanned with hackmyagent` line prints as `<version>`
+ *   json-version         (--json runs) the `hackmyagentVersion` value prints as `<version>`
  *   duration             a `Duration:` count of milliseconds prints as `<n>ms`
  *   trailing-space       spaces and tabs at the end of a line are removed
  *
  * A run whose `args` include `--fix` keeps a backup of the files it changed in
  * a store under HOME and prints where; home-folder and backup-store apply to
  * those runs only, so the record of a run that prints no backup lists neither.
+ * json-version applies to runs whose `args` include `--json` only, for the
+ * same reason.
  *
  * Usage (after `npm run build`):
  *   node scripts/chooser-captures.mjs           compare every capture and sidecar with a fresh run
@@ -97,6 +102,12 @@ export const NORMALIZERS = [
     apply: (text) => text.replace(/^( *Scanned with hackmyagent v)\S+$/gm, '$1<version>'),
   },
   {
+    id: 'json-version',
+    jsonOnly: true,
+    does: 'Prints the "hackmyagentVersion" value of the --json document as <version>, so a release alone changes no capture.',
+    apply: (text) => text.replace(/^( *"hackmyagentVersion": ")[^"]*(",?)$/gm, '$1<version>$2'),
+  },
+  {
     id: 'duration',
     does: 'Prints a "Duration:" count of milliseconds as <n>ms.',
     apply: (text) => text.replace(/^( *Duration: +)\d+ms$/gm, '$1<n>ms'),
@@ -110,8 +121,24 @@ export const NORMALIZERS = [
 
 /** The normalizers that apply to a run of `args`, in the order they are applied. */
 export function normalizersFor(args) {
-  const fix = args.split(/\s+/).includes('--fix');
-  return NORMALIZERS.filter((n) => fix || !n.fixOnly);
+  const words = args.split(/\s+/);
+  const fix = words.includes('--fix');
+  const json = words.includes('--json');
+  return NORMALIZERS.filter((n) => (fix || !n.fixOnly) && (json || !n.jsonOnly));
+}
+
+/**
+ * The command line a reader types to make the example's output: the command,
+ * and for an example that reads standard input, the fixture file it reads
+ * there.
+ */
+export function exampleCommand(data, ex) {
+  return `${commandLine(data, ex.args)}${stdinRedirect(ex)}`;
+}
+
+/** ` < <file>` for an example that reads standard input, and nothing for any other. */
+function stdinRedirect(ex) {
+  return ex.stdin === undefined ? '' : ` < ${ex.stdin}`;
 }
 
 /**
@@ -156,9 +183,10 @@ export function renderSidecar(data, item) {
   const record = {
     about: `How ${ex.capture} was made, from ${from} of docs/chooser.json. scripts/chooser-captures.mjs writes both files; regenerate them with node scripts/chooser-captures.mjs --write.`,
     choice: entry.id,
-    command: commandLine(data, ex.args),
-    ranAs: `node dist/cli.js ${ex.args}`,
+    command: exampleCommand(data, ex),
+    ranAs: `node dist/cli.js ${ex.args}${stdinRedirect(ex)}`,
     fixture: ex.fixture,
+    ...(ex.stdin === undefined ? {} : { stdin: `${ex.stdin}, a file of the fixture, read on standard input` }),
     ranIn: 'a copy of the fixture folder, under its own name, in a new temporary folder',
     exit: ex.exit,
     environment: {
@@ -176,7 +204,8 @@ export function renderSidecar(data, item) {
 
 /**
  * Run `item`, one of `examples(data)`, against a fresh copy of its fixture,
- * with `home` as HOME. Pass one HOME to every run so the classifier is
+ * with `home` as HOME and, when the example names one, the copy's `stdin`
+ * file on standard input. Pass one HOME to every run so the classifier is
  * fetched at most once. Returns the exit status, the raw output, whether the
  * classifier could be used, the temporary folders the temp-folder normalizer
  * replaces and the HOME folders the home-folder normalizer replaces.
@@ -191,13 +220,21 @@ export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
   try {
     const dir = path.join(parent, path.basename(ex.fixture));
     cpSync(source, dir, { recursive: true });
+    let input = 'ignore';
+    if (ex.stdin !== undefined) {
+      const file = path.join(dir, ex.stdin);
+      if (!existsSync(file) || !statSync(file).isFile()) {
+        throw new Error(`${entry.id}: the fixture ${ex.fixture} has no file ${ex.stdin} to read on standard input`);
+      }
+      input = openSync(file, 'r');
+    }
     const out = path.join(parent, 'output.txt');
     const fd = openSync(out, 'w');
     let r;
     try {
       r = spawnSync(process.execPath, [cli, ...ex.args.split(/\s+/)], {
         cwd: dir,
-        stdio: ['ignore', fd, fd],
+        stdio: [input, fd, fd],
         timeout: timeoutMs,
         env: {
           ...Object.fromEntries(PASSED_THROUGH.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
@@ -208,6 +245,7 @@ export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
       });
     } finally {
       closeSync(fd);
+      if (input !== 'ignore') closeSync(input);
     }
     if (r.error || r.status === null) {
       throw new Error(`${entry.id}: ${ex.args} did not finish: ${r.error?.message ?? r.signal}`);
@@ -267,7 +305,7 @@ function main(argv) {
     seedClassifier(home);
     for (const item of examples(data)) {
       const ex = item.example;
-      const label = `${item.entry.id}${item.step === 'next' ? ' (next)' : ''}: ${commandLine(data, ex.args)}`;
+      const label = `${item.entry.id}${item.step === 'next' ? ' (next)' : ''}: ${exampleCommand(data, ex)}`;
       const run = runExample(item, { home });
       if (!run.classifier) {
         process.stderr.write(`${label}: the NanoMind classifier could not be fetched, and the captures are runs with it\n`);

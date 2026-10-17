@@ -1,0 +1,54 @@
+{
+  "about": "How docs/captures/one-text-next.txt was made, from the next command of the one-text entry of docs/chooser.json. scripts/chooser-captures.mjs writes both files; regenerate them with node scripts/chooser-captures.mjs --write.",
+  "choice": "one-text",
+  "command": "npx hackmyagent scan-text - --as pr-body --json < pr-body.md",
+  "ranAs": "node dist/cli.js scan-text - --as pr-body --json < pr-body.md",
+  "fixture": "test-fixtures/pr-body",
+  "stdin": "pr-body.md, a file of the fixture, read on standard input",
+  "ranIn": "a copy of the fixture folder, under its own name, in a new temporary folder",
+  "exit": 1,
+  "environment": {
+    "HOME": "a new temporary folder",
+    "TMPDIR": "the temporary folder of the process that ran the script",
+    "LANG": "en_US.UTF-8",
+    "NO_COLOR": "1",
+    "OPENA2A_TELEMETRY": "off",
+    "passedThrough": [
+      "PATH",
+      "HTTPS_PROXY",
+      "https_proxy",
+      "HTTP_PROXY",
+      "http_proxy",
+      "NO_PROXY",
+      "no_proxy"
+    ]
+  },
+  "output": "standard output and standard error in one file, in the order the command wrote them",
+  "capture": "docs/captures/one-text-next.txt",
+  "normalizers": [
+    {
+      "id": "classifier-download",
+      "does": "Removes the NanoMind classifier download notice, which a run on an empty model cache prints and a later run does not."
+    },
+    {
+      "id": "temp-folder",
+      "does": "Prints the temporary folder that holds the fixture copy as \"...\", so a path reads \".../insecure-library/.env\"."
+    },
+    {
+      "id": "tool-version",
+      "does": "Prints the version on the \"Scanned with hackmyagent\" line as <version>, so a release alone changes no capture."
+    },
+    {
+      "id": "json-version",
+      "does": "Prints the \"hackmyagentVersion\" value of the --json document as <version>, so a release alone changes no capture."
+    },
+    {
+      "id": "duration",
+      "does": "Prints a \"Duration:\" count of milliseconds as <n>ms."
+    },
+    {
+      "id": "trailing-space",
+      "does": "Removes spaces and tabs at the end of each line."
+    }
+  ]
+}
