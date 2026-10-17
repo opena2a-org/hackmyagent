@@ -17,7 +17,10 @@
  * reads standard input, and names the file of its fixture it reads there
  * (`stdin`); no other example has one. An example whose fixture is written at
  * run time names the script of the fixture folder that writes it
- * (`materialize`). scripts/chooser-captures.mjs runs the examples; this script
+ * (`materialize`). An example whose command is sent to a server names the
+ * script of the fixture folder that starts one (`serve`), and writes `<port>`
+ * in `args` where the port that server listens on goes; no other example
+ * names a port. scripts/chooser-captures.mjs runs the examples; this script
  * only validates them.
  *
  * README.md carries the rendering between a `<!-- chooser:start` line and a
@@ -78,6 +81,14 @@ export function readsStdin(args) {
   return args.split(/\s+/).includes('-');
 }
 
+/** What an example's `args` hold where the port of the server its fixture starts goes. */
+export const PORT_SLOT = '<port>';
+
+/** True when `args` name the port of the server the example's fixture starts. */
+export function namesPort(args) {
+  return args.includes(PORT_SLOT);
+}
+
 /** The two example fields: the one for the entry's `run` and the one for its `next`, with the capture each names. */
 export const EXAMPLE_FIELDS = [
   { field: 'example', command: 'run', capture: (id) => `docs/captures/${id}.txt` },
@@ -98,6 +109,15 @@ function exampleProblems(entry, at, { field, command, capture }) {
   }
   if (ex.materialize !== undefined && !inFixture(ex.materialize)) {
     problems.push(`${where}.materialize: not the path of a script inside the fixture folder`);
+  }
+  if (ex.serve !== undefined && !inFixture(ex.serve)) {
+    problems.push(`${where}.serve: not the path of a script inside the fixture folder`);
+  }
+  const port = isText(ex.args) && namesPort(ex.args);
+  if (ex.serve !== undefined && isText(ex.args) && !port) {
+    problems.push(`${where}.args: no ${PORT_SLOT}; the command of an example with serve goes to the port its server listens on`);
+  } else if (ex.serve === undefined && port) {
+    problems.push(`${where}.serve: missing; ${PORT_SLOT} in args stands for the port of the server serve starts`);
   }
   const stdin = isText(ex.args) && readsStdin(ex.args);
   if (ex.stdin !== undefined) {

@@ -4,10 +4,11 @@
  * exit code the run ends with, and a capture under docs/captures/ with a
  * sidecar beside it. A `nextExample` does the same for the choice's next
  * command. An example whose command has the operand `-` also names the file
- * of its fixture the run reads on standard input, and an example whose
- * fixture is written at run time names the script of the fixture that writes
- * it. A surface that shows a choice shows that capture as what the command
- * prints.
+ * of its fixture the run reads on standard input, an example whose fixture
+ * is written at run time names the script of the fixture that writes it, and
+ * an example whose command goes to a server names the script of the fixture
+ * that starts one and writes <port> where its port goes. A surface that shows
+ * a choice shows that capture as what the command prints.
  *
  * This suite holds:
  *
@@ -18,6 +19,8 @@
  *    example, and docs/captures holds nothing else;
  *  - a fixture with a materialize script is the folder that script writes,
  *    and a run of detect finds first on PATH a ps that lists no process;
+ *  - a fixture with a serve script answers on the port the command names in
+ *    place of <port> while the command runs, and not after;
  *  - each choice without an example, and each next command without one, is
  *    listed below with the reason.
  *
@@ -28,6 +31,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
@@ -53,7 +57,6 @@ const REGENERATE = 'regenerate with node scripts/chooser-captures.mjs --write';
 /** The choices with no example yet, each with the reason. A choice that gains one leaves this list. */
 const NO_EXAMPLE: Record<string, string> = {
   'agent-endpoint': 'attack needs a running agent endpoint to send its payloads to',
-  'exposed-host': 'scan needs a host that serves MCP endpoints',
 };
 
 /** The next commands with no example yet, each with the reason. */
@@ -64,7 +67,7 @@ const NO_NEXT_EXAMPLE: Record<string, string> = {
 interface Item {
   entry: { id: string };
   step: 'run' | 'next';
-  example: { fixture: string; materialize?: string; args: string; stdin?: string; exit: number; capture: string };
+  example: { fixture: string; materialize?: string; serve?: string; args: string; stdin?: string; exit: number; capture: string };
 }
 const ITEMS: Item[] = examples(DATA);
 
@@ -206,6 +209,8 @@ describe('docs/chooser.json examples', () => {
 
     const detect = runExample(every, { home, cli });
     expect(detect.status).toBe(0);
+    // No server ran, so no port is replaced.
+    expect(detect.ports).toEqual([]);
     expect(normalize(detect.raw, ['temp-folder'], detect)).toBe(
       `ps: .../bin/ps\nUSER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND\n${folders}\n`,
     );
@@ -231,13 +236,106 @@ describe('docs/chooser.json examples', () => {
     expect(JSON.parse(renderSidecar(DATA, own)).ranIn).toBe('a copy of the fixture folder, under its own name, in a new temporary folder');
   });
 
+  it('validation refuses a serve script outside the fixture folder, a serve example whose command names no <port>, and a <port> with no serve script (non-vacuity)', () => {
+    const broken = structuredClone(DATA);
+    const host = broken.more.find((m: { id: string }) => m.id === 'exposed-host');
+    host.example.serve = '../pr-body/pr-body.md';
+    const unnamed = broken.more.find((m: { id: string }) => m.id === 'governance');
+    unnamed.run = 'scan <host>';
+    unnamed.example = { fixture: 'test-fixtures/exposed-mcp-host', serve: 'serve.mjs', args: 'scan 127.0.0.1', exit: 1, capture: 'docs/captures/governance.txt' };
+    const own = broken.options.find((o: { id: string }) => o.id === 'own-project');
+    own.run = 'scan <host>';
+    own.example.args = 'scan 127.0.0.1:<port>';
+    expect(validateChooser(broken)).toEqual([
+      'options[0].example.serve: missing; <port> in args stands for the port of the server serve starts',
+      'more[0].example.args: no <port>; the command of an example with serve goes to the port its server listens on',
+      'more[2].example.serve: not the path of a script inside the fixture folder',
+    ]);
+  });
+
+  it('an example whose serve script is missing, or writes no port, is refused and its command does not run', () => {
+    const home = tempDir('hma-chooser-captures-home-');
+    const cli = path.join(ROOT, 'no-such-cli.js');
+    const item = (fixture: string, serve: string) => ({
+      entry: { id: 'exposed-host' },
+      step: 'run',
+      example: { fixture, serve, args: 'scan 127.0.0.1:<port>', exit: 1, capture: 'docs/captures/exposed-host.txt' },
+    });
+    expect(() => runExample(item('test-fixtures/exposed-mcp-host', 'no-such-script.mjs'), { home, cli })).toThrow(
+      'exposed-host: the fixture test-fixtures/exposed-mcp-host has no script no-such-script.mjs to serve it with',
+    );
+    // pr-body.md is a file of its fixture, and node exits 1 on it without writing a port.
+    expect(() => runExample(item('test-fixtures/pr-body', 'pr-body.md'), { home, cli, serveStartMs: 500 })).toThrow(
+      'exposed-host: test-fixtures/pr-body/pr-body.md wrote no port within 500 ms',
+    );
+  });
+
+  it('a serve example runs its command with the port of its server in place of <port>, the server answers while the command runs, and it is stopped once the command ends', async () => {
+    // A stand-in for the CLI that prints its arguments and what the target
+    // answers for /mcp.json.
+    const cli = path.join(tempDir('hma-chooser-captures-cli-'), 'cli.cjs');
+    writeFileSync(
+      cli,
+      [
+        "const http = require('node:http');",
+        "process.stdout.write(`args: ${process.argv.slice(2).join(' ')}\\n`);",
+        'http.get(`http://${process.argv[3]}/mcp.json`, (res) => {',
+        "  let body = '';",
+        "  res.on('data', (d) => { body += d; });",
+        "  res.on('end', () => process.stdout.write(`GET /mcp.json: ${res.statusCode} ${Object.keys(JSON.parse(body)).join(' ')}\\n`));",
+        "}).on('error', (e) => { process.stdout.write(`GET /mcp.json: ${e.code}\\n`); process.exitCode = 3; });",
+        '',
+      ].join('\n'),
+    );
+    const host = ITEMS.find((i) => i.entry.id === 'exposed-host' && i.step === 'run')!;
+    const run = runExample(host, { home: tempDir('hma-chooser-captures-home-'), cli });
+    expect(run.status, run.raw).toBe(0);
+    expect(run.ports).toHaveLength(1);
+    const [port] = run.ports;
+    expect(run.raw).toBe(`args: scan 127.0.0.1:${port}\nGET /mcp.json: 200 mcpServers\n`);
+    expect(normalize(run.raw, ['served-port'], run)).toBe('args: scan 127.0.0.1:<port>\nGET /mcp.json: 200 mcpServers\n');
+
+    // SIGTERM is sent when the command ends; the port refuses a connection
+    // once the server has exited.
+    const refused = async (): Promise<boolean> => {
+      for (let i = 0; i < 40; i++) {
+        const code = await new Promise<string>((resolve) => {
+          const socket = net.connect(port, '127.0.0.1');
+          socket.on('connect', () => { socket.destroy(); resolve('connected'); });
+          socket.on('error', (e: NodeJS.ErrnoException) => resolve(e.code ?? 'error'));
+        });
+        if (code === 'ECONNREFUSED') return true;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return false;
+    };
+    expect(await refused(), `127.0.0.1:${port} still accepts connections after the run`).toBe(true);
+  });
+
+  it('the sidecar of a serve example names the script that served it, and the others name none', () => {
+    const host = ITEMS.find((i) => i.entry.id === 'exposed-host' && i.step === 'run')!;
+    const own = ITEMS.find((i) => i.entry.id === 'own-project' && i.step === 'run')!;
+    expect(JSON.parse(renderSidecar(DATA, host)).served).toBe(
+      'by serve.mjs of the fixture, started there before the command and stopped after it; <port> is the free port it listened on',
+    );
+    expect(JSON.parse(renderSidecar(DATA, own)).served).toBeUndefined();
+  });
+
+  it('served-port prints the port as <port> where the number stands alone, and leaves longer numbers that hold it alone', () => {
+    const raw = ['Target: 127.0.0.1:51234', 'Open Ports: 51234', 'Host: reachable (51234 open)', 'id 451234 and 512345'].join('\n');
+    expect(normalize(raw, ['served-port'], { ports: [51234] })).toBe(
+      ['Target: 127.0.0.1:<port>', 'Open Ports: <port>', 'Host: reachable (<port> open)', 'id 451234 and 512345'].join('\n'),
+    );
+    expect(normalize(raw, ['served-port'])).toBe(raw);
+  });
+
   it('the command of an example that reads standard input names the file it reads there, and the others are the command alone', () => {
     const text = DATA.options.find((o: { id: string }) => o.id === 'one-text');
     expect(exampleCommand(DATA, text.nextExample)).toBe('npx hackmyagent scan-text - --as pr-body --json < pr-body.md');
     expect(exampleCommand(DATA, text.example)).toBe('npx hackmyagent scan-text pr-body.md');
   });
 
-  it('a run with --fix also takes home-folder and backup-store, a run with --json also takes json-version, a run of detect also takes host-name, and any other run takes the five it always took', () => {
+  it('a run with --fix also takes home-folder and backup-store, a run with --json also takes json-version, a run of detect also takes host-name, a run that names <port> also takes served-port, and any other run takes the five it always took', () => {
     const always = ['classifier-download', 'temp-folder', 'tool-version', 'duration', 'trailing-space'];
     expect(normalizersFor('secure').map((n: { id: string }) => n.id)).toEqual(always);
     expect(normalizersFor('red-team SKILL.md').map((n: { id: string }) => n.id)).toEqual(always);
@@ -251,6 +349,10 @@ describe('docs/chooser.json examples', () => {
     expect(normalizersFor('scan-text - --as pr-body --json').map((n: { id: string }) => n.id)).toEqual([
       'classifier-download', 'temp-folder', 'tool-version', 'json-version', 'duration', 'trailing-space',
     ]);
+    expect(normalizersFor('scan 127.0.0.1:<port>').map((n: { id: string }) => n.id)).toEqual([
+      'classifier-download', 'temp-folder', 'served-port', 'tool-version', 'duration', 'trailing-space',
+    ]);
+    expect(normalizersFor('scan 127.0.0.1').map((n: { id: string }) => n.id)).toEqual(always);
   });
 
   it('json-version prints the hackmyagentVersion value as <version> and leaves the other lines alone', () => {

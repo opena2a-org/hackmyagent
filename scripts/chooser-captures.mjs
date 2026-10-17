@@ -15,6 +15,14 @@
  * test-fixtures/demo-agents/materialize.mjs does for the projects whose fake
  * credentials are not committed whole.
  *
+ * An example that names a `serve` script of its fixture sends its command to
+ * a server. The script runs in the fixture copy with the path of a file as its
+ * one argument, listens on a free port of 127.0.0.1 and writes that port to
+ * the file; the command runs with that port in place of `<port>` in `args`,
+ * and the server is stopped once the command ends. The script also stops when
+ * its standard input closes, so a server whose runner is killed does not keep
+ * the port. test-fixtures/exposed-mcp-host/serve.mjs is one.
+ *
  * `detect` adds what it finds on the machine to every report: the processes
  * running there, which no fixture holds. A run of `detect` finds `ps` first
  * on PATH as a script that lists no process, so it reports what a machine
@@ -32,7 +40,8 @@
  *
  *   classifier-download  the NanoMind classifier download notice is removed
  *   temp-folder          the temporary folder holding the fixture copy prints as `...`
- *   home-folder          (--fix runs) the HOME folder of the run prints as `~`
+ *   served-port          (serve runs) the port the fixture's server listened on prints as `<port>`
+ *   home-folder         (--fix runs) the HOME folder of the run prints as `~`
  *   backup-store         (--fix runs) the backup folder names print as `<directory>` and `<run>`
  *   host-name            (detect runs) the machine name on the `shadow ai audit` line prints as `<host>`
  *   tool-version         the version on the `Scanned with hackmyagent` line prints as `<version>`
@@ -43,8 +52,9 @@
  * A run whose `args` include `--fix` keeps a backup of the files it changed in
  * a store under HOME and prints where; home-folder and backup-store apply to
  * those runs only, so the record of a run that prints no backup lists neither.
- * json-version applies to runs whose `args` include `--json` only, and
- * host-name to runs of `detect` only, for the same reason.
+ * json-version applies to runs whose `args` include `--json` only,
+ * host-name to runs of `detect` only and served-port to runs whose `args`
+ * name `<port>` only, for the same reason.
  *
  * Usage (after `npm run build`):
  *   node scripts/chooser-captures.mjs           compare every capture and sidecar with a fresh run
@@ -57,9 +67,10 @@
  * Exit codes: 0 every exit code, capture and sidecar matches (or was
  * written), 1 one of them differs, 2 nothing could be compared (no build,
  * invalid data, a missing fixture, a materialize script that did not write
- * its fixture, the classifier could not be fetched, an unknown argument).
+ * its fixture, a serve script that wrote no port, the classifier could not be
+ * fetched, an unknown argument).
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync,
   writeFileSync,
@@ -67,7 +78,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA, EXAMPLE_FIELDS, commandLine, validateChooser } from './chooser.mjs';
+import { DATA, EXAMPLE_FIELDS, PORT_SLOT, commandLine, namesPort, validateChooser } from './chooser.mjs';
 import { CLI, DOWNLOAD_FAILED, DOWNLOAD_NOTICE, seedClassifier } from './use-case-samples.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -86,6 +97,13 @@ export const NORMALIZERS = [
     // real path `/private/var/...`, and replacing it first leaves `/private...`.
     apply: (text, { folders }) =>
       [...folders].sort((a, b) => b.length - a.length).reduce((t, f) => t.split(`${f}${path.sep}`).join('.../'), text),
+  },
+  {
+    id: 'served-port',
+    serveOnly: true,
+    does: 'Prints the port the fixture\'s server listened on, a free one chosen at run time, as <port> wherever that number stands alone.',
+    apply: (text, { ports }) =>
+      ports.reduce((t, p) => t.replace(new RegExp(`(?<![0-9])${p}(?![0-9])`, 'g'), PORT_SLOT), text),
   },
   {
     id: 'home-folder',
@@ -140,7 +158,10 @@ export function normalizersFor(args) {
   const fix = words.includes('--fix');
   const json = words.includes('--json');
   const detect = readsProcessList(args);
-  return NORMALIZERS.filter((n) => (fix || !n.fixOnly) && (json || !n.jsonOnly) && (detect || !n.detectOnly));
+  const serve = namesPort(args);
+  return NORMALIZERS.filter(
+    (n) => (fix || !n.fixOnly) && (json || !n.jsonOnly) && (detect || !n.detectOnly) && (serve || !n.serveOnly),
+  );
 }
 
 /** True when the command of `args` is `detect`, which adds the processes running on the machine to its report. */
@@ -167,13 +188,14 @@ function stdinRedirect(ex) {
 
 /**
  * `raw` with the normalizers named by `ids` applied in that order; `folders`
- * are the temporary folders of the run, `homes` its HOME folder.
+ * are the temporary folders of the run, `homes` its HOME folder and `ports`
+ * the port its fixture's server listened on.
  */
-export function normalize(raw, ids, { folders = [], homes = [] } = {}) {
+export function normalize(raw, ids, { folders = [], homes = [], ports = [] } = {}) {
   return ids.reduce((text, id) => {
     const n = NORMALIZERS.find((x) => x.id === id);
     if (!n) throw new Error(`unknown normalizer "${id}"`);
-    return n.apply(text, { folders, homes });
+    return n.apply(text, { folders, homes, ports });
   }, raw);
 }
 
@@ -214,6 +236,9 @@ export function renderSidecar(data, item) {
     ranIn: ex.materialize === undefined
       ? 'a copy of the fixture folder, under its own name, in a new temporary folder'
       : `the folder ${ex.fixture}/${ex.materialize} writes, under the fixture's own name, in a new temporary folder`,
+    ...(ex.serve === undefined
+      ? {}
+      : { served: `by ${ex.serve} of the fixture, started there before the command and stopped after it; ${PORT_SLOT} is the free port it listened on` }),
     exit: ex.exit,
     environment: {
       HOME: 'a new temporary folder',
@@ -249,17 +274,60 @@ function materializeFixture(item, source, dir, env) {
   }
 }
 
+/** Block this thread for `ms` milliseconds. */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Start the server of `item` with the `serve` script of its fixture, run in
+ * `dir` with `portFile` as its one argument, and wait up to `startMs`
+ * milliseconds for the port it writes there. The server's standard input is a
+ * pipe this process holds, so the server stops when this process ends.
+ * Returns the server process and its port.
+ */
+function startServer(item, dir, portFile, env, startMs) {
+  const { entry, example: ex } = item;
+  const script = path.join(dir, ex.serve);
+  if (!existsSync(script) || !statSync(script).isFile()) {
+    throw new Error(`${entry.id}: the fixture ${ex.fixture} has no script ${ex.serve} to serve it with`);
+  }
+  const server = spawn(process.execPath, [script, portFile], { cwd: dir, env, stdio: ['pipe', 'ignore', 'ignore'] });
+  // A signal that finds the server gone is no failure of the run.
+  server.on('error', () => {});
+  // The command runs with spawnSync, which holds this thread, so the wait for
+  // the port polls the file instead of listening for an event.
+  const deadline = Date.now() + startMs;
+  for (;;) {
+    const written = existsSync(portFile) ? /^(\d+)\n$/.exec(readFileSync(portFile, 'utf8')) : null;
+    if (written) return { server, port: Number(written[1]) };
+    if (Date.now() >= deadline) break;
+    sleepSync(25);
+  }
+  stopServer(server);
+  throw new Error(`${entry.id}: ${ex.fixture}/${ex.serve} wrote no port within ${startMs} ms`);
+}
+
+/** Close the server's standard input and send it SIGTERM. */
+function stopServer(server) {
+  server.stdin.destroy();
+  server.kill();
+}
+
 /**
  * Run `item`, one of `examples(data)`, against a fresh copy of its fixture
  * (or the folder its `materialize` script writes), with `home` as HOME and,
  * when the example names one, the copy's `stdin` file on standard input. A
- * run of `detect` finds a `ps` that lists no process first on PATH. Pass one
- * HOME to every run so the classifier is fetched at most once. Returns the
- * exit status, the raw output, whether the classifier could be used, the
- * temporary folders the temp-folder normalizer replaces and the HOME folders
- * the home-folder normalizer replaces.
+ * run of `detect` finds a `ps` that lists no process first on PATH. An example
+ * that names a `serve` script runs with its server listening, which has
+ * `serveStartMs` to write its port. Pass one HOME to every run so the
+ * classifier is fetched at most once. Returns the exit status, the raw output,
+ * whether the classifier could be used, the temporary folders the temp-folder
+ * normalizer replaces, the HOME folders the home-folder normalizer replaces
+ * and the port the served-port normalizer replaces (none for a run without a
+ * server).
  */
-export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
+export function runExample(item, { home, cli = CLI, timeoutMs = 150_000, serveStartMs = 10_000 }) {
   const { entry, example: ex } = item;
   const source = path.join(REPO_ROOT, ex.fixture);
   if (!existsSync(source) || !statSync(source).isDirectory()) {
@@ -293,14 +361,18 @@ export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
     const out = path.join(parent, 'output.txt');
     const fd = openSync(out, 'w');
     let r;
+    let served = null;
     try {
-      r = spawnSync(process.execPath, [cli, ...ex.args.split(/\s+/)], {
+      if (ex.serve !== undefined) served = startServer(item, dir, path.join(parent, 'port'), env, serveStartMs);
+      const args = served === null ? ex.args : ex.args.split(PORT_SLOT).join(String(served.port));
+      r = spawnSync(process.execPath, [cli, ...args.split(/\s+/)], {
         cwd: dir,
         stdio: [input, fd, fd],
         timeout: timeoutMs,
         env,
       });
     } finally {
+      if (served !== null) stopServer(served.server);
       closeSync(fd);
       if (input !== 'ignore') closeSync(input);
     }
@@ -314,6 +386,7 @@ export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
       classifier: !raw.split('\n').some((l) => DOWNLOAD_FAILED.test(l)),
       folders: [...new Set([parent, realpathSync(parent)])],
       homes: [...new Set([home, realpathSync(home)])],
+      ports: served === null ? [] : [served.port],
     };
   } finally {
     rmSync(parent, { recursive: true, force: true });
