@@ -46,9 +46,23 @@
       "id": "agent-endpoint",
       "ask": "A running agent endpoint you own",
       "run": "attack <url>",
-      "findingMeans": "Exit 1 is a payload that succeeded; exit 2 means nothing answered.",
+      "findingMeans": "Exit 1 is a high or critical risk score from the payloads that succeeded; exit 2 means nothing answered.",
       "nextWhen": "with every payload",
-      "next": "attack <url> --intensity aggressive"
+      "next": "attack <url> --intensity aggressive",
+      "example": {
+        "fixture": "test-fixtures/prompt-leaking-agent",
+        "serve": "serve.mjs",
+        "args": "attack http://127.0.0.1:<port>/v1/chat/completions",
+        "exit": 1,
+        "capture": "docs/captures/agent-endpoint.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/prompt-leaking-agent",
+        "serve": "serve.mjs",
+        "args": "attack http://127.0.0.1:<port>/v1/chat/completions --intensity aggressive",
+        "exit": 1,
+        "capture": "docs/captures/agent-endpoint-next.txt"
+      }
     },
     {
       "id": "one-text",
