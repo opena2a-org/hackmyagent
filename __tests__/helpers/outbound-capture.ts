@@ -11,6 +11,11 @@
  * A publish is answered with the status written to `<scratch>/publish-status`
  * (200 when the file is absent), which lets a test make a share fail.
  *
+ * It listens on 127.0.0.1 and, where the host has one, on ::1, at one port,
+ * and the CLI is handed `http://localhost:<port>`, so a connection reaches it
+ * whichever of the two the host resolves localhost to
+ * (__tests__/registry/capture-registry-loopback.test.ts).
+ *
  * The CLI runs with __tests__/helpers/loopback-only.cjs preloaded (no
  * connection leaves the host), no proxy variables, no hosted-analysis key and
  * no first-party signing key, from a working directory that is not the target.
@@ -54,7 +59,7 @@ function answer(method, url) {
   if (method === 'GET') return [404, { error: 'not found' }];
   return [200, {}];
 }
-const server = http.createServer((req, res) => {
+function handle(req, res) {
   let body = '';
   req.setEncoding('utf8');
   req.on('data', (chunk) => { body += chunk; });
@@ -69,10 +74,40 @@ const server = http.createServer((req, res) => {
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(JSON.stringify(json));
   });
-});
-server.listen(0, 'localhost', () => {
-  base = 'http://localhost:' + server.address().port;
-  process.stdout.write(String(server.address().port) + '\\n');
+}
+function listenOn(host, port) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handle);
+    server.once('error', reject);
+    server.listen(port, host, () => { server.off('error', reject); resolve(server); });
+  });
+}
+// The CLI is handed http://localhost:<port>. A listen on localhost took the
+// first answer of a lookup made without hints, while Node looks up the host
+// name of a connection with AI_ADDRCONFIG, and the two can differ: where the
+// first lists ::1 first and the second leaves IPv6 out, the registry listened
+// on ::1 and the CLI dialled 127.0.0.1 (#1147). So it listens on both
+// loopback addresses at one port, or on 127.0.0.1 alone where ::1 cannot be
+// bound.
+async function start() {
+  for (let attempt = 1; ; attempt++) {
+    const v4 = await listenOn('127.0.0.1', 0);
+    const port = v4.address().port;
+    try {
+      await listenOn('::1', port);
+    } catch (err) {
+      // Another process holds [::1]:<port>, and a CLI that dials ::1 would
+      // reach it instead: close 127.0.0.1:<port> and start again with a port
+      // the system assigns.
+      if (err.code === 'EADDRINUSE' && attempt < 10) { v4.close(); continue; }
+      if (err.code !== 'EADDRNOTAVAIL' && err.code !== 'EAFNOSUPPORT') throw err;
+    }
+    return port;
+  }
+}
+start().then((port) => {
+  base = 'http://localhost:' + port;
+  process.stdout.write(String(port) + '\\n');
 });
 `;
 
@@ -86,13 +121,19 @@ export interface CaptureRegistry {
   stop(): void;
 }
 
+export interface CaptureRegistryOptions {
+  /** A module the registry process requires before it starts, which can stand in for a host whose loopback addresses behave otherwise. */
+  preload?: string;
+}
+
 /** Starts the capture registry in its own process under `scratch`. */
-export async function startCaptureRegistry(scratch: string): Promise<CaptureRegistry> {
+export async function startCaptureRegistry(scratch: string, opts: CaptureRegistryOptions = {}): Promise<CaptureRegistry> {
   const capturePath = path.join(scratch, 'capture.jsonl');
   const statusPath = path.join(scratch, 'publish-status');
   const serverFile = path.join(scratch, 'capture-registry.js');
   fs.writeFileSync(serverFile, SERVER_SRC);
-  const proc: ChildProcess = spawn(process.execPath, [serverFile, capturePath, statusPath], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const preload = opts.preload ? ['--require', opts.preload] : [];
+  const proc: ChildProcess = spawn(process.execPath, [...preload, serverFile, capturePath, statusPath], { stdio: ['ignore', 'pipe', 'inherit'] });
   const port = await new Promise<string>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('capture registry did not start')), 15_000);
     proc.stdout!.once('data', (d) => { clearTimeout(t); resolve(String(d).trim()); });
