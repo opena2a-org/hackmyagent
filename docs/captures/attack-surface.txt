@@ -1,0 +1,29 @@
+
+Attack Surface & Payload Generation
+Target: SKILL.md (skill)
+
+Attack surface (static, from the artifact's own text):
+  Data access:       credential
+  Governance terms:  no governance vocabulary present
+  Modal statements:  0  (shape only — not counted as defenses)
+  Surfaces mapped:   3 (social_engineering, data_exfiltration, instruction_override)
+    - Data access: credential
+      Social engineering using the target's own data domain
+    - Sensitive data: credential
+      Exfiltrate sensitive data via compliance framing
+    - Instruction override (no governance vocabulary present)
+      Direct instruction override; any governance named here is a target, not a defence
+
+  Payloads generated: 4
+  Payloads executed:  0
+  Duration:           <n>ms
+
+  Resilience:  NOT MEASURED
+  No agent was executed — no agent execution backend is wired to this engine, so no payload was run.
+  Resilience is a property of a run, so this command reached no
+  verdict on it. The payloads above are generated, not results.
+
+  To run them against your agent yourself:
+    hackmyagent red-team SKILL.md --json
+  Payload text is under .results[].payloadInput
+

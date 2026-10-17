@@ -8,6 +8,11 @@
  * means (`findingMeans`), and the command to run next (`next`, with an
  * optional `nextWhen`). `options` are the common jobs, in the order a reader
  * sees them; `more` holds the commands for narrower jobs, with no next command.
+ * An entry may carry an `example`: the committed fixture folder its command
+ * runs in, the command with each `<operand>` filled in (`args`), the exit code
+ * that run ends with (`exit`) and the file its output is captured in
+ * (`capture`). scripts/chooser-captures.mjs runs the examples; this script
+ * only validates them.
  *
  * README.md carries the rendering between a `<!-- chooser:start` line and a
  * `<!-- chooser:end -->` line, so the README and the data cannot drift apart:
@@ -44,6 +49,36 @@ function isText(value) {
   return typeof value === 'string' && value.trim() === value && value.length > 0 && !/[\n\r`]/.test(value);
 }
 
+/**
+ * True when `args` is `run` with each `<operand>` filled in by one word that
+ * is not an option, and every other word left as it is.
+ */
+export function fillsIn(run, args) {
+  const want = run.split(/\s+/);
+  const have = args.split(/\s+/);
+  return want.length === have.length && want.every((w, i) => (/^<[^>]+>$/.test(w) ? /^[^-<]/.test(have[i]) : have[i] === w));
+}
+
+const FIXTURE = /^(?:test-fixtures|test)(?:\/[A-Za-z0-9._-]+)+$/;
+
+function exampleProblems(entry, at) {
+  const ex = entry.example;
+  if (ex === null || typeof ex !== 'object' || Array.isArray(ex)) return [`${at}.example: not an object`];
+  const problems = [];
+  if (typeof ex.fixture !== 'string' || !FIXTURE.test(ex.fixture) || ex.fixture.split('/').some((s) => s === '.' || s === '..')) {
+    problems.push(`${at}.example.fixture: missing or not a folder under test-fixtures/ or test/`);
+  }
+  if (!isText(ex.args)) problems.push(`${at}.example.args: missing or not one line of text`);
+  else if (isText(entry.run) && !fillsIn(entry.run, ex.args)) {
+    problems.push(`${at}.example.args: "${ex.args}" is not "${entry.run}" with each <operand> filled in`);
+  }
+  if (![0, 1, 2].includes(ex.exit)) problems.push(`${at}.example.exit: missing or not 0, 1 or 2`);
+  if (typeof entry.id === 'string' && ex.capture !== `docs/captures/${entry.id}.txt`) {
+    problems.push(`${at}.example.capture: not docs/captures/${entry.id}.txt`);
+  }
+  return problems;
+}
+
 /** Every problem with the data file, as `field: reason`; empty when it can be rendered. */
 export function validateChooser(data) {
   const problems = [];
@@ -73,6 +108,7 @@ export function validateChooser(data) {
     if (entry.nextWhen !== undefined && (!needsNext || !isText(entry.nextWhen))) {
       problems.push(`${at}.nextWhen: only an entry under options has one, and it is one line of text`);
     }
+    if (entry.example !== undefined) problems.push(...exampleProblems(entry, at));
   }
   return problems;
 }
