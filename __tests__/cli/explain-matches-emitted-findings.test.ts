@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { assertDistFresh, assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
-import { STATIC_EXPLANATIONS, isKnownExplainId } from '../../src/explain-registry';
+import { STATIC_EXPLANATIONS, explainBody, isKnownExplainId } from '../../src/explain-registry';
 import { HardeningScanner } from '../../src/hardening/scanner';
 import { DEEP_SCAN_NOT_RUN_FIX, DEEP_SCAN_NOT_RUN_NAME } from '../../src/hardening/settled-outcome';
 import { tempDir } from '../helpers/temp-dir';
@@ -84,8 +84,14 @@ describe('CRED-002 is explained as the finding secure reports', () => {
   it('gives the remedy the finding gives', async () => {
     const finding = await cred002Finding();
     expect(finding.fix).toMatch(/git rm --cached/);
-    expect(STATIC_EXPLANATIONS['CRED-002']).toMatch(/git rm --cached/);
-    expect(STATIC_EXPLANATIONS['CRED-002']).toMatch(/rotate/i);
+    expect(finding.fix).toMatch(/rotate/i);
+    // The hand-written line describes the file; the fix line after it is the
+    // finding's own (#1132), so the two cannot name different remedies. The
+    // finding names its file in the command, and explain states it as <file>.
+    const general = finding.fix!.replace(/git rm --cached \S+$/, 'git rm --cached <file>');
+    expect(general).not.toBe(finding.fix);
+    expect(explainBody('CRED-002')).toContain(`Fix: ${general}`);
+    expect(STATIC_EXPLANATIONS['CRED-002']).not.toMatch(/\bFix:/);
   });
 });
 

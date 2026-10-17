@@ -36,7 +36,7 @@ import { NemoClawScanner } from '../../src/hardening/nemoclaw-scanner';
 import { renderGovernanceModel } from '../../src/soul/governance-model';
 import { trustAapGate } from '../../src/aap/trust-gate';
 import * as publish from '../../src/registry/publish';
-import { STATIC_EXPLANATIONS, SOUL_SCAN_EXPLANATIONS } from '../../src/explain-registry';
+import { STATIC_EXPLANATIONS, SOUL_SCAN_EXPLANATIONS, explainBody } from '../../src/explain-registry';
 
 beforeAll(assertDistFreshIfPresent);
 
@@ -161,6 +161,23 @@ const SPANS: Span[] = [
     read: async () => (await failClosed()).markStubNextStep('hackmyagent'),
   },
   {
+    site: 'trust --batch next step for a package not in the registry',
+    verb: 'hackmyagent check',
+    read: async () => (await failClosed()).scanUnknownPackageCommand('hackmyagent'),
+  },
+  {
+    site: 'trust --batch next step for a package below the minimum trust level',
+    verb: 'hackmyagent trust',
+    read: async () => (await failClosed()).inspectFlaggedPackageCommand('hackmyagent'),
+  },
+  {
+    // Printed by a run with a local-path origin; the spawn that reaches it is
+    // in __tests__/cli/secure-ci-publish-repo-url-userinfo.test.ts.
+    site: 'secure --ci-publish with an origin that is a local path',
+    verb: 'git remote set-url',
+    read: async () => (await failClosed()).setOriginUrlCommand(),
+  },
+  {
     site: 'check next steps, Full project audit with HMA_FULL_SCAN_HINT unset',
     verb: 'hackmyagent secure',
     read: async () => (await failClosed()).fullScanCommand('hackmyagent'),
@@ -225,8 +242,28 @@ function textOf(span: Span): Promise<string> {
 }
 
 describe('plain shell-operand spans carry the fail-closed form', { timeout: 300_000 }, () => {
-  it('covers twelve spans', () => {
-    expect(SPANS).toHaveLength(12);
+  it('covers fifteen spans', () => {
+    // Twelve, then the two trust --batch next steps and the --ci-publish
+    // set-url line, which still printed `<name>` and `<host>` (#1132).
+    expect(SPANS).toHaveLength(15);
+  });
+
+  it('cli.ts passes no angle-bracket operand to npxCitation', () => {
+    // `npxCitation('check <name>')` printed a span that is a syntax error
+    // when pasted; a command with an operand comes from fail-closed-commands.
+    const file = path.join(REPO_ROOT, 'src', 'cli.ts');
+    const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const args: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'npxCitation') {
+        const first = node.arguments[0];
+        args.push(first && (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) ? first.text : first?.getText(sf) ?? '');
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    expect(args.length).toBeGreaterThan(0);
+    expect(args.filter((a) => PLACEHOLDER.test(a))).toEqual([]);
   });
 
   for (const span of SPANS) {
@@ -255,7 +292,7 @@ function findShell(name: string): string | null {
 }
 
 const SHELLS = ['bash', 'zsh', 'dash'].map((name) => ({ name, bin: findShell(name) }));
-const COMMANDS = ['hackmyagent', 'docker', 'npm', 'sha256sum', 'opena2a'];
+const COMMANDS = ['hackmyagent', 'docker', 'npm', 'sha256sum', 'opena2a', 'git'];
 
 /** The pasted command: from its verb through the last fail-closed operand. */
 function pasteOf(span: Span, text: string): string {
@@ -324,11 +361,13 @@ for (const shell of SHELLS) {
   });
 }
 
-it('names each shell the paste test skipped', () => {
-  // A skip is reported, not hidden: a host without zsh or dash runs fewer
-  // shells, and the test name says which.
+it('bash is installed, so the paste cases run; a skipped zsh or dash is named', () => {
+  // Every paste case sits under a skipIf for its shell. Without bash the
+  // bash cases would skip and the file would still pass, so its absence
+  // fails here. A host without zsh or dash runs fewer shells, and the
+  // warning says which.
+  expect(SHELLS.find((s) => s.name === 'bash')?.bin, 'bash not found on PATH: the bash paste cases did not run').toBeTruthy();
   const missing = SHELLS.filter((s) => !s.bin).map((s) => s.name);
-  expect(missing.every((m) => ['bash', 'zsh', 'dash'].includes(m))).toBe(true);
   if (missing.length > 0) console.warn(`paste test skipped, not installed: ${missing.join(', ')}`);
 });
 
@@ -355,17 +394,20 @@ describe('angle brackets that stay', { timeout: 300_000 }, () => {
       expect(text, id).not.toContain(':?');
       expect(text, id).not.toContain('${');
     }
+    // Read from what explain prints: the hand-written entries no longer state
+    // a fix of their own, and CRED-002's comes from its check definition
+    // (#1132). AST-GOV-001's pointer to harden-soul is a Run: line now.
     const rows: Array<[string, string]> = [
       ['CRED-002', 'then run: git rm --cached <file>'],
       ['AST-PROMPT-001', 'Run: hackmyagent harden-soul <dir>'],
       ['AST-PROMPT-003', 'Run: hackmyagent harden-soul <dir>'],
       ['AST-INJECT-001', 'Run: hackmyagent harden-soul <dir> to generate injection-resistant governance'],
-      ['AST-GOV-001', 'Fix: run hackmyagent harden-soul <dir> to auto-generate missing governance sections'],
+      ['AST-GOV-001', 'Run: hackmyagent harden-soul <dir> to auto-generate missing governance sections'],
       ['TEXT-001', 'Run: hackmyagent scan-text <file> to see the line and column'],
       ['TEXT-002', 'Run: hackmyagent scan-text <file> to see the line and column'],
       ['SEM-LLM-NOT-ANALYZED', 'Run: hackmyagent secure <dir> --deep'],
     ];
-    for (const [id, tail] of rows) expect(STATIC_EXPLANATIONS[id], id).toContain(tail);
+    for (const [id, tail] of rows) expect((explainBody(id) ?? []).join('\n'), id).toContain(tail);
   });
 
   it('the four export INTERNAL_API_KEY lines are unchanged', () => {

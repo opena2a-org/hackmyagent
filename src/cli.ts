@@ -499,7 +499,14 @@ import { UsageError, usageError, isRefusal, networkTimeoutError } from './checke
 import { RootRefusalError } from './mcp/roots';
 import { OTHER_BIRTH_STORE_MEANING } from './store/archive-store';
 import { shellQuote, citationPath, citationTarget, commandNaming } from './ui/shell-quote';
-import { fullScanCommand, markStubNextStep, wildAttackCommand } from './ui/fail-closed-commands';
+import {
+  fullScanCommand,
+  inspectFlaggedPackageCommand,
+  markStubNextStep,
+  scanUnknownPackageCommand,
+  setOriginUrlCommand,
+  wildAttackCommand,
+} from './ui/fail-closed-commands';
 import { describeArchiveStore } from './store/archive-store';
 import { RollbackNothingRestoredError } from './hardening/scanner';
 import {
@@ -7138,7 +7145,7 @@ Backups (--fix):
           } else if (ci.kind === 'local-origin') {
             console.error('\nThe git remote origin is a local path, not a repository URL, so the CI scan result was not sent.');
             console.error('Check it with: git remote get-url origin');
-            console.error('Set it to the repository URL: git remote set-url origin https://<host>/<org>/<repo>.git');
+            console.error(`Set it to the repository URL: ${setOriginUrlCommand()}`);
           } else if (ci.kind === 'no-repo-url') {
             console.error('\nCould not determine repo URL from git remote. Ensure a git remote is configured.');
           } else {
@@ -10566,8 +10573,12 @@ function getCommandPrefix(): string {
 // HMA_CLI_PREFIX is already installed under its own binary, so cite that prefix
 // directly (e.g. `opena2a secure`) instead of leaking `npx hackmyagent`.
 function npxCitation(verb: string): string {
-  if (process.env.HMA_CLI_PREFIX) return `${CLI_PREFIX} ${verb}`;
-  return `npx hackmyagent ${verb}`;
+  return `${npxPrefix()} ${verb}`;
+}
+
+/** The command prefix `npxCitation` puts before a verb. */
+function npxPrefix(): string {
+  return process.env.HMA_CLI_PREFIX ? CLI_PREFIX : 'npx hackmyagent';
 }
 
 // Domain percentage bar for text output
@@ -12275,10 +12286,10 @@ function formatTrustBatch(
   // Next steps
   lines.push('');
   if (notFound.length > 0) {
-    lines.push(`  ${colors.dim}Scan unknown packages: ${npxCitation('check <name>')}${colors.reset}`);
+    lines.push(`  ${colors.dim}Scan unknown packages: ${scanUnknownPackageCommand(npxPrefix())}${colors.reset}`);
   }
   if (belowThreshold.length > 0) {
-    lines.push(`  ${colors.dim}Inspect flagged packages: ${npxCitation('trust <name>')}${colors.reset}`);
+    lines.push(`  ${colors.dim}Inspect flagged packages: ${inspectFlaggedPackageCommand(npxPrefix())}${colors.reset}`);
   }
   lines.push(`  ${colors.dim}Full project security scan: ${npxCitation('secure .')}${colors.reset}`);
 

@@ -1,6 +1,12 @@
 /**
- * A finding's text carries no byte of a credential body the detector can
- * recognise, in any field and in any output channel.
+ * A finding's text carries no byte of a credential body the report boundary
+ * takes from the detector, in any field and in any output channel.
+ *
+ * The boundary is narrower than the detector for three kinds of value, so
+ * those are not held here: `entropy-blob`, which no redactor applies (see
+ * HELD_OUT); an `sk-` or `sk_` vendor head with an ASCII letter or digit
+ * right before it; and a JWT whose `eyJ` has one right before it. Every case
+ * below plants its value right after a space.
  *
  * Three layers, each checked with a positive and a negative control in the
  * same run:
@@ -283,10 +289,11 @@ describe('secure: a credential inside a request clause reaches no field of any f
 });
 
 // ============================================================================
-// 2. The report boundary, for every shape the detector knows
+// 2. The report boundary, for every shape the detector knows but entropy-blob,
+//    each planted where the boundary's left anchors admit it
 // ============================================================================
 
-describe('emitFinding: the report boundary is never narrower than the detector', () => {
+describe('emitFinding: the report boundary removes each detector shape but the held-out entropy-blob, planted after a space', () => {
   const cases: Planted[] = CREDENTIAL_SHAPES.flatMap(shape =>
     shape.kind === 'vendor' ? vendorCases(shape) : structuralCases(shape.id),
   );
