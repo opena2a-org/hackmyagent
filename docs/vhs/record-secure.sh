@@ -2,7 +2,13 @@
 # Renders a docs/vhs tape inside the docs-record container and writes its provenance sidecar.
 #
 #   docs/vhs/record-secure.sh [tape-name] [tool-version]
+#   docs/vhs/record-secure.sh --dry-run [tape-name] [tool-version]
 #   DOCKER=<path to docker> docs/vhs/record-secure.sh      (when docker is not on PATH)
+#
+# --dry-run asks npm which build the render would install and docker whether the image is present,
+# prints the tape, the build, the image and the files the render writes (the tape's outputs and
+# screenshots, the text capture and the sidecar), and exits 0. It builds no image, packs nothing,
+# renders nothing and leaves docs/vhs as it was.
 #
 # tape-name is a tape under docs/vhs without its extension (default: secure). tool-version is the
 # hackmyagent build the container runs (default: the version in package.json). When that version is
@@ -31,7 +37,7 @@ if [ -n "${ANTHROPIC_API_KEY+set}" ] || [ -n "${OPENAI_API_KEY+set}" ]; then
 fi
 
 # Prints the tape's typed lines, one per line: `hidden` for those between Hide and Show, `typed`
-# for the rest, `screenshots` for the Screenshot paths.
+# for the rest, `screenshots` for the Screenshot paths, `outputs` for the Output paths.
 tape_lines() {
   node - "$1" "$2" <<'NODE'
 const [tape, want] = process.argv.slice(2);
@@ -42,8 +48,10 @@ for (const raw of require("fs").readFileSync(tape, "utf8").split("\n")) {
   else if (line === "Show") hidden = false;
   const typed = line.match(/^Type(?:@\S+)?\s+(["'`])(.*)\1$/);
   const shot = line.match(/^Screenshot\s+(\S+)$/);
+  const output = line.match(/^Output\s+(\S+)$/);
   if (typed && want === (hidden ? "hidden" : "typed")) console.log(typed[2]);
   if (shot && want === "screenshots") console.log(shot[1]);
+  if (output && want === "outputs") console.log(output[1]);
 }
 NODE
 }
@@ -182,6 +190,11 @@ if [ "${1:-}" = "--inside" ]; then
   exit 0
 fi
 
+DRY_RUN=0
+if [ "${1:-}" = "--dry-run" ]; then
+  DRY_RUN=1
+  shift
+fi
 TAPE_NAME="${1:-secure}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DOCKER="${DOCKER:-docker}"
@@ -193,13 +206,12 @@ PACKAGE_VERSION="$(node -p "require(process.argv[1]).version" "$REPO_ROOT/packag
 VERSION="${2:-$PACKAGE_VERSION}"
 PACK_FILE=""
 PACKED_FROM=""
-VIEW_ERR="$REPO_ROOT/docs/vhs/out/npm-view.err"
+VIEW_ERR="$(mktemp)"
 remove_scratch() {
   rm -f "$VIEW_ERR"
   if [ -n "$PACK_FILE" ]; then rm -f "$REPO_ROOT/docs/vhs/out/$PACK_FILE"; fi
 }
 trap remove_scratch EXIT
-mkdir -p "$REPO_ROOT/docs/vhs/out"
 # A version npm does not have is packed from this checkout; an npm that did not answer is not
 # read as "not published".
 if INTEGRITY="$(npm view "hackmyagent@$VERSION" dist.integrity 2>"$VIEW_ERR")"; then
@@ -213,6 +225,7 @@ fi
 if [ -n "$INTEGRITY" ]; then
   IMAGE="${HMA_VHS_IMAGE:-hma-vhs:$VERSION}"
   BUILD_VERSION="$VERSION"
+  BUILD="hackmyagent $VERSION from npm, integrity $INTEGRITY"
 else
   # Not on npm: pack this checkout. packedFromCommit names HEAD, so the packed sources must be HEAD's.
   if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
@@ -225,12 +238,36 @@ else
   fi
   IMAGE="${HMA_VHS_IMAGE:-hma-vhs:no-build}"
   BUILD_VERSION="none"
-  PACK_FILE="$(cd "$REPO_ROOT" && npm pack --silent --pack-destination docs/vhs/out | tail -1)"
-  PACKED_FROM="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  BUILD="hackmyagent $VERSION packed from this checkout at commit $(git -C "$REPO_ROOT" rev-parse HEAD)"
 fi
 # Changes to the fixture script that the next commit would not carry: an unstaged edit or an
 # untracked file counts, a fully staged one does not.
 FIXTURE_DIRTY="$(git -C "$REPO_ROOT" status --porcelain -- docs/vhs/setup-lab.sh | grep -cv "^[MA]  " || true)"
+if [ "$DRY_RUN" = 1 ]; then
+  if "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
+    IMAGE_STATE="present"
+  else
+    IMAGE_STATE="not found by docker image inspect, so the render builds it from docs/vhs/docker with HMA_VERSION=$BUILD_VERSION"
+  fi
+  echo "record-secure.sh --dry-run: nothing was built, packed, rendered or written."
+  echo "tape:    docs/vhs/$TAPE_NAME.tape"
+  echo "build:   $BUILD"
+  echo "image:   $IMAGE, $IMAGE_STATE"
+  echo "fixture: docs/vhs/setup-lab.sh, $FIXTURE_DIRTY uncommitted changes"
+  echo "writes:"
+  {
+    tape_lines "$REPO_ROOT/docs/vhs/$TAPE_NAME.tape" outputs
+    tape_lines "$REPO_ROOT/docs/vhs/$TAPE_NAME.tape" screenshots
+    echo "docs/vhs/$TAPE_NAME-capture.txt"
+    echo "docs/vhs/$TAPE_NAME.json"
+  } | sed "s/^/  /"
+  exit 0
+fi
+mkdir -p "$REPO_ROOT/docs/vhs/out"
+if [ -z "$INTEGRITY" ]; then
+  PACK_FILE="$(cd "$REPO_ROOT" && npm pack --silent --pack-destination docs/vhs/out | tail -1)"
+  PACKED_FROM="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+fi
 if ! "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
   "$DOCKER" build --build-arg "HMA_VERSION=$BUILD_VERSION" -t "$IMAGE" "$REPO_ROOT/docs/vhs/docker"
 fi

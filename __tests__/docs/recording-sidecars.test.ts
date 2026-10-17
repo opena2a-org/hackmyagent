@@ -13,15 +13,21 @@
  *  - the tape, the capture and the README line carry no home-directory path,
  *    and the README line no version and no date: those live in the sidecar.
  *
+ * It also holds the render scripts: each refuses to start when a metered key
+ * is set, and `--dry-run` prints what a render would use and write, then
+ * exits 0 with docs/vhs as it was.
+ *
  * Re-render with the script the README line names; the sidecar is written by
  * the render, never by hand.
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { parseTape } from '../helpers/tape';
+import { tempDir } from '../helpers/temp-dir';
+import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
 const at = (rel: string): string => path.join(REPO_ROOT, rel);
@@ -200,20 +206,148 @@ describe('recording sidecars', () => {
     });
   });
 
-  it('the render script refuses to start when a metered key is set, and writes nothing', () => {
-    const script = at('docs/vhs/record-secure.sh');
+});
+
+/**
+ * The render scripts, with the tape each renders, the files it writes beside
+ * the tape's own outputs, and the image a dry run names: record-secure.sh
+ * names the image of the version in package.json, record-detect.sh the one
+ * its header pins.
+ */
+const RENDER_SCRIPTS = [
+  {
+    script: 'docs/vhs/record-secure.sh', tape: 'docs/vhs/secure.tape', capture: 'docs/vhs/secure-capture.txt',
+    sidecar: 'docs/vhs/secure.json', image: `hma-vhs:${PACKAGE.version}`, takesFixture: false,
+  },
+  {
+    script: 'docs/vhs/record-detect.sh', tape: 'docs/vhs/detect.tape', capture: 'docs/vhs/detect-capture.txt',
+    sidecar: 'docs/vhs/detect.json', image: 'hma-vhs:0.33.0', takesFixture: true,
+  },
+];
+
+/** Every path under `rel` with its size and modification time, so a write anywhere below it shows. */
+function treeState(rel: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(at(rel)).sort()) {
+    const child = `${rel}/${name}`;
+    const st = statSync(at(child));
+    out.push(`${child} ${st.size} ${st.mtimeMs}`);
+    if (st.isDirectory()) out.push(...treeState(child));
+  }
+  return out;
+}
+
+/**
+ * A scratch directory with stand-ins for docker and npm that append each call
+ * to a log. docker answers every call with exit 1, so an image is never
+ * present and a build or a run fails the script; npm answers `view` with an
+ * integrity and every other call with exit 1. The directory is removed when
+ * the test that made it finishes.
+ */
+function stubs(): { dir: string; log: string; env: Record<string, string> } {
+  const dir = tempDir('hma-render-');
+  const bin = path.join(dir, 'bin');
+  const log = path.join(dir, 'calls.log');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'docker'), '#!/bin/sh\necho "docker $*" >> "$STUB_LOG"\nexit 1\n');
+  writeFileSync(
+    path.join(bin, 'npm'),
+    '#!/bin/sh\nif [ "$1" = view ]; then echo sha512-FAKE; exit 0; fi\necho "npm $*" >> "$STUB_LOG"\nexit 1\n',
+  );
+  chmodSync(path.join(bin, 'docker'), 0o755);
+  chmodSync(path.join(bin, 'npm'), 0o755);
+  writeFileSync(log, '');
+  const env = {
+    PATH: [bin, path.dirname(process.execPath), '/usr/bin', '/bin'].join(':'),
+    HOME: dir,
+    TMPDIR: dir,
+    DOCKER: path.join(bin, 'docker'),
+    STUB_LOG: log,
+    GIT_CEILING_DIRECTORIES: path.dirname(dir),
+  };
+  return { dir, log, env };
+}
+
+/**
+ * A fixture checkout with one commit; returns its path and short commit. The
+ * commit runs with the stubs' HOME, so no global git configuration or hook
+ * takes part.
+ */
+function fixtureCheckout(dir: string, env: Record<string, string>): { path: string; sha: string } {
+  const fixture = path.join(dir, 'fixture');
+  mkdirSync(fixture);
+  initThrowawayRepo(fixture);
+  const git = (...args: string[]) => spawnSync('git', ['-C', fixture, ...args], {
+    env: { ...gitFreeEnv(), HOME: env.HOME, GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8',
+  });
+  expect(git('commit', '-q', '--no-verify', '--allow-empty', '-m', 'fixture').status).toBe(0);
+  return { path: fixture, sha: git('rev-parse', '--short', 'HEAD').stdout.trim() };
+}
+
+describe.each(RENDER_SCRIPTS)('$script', (entry) => {
+  it('refuses to start when a metered key is set, dry run or not, and writes nothing', () => {
+    const script = at(entry.script);
     expect(existsSync(script)).toBe(true);
-    const before = sha256('docs/vhs/secure.json');
-    for (const name of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
-      for (const value of ['set', '']) {
-        // No docker and no node on this PATH: were the refusal ever removed, the
-        // script would stop at its first external command instead of rendering.
-        const run = spawnSync('/bin/bash', [script], { env: { PATH: '/nonexistent', DOCKER: 'false', [name]: value }, encoding: 'utf8' });
-        expect(run.status, `${name}=${JSON.stringify(value)}`).toBe(2);
-        expect(run.stderr).toContain(name);
-        expect(run.stdout).toBe('');
+    const before = sha256(entry.sidecar);
+    for (const args of [[], ['--dry-run']]) {
+      for (const name of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+        for (const value of ['set', '']) {
+          // No docker and no node on this PATH: were the refusal ever removed, the
+          // script would stop at its first external command instead of rendering.
+          const run = spawnSync('/bin/bash', [script, ...args], { env: { PATH: '/nonexistent', DOCKER: 'false', [name]: value }, encoding: 'utf8' });
+          expect(run.status, `${[...args, `${name}=${JSON.stringify(value)}`].join(' ')}`).toBe(2);
+          expect(run.stderr).toContain(name);
+          expect(run.stdout).toBe('');
+        }
       }
     }
-    expect(sha256('docs/vhs/secure.json')).toBe(before);
+    expect(sha256(entry.sidecar)).toBe(before);
+  });
+
+  it('--dry-run prints the tape, the image, the outputs, screenshots, capture and sidecar, asks docker only whether the image is present, and leaves docs/vhs as it was', () => {
+    const { dir, log, env } = stubs();
+    const fixture = entry.takesFixture ? fixtureCheckout(dir, env) : undefined;
+    const tape = parseTape(text(entry.tape));
+    const before = treeState('docs/vhs');
+    const run = spawnSync('/bin/bash', [at(entry.script), '--dry-run', ...(fixture ? [fixture.path] : [])], { env, encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    for (const written of [entry.tape, ...tape.outputs, ...tape.screenshots, entry.capture, entry.sidecar]) {
+      expect(run.stdout, written).toContain(written);
+    }
+    expect(run.stdout).toContain(entry.image);
+    if (fixture) expect(run.stdout).toContain(fixture.sha);
+    expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toEqual([`docker image inspect ${entry.image}`]);
+    expect(treeState('docs/vhs')).toEqual(before);
+  });
+});
+
+describe('docs/vhs/record-detect.sh', () => {
+  it('refuses a fixture that is not a git checkout, naming it, since the sidecar names the fixture by its commit', () => {
+    const { dir, log, env } = stubs();
+    const notCheckout = path.join(dir, 'not-a-checkout');
+    mkdirSync(notCheckout);
+    for (const args of [['--dry-run', notCheckout], [notCheckout]]) {
+      const run = spawnSync('/bin/bash', [at('docs/vhs/record-detect.sh'), ...args], { env, encoding: 'utf8' });
+      expect(run.status, args.join(' ')).toBe(1);
+      expect(run.stderr).toContain(`${notCheckout} is not a git checkout`);
+    }
+    expect(readFileSync(log, 'utf8')).toBe('');
+  });
+
+  it('--dry-run with no argument names test-fixtures/demo-agents by the commit that last changed it, and materializes nothing', () => {
+    const { dir, log, env } = stubs();
+    const before = treeState('docs/vhs');
+    const run = spawnSync('/bin/bash', [at('docs/vhs/record-detect.sh'), '--dry-run'], { env, encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    const named = run.stdout.match(/\nfixture: test-fixtures\/demo-agents at commit ([0-9a-f]{7,40}), [0-9]+ uncommitted changes, /);
+    expect(named, run.stdout).not.toBeNull();
+    const last = spawnSync('git', ['-C', REPO_ROOT, 'log', '-1', '--format=%H', '--', 'test-fixtures/demo-agents'], {
+      env: gitFreeEnv(), encoding: 'utf8',
+    });
+    expect(last.stdout.trim().startsWith(named![1])).toBe(true);
+    expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toEqual(['docker image inspect hma-vhs:0.33.0']);
+    // TMPDIR is the stubs' directory: a materialized copy would be a new entry in it.
+    expect(readdirSync(dir).sort()).toEqual(['bin', 'calls.log']);
+    expect(treeState('docs/vhs')).toEqual(before);
   });
 });
