@@ -2,8 +2,10 @@
 # Renders docs/vhs/detect.tape inside the docs-record container and writes the provenance sidecar.
 #
 #   docs/vhs/record-detect.sh                        renders the fixture in test-fixtures/demo-agents
-#   docs/vhs/record-detect.sh <fixture-checkout>     renders a git checkout of the five projects
-#   docs/vhs/record-detect.sh --dry-run [<fixture-checkout>]   prints what that render uses and writes
+#   docs/vhs/record-detect.sh <fixture-checkout> [tool-version]
+#                                                    renders a git checkout of the five projects
+#   docs/vhs/record-detect.sh --dry-run [<fixture-checkout> [tool-version]]
+#                                                    prints what that render uses and writes
 #   DOCKER=/path/to/docker docs/vhs/record-detect.sh   when the docker client is not on PATH
 #
 # With no argument, test-fixtures/demo-agents/materialize.mjs writes the five projects into a new
@@ -11,9 +13,16 @@
 # render reads that directory and it is removed on exit. The sidecar then names the fixture by its
 # path in this repository, with the commit that last changed it and its uncommitted changes.
 #
+# tool-version is the hackmyagent build the container runs (default, and with no argument: the
+# version in package.json), chosen as docs/vhs/record-secure.sh chooses it (docs/vhs/render-build.sh):
+# when that version is on npm the image installs it and the sidecar records its npmIntegrity; when it
+# is not, the container installs the tarball `npm pack` writes from this checkout (build it first) and
+# the sidecar records packedFromCommit. The committed docs/vhs/detect.json was rendered with 0.33.0
+# over a demo-agents checkout; pass that checkout and 0.33.0 to render that build again.
+#
 # The container (docs/vhs/docker/Dockerfile) carries VHS 0.12.0 with its encode regression patched,
-# ffmpeg, ttyd, Chromium, JetBrains Mono, gifsicle, Node 22, procps and hackmyagent@0.33.0 installed
-# globally, so the typed `npx hackmyagent detect` runs the published build with no download on screen.
+# ffmpeg, ttyd, Chromium, JetBrains Mono, gifsicle, Node 22 and procps, with that hackmyagent build
+# installed globally, so the typed `npx hackmyagent detect` runs it with no download on screen.
 # The fixture is copied into the container filesystem (a bind mount is slow to walk) with its .git and
 # session files removed; the hostname is `laptop`; HOME is fresh. After the tape, the same container
 # runs both commands once more with NO_COLOR=1 into detect-capture.txt (the text version of the
@@ -25,10 +34,10 @@
 # A fixture passed as the argument has to be a git checkout with a commit: the sidecar names it by
 # that commit.
 #
-# --dry-run asks docker whether the image is present, prints the tape, the image, the fixture and its
-# commit and the files the render writes (the tape's outputs and screenshots, the text capture and
-# the sidecar), and exits 0. It builds no image, materializes no fixture, renders nothing and leaves
-# docs/vhs as it was.
+# --dry-run asks npm which build the render would install and docker whether the image is present,
+# prints the tape, the build, the image, the fixture and its commit and the files the render writes
+# (the tape's outputs and screenshots, the text capture and the sidecar), and exits 0. It builds no
+# image, materializes no fixture, packs nothing, renders nothing and leaves docs/vhs as it was.
 #
 # A recording never runs with a metered key in reach, so the script refuses to start when one is set.
 set -euo pipefail
@@ -42,7 +51,6 @@ if [ "${1:-}" = "--dry-run" ]; then
   shift
 fi
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-IMAGE="${HMA_VHS_IMAGE:-hma-vhs:0.33.0}"
 DOCKER="${DOCKER:-docker}"
 if [ "$#" -gt 0 ]; then
   FIXTURE="$1"
@@ -59,14 +67,28 @@ else
   FIXTURE_SHA="$(git -C "$REPO_ROOT" log -1 --format=%h -- test-fixtures/demo-agents 2>/dev/null || echo unknown)"
   FIXTURE_DIRTY="$(git -C "$REPO_ROOT" status --porcelain -- test-fixtures/demo-agents 2>/dev/null | wc -l | tr -d ' ')"
 fi
+PACKAGE_VERSION="$(node -p "require(process.argv[1]).version" "$REPO_ROOT/package.json")"
+VERSION="${2:-$PACKAGE_VERSION}"
+PACK_FILE=""
+MATERIALIZED=""
+# One EXIT trap for both: a second `trap ... EXIT` would replace the first.
+cleanup() {
+  if [ -n "$PACK_FILE" ]; then rm -f "$REPO_ROOT/docs/vhs/out/$PACK_FILE"; fi
+  if [ -n "$MATERIALIZED" ]; then rm -rf "$MATERIALIZED"; fi
+}
+trap cleanup EXIT
+# shellcheck source=render-build.sh
+. "$REPO_ROOT/docs/vhs/render-build.sh"
+resolve_build record-detect.sh "$VERSION"
 if [ "$DRY_RUN" = 1 ]; then
   if "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
     IMAGE_STATE="present"
   else
-    IMAGE_STATE="not found by docker image inspect, so the render builds it from docs/vhs/docker"
+    IMAGE_STATE="not found by docker image inspect, so the render builds it from docs/vhs/docker with HMA_VERSION=$BUILD_VERSION"
   fi
-  echo "record-detect.sh --dry-run: nothing was built, materialized, rendered or written."
+  echo "record-detect.sh --dry-run: nothing was built, materialized, packed, rendered or written."
   echo "tape:    docs/vhs/detect.tape"
+  echo "build:   $BUILD"
   echo "image:   $IMAGE, $IMAGE_STATE"
   if [ -n "$FIXTURE" ]; then
     echo "fixture: $FIXTURE at commit $FIXTURE_SHA, $FIXTURE_DIRTY uncommitted changes"
@@ -87,14 +109,16 @@ if [ -z "$FIXTURE" ]; then
     echo "record-detect: materialize.mjs printed no directory" >&2
     exit 1
   fi
-  cleanup_fixture() { rm -rf "$FIXTURE"; }
-  trap cleanup_fixture EXIT
+  MATERIALIZED="$FIXTURE"
 fi
+pack_build
 if ! "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
-  "$DOCKER" build -t "$IMAGE" "$REPO_ROOT/docs/vhs/docker"
+  "$DOCKER" build --build-arg "HMA_VERSION=$BUILD_VERSION" -t "$IMAGE" "$REPO_ROOT/docs/vhs/docker"
 fi
 "$DOCKER" run --rm --hostname laptop --shm-size=1g \
   -e FIXTURE_NAME="$FIXTURE_NAME" -e FIXTURE_SHA="$FIXTURE_SHA" -e FIXTURE_DIRTY="$FIXTURE_DIRTY" \
+  -e HMA_VERSION="$VERSION" -e HMA_INTEGRITY="$INTEGRITY" \
+  -e HMA_PACKED_FROM_COMMIT="$PACKED_FROM" -e HMA_PACK_FILE="$PACK_FILE" \
   -v "$REPO_ROOT/docs/vhs":/work/docs/vhs \
   -v "$FIXTURE":/work/fixture:ro \
   --entrypoint bash "$IMAGE" -c '
@@ -104,6 +128,14 @@ cd /work
 SCRATCH="$(mktemp -d)"
 cleanup_scratch() { rm -rf "$SCRATCH"; }
 trap cleanup_scratch EXIT
+if [ -n "$HMA_PACK_FILE" ]; then
+  HOME="$SCRATCH" npm install -g --no-audit --no-fund "/work/docs/vhs/out/$HMA_PACK_FILE" >/dev/null
+fi
+VERSION="$(HOME="$SCRATCH" hackmyagent --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1 || true)"
+if [ "$VERSION" != "$HMA_VERSION" ]; then
+  echo "record-detect.sh: the container runs hackmyagent $VERSION, not $HMA_VERSION; nothing was rendered." >&2
+  exit 1
+fi
 RAN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Wall clock of the recording: from the start of vhs to its first "Creating" line, which it prints
 # when the last command of the tape has run and it starts to encode.
@@ -135,26 +167,30 @@ cd /work/demo-agents
   echo "[exit $E2]"
 } > /work/docs/vhs/detect-capture.txt 2>&1
 cd /work
-VERSION="$(hackmyagent --version | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)"
 VHS_VERSION="$(vhs --version 2>/dev/null | head -1 | sed "s/^vhs version //")"
 PATCH_SHA="$(sha256sum docs/vhs/docker/vhs-0.12.0-render-context.patch | cut -d" " -f1)"
-INTEGRITY="$(npm view hackmyagent@$VERSION dist.integrity 2>/dev/null || echo unknown)"
 GIF_PX="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 docs/vhs/detect.gif)"
 DURATION="$(ffprobe -v error -show_entries format=duration -of csv=p=0 docs/vhs/detect.mp4)"
-node - "$RAN_AT" "$VERSION" "$INTEGRITY" "$GIF_PX" "$DURATION" "$E1" "$E2" "$VHS_VERSION" "$PATCH_SHA" "$FRAME_CENSUS" "$WALL_TENTHS" <<NODE > docs/vhs/detect.json
+node - "$RAN_AT" "$VERSION" "$GIF_PX" "$DURATION" "$E1" "$E2" "$VHS_VERSION" "$PATCH_SHA" "$FRAME_CENSUS" "$WALL_TENTHS" <<NODE > docs/vhs/detect.json
 const fs = require("fs"), crypto = require("crypto");
-const [ranAtUtc, version, integrity, gifPx, duration, e1, e2, vhsVersion, patchSha, frameCensus, wallTenths] = process.argv.slice(2);
+const [ranAtUtc, version, gifPx, duration, e1, e2, vhsVersion, patchSha, frameCensus, wallTenths] = process.argv.slice(2);
 const census = JSON.parse(frameCensus);
 const sha = f => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
 const size = f => fs.statSync(f).size;
+const file = f => ({ path: f, bytes: size(f), sha256: sha(f) });
 const [w, h] = gifPx.split(",").map(Number);
+const tape = fs.readFileSync("docs/vhs/detect.tape", "utf8");
+const screenshots = [...tape.matchAll(/^Screenshot\s+(\S+)/gm)].map(m => m[1]);
+const build = process.env.HMA_INTEGRITY
+  ? { npmIntegrity: process.env.HMA_INTEGRITY }
+  : { packedFromCommit: process.env.HMA_PACKED_FROM_COMMIT };
 const out = {
   tape: "docs/vhs/detect.tape",
   tapeSha256: sha("docs/vhs/detect.tape"),
   commands: ["npx hackmyagent detect", "npx hackmyagent detect deploy-runbook-agent"],
   tool: "hackmyagent",
   version,
-  npmIntegrity: integrity,
+  ...build,
   ranAtUtc,
   fixture: process.env.FIXTURE_NAME,
   fixtureSha: process.env.FIXTURE_SHA,
@@ -172,20 +208,15 @@ const out = {
   gifScrollInNote: "the run of full-screen frames is the report streaming into the terminal; how many frames it spans varies with container load, so the GIF size varies per render",
   renderedPixelSize: { width: w, height: h },
   outputs: {
-    gif: { path: "docs/vhs/detect.gif", bytes: size("docs/vhs/detect.gif") },
-    mp4: { path: "docs/vhs/detect.mp4", bytes: size("docs/vhs/detect.mp4") },
-    inventoryFrame: "docs/vhs/detect-inventory.png",
-    pathForwardFrame: "docs/vhs/detect-path-forward.png",
+    gif: file("docs/vhs/detect.gif"),
+    mp4: file("docs/vhs/detect.mp4"),
+    frames: screenshots.map(file),
     capture: "docs/vhs/detect-capture.txt"
   },
   durationSeconds: Number(Number(duration).toFixed(1)),
   wallClockSeconds: Number(wallTenths) / 10,
   meteredCostUsd: 0,
   exitCodes: [Number(e1), Number(e2)],
-  frames: {
-    "detect-inventory.png": { firstLine: "> npx hackmyagent detect", lastLine: "Fix: hackmyagent harden-soul invoice-reconciliation-agent" },
-    "detect-path-forward.png": { firstLine: "HIGH  1 AI agent without governance", lastLine: "Scanned with hackmyagent v0.33.0" }
-  },
   edits: ["setup not shown"],
   environment: {
     container: "docs/vhs/docker/Dockerfile (Debian trixie, Node 22, hackmyagent installed globally)",

@@ -349,11 +349,15 @@ describe('demo-agents fixture', () => {
       ].join('\n'),
       { mode: 0o755 },
     );
+    // npm answers `view` as the registry does for a published version, so the render reads no network.
+    const bin = path.join(stubDir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'npm'), '#!/bin/sh\nif [ "$1" = view ]; then echo sha512-FAKE; exit 0; fi\nexit 1\n', { mode: 0o755 });
     const tmp = tempDir('hma-demo-agents-tmp-');
     const res = spawnSync('bash', [path.join(repo, path.relative(REPO_ROOT, RECORD))], {
       cwd: repo,
       encoding: 'utf-8',
-      env: cleanEnv({ DOCKER: stub, STUB_OUT: out, TMPDIR: tmp }),
+      env: cleanEnv({ DOCKER: stub, STUB_OUT: out, TMPDIR: tmp, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` }),
       timeout: 120_000,
     });
     expect(res.stderr).toBe('');
@@ -378,6 +382,7 @@ describe('demo-agents fixture', () => {
     }
     expect(run.files).toContain('hr-onboarding-assistant/.cursorrules');
     expect(run.argv).toContain('FIXTURE_NAME=test-fixtures/demo-agents');
+    expect(run.argv).toContain('HMA_INTEGRITY=sha512-FAKE');
     // The materialized copy is removed when the script exits.
     expect(fs.existsSync(run.source!)).toBe(false);
   });
