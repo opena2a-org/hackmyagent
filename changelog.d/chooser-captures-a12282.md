@@ -20,6 +20,3 @@ type: added
   or a capture or sidecar is missing or differs. `--write` regenerates the
   captures and sidecars; for a run that ends with an undeclared exit code it
   leaves the files as they were and exits 1.
-- `detect`, `attack`, `scan` and `scan-text` have no example yet: `detect`
-  adds the host name and the running assistants to every run, `attack` and
-  `scan` need an endpoint, and no committed fixture is a pull request body.

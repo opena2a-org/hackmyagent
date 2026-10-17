@@ -18,7 +18,3 @@ type: added
   folder names, made from the device, inode and creation time of the copy and
   from the time of the run, print as `<directory>` and `<run>`. The sidecars
   of the four examples that were already there are unchanged.
-- The next commands of `attack`, `scan-text` and `detect` have no example:
-  `attack` needs an endpoint, `scan-text -` reads standard input and no
-  committed fixture is a pull request body, and `secure <project>` is the
-  own-project command with a project named.

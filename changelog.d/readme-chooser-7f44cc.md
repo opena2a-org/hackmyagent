@@ -17,5 +17,5 @@ type: added
   missing.
 - The section sits between Quick start and What it finds. The Scan anything
   table and the "secure vs check vs red-team vs attack" list stay in
-  `docs/commands.md`. The README went from 186 lines to 197, and `wc -w`
-  counts 1,369 words where it counted 1,216.
+  `docs/commands.md`. The section adds 11 lines and 153 words to the README
+  (`wc -w`).
