@@ -1,0 +1,15 @@
+
+Scanning 127.0.0.1:<port> (1 port, 2000ms timeout)...
+
+Target: 127.0.0.1:<port>
+Score: 72/100 (moderate)
+Open Ports: <port>
+Host: reachable (<port> open)
+Duration: <n>ms
+
+[!!] CRITICAL (2)
+   • [MCP-TOOLS] MCP Tools Endpoint Exposed
+     Port: <port>, Path: /mcp/tools
+   • [CONFIG-EXPOSED] Configuration File Exposed
+     Port: <port>, Path: /mcp.json
+
