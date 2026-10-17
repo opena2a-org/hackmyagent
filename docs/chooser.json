@@ -1,0 +1,150 @@
+{
+  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write. An example runs its command in a copy of a committed fixture and declares the exit code, and a nextExample does the same for the next command. An example whose command has the operand - names the fixture file it reads on standard input in stdin. An example whose fixture is written at run time names the script of the fixture folder that writes it in materialize. An example whose command goes to a server names the script of the fixture folder that starts one in serve, and writes <port> in args where that server's port goes. scripts/chooser-captures.mjs --write records the output in the capture file and how it was made in the sidecar beside it.",
+  "question": "What do you want to check?",
+  "invocation": "npx hackmyagent",
+  "options": [
+    {
+      "id": "own-project",
+      "ask": "My own project, before I ship it",
+      "run": "secure",
+      "findingMeans": "Exit 1 is a critical or high finding to fix before you ship.",
+      "next": "secure --fix",
+      "example": {
+        "fixture": "test-fixtures/insecure-library",
+        "args": "secure",
+        "exit": 1,
+        "capture": "docs/captures/own-project.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/insecure-library",
+        "args": "secure --fix",
+        "exit": 1,
+        "capture": "docs/captures/own-project-next.txt"
+      }
+    },
+    {
+      "id": "before-install",
+      "ask": "A package, repository or skill, before I install it",
+      "run": "check <target>",
+      "findingMeans": "Exit 1 is a high or critical risk.",
+      "nextWhen": "for a local copy",
+      "next": "secure <dir> --fix",
+      "example": {
+        "fixture": "test-fixtures/insecure-openclaw/skills",
+        "args": "check malicious-skill",
+        "exit": 1,
+        "capture": "docs/captures/before-install.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/insecure-openclaw/skills",
+        "args": "secure malicious-skill --fix",
+        "exit": 1,
+        "capture": "docs/captures/before-install-next.txt"
+      }
+    },
+    {
+      "id": "agent-endpoint",
+      "ask": "A running agent endpoint you own",
+      "run": "attack <url>",
+      "findingMeans": "Exit 1 is a high or critical risk score from the payloads that succeeded; exit 2 means nothing answered.",
+      "nextWhen": "with every payload",
+      "next": "attack <url> --intensity aggressive",
+      "example": {
+        "fixture": "test-fixtures/prompt-leaking-agent",
+        "serve": "serve.mjs",
+        "args": "attack http://127.0.0.1:<port>/v1/chat/completions",
+        "exit": 1,
+        "capture": "docs/captures/agent-endpoint.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/prompt-leaking-agent",
+        "serve": "serve.mjs",
+        "args": "attack http://127.0.0.1:<port>/v1/chat/completions --intensity aggressive",
+        "exit": 1,
+        "capture": "docs/captures/agent-endpoint-next.txt"
+      }
+    },
+    {
+      "id": "one-text",
+      "ask": "One text, such as a pull request body",
+      "run": "scan-text <file>",
+      "findingMeans": "Exit 1 is a high or critical line that overrides instructions or claims authority.",
+      "nextWhen": "in a pipeline",
+      "next": "scan-text - --as pr-body --json",
+      "example": {
+        "fixture": "test-fixtures/pr-body",
+        "args": "scan-text pr-body.md",
+        "exit": 1,
+        "capture": "docs/captures/one-text.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/pr-body",
+        "args": "scan-text - --as pr-body --json",
+        "stdin": "pr-body.md",
+        "exit": 1,
+        "capture": "docs/captures/one-text-next.txt"
+      }
+    },
+    {
+      "id": "every-project",
+      "ask": "Every agent project under this folder",
+      "run": "detect",
+      "findingMeans": "Exit 1 is a high or critical finding in one of them.",
+      "nextWhen": "for one project",
+      "next": "secure <project>",
+      "example": {
+        "fixture": "test-fixtures/demo-agents",
+        "materialize": "materialize.mjs",
+        "args": "detect",
+        "exit": 1,
+        "capture": "docs/captures/every-project.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/demo-agents",
+        "materialize": "materialize.mjs",
+        "args": "secure deploy-runbook-agent",
+        "exit": 1,
+        "capture": "docs/captures/every-project-next.txt"
+      }
+    }
+  ],
+  "more": [
+    {
+      "id": "governance",
+      "ask": "A SOUL.md governance file",
+      "run": "scan-soul",
+      "findingMeans": "Exit 1 is a critical control not detected.",
+      "example": {
+        "fixture": "test/fixtures/governed-mcp",
+        "args": "scan-soul",
+        "exit": 1,
+        "capture": "docs/captures/governance.txt"
+      }
+    },
+    {
+      "id": "attack-surface",
+      "ask": "Attack payloads to run yourself against a skill, MCP config or SOUL.md",
+      "run": "red-team <file>",
+      "findingMeans": "It does not run them, so it does not tell you whether the artifact resists.",
+      "example": {
+        "fixture": "test-fixtures/insecure-openclaw/skills/malicious-skill",
+        "args": "red-team SKILL.md",
+        "exit": 2,
+        "capture": "docs/captures/attack-surface.txt"
+      }
+    },
+    {
+      "id": "exposed-host",
+      "ask": "MCP endpoints a host you own exposes",
+      "run": "scan <host>",
+      "findingMeans": "Exit 1 is a critical or high exposure.",
+      "example": {
+        "fixture": "test-fixtures/exposed-mcp-host",
+        "serve": "serve.mjs",
+        "args": "scan 127.0.0.1:<port>",
+        "exit": 1,
+        "capture": "docs/captures/exposed-host.txt"
+      }
+    }
+  ]
+}

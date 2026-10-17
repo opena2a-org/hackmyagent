@@ -1,0 +1,83 @@
+
+  demo-agents  shadow ai audit · <host> · 2 agents · 5 agent projects
+  4 of 5 agent projects need action (4 critical, 5 high)
+
+  ── Shadow AI agents (5) ────────────────────────────────────
+  project                       identified by  mcp servers     governance   cred      verdict
+  deploy-runbook-agent          Claude Code    3 mcp critical  gov   0/100  cred yes  CRITICAL
+  invoice-reconciliation-agent  Claude Code    3 mcp high      gov   4/100  cred yes  CRITICAL
+  hr-onboarding-assistant       Cursor         3 mcp medium    gov   6/100  cred yes  CRITICAL
+  support-triage-agent          SOUL.md        1 mcp medium    gov   7/100  cred no   HIGH
+  release-notes-agent           SOUL.md        1 mcp medium    gov 100/100  cred no   MEDIUM
+
+  deploy-runbook-agent  2 critical · 1 high · 1 medium
+  │ CRITICAL  1 project MCP server with sensitive access
+  │ shell: can run any command on your computer
+  │ Fix: hackmyagent secure deploy-runbook-agent
+
+  │ CRITICAL  AI config files contain credential references
+  │ .claude/settings.json:3 — "ANTHROPIC_API_KEY" = Anthropic API key: [REDACTED]
+  │ Fix: opena2a protect deploy-runbook-agent
+  │ Migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ Verify: sed -n '3p' deploy-runbook-agent/.claude/settings.json
+
+  │ HIGH  1 AI agent without governance
+  │ Claude Code (installed: .claude/settings.json) — no governance file found
+  │ Fix: hackmyagent harden-soul deploy-runbook-agent
+
+  + 1 more — hackmyagent detect deploy-runbook-agent for the full report
+
+  invoice-reconciliation-agent  1 critical · 2 high · 1 medium · 1 low
+  │ CRITICAL  AI config files contain credential references
+  │ CLAUDE.md:19 — "ANTHROPIC_API_KEY" = Anthropic API key: [REDACTED]
+  │ Fix: opena2a protect invoice-reconciliation-agent
+  │ Migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ Verify: sed -n '19p' invoice-reconciliation-agent/CLAUDE.md
+
+  │ HIGH  1 AI agent with governance gaps
+  │ Claude Code (installed: .claude/settings.json) — CLAUDE.md is missing 2 critical control(s)
+  │ Fix: hackmyagent harden-soul invoice-reconciliation-agent
+
+  │ HIGH  AI config files grant broad permissions
+  │ .claude/settings.json:3 — "Bash(*)" grants Bash with no command-name bound
+  │ Fix: Narrow .claude/settings.json:3 — replace "Bash(*)" with "Bash(npm test)" or another entry the prefix bounds
+  │ Verify: sed -n '3p' invoice-reconciliation-agent/.claude/settings.json
+
+  + 2 more — hackmyagent detect invoice-reconciliation-agent for the full report
+
+  hr-onboarding-assistant  1 critical · 1 high · 1 medium · 1 low
+  │ CRITICAL  AI config files contain credential references
+  │ .cursorrules:15 — "OPENAI_API_KEY" = OpenAI project key: [REDACTED]
+  │ Fix: opena2a protect hr-onboarding-assistant
+  │ Migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │ Verify: sed -n '15p' hr-onboarding-assistant/.cursorrules
+
+  │ HIGH  1 AI agent with governance gaps
+  │ Cursor (installed: .cursorrules) — .cursorrules is missing 1 critical control(s)
+  │ Fix: hackmyagent harden-soul hr-onboarding-assistant
+
+  + 2 more — hackmyagent detect hr-onboarding-assistant for the full report
+
+  support-triage-agent  1 high · 1 medium
+  │ HIGH  Governance document subverts 1 of its own controls
+  │ SOUL.md:17 Override compliance mandate (SOUL-IH-001)
+  │ Fix: hackmyagent scan-soul support-triage-agent
+  │ Verify: sed -n '17p' support-triage-agent/SOUL.md
+
+  + 1 more — hackmyagent detect support-triage-agent for the full report
+
+  release-notes-agent  1 medium
+
+  + 1 more — hackmyagent detect release-notes-agent for the full report
+
+  ── AI Agents (2) ───────────────────────────────────────────
+  Claude Code           installed  governed in 0 of 2 projects (.claude/settings.json)
+  Cursor                installed  governed in 0 of 1 project (.cursorrules)
+
+  ── Next Steps ──────────────────────────────────────────────
+  Worst project:   hackmyagent detect deploy-runbook-agent          full report for one project
+  Full scan:       hackmyagent secure deploy-runbook-agent          deep security scan with findings
+  Inventory:       hackmyagent detect --export-csv inventory.csv    one row per asset across every project
+  All commands:    hackmyagent --help                               full command reference
+
+  Scanned with hackmyagent v<version>
