@@ -59,8 +59,6 @@ No config file or flag is needed. `[...]` marks omitted lines. The full output, 
 - **Text that gives orders**: pull-request bodies, issues and comments (`scan-text`). Example: `TEXT-001  HIGH  Instruction-override payload`.
 - **Attacks an agent falls for**: 164 adversarial payloads (`attack`). Example: `Prompt Injection: 2/2 successful` against a deliberately vulnerable agent.
 
-Check categories, what each count includes, and what `--fix` changes: [docs/SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md). `hackmyagent check-metadata` lists every check.
-
 ## Usage
 
 ### Fix what a scan finds
@@ -77,8 +75,6 @@ Backups go to a store outside the project. Which checks it fixes, and where the 
 
 ### Find the shadow AI on a machine
 
-Run it from the directory that holds your agent projects, such as a workspace or a home directory:
-
 ```bash
 npx hackmyagent detect
 ```
@@ -93,34 +89,6 @@ npx hackmyagent detect
 ```
 
 One row per agent project, worst first. Full output: [docs/quick-start-capture.txt](docs/quick-start-capture.txt).
-
-### Check a package or repo before you install it
-
-```bash
-hackmyagent check express                # npm package
-hackmyagent check pip:requests           # PyPI package
-hackmyagent check getsentry/sentry-mcp   # GitHub repo
-```
-
-The surfaces HackMyAgent scans, and the command for each: [docs/commands.md](docs/commands.md#scan-anything).
-
-### Grade and harden governance
-
-```bash
-hackmyagent scan-soul      # scan current directory for SOUL.md
-hackmyagent harden-soul    # generate or update governance sections
-```
-
-`scan-soul` exits 1 when conformance is `none`, meaning a critical control was not detected, whatever the score.
-
-### Test an agent with attack payloads
-
-```bash
-hackmyagent attack https://api.example.com/v1/chat   # test a live endpoint
-hackmyagent red-team ./my-skill.md                   # map surface, generate payloads
-```
-
-`red-team` generates payloads without running them. Only test systems you own or have written authorisation to test.
 
 ### Gate a pull request in CI
 

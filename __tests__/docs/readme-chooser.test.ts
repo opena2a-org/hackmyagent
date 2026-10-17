@@ -10,6 +10,8 @@
  *    `--check` exits 1 on a section edited by hand, 2 on a missing marker;
  *  - the section sits right after Quick start, before What it finds and
  *    Usage, with each choice's command on the line that asks it;
+ *  - the README holds no more words than it did before the section was
+ *    added, so the section is paid for by the Usage examples it replaces;
  *  - every command the data names is one the built CLI lists in `--help`, with
  *    the operands its usage line accepts and options registered on that
  *    command.
@@ -37,6 +39,12 @@ const README = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
 const LINES = README.split('\n');
 
 const verbOf = (args: string): string => args.split(/\s+/)[0];
+
+/** The number of words in `text` as `wc -w` counts them: runs of characters between whitespace. */
+const wordCount = (text: string): number => text.split(/\s+/).filter(Boolean).length;
+
+/** `wc -w README.md` on the commit before the section was added. */
+const README_WORDS_BEFORE_CHOOSER = 1216;
 
 /** Run the script on a README copy holding `text`; the copy lives in a temporary directory. */
 function runScript(mode: '--check' | '--write', text: string): { status: number | null; stdout: string; stderr: string; after: string } {
@@ -109,6 +117,12 @@ describe('README "What do you want to check?"', () => {
     const headingsAfter = LINES.slice(location.end + 1).filter((l) => l.startsWith('## '));
     expect(headingsAfter[0]).toBe('## What it finds');
     expect(headingsAfter).toContain('## Usage');
+  });
+
+  it('adds no words to the README: it holds no more than before the section was added', () => {
+    // Counted the way `wc -w` counts, markup and code included (non-vacuity first).
+    expect(wordCount('- **More.** `npx hackmyagent scan <host>`.\n<!-- chooser:end -->\n')).toBe(9);
+    expect(wordCount(README)).toBeLessThanOrEqual(README_WORDS_BEFORE_CHOOSER);
   });
 
   it('shows each choice with its command on the same line', () => {
