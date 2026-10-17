@@ -74,20 +74,37 @@ function materialized(omit: string[] = []): string {
   return target;
 }
 
-function runCli(args: string[], cwd: string) {
+function runCli(args: string[], cwd: string, extra: Record<string, string> = {}) {
   return spawnSync(process.execPath, [BUILT_CLI, ...args], {
     cwd,
     encoding: 'utf-8',
-    env: cleanEnv(),
+    env: cleanEnv(extra),
     timeout: 170_000,
   });
+}
+
+/**
+ * A directory holding a `ps` that lists no process, to put first on PATH.
+ * `detect` fills each project's agents list from `ps aux` and the machine-wide
+ * tool configs under HOME before it reads the project's own config files; with
+ * this stub and the scratch HOME, the list holds only what the project's own
+ * files evidence, which is what a clean CI runner reports.
+ */
+function noProcessPath(): string {
+  const dir = tempDir('hma-demo-agents-ps-');
+  fs.writeFileSync(
+    path.join(dir, 'ps'),
+    '#!/bin/sh\necho "USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND"\n',
+    { mode: 0o755 },
+  );
+  return `${dir}${path.delimiter}${process.env.PATH ?? ''}`;
 }
 
 interface DetectProject {
   scanDirectory: string;
   findings: { severity: string; title: string }[];
   aiConfigs: { file: string; risk: string }[];
-  agents: { governanceStatus: string }[];
+  agents: { name: string; source: string; governanceStatus: string }[];
   identity: { governanceFile: string | null };
   summary: { governanceScore: number; ungoverned: number };
 }
@@ -101,8 +118,8 @@ interface Row {
 }
 
 /** The per-project rows, computed the way the workspace table computes them. */
-function detectRows(root: string): { exit: number | null; projectsNeedingAction: number; projects: number; rows: Row[] } {
-  const res = runCli(['detect', root, '--json', '--no-contribute'], root);
+function detectRows(root: string, extra: Record<string, string> = {}): { exit: number | null; projectsNeedingAction: number; projects: number; rows: Row[] } {
+  const res = runCli(['detect', root, '--json', '--no-contribute'], root, extra);
   const report = JSON.parse(res.stdout) as {
     summary: { projects: number; projectsNeedingAction: number };
     projects: DetectProject[];
@@ -157,8 +174,35 @@ describe('demo-agents fixture', () => {
     expect(governed.identity.governanceFile).toBe('SOUL.md');
     expect(governed.summary.governanceScore).toBe(100);
     expect(governed.summary.ungoverned).toBe(0);
-    expect(governed.agents.length).toBeGreaterThan(0);
+    // release-notes-agent has none of the tool config files `detect` reads
+    // (.cursorrules, CLAUDE.md, .claude/settings.json and their peers), so its
+    // own files put no agent on the list. Whatever the list holds came from
+    // this machine (a running agent process or a tool config under HOME) and
+    // is judged against this project's SOUL.md: governed. On a machine running
+    // no agent process the list is empty; cell (f) pins that case.
+    expect(governed.aiConfigs).toEqual([]);
     expect(governed.agents.every((a) => a.governanceStatus === 'governed')).toBe(true);
+  });
+
+  it('(f) with a ps that lists no process, each row holds only the agents its own files evidence: release-notes-agent none, still governed 100/100', () => {
+    const quiet = detectRows(fixtureRoot, { PATH: noProcessPath() });
+    expect(quiet.projects).toBe(5);
+    expect(quiet.rows.map((r) => [r.name, r.verdict, r.cred])).toEqual(baseline.rows.map((r) => [r.name, r.verdict, r.cred]));
+    expect(quiet.projectsNeedingAction).toBe(4);
+    expect(quiet.exit).toBe(1);
+
+    const agentsOf = (name: string) => quiet.rows.find((r) => r.name === name)!.project.agents.map((a) => [a.name, a.source, a.governanceStatus]);
+    expect(agentsOf('deploy-runbook-agent')).toEqual([['Claude Code', '.claude/settings.json', 'no governance']]);
+    expect(agentsOf('invoice-reconciliation-agent')).toEqual([['Claude Code', '.claude/settings.json', 'no governance']]);
+    expect(agentsOf('hr-onboarding-assistant')).toEqual([['Cursor', '.cursorrules', 'no governance']]);
+    expect(agentsOf('support-triage-agent')).toEqual([]);
+    expect(agentsOf('release-notes-agent')).toEqual([]);
+
+    const governed = quiet.rows[4].project;
+    expect(governed.identity.governanceFile).toBe('SOUL.md');
+    expect(governed.summary.governanceScore).toBe(100);
+    expect(governed.summary.ungoverned).toBe(0);
+    expect(governed.aiConfigs).toEqual([]);
   });
 
   it('(b) secure reports a credential finding on each value line the rows name, FAKE marker included, and none for release-notes-agent', () => {
