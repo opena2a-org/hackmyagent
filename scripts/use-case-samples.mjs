@@ -92,12 +92,12 @@ export const SAMPLES = [
 
 const BOX_HEAD = /^ {2}│ (CRITICAL|HIGH|MEDIUM|LOW|INFO) {2}(.+)$/;
 const EXPLAINER_HEAD = /^ {2}│ ━━ Why .+ ━━/;
-const DOWNLOAD_NOTICE = [
+export const DOWNLOAD_NOTICE = [
   /^NanoMind: downloading the classifier model /,
   /^ {2}This happens once per cache;/,
   /^NanoMind: model downloaded and verified /,
 ];
-const DOWNLOAD_FAILED = /^NanoMind: model download failed/;
+export const DOWNLOAD_FAILED = /^NanoMind: model download failed/;
 const VERSION_LINE = /^( {2}Scanned with hackmyagent v)\S+$/;
 
 /** Every fenced block in `text`, with the offsets of its body. */

@@ -1,5 +1,5 @@
 {
-  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write.",
+  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write. An example runs its command in a copy of a committed fixture and declares the exit code; scripts/chooser-captures.mjs --write records the output in the capture file and how it was made in the sidecar beside it.",
   "question": "What do you want to check?",
   "invocation": "npx hackmyagent",
   "options": [
@@ -8,7 +8,13 @@
       "ask": "My own project, before I ship it",
       "run": "secure",
       "findingMeans": "Exit 1 is a critical or high finding to fix before you ship.",
-      "next": "secure --fix"
+      "next": "secure --fix",
+      "example": {
+        "fixture": "test-fixtures/insecure-library",
+        "args": "secure",
+        "exit": 1,
+        "capture": "docs/captures/own-project.txt"
+      }
     },
     {
       "id": "before-install",
@@ -16,7 +22,13 @@
       "run": "check <target>",
       "findingMeans": "Exit 1 is a high or critical risk.",
       "nextWhen": "for a local copy",
-      "next": "secure <dir> --fix"
+      "next": "secure <dir> --fix",
+      "example": {
+        "fixture": "test-fixtures/insecure-openclaw/skills",
+        "args": "check malicious-skill",
+        "exit": 1,
+        "capture": "docs/captures/before-install.txt"
+      }
     },
     {
       "id": "agent-endpoint",
@@ -48,13 +60,25 @@
       "id": "governance",
       "ask": "A SOUL.md governance file",
       "run": "scan-soul",
-      "findingMeans": "Exit 1 is a critical control not detected."
+      "findingMeans": "Exit 1 is a critical control not detected.",
+      "example": {
+        "fixture": "test/fixtures/governed-mcp",
+        "args": "scan-soul",
+        "exit": 1,
+        "capture": "docs/captures/governance.txt"
+      }
     },
     {
       "id": "attack-surface",
       "ask": "Attack payloads to run yourself against a skill, MCP config or SOUL.md",
       "run": "red-team <file>",
-      "findingMeans": "It does not run them, so it does not tell you whether the artifact resists."
+      "findingMeans": "It does not run them, so it does not tell you whether the artifact resists.",
+      "example": {
+        "fixture": "test-fixtures/insecure-openclaw/skills/malicious-skill",
+        "args": "red-team SKILL.md",
+        "exit": 2,
+        "capture": "docs/captures/attack-surface.txt"
+      }
     },
     {
       "id": "exposed-host",
