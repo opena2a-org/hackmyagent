@@ -324,6 +324,105 @@ describe('Integrity Verifier', () => {
   });
 
   // --------------------------------------------------------------------------
+  // First line of a #! file rewritten on install (#1145)
+  // --------------------------------------------------------------------------
+
+  describe('a rewritten first line of a #! file', () => {
+    // createFakePackage writes dist/cli.js as `#!/usr/bin/env node` and one
+    // line of code. Each case takes the manifest first, then rewrites the
+    // file the way a package manager rewrites an installed CLI.
+    function rewriteCli(pkgRoot: string, firstLine: string, rest = 'console.log("HMA");'): void {
+      writeFileSync(join(pkgRoot, 'dist', 'cli.js'), `${firstLine}\n${rest}`);
+    }
+
+    function verifyRewritten(firstLine: string, rest?: string) {
+      const pkgRoot = join(tempDir, 'pkg-rewritten');
+      createFakePackage(pkgRoot);
+      const manifest = createManifestFor(pkgRoot);
+      rewriteCli(pkgRoot, firstLine, rest);
+      return {
+        result: verifyAll({ packageRoot: pkgRoot, manifest, eventChainPath }),
+        pkgCheck: checkPackageIntegrity(pkgRoot, manifest),
+      };
+    }
+
+    it.each([
+      '#!/opt/homebrew/opt/node/bin/node',
+      '#!/usr/local/opt/node/bin/node',
+      '#!/home/linuxbrew/.linuxbrew/opt/node@22/bin/node',
+      '#!/nix/store/0abc-nodejs-22.11.0/bin/node',
+      '#!/usr/bin/nodejs',
+      '#!/data/data/com.termux/files/usr/bin/env node',
+      '#! /usr/bin/env node',
+    ])('passes when the first line is %s and the rest of the file is unchanged', (firstLine) => {
+      const { result, pkgCheck } = verifyRewritten(firstLine);
+
+      expect(result.status).toBe('CLEAN');
+      expect(pkgCheck).toEqual({ name: 'package_integrity', passed: true });
+    });
+
+    it.each([
+      '#!/bin/sh',
+      '#!/usr/bin/env bash',
+      '#!/usr/bin/python3',
+      '#!/usr/bin/env -S node --require ./preload.js',
+      '#!/usr/bin/env node --require ./preload.js',
+      '#!/opt/homebrew/opt/node/bin/node --import ./preload.mjs',
+      '#!node',
+    ])('reports cli.js when the first line is %s', (firstLine) => {
+      const { result, pkgCheck } = verifyRewritten(firstLine);
+
+      expect(result.status).toBe('QUARANTINE');
+      expect(pkgCheck.passed).toBe(false);
+      expect(pkgCheck.reason).toBe('1 files tampered: cli.js');
+    });
+
+    it('reports cli.js when the first line runs node and a later line changed', () => {
+      const { result, pkgCheck } = verifyRewritten('#!/opt/homebrew/opt/node/bin/node', 'console.log("changed");');
+
+      expect(result.status).toBe('QUARANTINE');
+      expect(pkgCheck.reason).toBe('1 files tampered: cli.js');
+    });
+
+    it('reports cli.js when its #! line is removed', () => {
+      const pkgRoot = join(tempDir, 'pkg-no-shebang');
+      createFakePackage(pkgRoot);
+      const manifest = createManifestFor(pkgRoot);
+      writeFileSync(join(pkgRoot, 'dist', 'cli.js'), 'console.log("HMA");');
+
+      const result = verifyAll({ packageRoot: pkgRoot, manifest, eventChainPath });
+
+      expect(result.status).toBe('QUARANTINE');
+      expect(checkPackageIntegrity(pkgRoot, manifest).reason).toBe('1 files tampered: cli.js');
+    });
+
+    it('reports a file built without a #! line when one that runs node is added in front of it', () => {
+      const pkgRoot = join(tempDir, 'pkg-added-shebang');
+      createFakePackage(pkgRoot);
+      const manifest = createManifestFor(pkgRoot);
+      writeFileSync(join(pkgRoot, 'dist', 'index.js'), '#!/opt/homebrew/opt/node/bin/node\nmodule.exports = {};');
+
+      const result = verifyAll({ packageRoot: pkgRoot, manifest, eventChainPath });
+
+      expect(result.status).toBe('QUARANTINE');
+      expect(checkPackageIntegrity(pkgRoot, manifest).reason).toBe('1 files tampered: index.js');
+    });
+
+    it('reports a #! file whose first line at build time was not #!/usr/bin/env node', () => {
+      const pkgRoot = join(tempDir, 'pkg-other-build-line');
+      createFakePackage(pkgRoot);
+      writeFileSync(join(pkgRoot, 'dist', 'cli.js'), '#!/usr/bin/env -S node --no-warnings\nconsole.log("HMA");');
+      const manifest = createManifestFor(pkgRoot);
+      rewriteCli(pkgRoot, '#!/opt/homebrew/opt/node/bin/node');
+
+      const result = verifyAll({ packageRoot: pkgRoot, manifest, eventChainPath });
+
+      expect(result.status).toBe('QUARANTINE');
+      expect(checkPackageIntegrity(pkgRoot, manifest).reason).toBe('1 files tampered: cli.js');
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Tamper-Evident Event Chain
   // --------------------------------------------------------------------------
 
