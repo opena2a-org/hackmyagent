@@ -14,7 +14,9 @@
  *    and the README line no version and no date: those live in the sidecar.
  *
  * It also holds the render scripts: each refuses to start when a metered key
- * is set, `--dry-run` prints what a render would use and write, then exits 0
+ * is set, both render the version in package.json (or a version passed to
+ * them) and stop when npm does not answer for it, `--dry-run` prints what a
+ * render would use and write, then exits 0
  * with docs/vhs as it was, and a render ends with the sidecar line (the
  * sidecar's path, sha256, build, wall clock and metered cost) or exits 1 when
  * the sidecar carries no measured wall clock or a cost other than 0. The
@@ -217,9 +219,10 @@ const SIDECAR_LINE = 'docs/vhs/sidecar-line.mjs';
 
 /**
  * The render scripts, with the tape each renders, the files it writes beside
- * the tape's own outputs, and the image a dry run names: record-secure.sh
- * names the image of the version in package.json, record-detect.sh the one
- * its header pins.
+ * the tape's own outputs, the image a dry run names (the one of the version in
+ * package.json, which npm has here), and the arguments that come before the
+ * tool version: record-secure.sh takes a tape name there, record-detect.sh a
+ * fixture checkout.
  */
 const RENDER_SCRIPTS = [
   {
@@ -228,9 +231,17 @@ const RENDER_SCRIPTS = [
   },
   {
     script: 'docs/vhs/record-detect.sh', tape: 'docs/vhs/detect.tape', capture: 'docs/vhs/detect-capture.txt',
-    sidecar: 'docs/vhs/detect.json', image: 'hma-vhs:0.33.0', takesFixture: true,
+    sidecar: 'docs/vhs/detect.json', image: `hma-vhs:${PACKAGE.version}`, takesFixture: true,
   },
 ];
+
+/** How the npm stand-in answers `view`: with an integrity, with E404, or not at all. */
+type NpmView = 'published' | 'not-published' | 'no-answer';
+const NPM_VIEW: Record<NpmView, string> = {
+  published: 'echo sha512-FAKE; exit 0',
+  'not-published': 'echo "npm error code E404" >&2; exit 1',
+  'no-answer': 'echo "npm error code ECONNREFUSED" >&2; exit 1',
+};
 
 /** Every path under `rel` with its size and modification time, so a write anywhere below it shows. */
 function treeState(rel: string): string[] {
@@ -249,10 +260,10 @@ function treeState(rel: string): string[] {
  * to a log. docker answers every call with `dockerStatus`: 1 by default, so an
  * image is never present and a build or a run fails the script; with 0 the
  * image is present and a run succeeds without writing anything. npm answers
- * `view` with an integrity and every other call with exit 1. The directory is
- * removed when the test that made it finishes.
+ * `view` as `npmView` says (with an integrity by default) and every other call
+ * with exit 1. The directory is removed when the test that made it finishes.
  */
-function stubs(dockerStatus = 1): { dir: string; log: string; env: Record<string, string> } {
+function stubs(dockerStatus = 1, npmView: NpmView = 'published'): { dir: string; log: string; env: Record<string, string> } {
   const dir = tempDir('hma-render-');
   const bin = path.join(dir, 'bin');
   const log = path.join(dir, 'calls.log');
@@ -260,7 +271,7 @@ function stubs(dockerStatus = 1): { dir: string; log: string; env: Record<string
   writeFileSync(path.join(bin, 'docker'), `#!/bin/sh\necho "docker $*" >> "$STUB_LOG"\nexit ${dockerStatus}\n`);
   writeFileSync(
     path.join(bin, 'npm'),
-    '#!/bin/sh\nif [ "$1" = view ]; then echo sha512-FAKE; exit 0; fi\necho "npm $*" >> "$STUB_LOG"\nexit 1\n',
+    `#!/bin/sh\nif [ "$1" = view ]; then ${NPM_VIEW[npmView]}; fi\necho "npm $*" >> "$STUB_LOG"\nexit 1\n`,
   );
   chmodSync(path.join(bin, 'docker'), 0o755);
   chmodSync(path.join(bin, 'npm'), 0o755);
@@ -325,6 +336,58 @@ describe.each(RENDER_SCRIPTS)('$script', (entry) => {
     expect(run.stdout).toContain(entry.image);
     if (fixture) expect(run.stdout).toContain(fixture.sha);
     expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toEqual([`docker image inspect ${entry.image}`]);
+    expect(treeState('docs/vhs')).toEqual(before);
+  });
+
+  /** The arguments before the tool version: the tape name, or a fixture checkout. */
+  const leadArgs = (dir: string, env: Record<string, string>): string[] =>
+    entry.takesFixture ? [fixtureCheckout(dir, env).path] : [path.basename(entry.tape, '.tape')];
+  const name = path.basename(entry.script);
+
+  it('--dry-run names the build it would install: the version in package.json, or the version passed after the other arguments', () => {
+    const { dir, log, env } = stubs();
+    const lead = leadArgs(dir, env);
+    for (const [args, version] of [[lead, PACKAGE.version], [[...lead, '0.33.0'], '0.33.0']] as const) {
+      const run = spawnSync('/bin/bash', [at(entry.script), '--dry-run', ...args], { env, encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain(`\nbuild:   hackmyagent ${version} from npm, integrity sha512-FAKE\n`);
+      expect(run.stdout).toContain(`\nimage:   hma-vhs:${version}, `);
+    }
+    expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toEqual([
+      `docker image inspect hma-vhs:${PACKAGE.version}`,
+      'docker image inspect hma-vhs:0.33.0',
+    ]);
+  });
+
+  it('refuses a version npm does not have when it is not the one in package.json, before docker or a write', () => {
+    const { dir, log, env } = stubs(1, 'not-published');
+    const lead = leadArgs(dir, env);
+    const before = treeState('docs/vhs');
+    for (const args of [['--dry-run', ...lead, '9.9.9'], [...lead, '9.9.9']]) {
+      const run = spawnSync('/bin/bash', [at(entry.script), ...args], { env, encoding: 'utf8' });
+      expect(run.status, args.join(' ')).toBe(1);
+      expect(run.stderr).toContain(
+        `${name}: hackmyagent 9.9.9 is not on npm and is not the version in package.json; nothing was rendered.`,
+      );
+      expect(run.stdout).toBe('');
+    }
+    expect(readFileSync(log, 'utf8')).toBe('');
+    expect(treeState('docs/vhs')).toEqual(before);
+  });
+
+  it('stops when npm does not answer whether the build is published, instead of reading that as not published', () => {
+    const { dir, log, env } = stubs(1, 'no-answer');
+    const lead = leadArgs(dir, env);
+    const before = treeState('docs/vhs');
+    for (const args of [['--dry-run', ...lead], lead]) {
+      const run = spawnSync('/bin/bash', [at(entry.script), ...args], { env, encoding: 'utf8' });
+      expect(run.status, args.join(' ')).toBe(1);
+      expect(run.stderr).toContain(
+        `${name}: npm did not answer whether hackmyagent ${PACKAGE.version} is published; nothing was rendered.`,
+      );
+      expect(run.stdout).toBe('');
+    }
+    expect(readFileSync(log, 'utf8')).toBe('');
     expect(treeState('docs/vhs')).toEqual(before);
   });
 
@@ -419,7 +482,8 @@ describe('docs/vhs/record-detect.sh', () => {
       env: gitFreeEnv(), encoding: 'utf8',
     });
     expect(last.stdout.trim().startsWith(named![1])).toBe(true);
-    expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toEqual(['docker image inspect hma-vhs:0.33.0']);
+    expect(run.stdout).toContain(`\nbuild:   hackmyagent ${PACKAGE.version} from npm, integrity sha512-FAKE\n`);
+    expect(readFileSync(log, 'utf8').split('\n').filter(Boolean)).toEqual([`docker image inspect hma-vhs:${PACKAGE.version}`]);
     // TMPDIR is the stubs' directory: a materialized copy would be a new entry in it.
     expect(readdirSync(dir).sort()).toEqual(['bin', 'calls.log']);
     expect(treeState('docs/vhs')).toEqual(before);

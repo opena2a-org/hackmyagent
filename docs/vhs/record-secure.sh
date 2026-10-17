@@ -209,41 +209,14 @@ fi
 PACKAGE_VERSION="$(node -p "require(process.argv[1]).version" "$REPO_ROOT/package.json")"
 VERSION="${2:-$PACKAGE_VERSION}"
 PACK_FILE=""
-PACKED_FROM=""
-VIEW_ERR="$(mktemp)"
-remove_scratch() {
-  rm -f "$VIEW_ERR"
+remove_pack() {
   if [ -n "$PACK_FILE" ]; then rm -f "$REPO_ROOT/docs/vhs/out/$PACK_FILE"; fi
 }
-trap remove_scratch EXIT
-# A version npm does not have is packed from this checkout; an npm that did not answer is not
-# read as "not published".
-if INTEGRITY="$(npm view "hackmyagent@$VERSION" dist.integrity 2>"$VIEW_ERR")"; then
-  :
-elif grep -q "E404" "$VIEW_ERR"; then
-  INTEGRITY=""
-else
-  echo "record-secure.sh: npm did not answer whether hackmyagent $VERSION is published; nothing was rendered." >&2
-  exit 1
-fi
-if [ -n "$INTEGRITY" ]; then
-  IMAGE="${HMA_VHS_IMAGE:-hma-vhs:$VERSION}"
-  BUILD_VERSION="$VERSION"
-  BUILD="hackmyagent $VERSION from npm, integrity $INTEGRITY"
-else
-  # Not on npm: pack this checkout. packedFromCommit names HEAD, so the packed sources must be HEAD's.
-  if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
-    echo "record-secure.sh: hackmyagent $VERSION is not on npm and is not the version in package.json; nothing was rendered." >&2
-    exit 1
-  fi
-  if [ ! -f "$REPO_ROOT/dist/cli.js" ] || [ -n "$(git -C "$REPO_ROOT" status --porcelain -- src package.json)" ]; then
-    echo "record-secure.sh: hackmyagent $VERSION is not on npm, so the checkout is packed: commit the changes under src/ and package.json, run \`npm run build\`, and run again; nothing was rendered." >&2
-    exit 1
-  fi
-  IMAGE="${HMA_VHS_IMAGE:-hma-vhs:no-build}"
-  BUILD_VERSION="none"
-  BUILD="hackmyagent $VERSION packed from this checkout at commit $(git -C "$REPO_ROOT" rev-parse HEAD)"
-fi
+trap remove_pack EXIT
+# The build: from npm when npm has the version, packed from this checkout when it does not.
+# shellcheck source=render-build.sh
+. "$REPO_ROOT/docs/vhs/render-build.sh"
+resolve_build record-secure.sh "$VERSION"
 # Changes to the fixture script that the next commit would not carry: an unstaged edit or an
 # untracked file counts, a fully staged one does not.
 FIXTURE_DIRTY="$(git -C "$REPO_ROOT" status --porcelain -- docs/vhs/setup-lab.sh | grep -cv "^[MA]  " || true)"
@@ -268,10 +241,7 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 mkdir -p "$REPO_ROOT/docs/vhs/out"
-if [ -z "$INTEGRITY" ]; then
-  PACK_FILE="$(cd "$REPO_ROOT" && npm pack --silent --pack-destination docs/vhs/out | tail -1)"
-  PACKED_FROM="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-fi
+pack_build
 if ! "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
   "$DOCKER" build --build-arg "HMA_VERSION=$BUILD_VERSION" -t "$IMAGE" "$REPO_ROOT/docs/vhs/docker"
 fi

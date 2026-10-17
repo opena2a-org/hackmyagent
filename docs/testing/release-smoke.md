@@ -635,10 +635,12 @@ frames and the capture by name. From the repository root,
 again; it exits 1 and prints no line when the sidecar carries no measured wall
 clock or a metered cost other than 0.
 
-`docs/vhs/record-detect.sh` still renders the hackmyagent build its image
-carries, 0.33.0, and not the version in `package.json`, so
-`docs/vhs/detect.json` stays at the version it was recorded with, and the test
-lists it with that reason.
+`docs/vhs/record-detect.sh` chooses the build as `record-secure.sh` does
+(`docs/vhs/render-build.sh`). With no argument it materializes
+`test-fixtures/demo-agents` into a temporary directory outside any work tree,
+renders the version being tagged over it, and ends with its sidecar line.
+Until such a render is committed, `docs/vhs/detect.json` stays at the version
+it was recorded with, and the test lists it with that reason.
 
 Fail the release if: a render exits non-zero, the version in the sidecar line is
 not the version being tagged, or `recording-sidecars.test.ts` fails.
