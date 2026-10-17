@@ -2,7 +2,7 @@ Full output behind the two README samples: `secure` in Quick start and `detect` 
 
 Tool:     hackmyagent 0.33.2, built from this repository and run as `node dist/cli.js`;
           the README shows the same commands as `npx hackmyagent`.
-Run at:   2026-10-10T04:11:29Z (secure); detect ran next, in the same container.
+Run at:   2026-10-17T17:37:33Z (secure); detect ran next, in the same container.
 Where:    node:22 Linux container, hostname `laptop`, fresh HOME=/home/dev, NO_COLOR=1,
           OPENA2A_TELEMETRY=off. One earlier `secure` run in the same container
           downloaded the NanoMind model, so neither run below prints the download notice.
@@ -188,7 +188,7 @@ NanoMind: 5 artifact(s) compiled, 3 semantic finding(s) added
   │ shell: can run any command on your computer
   │ Fix: hackmyagent secure support-agent
 
-  │ HIGH  1 AI agent without governance
+  │ HIGH  1 AI agent with governance gaps
   │ Claude Code (installed: .claude/settings.json) — CLAUDE.md is missing 2 critical control(s)
   │ Fix: hackmyagent harden-soul support-agent
 
@@ -200,7 +200,7 @@ NanoMind: 5 artifact(s) compiled, 3 semantic finding(s) added
   + 2 more — hackmyagent detect support-agent for the full report
 
   research-agent  1 high · 1 low
-  │ HIGH  1 AI agent without governance
+  │ HIGH  1 AI agent with governance gaps
   │ Cursor (installed: .cursorrules) — .cursorrules is missing 2 critical control(s)
   │ Fix: hackmyagent harden-soul research-agent
 
