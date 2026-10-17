@@ -1,0 +1,75 @@
+
+Scanning .../insecure-library...
+
+Discovering assembly components...
+Verifying applied fixes...
+
+  insecure-library-example  v1.0.0 · library · 3 files analyzed
+  2 high-severity issues found
+
+  Security  ━━━━━━━━━━━━━━━━━━━━ 69/100  (score capped from 78 to 69 — verdict is fail-direction)
+
+  ── Observations ────────────────────────────────────────────
+  Surfaces    library · 3 semantic artifacts · all 3 artifacts reached 2 of 7 analyzer families
+  Checks      261 static declared · 63 of 63 check groups ran · 3 semantic (NanoMind AST, 2 of 7 analyzer families) · 4 files read by static checks
+  Coverage    17 of 25 categories examined · 8 unexamined (read no file) · 36 checks reported an absent mitigation (not shown)
+  Unexamined  A2A, capabilities, governance, heartbeat, lifecycle, MCP, prompt, skill
+  Unresolved  sandbox
+  Categories  credentials (2 high) · supply-chain (1 medium) · 14 others clear
+  Verdict     Not safe as-is. Password embedded in URL in .env:4 + 2 more. Fix, then rescan.
+
+
+  ── Findings ────────────────────────────────────────────────
+  2 high  1 medium
+
+  │ HIGH  Password embedded in URL
+  │ .env:4
+  │ URL-embedded credentials are logged by proxies, shell history, and process listings. They bypass .env file protections and are easily leaked in stack traces.
+  │ Verify: sed -n '4p' .../insecure-library/.env
+  │ Fix: npx opena2a-cli protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.
+  │
+  │ ━━ Why the Secretless vault ━━ (shown once per scan)
+  │
+  │ Hardcoded credentials live in source, configs, and version control history
+  │ forever — even after you delete the line. The Secretless vault keeps them
+  │ out of process memory and out of AI context: the agent never reads the
+  │ value, only an opaque reference. If a prompt-injection convinces the agent
+  │ to exfiltrate environment variables, there is nothing to exfiltrate.
+  │
+  │ `npx opena2a-cli protect` migrates `.env` and config files into the vault and
+  │ replaces credential lines with vault references. Existing app code keeps
+  │ working — credentials still resolve at runtime via the vault adapter.
+
+  │ HIGH  Hardcoded secret in config
+  │ .env:5
+  │ .env files with hardcoded secrets should be gitignored. If this file is committed, the secret is exposed in version control history.
+  │ Verify: sed -n '5p' .../insecure-library/.env
+  │ Fix: Ensure .env is in .gitignore and rotate this credential.
+
+  │ MEDIUM  Dependency Lock File
+  │ package-lock.json
+  │ Without a lock file, npm install can resolve to different package versions on different machines, including versions with known vulnerabilities or supply-chain backdoors.
+
+  Path forward: 69 -> 94 by fixing 2 high
+
+  ── Next Steps ─────────────────────────────────────────────────
+  Protect credentials:  npx opena2a-cli protect .
+  Auto-fix all issues:  hackmyagent secure . --fix
+  AI analysis:          hackmyagent check . --nanomind  (attack vectors + targeted remediation)
+  All commands:         hackmyagent --help
+  opena2a is a separate CLI — install with: npm i -g opena2a-cli
+
+Fixed 2 issues (2 verified):
+  ✓✓ [PERM-001] .env - Sensitive File Permissions
+    → Changed permissions to 600
+  ✓✓ [GIT-002] .gitignore - Incomplete .gitignore
+
+2 remaining issues have fix guidance. Run `hackmyagent fix-all` to apply all available fixes.
+
+Backup created: ~/.opena2a/backups/<directory>/<run>
+  It holds a copy of each file a fix changed, taken just before the change, so it can hold a credential a fix removed. A file whose only change was its mode, such as a `.env` the permissions fix narrowed, is not copied: the backup records the mode it had. It is outside the scanned directory, so later scans do not report it, and deleting the scanned directory does not delete it. It stays until you delete it or `hackmyagent rollback` restores from it.
+Something wrong? Run `hackmyagent rollback .` to undo all changes.
+
+Backups: 1 --fix backup of this directory is kept outside it at ~/.opena2a/backups/<directory>. It holds a copy of each file a fix in that run changed, so it can hold a credential a fix removed, and it stays after this directory is deleted. Delete it once you no longer need `hackmyagent rollback`: rm -rf ~/.opena2a/backups/<directory>
+
+  Scanned with hackmyagent v<version>

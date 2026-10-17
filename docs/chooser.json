@@ -1,5 +1,5 @@
 {
-  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write. An example runs its command in a copy of a committed fixture and declares the exit code; scripts/chooser-captures.mjs --write records the output in the capture file and how it was made in the sidecar beside it.",
+  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write. An example runs its command in a copy of a committed fixture and declares the exit code, and a nextExample does the same for the next command; scripts/chooser-captures.mjs --write records the output in the capture file and how it was made in the sidecar beside it.",
   "question": "What do you want to check?",
   "invocation": "npx hackmyagent",
   "options": [
@@ -14,6 +14,12 @@
         "args": "secure",
         "exit": 1,
         "capture": "docs/captures/own-project.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/insecure-library",
+        "args": "secure --fix",
+        "exit": 1,
+        "capture": "docs/captures/own-project-next.txt"
       }
     },
     {
@@ -28,6 +34,12 @@
         "args": "check malicious-skill",
         "exit": 1,
         "capture": "docs/captures/before-install.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/insecure-openclaw/skills",
+        "args": "secure malicious-skill --fix",
+        "exit": 1,
+        "capture": "docs/captures/before-install-next.txt"
       }
     },
     {

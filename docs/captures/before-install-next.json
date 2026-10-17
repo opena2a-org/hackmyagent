@@ -1,0 +1,57 @@
+{
+  "about": "How docs/captures/before-install-next.txt was made, from the next command of the before-install entry of docs/chooser.json. scripts/chooser-captures.mjs writes both files; regenerate them with node scripts/chooser-captures.mjs --write.",
+  "choice": "before-install",
+  "command": "npx hackmyagent secure malicious-skill --fix",
+  "ranAs": "node dist/cli.js secure malicious-skill --fix",
+  "fixture": "test-fixtures/insecure-openclaw/skills",
+  "ranIn": "a copy of the fixture folder, under its own name, in a new temporary folder",
+  "exit": 1,
+  "environment": {
+    "HOME": "a new temporary folder",
+    "TMPDIR": "the temporary folder of the process that ran the script",
+    "LANG": "en_US.UTF-8",
+    "NO_COLOR": "1",
+    "OPENA2A_TELEMETRY": "off",
+    "passedThrough": [
+      "PATH",
+      "HTTPS_PROXY",
+      "https_proxy",
+      "HTTP_PROXY",
+      "http_proxy",
+      "NO_PROXY",
+      "no_proxy"
+    ]
+  },
+  "output": "standard output and standard error in one file, in the order the command wrote them",
+  "capture": "docs/captures/before-install-next.txt",
+  "normalizers": [
+    {
+      "id": "classifier-download",
+      "does": "Removes the NanoMind classifier download notice, which a run on an empty model cache prints and a later run does not."
+    },
+    {
+      "id": "temp-folder",
+      "does": "Prints the temporary folder that holds the fixture copy as \"...\", so a path reads \".../insecure-library/.env\"."
+    },
+    {
+      "id": "home-folder",
+      "does": "Prints the HOME folder of the run, a new temporary folder, as \"~\", so the --fix backup reads \"~/.opena2a/backups/...\"."
+    },
+    {
+      "id": "backup-store",
+      "does": "Prints the folder the --fix backup store keeps for the scanned directory as <directory> and the folder of this run's backup as <run>: the first is named from the device, inode and creation time of the fixture copy, the second from the time of the run and a random part."
+    },
+    {
+      "id": "tool-version",
+      "does": "Prints the version on the \"Scanned with hackmyagent\" line as <version>, so a release alone changes no capture."
+    },
+    {
+      "id": "duration",
+      "does": "Prints a \"Duration:\" count of milliseconds as <n>ms."
+    },
+    {
+      "id": "trailing-space",
+      "does": "Removes spaces and tabs at the end of each line."
+    }
+  ]
+}

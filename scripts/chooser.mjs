@@ -11,8 +11,10 @@
  * An entry may carry an `example`: the committed fixture folder its command
  * runs in, the command with each `<operand>` filled in (`args`), the exit code
  * that run ends with (`exit`) and the file its output is captured in
- * (`capture`). scripts/chooser-captures.mjs runs the examples; this script
- * only validates them.
+ * (`capture`, docs/captures/<id>.txt). An entry with a next command may also
+ * carry a `nextExample` of the same shape for that command, captured in
+ * docs/captures/<id>-next.txt. scripts/chooser-captures.mjs runs the
+ * examples; this script only validates them.
  *
  * README.md carries the rendering between a `<!-- chooser:start` line and a
  * `<!-- chooser:end -->` line, so the README and the data cannot drift apart:
@@ -61,20 +63,27 @@ export function fillsIn(run, args) {
 
 const FIXTURE = /^(?:test-fixtures|test)(?:\/[A-Za-z0-9._-]+)+$/;
 
-function exampleProblems(entry, at) {
-  const ex = entry.example;
-  if (ex === null || typeof ex !== 'object' || Array.isArray(ex)) return [`${at}.example: not an object`];
+/** The two example fields: the one for the entry's `run` and the one for its `next`, with the capture each names. */
+export const EXAMPLE_FIELDS = [
+  { field: 'example', command: 'run', capture: (id) => `docs/captures/${id}.txt` },
+  { field: 'nextExample', command: 'next', capture: (id) => `docs/captures/${id}-next.txt` },
+];
+
+function exampleProblems(entry, at, { field, command, capture }) {
+  const ex = entry[field];
+  const where = `${at}.${field}`;
+  if (ex === null || typeof ex !== 'object' || Array.isArray(ex)) return [`${where}: not an object`];
   const problems = [];
   if (typeof ex.fixture !== 'string' || !FIXTURE.test(ex.fixture) || ex.fixture.split('/').some((s) => s === '.' || s === '..')) {
-    problems.push(`${at}.example.fixture: missing or not a folder under test-fixtures/ or test/`);
+    problems.push(`${where}.fixture: missing or not a folder under test-fixtures/ or test/`);
   }
-  if (!isText(ex.args)) problems.push(`${at}.example.args: missing or not one line of text`);
-  else if (isText(entry.run) && !fillsIn(entry.run, ex.args)) {
-    problems.push(`${at}.example.args: "${ex.args}" is not "${entry.run}" with each <operand> filled in`);
+  if (!isText(ex.args)) problems.push(`${where}.args: missing or not one line of text`);
+  else if (isText(entry[command]) && !fillsIn(entry[command], ex.args)) {
+    problems.push(`${where}.args: "${ex.args}" is not "${entry[command]}" with each <operand> filled in`);
   }
-  if (![0, 1, 2].includes(ex.exit)) problems.push(`${at}.example.exit: missing or not 0, 1 or 2`);
-  if (typeof entry.id === 'string' && ex.capture !== `docs/captures/${entry.id}.txt`) {
-    problems.push(`${at}.example.capture: not docs/captures/${entry.id}.txt`);
+  if (![0, 1, 2].includes(ex.exit)) problems.push(`${where}.exit: missing or not 0, 1 or 2`);
+  if (typeof entry.id === 'string' && ex.capture !== capture(entry.id)) {
+    problems.push(`${where}.capture: not ${capture(entry.id)}`);
   }
   return problems;
 }
@@ -108,7 +117,11 @@ export function validateChooser(data) {
     if (entry.nextWhen !== undefined && (!needsNext || !isText(entry.nextWhen))) {
       problems.push(`${at}.nextWhen: only an entry under options has one, and it is one line of text`);
     }
-    if (entry.example !== undefined) problems.push(...exampleProblems(entry, at));
+    if (entry.example !== undefined) problems.push(...exampleProblems(entry, at, EXAMPLE_FIELDS[0]));
+    if (entry.nextExample !== undefined) {
+      if (needsNext) problems.push(...exampleProblems(entry, at, EXAMPLE_FIELDS[1]));
+      else problems.push(`${at}.nextExample: an entry under more has no next command`);
+    }
   }
   return problems;
 }
