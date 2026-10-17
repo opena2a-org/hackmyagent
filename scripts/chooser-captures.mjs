@@ -23,6 +23,13 @@
  * its standard input closes, so a server whose runner is killed does not keep
  * the port. test-fixtures/exposed-mcp-host/serve.mjs is one.
  *
+ * Each example runs the command a reader copies, options and their defaults
+ * included. `attack` waits 1000 ms after each payload unless `--delay` says
+ * otherwise, and its examples pass no `--delay`, so a run of
+ * `attack <url> --intensity aggressive` lasts at least 164 seconds, one for
+ * each payload it sends. A command that has not ended after RUN_LIMIT_MS is
+ * stopped and reported.
+ *
  * `detect` adds what it finds on the machine to every report: the processes
  * running there, which no fixture holds. A run of `detect` finds `ps` first
  * on PATH as a script that lists no process, so it reports what a machine
@@ -82,6 +89,9 @@ import { DATA, EXAMPLE_FIELDS, PORT_SLOT, commandLine, namesPort, validateChoose
 import { CLI, DOWNLOAD_FAILED, DOWNLOAD_NOTICE, seedClassifier } from './use-case-samples.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/** How long one example's command may run before it is stopped: above the 164 s the aggressive attack example waits between payloads. */
+export const RUN_LIMIT_MS = 240_000;
 
 /** Each normalizer: its id, the sentence a sidecar shows for it, and the rewrite. */
 export const NORMALIZERS = [
@@ -327,7 +337,7 @@ function stopServer(server) {
  * and the port the served-port normalizer replaces (none for a run without a
  * server).
  */
-export function runExample(item, { home, cli = CLI, timeoutMs = 150_000, serveStartMs = 10_000 }) {
+export function runExample(item, { home, cli = CLI, timeoutMs = RUN_LIMIT_MS, serveStartMs = 10_000 }) {
   const { entry, example: ex } = item;
   const source = path.join(REPO_ROOT, ex.fixture);
   if (!existsSync(source) || !statSync(source).isDirectory()) {
