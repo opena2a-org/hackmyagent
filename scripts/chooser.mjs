@@ -15,8 +15,10 @@
  * carry a `nextExample` of the same shape for that command, captured in
  * docs/captures/<id>-next.txt. An example whose command has the operand `-`
  * reads standard input, and names the file of its fixture it reads there
- * (`stdin`); no other example has one. scripts/chooser-captures.mjs runs the
- * examples; this script only validates them.
+ * (`stdin`); no other example has one. An example whose fixture is written at
+ * run time names the script of the fixture folder that writes it
+ * (`materialize`). scripts/chooser-captures.mjs runs the examples; this script
+ * only validates them.
  *
  * README.md carries the rendering between a `<!-- chooser:start` line and a
  * `<!-- chooser:end -->` line, so the README and the data cannot drift apart:
@@ -66,6 +68,11 @@ export function fillsIn(run, args) {
 const FIXTURE = /^(?:test-fixtures|test)(?:\/[A-Za-z0-9._-]+)+$/;
 const IN_FIXTURE = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
 
+/** True when `value` is the path of a file inside a fixture folder: relative, with no `.` or `..` segment. */
+function inFixture(value) {
+  return typeof value === 'string' && IN_FIXTURE.test(value) && !value.split('/').some((s) => s === '.' || s === '..');
+}
+
 /** True when `args` has the operand `-`, which reads standard input. */
 export function readsStdin(args) {
   return args.split(/\s+/).includes('-');
@@ -89,9 +96,12 @@ function exampleProblems(entry, at, { field, command, capture }) {
   else if (isText(entry[command]) && !fillsIn(entry[command], ex.args)) {
     problems.push(`${where}.args: "${ex.args}" is not "${entry[command]}" with each <operand> filled in`);
   }
+  if (ex.materialize !== undefined && !inFixture(ex.materialize)) {
+    problems.push(`${where}.materialize: not the path of a script inside the fixture folder`);
+  }
   const stdin = isText(ex.args) && readsStdin(ex.args);
   if (ex.stdin !== undefined) {
-    if (typeof ex.stdin !== 'string' || !IN_FIXTURE.test(ex.stdin) || ex.stdin.split('/').some((s) => s === '.' || s === '..')) {
+    if (!inFixture(ex.stdin)) {
       problems.push(`${where}.stdin: not the path of a file inside the fixture folder`);
     } else if (!stdin) {
       problems.push(`${where}.stdin: only a command with the operand - reads standard input`);

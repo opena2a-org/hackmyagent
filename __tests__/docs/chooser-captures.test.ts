@@ -4,8 +4,10 @@
  * exit code the run ends with, and a capture under docs/captures/ with a
  * sidecar beside it. A `nextExample` does the same for the choice's next
  * command. An example whose command has the operand `-` also names the file
- * of its fixture the run reads on standard input. A surface that shows a
- * choice shows that capture as what the command prints.
+ * of its fixture the run reads on standard input, and an example whose
+ * fixture is written at run time names the script of the fixture that writes
+ * it. A surface that shows a choice shows that capture as what the command
+ * prints.
  *
  * This suite holds:
  *
@@ -14,6 +16,8 @@
  *    its sidecar lists, is byte-equal to the capture;
  *  - each sidecar is the record scripts/chooser-captures.mjs renders for its
  *    example, and docs/captures holds nothing else;
+ *  - a fixture with a materialize script is the folder that script writes,
+ *    and a run of detect finds first on PATH a ps that lists no process;
  *  - each choice without an example, and each next command without one, is
  *    listed below with the reason.
  *
@@ -23,7 +27,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
@@ -49,19 +53,19 @@ const REGENERATE = 'regenerate with node scripts/chooser-captures.mjs --write';
 /** The choices with no example yet, each with the reason. A choice that gains one leaves this list. */
 const NO_EXAMPLE: Record<string, string> = {
   'agent-endpoint': 'attack needs a running agent endpoint to send its payloads to',
-  'every-project':
-    'detect adds machine-wide discovery (the host name and the assistants running on the machine) to every run, so its output is not a function of a fixture',
   'exposed-host': 'scan needs a host that serves MCP endpoints',
 };
 
 /** The next commands with no example yet, each with the reason. */
 const NO_NEXT_EXAMPLE: Record<string, string> = {
   'agent-endpoint': 'attack needs a running agent endpoint to send its payloads to',
-  'every-project':
-    'it is secure on one project detect listed, the command of the own-project choice with the project named; docs/captures/own-project.txt shows what secure prints',
 };
 
-interface Item { entry: { id: string }; step: 'run' | 'next'; example: { fixture: string; args: string; stdin?: string; exit: number; capture: string } }
+interface Item {
+  entry: { id: string };
+  step: 'run' | 'next';
+  example: { fixture: string; materialize?: string; args: string; stdin?: string; exit: number; capture: string };
+}
 const ITEMS: Item[] = examples(DATA);
 
 describe('docs/chooser.json examples', () => {
@@ -150,16 +154,97 @@ describe('docs/chooser.json examples', () => {
     );
   });
 
+  it('validation refuses a materialize script outside the fixture folder (non-vacuity)', () => {
+    const broken = structuredClone(DATA);
+    const every = broken.options.find((o: { id: string }) => o.id === 'every-project');
+    every.example.materialize = '../pr-body/pr-body.md';
+    every.nextExample.materialize = '/tmp/materialize.mjs';
+    expect(validateChooser(broken)).toEqual([
+      'options[4].example.materialize: not the path of a script inside the fixture folder',
+      'options[4].nextExample.materialize: not the path of a script inside the fixture folder',
+    ]);
+  });
+
+  it('an example whose materialize script is missing, or does not write its fixture, is refused before the command runs', () => {
+    const home = tempDir('hma-chooser-captures-home-');
+    const cli = path.join(ROOT, 'no-such-cli.js');
+    const item = (materialize: string) => ({
+      entry: { id: 'every-project' },
+      step: 'run',
+      example: { fixture: 'test-fixtures/demo-agents', materialize, args: 'detect', exit: 1, capture: 'docs/captures/every-project.txt' },
+    });
+    expect(() => runExample(item('no-such-script.mjs'), { home, cli })).toThrow(
+      'every-project: the fixture test-fixtures/demo-agents has no script no-such-script.mjs to write it with',
+    );
+    // README.md is a file of the fixture, and node exits 1 on it.
+    expect(() => runExample(item('README.md'), { home, cli })).toThrow(
+      'every-project: test-fixtures/demo-agents/README.md did not write the fixture: exit 1',
+    );
+  });
+
+  it('a run of detect finds first on PATH a ps that lists no process, in the folder the materialize script wrote; a run of another command finds the ps of the machine', () => {
+    // A stand-in for the CLI that prints the first ps on PATH, what it lists
+    // when the command is detect, and the folders of its working directory.
+    const cli = path.join(tempDir('hma-chooser-captures-cli-'), 'cli.cjs');
+    writeFileSync(
+      cli,
+      [
+        "const { execFileSync } = require('node:child_process');",
+        "const fs = require('node:fs');",
+        "const path = require('node:path');",
+        "const ps = (process.env.PATH ?? '').split(path.delimiter).map((d) => path.join(d, 'ps')).find((f) => fs.existsSync(f));",
+        'process.stdout.write(`ps: ${ps}\\n`);',
+        "if (process.argv[2] === 'detect') process.stdout.write(execFileSync(ps, ['aux'], { encoding: 'utf8' }));",
+        "process.stdout.write(`folders: ${fs.readdirSync('.').filter((n) => fs.statSync(n).isDirectory()).sort().join(' ')}\\n`);",
+        '',
+      ].join('\n'),
+    );
+    const home = tempDir('hma-chooser-captures-home-');
+    const every = ITEMS.find((i) => i.entry.id === 'every-project' && i.step === 'run')!;
+    const next = ITEMS.find((i) => i.entry.id === 'every-project' && i.step === 'next')!;
+    const folders = 'folders: deploy-runbook-agent hr-onboarding-assistant invoice-reconciliation-agent release-notes-agent support-triage-agent';
+
+    const detect = runExample(every, { home, cli });
+    expect(detect.status).toBe(0);
+    expect(normalize(detect.raw, ['temp-folder'], detect)).toBe(
+      `ps: .../bin/ps\nUSER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND\n${folders}\n`,
+    );
+
+    const secure = runExample(next, { home, cli });
+    expect(secure.status).toBe(0);
+    const [psLine, ...rest] = normalize(secure.raw, ['temp-folder'], secure).split('\n');
+    expect(psLine).toMatch(/^ps: \//);
+    expect(rest).toEqual([folders, '']);
+  });
+
+  it('the sidecar of a detect run records the ps it found, and the sidecar of a materialized fixture names the script that wrote it', () => {
+    const every = ITEMS.find((i) => i.entry.id === 'every-project' && i.step === 'run')!;
+    const next = ITEMS.find((i) => i.entry.id === 'every-project' && i.step === 'next')!;
+    const own = ITEMS.find((i) => i.entry.id === 'own-project' && i.step === 'run')!;
+    const ps = (item: Item) => JSON.parse(renderSidecar(DATA, item)).environment.ps;
+    expect(ps(every)).toMatch(/^first on PATH, a script that lists no process/);
+    expect(ps(next)).toBeUndefined();
+    expect(ps(own)).toBeUndefined();
+    expect(JSON.parse(renderSidecar(DATA, next)).ranIn).toBe(
+      "the folder test-fixtures/demo-agents/materialize.mjs writes, under the fixture's own name, in a new temporary folder",
+    );
+    expect(JSON.parse(renderSidecar(DATA, own)).ranIn).toBe('a copy of the fixture folder, under its own name, in a new temporary folder');
+  });
+
   it('the command of an example that reads standard input names the file it reads there, and the others are the command alone', () => {
     const text = DATA.options.find((o: { id: string }) => o.id === 'one-text');
     expect(exampleCommand(DATA, text.nextExample)).toBe('npx hackmyagent scan-text - --as pr-body --json < pr-body.md');
     expect(exampleCommand(DATA, text.example)).toBe('npx hackmyagent scan-text pr-body.md');
   });
 
-  it('a run with --fix also takes home-folder and backup-store, a run with --json also takes json-version, and a run with neither takes the five it always took', () => {
+  it('a run with --fix also takes home-folder and backup-store, a run with --json also takes json-version, a run of detect also takes host-name, and any other run takes the five it always took', () => {
     const always = ['classifier-download', 'temp-folder', 'tool-version', 'duration', 'trailing-space'];
     expect(normalizersFor('secure').map((n: { id: string }) => n.id)).toEqual(always);
     expect(normalizersFor('red-team SKILL.md').map((n: { id: string }) => n.id)).toEqual(always);
+    expect(normalizersFor('secure deploy-runbook-agent').map((n: { id: string }) => n.id)).toEqual(always);
+    expect(normalizersFor('detect').map((n: { id: string }) => n.id)).toEqual([
+      'classifier-download', 'temp-folder', 'host-name', 'tool-version', 'duration', 'trailing-space',
+    ]);
     expect(normalizersFor('secure malicious-skill --fix').map((n: { id: string }) => n.id)).toEqual([
       'classifier-download', 'temp-folder', 'home-folder', 'backup-store', 'tool-version', 'duration', 'trailing-space',
     ]);
@@ -173,6 +258,19 @@ describe('docs/chooser.json examples', () => {
     expect(normalize(raw, ['json-version'])).toBe(
       ['{', '  "hackmyagentVersion": "<version>",', '  "surface": "pr-body",', '  "note": "hackmyagentVersion 0.33.2"', '}'].join('\n'),
     );
+  });
+
+  it('host-name prints the machine name on the shadow ai audit line as <host> and leaves the other lines alone', () => {
+    const raw = [
+      '  demo-agents  shadow ai audit · build-host-17.local · 2 agents · 5 agent projects',
+      '  deploy-runbook-agent  shadow ai audit · build-host-17',
+      '  build-host-17.local is named here and kept',
+    ].join('\n');
+    expect(normalize(raw, ['host-name'])).toBe([
+      '  demo-agents  shadow ai audit · <host> · 2 agents · 5 agent projects',
+      '  deploy-runbook-agent  shadow ai audit · <host>',
+      '  build-host-17.local is named here and kept',
+    ].join('\n'));
   });
 
   it('home-folder and backup-store print the --fix backup lines without the run\'s HOME or the store\'s generated names', () => {

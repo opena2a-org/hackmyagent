@@ -1,5 +1,5 @@
 {
-  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write. An example runs its command in a copy of a committed fixture and declares the exit code, and a nextExample does the same for the next command. An example whose command has the operand - names the fixture file it reads on standard input in stdin. scripts/chooser-captures.mjs --write records the output in the capture file and how it was made in the sidecar beside it.",
+  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write. An example runs its command in a copy of a committed fixture and declares the exit code, and a nextExample does the same for the next command. An example whose command has the operand - names the fixture file it reads on standard input in stdin. An example whose fixture is written at run time names the script of the fixture folder that writes it in materialize. scripts/chooser-captures.mjs --write records the output in the capture file and how it was made in the sidecar beside it.",
   "question": "What do you want to check?",
   "invocation": "npx hackmyagent",
   "options": [
@@ -77,7 +77,21 @@
       "run": "detect",
       "findingMeans": "Exit 1 is a high or critical finding in one of them.",
       "nextWhen": "for one project",
-      "next": "secure <project>"
+      "next": "secure <project>",
+      "example": {
+        "fixture": "test-fixtures/demo-agents",
+        "materialize": "materialize.mjs",
+        "args": "detect",
+        "exit": 1,
+        "capture": "docs/captures/every-project.txt"
+      },
+      "nextExample": {
+        "fixture": "test-fixtures/demo-agents",
+        "materialize": "materialize.mjs",
+        "args": "secure deploy-runbook-agent",
+        "exit": 1,
+        "capture": "docs/captures/every-project-next.txt"
+      }
     }
   ],
   "more": [
