@@ -17,10 +17,13 @@ import { didProcessScanFail, scanProcesses } from '../../src/scanner/detect';
 import { NemoClawScanner } from '../../src/hardening/nemoclaw-scanner';
 
 const ONE_MIB = 1024 * 1024;
-// macOS caps a command line and its environment together at 1 MiB, so the
-// listing is made large with several processes rather than one.
-const PADDING = 'x'.repeat(450_000);
-const PADDED_PROCESSES = 3;
+// Linux refuses one argument longer than 128 KiB (spawn fails with E2BIG),
+// and macOS caps a command line and its environment together at 1 MiB. So
+// each process carries one argument under the smaller cap, and enough of
+// them are started for the listing to pass 1 MiB on either: ten processes of
+// 120,000 bytes each put 1.2 MB of command lines in it.
+const PADDING = 'x'.repeat(120_000);
+const PADDED_PROCESSES = 10;
 
 const started: ChildProcess[] = [];
 
