@@ -10,7 +10,15 @@
  * `node dist/cli.js <args>` inside that copy, and holds the run to three
  * files. An example whose `args` have the operand `-` names the file of the
  * fixture the run reads on standard input (`stdin`); every other run reads
- * nothing there.
+ * nothing there. An example that names a `materialize` script of its fixture
+ * is not copied: the script writes the fixture into that folder instead, as
+ * test-fixtures/demo-agents/materialize.mjs does for the projects whose fake
+ * credentials are not committed whole.
+ *
+ * `detect` adds what it finds on the machine to every report: the processes
+ * running there, which no fixture holds. A run of `detect` finds `ps` first
+ * on PATH as a script that lists no process, so it reports what a machine
+ * running no AI tool reports; the sidecar of such a run says so.
  *
  *   - docs/chooser.json: the run ends with the exit code the example declares;
  *   - the capture: standard output and standard error, in the order the CLI
@@ -26,6 +34,7 @@
  *   temp-folder          the temporary folder holding the fixture copy prints as `...`
  *   home-folder          (--fix runs) the HOME folder of the run prints as `~`
  *   backup-store         (--fix runs) the backup folder names print as `<directory>` and `<run>`
+ *   host-name            (detect runs) the machine name on the `shadow ai audit` line prints as `<host>`
  *   tool-version         the version on the `Scanned with hackmyagent` line prints as `<version>`
  *   json-version         (--json runs) the `hackmyagentVersion` value prints as `<version>`
  *   duration             a `Duration:` count of milliseconds prints as `<n>ms`
@@ -34,8 +43,8 @@
  * A run whose `args` include `--fix` keeps a backup of the files it changed in
  * a store under HOME and prints where; home-folder and backup-store apply to
  * those runs only, so the record of a run that prints no backup lists neither.
- * json-version applies to runs whose `args` include `--json` only, for the
- * same reason.
+ * json-version applies to runs whose `args` include `--json` only, and
+ * host-name to runs of `detect` only, for the same reason.
  *
  * Usage (after `npm run build`):
  *   node scripts/chooser-captures.mjs           compare every capture and sidecar with a fresh run
@@ -47,8 +56,8 @@
  *
  * Exit codes: 0 every exit code, capture and sidecar matches (or was
  * written), 1 one of them differs, 2 nothing could be compared (no build,
- * invalid data, a missing fixture, the classifier could not be fetched, an
- * unknown argument).
+ * invalid data, a missing fixture, a materialize script that did not write
+ * its fixture, the classifier could not be fetched, an unknown argument).
  */
 import { spawnSync } from 'node:child_process';
 import {
@@ -97,6 +106,12 @@ export const NORMALIZERS = [
       ),
   },
   {
+    id: 'host-name',
+    detectOnly: true,
+    does: 'Prints the name of the machine on the "shadow ai audit" header line as <host>.',
+    apply: (text) => text.replace(/^(.* shadow ai audit · )[^\s·]+/gm, '$1<host>'),
+  },
+  {
     id: 'tool-version',
     does: 'Prints the version on the "Scanned with hackmyagent" line as <version>, so a release alone changes no capture.',
     apply: (text) => text.replace(/^( *Scanned with hackmyagent v)\S+$/gm, '$1<version>'),
@@ -124,8 +139,17 @@ export function normalizersFor(args) {
   const words = args.split(/\s+/);
   const fix = words.includes('--fix');
   const json = words.includes('--json');
-  return NORMALIZERS.filter((n) => (fix || !n.fixOnly) && (json || !n.jsonOnly));
+  const detect = readsProcessList(args);
+  return NORMALIZERS.filter((n) => (fix || !n.fixOnly) && (json || !n.jsonOnly) && (detect || !n.detectOnly));
 }
+
+/** True when the command of `args` is `detect`, which adds the processes running on the machine to its report. */
+export function readsProcessList(args) {
+  return args.split(/\s+/)[0] === 'detect';
+}
+
+/** The `ps` a run of `detect` finds first on PATH: the header line of `ps aux`, and no process. */
+const NO_PROCESS_PS = '#!/bin/sh\necho "USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND"\n';
 
 /**
  * The command line a reader types to make the example's output: the command,
@@ -187,13 +211,18 @@ export function renderSidecar(data, item) {
     ranAs: `node dist/cli.js ${ex.args}${stdinRedirect(ex)}`,
     fixture: ex.fixture,
     ...(ex.stdin === undefined ? {} : { stdin: `${ex.stdin}, a file of the fixture, read on standard input` }),
-    ranIn: 'a copy of the fixture folder, under its own name, in a new temporary folder',
+    ranIn: ex.materialize === undefined
+      ? 'a copy of the fixture folder, under its own name, in a new temporary folder'
+      : `the folder ${ex.fixture}/${ex.materialize} writes, under the fixture's own name, in a new temporary folder`,
     exit: ex.exit,
     environment: {
       HOME: 'a new temporary folder',
       TMPDIR: 'the temporary folder of the process that ran the script',
       ...SET,
       passedThrough: PASSED_THROUGH,
+      ...(readsProcessList(ex.args)
+        ? { ps: 'first on PATH, a script that lists no process, so the run reports no AI tool running on the machine that made it' }
+        : {}),
     },
     output: 'standard output and standard error in one file, in the order the command wrote them',
     capture: ex.capture,
@@ -203,12 +232,32 @@ export function renderSidecar(data, item) {
 }
 
 /**
- * Run `item`, one of `examples(data)`, against a fresh copy of its fixture,
- * with `home` as HOME and, when the example names one, the copy's `stdin`
- * file on standard input. Pass one HOME to every run so the classifier is
- * fetched at most once. Returns the exit status, the raw output, whether the
- * classifier could be used, the temporary folders the temp-folder normalizer
- * replaces and the HOME folders the home-folder normalizer replaces.
+ * Write the fixture of `item` into `dir` with the fixture's `materialize`
+ * script, which takes the folder to write as its one argument and exits 0
+ * when it wrote it.
+ */
+function materializeFixture(item, source, dir, env) {
+  const { entry, example: ex } = item;
+  const script = path.join(source, ex.materialize);
+  if (!existsSync(script) || !statSync(script).isFile()) {
+    throw new Error(`${entry.id}: the fixture ${ex.fixture} has no script ${ex.materialize} to write it with`);
+  }
+  const r = spawnSync(process.execPath, [script, dir], { encoding: 'utf8', env, timeout: 60_000 });
+  if (r.error || r.status !== 0) {
+    const why = r.error?.message ?? (r.status === null ? r.signal : `exit ${r.status}: ${r.stderr.trim().split('\n')[0]}`);
+    throw new Error(`${entry.id}: ${ex.fixture}/${ex.materialize} did not write the fixture: ${why}`);
+  }
+}
+
+/**
+ * Run `item`, one of `examples(data)`, against a fresh copy of its fixture
+ * (or the folder its `materialize` script writes), with `home` as HOME and,
+ * when the example names one, the copy's `stdin` file on standard input. A
+ * run of `detect` finds a `ps` that lists no process first on PATH. Pass one
+ * HOME to every run so the classifier is fetched at most once. Returns the
+ * exit status, the raw output, whether the classifier could be used, the
+ * temporary folders the temp-folder normalizer replaces and the HOME folders
+ * the home-folder normalizer replaces.
  */
 export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
   const { entry, example: ex } = item;
@@ -218,8 +267,21 @@ export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
   }
   const parent = mkdtempSync(path.join(os.tmpdir(), 'hma-chooser-'));
   try {
+    const env = {
+      ...Object.fromEntries(PASSED_THROUGH.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
+      HOME: home,
+      TMPDIR: os.tmpdir(),
+      ...SET,
+    };
     const dir = path.join(parent, path.basename(ex.fixture));
-    cpSync(source, dir, { recursive: true });
+    if (ex.materialize === undefined) cpSync(source, dir, { recursive: true });
+    else materializeFixture(item, source, dir, env);
+    if (readsProcessList(ex.args)) {
+      const bin = path.join(parent, 'bin');
+      mkdirSync(bin);
+      writeFileSync(path.join(bin, 'ps'), NO_PROCESS_PS, { mode: 0o755 });
+      env.PATH = `${bin}${path.delimiter}${env.PATH ?? ''}`;
+    }
     let input = 'ignore';
     if (ex.stdin !== undefined) {
       const file = path.join(dir, ex.stdin);
@@ -236,12 +298,7 @@ export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
         cwd: dir,
         stdio: [input, fd, fd],
         timeout: timeoutMs,
-        env: {
-          ...Object.fromEntries(PASSED_THROUGH.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
-          HOME: home,
-          TMPDIR: os.tmpdir(),
-          ...SET,
-        },
+        env,
       });
     } finally {
       closeSync(fd);
