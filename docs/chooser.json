@@ -1,0 +1,66 @@
+{
+  "about": "Which command to run for what you want to check. README.md renders this file between its chooser markers with scripts/chooser.mjs; edit it here, then run node scripts/chooser.mjs --write.",
+  "question": "What do you want to check?",
+  "invocation": "npx hackmyagent",
+  "options": [
+    {
+      "id": "own-project",
+      "ask": "My own project, before I ship it",
+      "run": "secure",
+      "findingMeans": "Exit 1 is a critical or high finding to fix before you ship.",
+      "next": "secure --fix"
+    },
+    {
+      "id": "before-install",
+      "ask": "A package, repository or skill, before I install it",
+      "run": "check <target>",
+      "findingMeans": "Exit 1 is a high or critical risk.",
+      "nextWhen": "for a local copy",
+      "next": "secure <dir> --fix"
+    },
+    {
+      "id": "agent-endpoint",
+      "ask": "A running agent endpoint you own",
+      "run": "attack <url>",
+      "findingMeans": "Exit 1 is a payload that succeeded; exit 2 means nothing answered.",
+      "nextWhen": "with every payload",
+      "next": "attack <url> --intensity aggressive"
+    },
+    {
+      "id": "one-text",
+      "ask": "One text, such as a pull request body",
+      "run": "scan-text <file>",
+      "findingMeans": "Exit 1 is a high or critical line that overrides instructions or claims authority.",
+      "nextWhen": "in a pipeline",
+      "next": "scan-text - --as pr-body --json"
+    },
+    {
+      "id": "every-project",
+      "ask": "Every agent project under this folder",
+      "run": "detect",
+      "findingMeans": "Exit 1 is a high or critical finding in one of them.",
+      "nextWhen": "for one project",
+      "next": "secure <project>"
+    }
+  ],
+  "more": [
+    {
+      "id": "governance",
+      "ask": "A SOUL.md governance file",
+      "run": "scan-soul",
+      "findingMeans": "Exit 1 is a critical control not detected."
+    },
+    {
+      "id": "attack-surface",
+      "ask": "Attack payloads to run yourself against a skill, MCP config or SOUL.md",
+      "run": "red-team <file>",
+      "findingMeans": "It does not run them, so it does not tell you whether the artifact resists."
+    },
+    {
+      "id": "exposed-host",
+      "ask": "MCP endpoints a host you own exposes",
+      "run": "scan <host>",
+      "findingMeans": "Exit 1 is a critical or high exposure."
+    }
+  ]
+}

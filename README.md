@@ -39,6 +39,17 @@ npx hackmyagent secure
 
 No config file or flag is needed. `[...]` marks omitted lines. The full output, the sample workspace and the build that produced it are in [docs/quick-start-capture.txt](docs/quick-start-capture.txt). The run exits 1 because a critical or high finding fired.
 
+<!-- chooser:start docs/chooser.json -->
+## What do you want to check?
+
+- **My own project, before I ship it:** `npx hackmyagent secure`. Next: `npx hackmyagent secure --fix`.
+- **A package, repository or skill, before I install it:** `npx hackmyagent check <target>`. Next, for a local copy: `npx hackmyagent secure <dir> --fix`.
+- **A running agent endpoint you own:** `npx hackmyagent attack <url>`. Next, with every payload: `npx hackmyagent attack <url> --intensity aggressive`.
+- **One text, such as a pull request body:** `npx hackmyagent scan-text <file>`. Next, in a pipeline: `npx hackmyagent scan-text - --as pr-body --json`.
+- **Every agent project under this folder:** `npx hackmyagent detect`. Next, for one project: `npx hackmyagent secure <project>`.
+- **More.** A SOUL.md governance file: `npx hackmyagent scan-soul`. Attack payloads to run yourself against a skill, MCP config or SOUL.md: `npx hackmyagent red-team <file>`. MCP endpoints a host you own exposes: `npx hackmyagent scan <host>`.
+<!-- chooser:end -->
+
 ## What it finds
 
 - **Shadow AI**: the AI assistants, MCP servers and agent projects on a machine (`detect`). Example: `1 project MCP server with sensitive access`.
