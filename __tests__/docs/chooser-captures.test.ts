@@ -3,8 +3,9 @@
  * fixture its command runs in, the command with its operands filled in, the
  * exit code the run ends with, and a capture under docs/captures/ with a
  * sidecar beside it. A `nextExample` does the same for the choice's next
- * command. A surface that shows a choice shows that capture as what the
- * command prints.
+ * command. An example whose command has the operand `-` also names the file
+ * of its fixture the run reads on standard input. A surface that shows a
+ * choice shows that capture as what the command prints.
  *
  * This suite holds:
  *
@@ -26,10 +27,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
-import { commandLine, validateChooser } from '../../scripts/chooser.mjs';
+import { validateChooser } from '../../scripts/chooser.mjs';
 import {
   NORMALIZERS,
   compareText,
+  exampleCommand,
   examples,
   normalize,
   normalizersFor,
@@ -47,7 +49,6 @@ const REGENERATE = 'regenerate with node scripts/chooser-captures.mjs --write';
 /** The choices with no example yet, each with the reason. A choice that gains one leaves this list. */
 const NO_EXAMPLE: Record<string, string> = {
   'agent-endpoint': 'attack needs a running agent endpoint to send its payloads to',
-  'one-text': 'no committed fixture is a pull request body',
   'every-project':
     'detect adds machine-wide discovery (the host name and the assistants running on the machine) to every run, so its output is not a function of a fixture',
   'exposed-host': 'scan needs a host that serves MCP endpoints',
@@ -56,12 +57,11 @@ const NO_EXAMPLE: Record<string, string> = {
 /** The next commands with no example yet, each with the reason. */
 const NO_NEXT_EXAMPLE: Record<string, string> = {
   'agent-endpoint': 'attack needs a running agent endpoint to send its payloads to',
-  'one-text': 'scan-text - reads the text on standard input, and no committed fixture is a pull request body',
   'every-project':
     'it is secure on one project detect listed, the command of the own-project choice with the project named; docs/captures/own-project.txt shows what secure prints',
 };
 
-interface Item { entry: { id: string }; step: 'run' | 'next'; example: { fixture: string; args: string; exit: number; capture: string } }
+interface Item { entry: { id: string }; step: 'run' | 'next'; example: { fixture: string; args: string; stdin?: string; exit: number; capture: string } }
 const ITEMS: Item[] = examples(DATA);
 
 describe('docs/chooser.json examples', () => {
@@ -126,13 +126,53 @@ describe('docs/chooser.json examples', () => {
     ]);
   });
 
-  it('a run with --fix also takes home-folder and backup-store, and a run without takes the five it always took', () => {
+  it('validation refuses an example that reads standard input with no stdin file, a stdin file on a command that does not read it, and a stdin path outside the fixture (non-vacuity)', () => {
+    const broken = structuredClone(DATA);
+    const text = broken.options.find((o: { id: string }) => o.id === 'one-text');
+    delete text.nextExample.stdin;
+    text.example.stdin = 'pr-body.md';
+    broken.options.find((o: { id: string }) => o.id === 'own-project').example.stdin = '../insecure-api/config.json';
+    expect(validateChooser(broken)).toEqual([
+      'options[0].example.stdin: not the path of a file inside the fixture folder',
+      'options[3].example.stdin: only a command with the operand - reads standard input',
+      'options[3].nextExample.stdin: missing; the operand - reads standard input, so the example names the fixture file it reads',
+    ]);
+  });
+
+  it('an example whose stdin file is not in its fixture is refused before anything runs', () => {
+    const item = {
+      entry: { id: 'one-text' },
+      step: 'next',
+      example: { fixture: 'test-fixtures/pr-body', args: 'scan-text - --json', stdin: 'no-such-file.md', exit: 1, capture: 'docs/captures/one-text-next.txt' },
+    };
+    expect(() => runExample(item, { home: tempDir('hma-chooser-captures-home-'), cli: path.join(ROOT, 'no-such-cli.js') })).toThrow(
+      'one-text: the fixture test-fixtures/pr-body has no file no-such-file.md to read on standard input',
+    );
+  });
+
+  it('the command of an example that reads standard input names the file it reads there, and the others are the command alone', () => {
+    const text = DATA.options.find((o: { id: string }) => o.id === 'one-text');
+    expect(exampleCommand(DATA, text.nextExample)).toBe('npx hackmyagent scan-text - --as pr-body --json < pr-body.md');
+    expect(exampleCommand(DATA, text.example)).toBe('npx hackmyagent scan-text pr-body.md');
+  });
+
+  it('a run with --fix also takes home-folder and backup-store, a run with --json also takes json-version, and a run with neither takes the five it always took', () => {
     const always = ['classifier-download', 'temp-folder', 'tool-version', 'duration', 'trailing-space'];
     expect(normalizersFor('secure').map((n: { id: string }) => n.id)).toEqual(always);
     expect(normalizersFor('red-team SKILL.md').map((n: { id: string }) => n.id)).toEqual(always);
     expect(normalizersFor('secure malicious-skill --fix').map((n: { id: string }) => n.id)).toEqual([
       'classifier-download', 'temp-folder', 'home-folder', 'backup-store', 'tool-version', 'duration', 'trailing-space',
     ]);
+    expect(normalizersFor('scan-text - --as pr-body --json').map((n: { id: string }) => n.id)).toEqual([
+      'classifier-download', 'temp-folder', 'tool-version', 'json-version', 'duration', 'trailing-space',
+    ]);
+  });
+
+  it('json-version prints the hackmyagentVersion value as <version> and leaves the other lines alone', () => {
+    const raw = ['{', '  "hackmyagentVersion": "0.33.2",', '  "surface": "pr-body",', '  "note": "hackmyagentVersion 0.33.2"', '}'].join('\n');
+    expect(normalize(raw, ['json-version'])).toBe(
+      ['{', '  "hackmyagentVersion": "<version>",', '  "surface": "pr-body",', '  "note": "hackmyagentVersion 0.33.2"', '}'].join('\n'),
+    );
   });
 
   it('home-folder and backup-store print the --fix backup lines without the run\'s HOME or the store\'s generated names', () => {
@@ -211,7 +251,7 @@ describe('docs/chooser.json examples', () => {
     for (const item of ITEMS) {
       const ex = item.example;
       const id = `${item.entry.id}${item.step === 'next' ? ' (next)' : ''}`;
-      it(`${id}: ${commandLine(DATA, ex.args)} in ${ex.fixture} exits ${ex.exit} and prints ${ex.capture}`, (ctx) => {
+      it(`${id}: ${exampleCommand(DATA, ex)} in ${ex.fixture} exits ${ex.exit} and prints ${ex.capture}`, (ctx) => {
         const sidecar = readFileSync(path.join(ROOT, sidecarPath(ex.capture)), 'utf8');
         expect(sidecar, `${sidecarPath(ex.capture)} is not the record of this example; ${REGENERATE}`).toBe(renderSidecar(DATA, item));
 

@@ -13,7 +13,9 @@
  * that run ends with (`exit`) and the file its output is captured in
  * (`capture`, docs/captures/<id>.txt). An entry with a next command may also
  * carry a `nextExample` of the same shape for that command, captured in
- * docs/captures/<id>-next.txt. scripts/chooser-captures.mjs runs the
+ * docs/captures/<id>-next.txt. An example whose command has the operand `-`
+ * reads standard input, and names the file of its fixture it reads there
+ * (`stdin`); no other example has one. scripts/chooser-captures.mjs runs the
  * examples; this script only validates them.
  *
  * README.md carries the rendering between a `<!-- chooser:start` line and a
@@ -62,6 +64,12 @@ export function fillsIn(run, args) {
 }
 
 const FIXTURE = /^(?:test-fixtures|test)(?:\/[A-Za-z0-9._-]+)+$/;
+const IN_FIXTURE = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+
+/** True when `args` has the operand `-`, which reads standard input. */
+export function readsStdin(args) {
+  return args.split(/\s+/).includes('-');
+}
 
 /** The two example fields: the one for the entry's `run` and the one for its `next`, with the capture each names. */
 export const EXAMPLE_FIELDS = [
@@ -80,6 +88,16 @@ function exampleProblems(entry, at, { field, command, capture }) {
   if (!isText(ex.args)) problems.push(`${where}.args: missing or not one line of text`);
   else if (isText(entry[command]) && !fillsIn(entry[command], ex.args)) {
     problems.push(`${where}.args: "${ex.args}" is not "${entry[command]}" with each <operand> filled in`);
+  }
+  const stdin = isText(ex.args) && readsStdin(ex.args);
+  if (ex.stdin !== undefined) {
+    if (typeof ex.stdin !== 'string' || !IN_FIXTURE.test(ex.stdin) || ex.stdin.split('/').some((s) => s === '.' || s === '..')) {
+      problems.push(`${where}.stdin: not the path of a file inside the fixture folder`);
+    } else if (!stdin) {
+      problems.push(`${where}.stdin: only a command with the operand - reads standard input`);
+    }
+  } else if (stdin) {
+    problems.push(`${where}.stdin: missing; the operand - reads standard input, so the example names the fixture file it reads`);
   }
   if (![0, 1, 2].includes(ex.exit)) problems.push(`${where}.exit: missing or not 0, 1 or 2`);
   if (typeof entry.id === 'string' && ex.capture !== capture(entry.id)) {
