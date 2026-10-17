@@ -2,8 +2,9 @@
  * A choice in docs/chooser.json that carries an `example` names the committed
  * fixture its command runs in, the command with its operands filled in, the
  * exit code the run ends with, and a capture under docs/captures/ with a
- * sidecar beside it. A surface that shows a choice shows that capture as what
- * the command prints.
+ * sidecar beside it. A `nextExample` does the same for the choice's next
+ * command. A surface that shows a choice shows that capture as what the
+ * command prints.
  *
  * This suite holds:
  *
@@ -12,7 +13,8 @@
  *    its sidecar lists, is byte-equal to the capture;
  *  - each sidecar is the record scripts/chooser-captures.mjs renders for its
  *    example, and docs/captures holds nothing else;
- *  - each choice without an example is listed below with the reason.
+ *  - each choice without an example, and each next command without one, is
+ *    listed below with the reason.
  *
  * A capture or sidecar that differs is regenerated with
  * `node scripts/chooser-captures.mjs --write`, which records no run whose
@@ -30,6 +32,7 @@ import {
   compareText,
   examples,
   normalize,
+  normalizersFor,
   renderSidecar,
   runExample,
   sidecarPath,
@@ -50,17 +53,32 @@ const NO_EXAMPLE: Record<string, string> = {
   'exposed-host': 'scan needs a host that serves MCP endpoints',
 };
 
+/** The next commands with no example yet, each with the reason. */
+const NO_NEXT_EXAMPLE: Record<string, string> = {
+  'agent-endpoint': 'attack needs a running agent endpoint to send its payloads to',
+  'one-text': 'scan-text - reads the text on standard input, and no committed fixture is a pull request body',
+  'every-project':
+    'it is secure on one project detect listed, the command of the own-project choice with the project named; docs/captures/own-project.txt shows what secure prints',
+};
+
+interface Item { entry: { id: string }; step: 'run' | 'next'; example: { fixture: string; args: string; exit: number; capture: string } }
+const ITEMS: Item[] = examples(DATA);
+
 describe('docs/chooser.json examples', () => {
   it('every choice has an example or is listed here with the reason it has none', () => {
-    const withExample = new Set(examples(DATA).map((e: { id: string }) => e.id));
+    const withExample = new Set(ITEMS.filter((i) => i.step === 'run').map((i) => i.entry.id));
     const without = [...DATA.options, ...DATA.more].map((e: { id: string }) => e.id).filter((id: string) => !withExample.has(id));
     expect(without.sort()).toEqual(Object.keys(NO_EXAMPLE).sort());
   });
 
+  it('every next command has an example or is listed here with the reason it has none', () => {
+    const withExample = new Set(ITEMS.filter((i) => i.step === 'next').map((i) => i.entry.id));
+    const without = DATA.options.map((o: { id: string }) => o.id).filter((id: string) => !withExample.has(id));
+    expect(without.sort()).toEqual(Object.keys(NO_NEXT_EXAMPLE).sort());
+  });
+
   it('docs/captures holds a capture and a sidecar for each example, and nothing else', () => {
-    const named = examples(DATA)
-      .flatMap((e: { example: { capture: string } }) => [e.example.capture, sidecarPath(e.example.capture)])
-      .map((p: string) => path.basename(p));
+    const named = ITEMS.flatMap((i) => [i.example.capture, sidecarPath(i.example.capture)]).map((p: string) => path.basename(p));
     expect(readdirSync(path.join(ROOT, 'docs', 'captures')).sort()).toEqual(named.sort());
   });
 
@@ -82,6 +100,55 @@ describe('docs/chooser.json examples', () => {
       'options[1].example.args: "check --json" is not "check <target>" with each <operand> filled in',
       'more[0].example.fixture: missing or not a folder under test-fixtures/ or test/',
     ]);
+  });
+
+  it('validation refuses a next example that is not the next command filled in or has its capture elsewhere, and one on an entry under more (non-vacuity)', () => {
+    const broken = structuredClone(DATA);
+    broken.options.find((o: { id: string }) => o.id === 'own-project').nextExample = {
+      fixture: 'test-fixtures/insecure-library',
+      args: 'secure',
+      exit: 1,
+      capture: 'docs/captures/own-project.txt',
+    };
+    // An option where the operand goes is not a filled-in operand.
+    broken.options.find((o: { id: string }) => o.id === 'before-install').nextExample.args = 'secure --json --fix';
+    broken.more.find((m: { id: string }) => m.id === 'governance').nextExample = {
+      fixture: 'test/fixtures/governed-mcp',
+      args: 'scan-soul',
+      exit: 1,
+      capture: 'docs/captures/governance-next.txt',
+    };
+    expect(validateChooser(broken)).toEqual([
+      'options[0].nextExample.args: "secure" is not "secure --fix" with each <operand> filled in',
+      'options[0].nextExample.capture: not docs/captures/own-project-next.txt',
+      'options[1].nextExample.args: "secure --json --fix" is not "secure <dir> --fix" with each <operand> filled in',
+      'more[0].nextExample: an entry under more has no next command',
+    ]);
+  });
+
+  it('a run with --fix also takes home-folder and backup-store, and a run without takes the five it always took', () => {
+    const always = ['classifier-download', 'temp-folder', 'tool-version', 'duration', 'trailing-space'];
+    expect(normalizersFor('secure').map((n: { id: string }) => n.id)).toEqual(always);
+    expect(normalizersFor('red-team SKILL.md').map((n: { id: string }) => n.id)).toEqual(always);
+    expect(normalizersFor('secure malicious-skill --fix').map((n: { id: string }) => n.id)).toEqual([
+      'classifier-download', 'temp-folder', 'home-folder', 'backup-store', 'tool-version', 'duration', 'trailing-space',
+    ]);
+  });
+
+  it('home-folder and backup-store print the --fix backup lines without the run\'s HOME or the store\'s generated names', () => {
+    const home = path.join('/scratch', 'hma-chooser-captures-home-XyZ');
+    const store = `${home}${path.sep}.opena2a/backups/1-22-333`;
+    const raw = [
+      `Backup created: ${store}/2026-10-17-034824521-000-c0287b32`,
+      `Backups: 1 --fix backup of this directory is kept outside it at ${store}. Delete it: rm -rf ${store}`,
+      'Fixed 2 issues (2 verified):',
+    ].join('\n');
+    expect(normalize(raw, ['home-folder', 'backup-store'], { homes: [home] })).toBe([
+      'Backup created: ~/.opena2a/backups/<directory>/<run>',
+      'Backups: 1 --fix backup of this directory is kept outside it at ~/.opena2a/backups/<directory>. Delete it: rm -rf ~/.opena2a/backups/<directory>',
+      'Fixed 2 issues (2 verified):',
+    ].join('\n'));
+    expect(normalize(raw, [], { homes: [home] })).toBe(raw);
   });
 
   it('each normalizer rewrites what it names and leaves the other lines alone', () => {
@@ -141,15 +208,16 @@ describe('docs/chooser.json examples', () => {
       seedClassifier(home);
     });
 
-    for (const entry of examples(DATA)) {
-      const ex = entry.example;
-      it(`${entry.id}: ${commandLine(DATA, ex.args)} in ${ex.fixture} exits ${ex.exit} and prints ${ex.capture}`, (ctx) => {
+    for (const item of ITEMS) {
+      const ex = item.example;
+      const id = `${item.entry.id}${item.step === 'next' ? ' (next)' : ''}`;
+      it(`${id}: ${commandLine(DATA, ex.args)} in ${ex.fixture} exits ${ex.exit} and prints ${ex.capture}`, (ctx) => {
         const sidecar = readFileSync(path.join(ROOT, sidecarPath(ex.capture)), 'utf8');
-        expect(sidecar, `${sidecarPath(ex.capture)} is not the record of this example; ${REGENERATE}`).toBe(renderSidecar(DATA, entry));
+        expect(sidecar, `${sidecarPath(ex.capture)} is not the record of this example; ${REGENERATE}`).toBe(renderSidecar(DATA, item));
 
-        const run = runExample(entry, { home });
+        const run = runExample(item, { home });
         if (!run.classifier) ctx.skip('the NanoMind classifier could not be fetched; the captures are runs with it');
-        expect(run.status, `the exit code docs/chooser.json declares for ${entry.id}`).toBe(ex.exit);
+        expect(run.status, `the exit code docs/chooser.json declares for ${id}`).toBe(ex.exit);
 
         const ids = JSON.parse(sidecar).normalizers.map((n: { id: string }) => n.id);
         const diff = compareText(readFileSync(path.join(ROOT, ex.capture), 'utf8'), normalize(run.raw, ids, run));

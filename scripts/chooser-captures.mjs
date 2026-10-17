@@ -4,10 +4,11 @@
  *
  * An entry's `example` names a committed fixture folder, the entry's command
  * with each operand filled in (`args`), the exit code that run ends with
- * (`exit`) and its capture file under docs/captures/. For each example this
- * script copies the fixture into a new temporary folder under the fixture's
- * own name, runs `node dist/cli.js <args>` inside that copy, and holds the run
- * to three files:
+ * (`exit`) and its capture file under docs/captures/. A `nextExample` does the
+ * same for the entry's next command. For each example this script copies the
+ * fixture into a new temporary folder under the fixture's own name, runs
+ * `node dist/cli.js <args>` inside that copy, and holds the run to three
+ * files:
  *
  *   - docs/chooser.json: the run ends with the exit code the example declares;
  *   - the capture: standard output and standard error, in the order the CLI
@@ -16,13 +17,20 @@
  *     script renders for the example, naming the command, the fixture, the
  *     exit code, the environment and the normalizers.
  *
- * The normalizers, applied in this order, each listed in every sidecar:
+ * The normalizers, applied in this order, each listed in the sidecar of every
+ * run it applies to:
  *
  *   classifier-download  the NanoMind classifier download notice is removed
  *   temp-folder          the temporary folder holding the fixture copy prints as `...`
+ *   home-folder          (--fix runs) the HOME folder of the run prints as `~`
+ *   backup-store         (--fix runs) the backup folder names print as `<directory>` and `<run>`
  *   tool-version         the version on the `Scanned with hackmyagent` line prints as `<version>`
  *   duration             a `Duration:` count of milliseconds prints as `<n>ms`
  *   trailing-space       spaces and tabs at the end of a line are removed
+ *
+ * A run whose `args` include `--fix` keeps a backup of the files it changed in
+ * a store under HOME and prints where; home-folder and backup-store apply to
+ * those runs only, so the record of a run that prints no backup lists neither.
  *
  * Usage (after `npm run build`):
  *   node scripts/chooser-captures.mjs           compare every capture and sidecar with a fresh run
@@ -45,7 +53,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DATA, commandLine, validateChooser } from './chooser.mjs';
+import { DATA, EXAMPLE_FIELDS, commandLine, validateChooser } from './chooser.mjs';
 import { CLI, DOWNLOAD_FAILED, DOWNLOAD_NOTICE, seedClassifier } from './use-case-samples.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -66,6 +74,24 @@ export const NORMALIZERS = [
       [...folders].sort((a, b) => b.length - a.length).reduce((t, f) => t.split(`${f}${path.sep}`).join('.../'), text),
   },
   {
+    id: 'home-folder',
+    fixOnly: true,
+    does: 'Prints the HOME folder of the run, a new temporary folder, as "~", so the --fix backup reads "~/.opena2a/backups/...".',
+    // Longest first, for the same reason as temp-folder.
+    apply: (text, { homes }) =>
+      [...homes].sort((a, b) => b.length - a.length).reduce((t, h) => t.split(`${h}${path.sep}`).join('~/'), text),
+  },
+  {
+    id: 'backup-store',
+    fixOnly: true,
+    does: 'Prints the folder the --fix backup store keeps for the scanned directory as <directory> and the folder of this run\'s backup as <run>: the first is named from the device, inode and creation time of the fixture copy, the second from the time of the run and a random part.',
+    apply: (text) =>
+      text.replace(
+        /(\.opena2a\/backups\/)\d+-\d+-\d+(\/\d{4}-\d{2}-\d{2}-\d{9}-\d{3}-[0-9a-f]{8})?/g,
+        (_, store, run) => `${store}<directory>${run ? '/<run>' : ''}`,
+      ),
+  },
+  {
     id: 'tool-version',
     does: 'Prints the version on the "Scanned with hackmyagent" line as <version>, so a release alone changes no capture.',
     apply: (text) => text.replace(/^( *Scanned with hackmyagent v)\S+$/gm, '$1<version>'),
@@ -82,18 +108,37 @@ export const NORMALIZERS = [
   },
 ];
 
-/** `raw` with the normalizers named by `ids` applied in that order; `folders` are the temporary folders of the run. */
-export function normalize(raw, ids, { folders = [] } = {}) {
+/** The normalizers that apply to a run of `args`, in the order they are applied. */
+export function normalizersFor(args) {
+  const fix = args.split(/\s+/).includes('--fix');
+  return NORMALIZERS.filter((n) => fix || !n.fixOnly);
+}
+
+/**
+ * `raw` with the normalizers named by `ids` applied in that order; `folders`
+ * are the temporary folders of the run, `homes` its HOME folder.
+ */
+export function normalize(raw, ids, { folders = [], homes = [] } = {}) {
   return ids.reduce((text, id) => {
     const n = NORMALIZERS.find((x) => x.id === id);
     if (!n) throw new Error(`unknown normalizer "${id}"`);
-    return n.apply(text, { folders });
+    return n.apply(text, { folders, homes });
   }, raw);
 }
 
-/** Every entry of the data that carries an example, options first. */
+/**
+ * Every example of the data, options first and an entry's `example` before
+ * its `nextExample`: the entry, the command the example runs (`run` or
+ * `next`) and the example.
+ */
 export function examples(data) {
-  return [...data.options, ...data.more].filter((e) => e.example !== undefined);
+  return [...data.options, ...data.more].flatMap((entry) =>
+    EXAMPLE_FIELDS.filter(({ field }) => entry[field] !== undefined).map(({ field, command }) => ({
+      entry,
+      step: command,
+      example: entry[field],
+    })),
+  );
 }
 
 /** The sidecar path for a capture path: the same name, ending in .json. */
@@ -104,11 +149,12 @@ export function sidecarPath(capture) {
 const PASSED_THROUGH = ['PATH', 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy'];
 const SET = { LANG: 'en_US.UTF-8', NO_COLOR: '1', OPENA2A_TELEMETRY: 'off' };
 
-/** The sidecar text for `entry`, as --write writes it. */
-export function renderSidecar(data, entry) {
-  const ex = entry.example;
+/** The sidecar text for `item`, one of `examples(data)`, as --write writes it. */
+export function renderSidecar(data, item) {
+  const { entry, step, example: ex } = item;
+  const from = step === 'next' ? `the next command of the ${entry.id} entry` : `the ${entry.id} entry`;
   const record = {
-    about: `How ${ex.capture} was made, from the ${entry.id} entry of docs/chooser.json. scripts/chooser-captures.mjs writes both files; regenerate them with node scripts/chooser-captures.mjs --write.`,
+    about: `How ${ex.capture} was made, from ${from} of docs/chooser.json. scripts/chooser-captures.mjs writes both files; regenerate them with node scripts/chooser-captures.mjs --write.`,
     choice: entry.id,
     command: commandLine(data, ex.args),
     ranAs: `node dist/cli.js ${ex.args}`,
@@ -123,19 +169,20 @@ export function renderSidecar(data, entry) {
     },
     output: 'standard output and standard error in one file, in the order the command wrote them',
     capture: ex.capture,
-    normalizers: NORMALIZERS.map(({ id, does }) => ({ id, does })),
+    normalizers: normalizersFor(ex.args).map(({ id, does }) => ({ id, does })),
   };
   return `${JSON.stringify(record, null, 2)}\n`;
 }
 
 /**
- * Run `entry`'s example against a fresh copy of its fixture, with `home` as
- * HOME. Pass one HOME to every run so the classifier is fetched at most once.
- * Returns the exit status, the raw output, whether the classifier could be
- * used, and the temporary folders the temp-folder normalizer replaces.
+ * Run `item`, one of `examples(data)`, against a fresh copy of its fixture,
+ * with `home` as HOME. Pass one HOME to every run so the classifier is
+ * fetched at most once. Returns the exit status, the raw output, whether the
+ * classifier could be used, the temporary folders the temp-folder normalizer
+ * replaces and the HOME folders the home-folder normalizer replaces.
  */
-export function runExample(entry, { home, cli = CLI, timeoutMs = 150_000 }) {
-  const ex = entry.example;
+export function runExample(item, { home, cli = CLI, timeoutMs = 150_000 }) {
+  const { entry, example: ex } = item;
   const source = path.join(REPO_ROOT, ex.fixture);
   if (!existsSync(source) || !statSync(source).isDirectory()) {
     throw new Error(`${entry.id}: the fixture ${ex.fixture} is not a folder in this repository`);
@@ -171,6 +218,7 @@ export function runExample(entry, { home, cli = CLI, timeoutMs = 150_000 }) {
       raw,
       classifier: !raw.split('\n').some((l) => DOWNLOAD_FAILED.test(l)),
       folders: [...new Set([parent, realpathSync(parent)])],
+      homes: [...new Set([home, realpathSync(home)])],
     };
   } finally {
     rmSync(parent, { recursive: true, force: true });
@@ -212,16 +260,15 @@ function main(argv) {
     for (const p of problems) process.stderr.write(`chooser-captures: docs/chooser.json: ${p}\n`);
     return 2;
   }
-  const ids = NORMALIZERS.map((n) => n.id);
   const home = mkdtempSync(path.join(os.tmpdir(), 'hma-chooser-home-'));
   let exitDiffer = 0;
   let differ = 0;
   try {
     seedClassifier(home);
-    for (const entry of examples(data)) {
-      const ex = entry.example;
-      const label = `${entry.id}: ${commandLine(data, ex.args)}`;
-      const run = runExample(entry, { home });
+    for (const item of examples(data)) {
+      const ex = item.example;
+      const label = `${item.entry.id}${item.step === 'next' ? ' (next)' : ''}: ${commandLine(data, ex.args)}`;
+      const run = runExample(item, { home });
       if (!run.classifier) {
         process.stderr.write(`${label}: the NanoMind classifier could not be fetched, and the captures are runs with it\n`);
         return 2;
@@ -231,8 +278,8 @@ function main(argv) {
         process.stdout.write(`${label}: exited ${run.status}; docs/chooser.json declares ${ex.exit}\n`);
         continue;
       }
-      const output = normalize(run.raw, ids, run);
-      const sidecar = renderSidecar(data, entry);
+      const output = normalize(run.raw, normalizersFor(ex.args).map((n) => n.id), run);
+      const sidecar = renderSidecar(data, item);
       if (write) {
         mkdirSync(path.dirname(path.join(REPO_ROOT, ex.capture)), { recursive: true });
         writeFileSync(path.join(REPO_ROOT, ex.capture), output);
