@@ -11,7 +11,12 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { virtualChangelog } from '../helpers/changelog-record';
+import {
+  expectRecordUnderUnreleasedOrRelease,
+  sectionRecording,
+  sectionsThroughRecording,
+  virtualChangelog,
+} from '../helpers/changelog-record';
 
 const COMMANDS = readFileSync(join(__dirname, '../../docs/commands.md'), 'utf-8');
 const CHANGELOG = virtualChangelog();
@@ -46,19 +51,23 @@ describe('HMA-71.AC6: docs/commands.md and CHANGELOG name the files init-mcp wri
     expect(offenders.map((o) => o.text.trim())).toEqual([]);
   });
 
-  const unreleased = section(CHANGELOG, '\n## [Unreleased]\n');
+  // The section that records the change, found by its content: `## [Unreleased]`
+  // until the release cut moves the entry into the dated section of that release.
+  const RECORD = '--tool vscode';
+  const recording = sectionRecording(CHANGELOG, RECORD);
 
-  it('HMA-71.AC6 the Unreleased section carries an entry for the key each client reads', () => {
+  it('HMA-71.AC6 the section recording the change carries an entry for the key each client reads', () => {
+    expectRecordUnderUnreleasedOrRelease(recording);
     // Entries are `#### <title>` under a `### <Type>` heading in the virtual reading.
-    const entry = unreleased.split(/\n####? /).find((e) => e.includes('--tool vscode'));
-    expect(entry, 'no [Unreleased] entry names the `--tool vscode` spelling').toBeDefined();
+    const entry = recording.split(/\n####? /).find((e) => e.includes(RECORD));
+    expect(entry, 'no entry in the recording section names the `--tool vscode` spelling').toBeDefined();
 
     for (const token of ['init-mcp', '.vscode/mcp.json', '`servers`', '--tool vscode', 'MCP-001', 'mcpServers', '.mcp.json']) {
       expect(entry).toContain(token);
     }
   });
 
-  it('HMA-71.AC6 the Unreleased section no longer calls the VS Code target unchanged', () => {
-    expect(unreleased).not.toMatch(/and VS Code \(`\.vscode\/mcp\.json`\) are\s+unchanged/);
+  it('HMA-71.AC6 no section from the newest through the recording one calls the VS Code target unchanged', () => {
+    expect(sectionsThroughRecording(CHANGELOG, RECORD)).not.toMatch(/and VS Code \(`\.vscode\/mcp\.json`\) are\s+unchanged/);
   });
 });

@@ -6,9 +6,9 @@
     "npx hackmyagent secure --fix"
   ],
   "tool": "hackmyagent",
-  "version": "0.33.2",
-  "npmIntegrity": "sha512-9DeR/g4pruOW1yzF/nlTIvpPEN1HTcIgSKf9cUHi2nXgSYfhmbH0McpJeFzZJFaXy1KEY34jVXltyhvc7WiiQQ==",
-  "ranAtUtc": "2026-10-13T17:42:54Z",
+  "version": "0.34.0",
+  "packedFromCommit": "b904c5ef14646b6c915783851bd293d8548c4dea",
+  "ranAtUtc": "2026-10-17T21:09:07Z",
   "fixture": "hma-demo, the sample agent project docs/vhs/setup-lab.sh writes",
   "fixtureSha": "b2e2a519b6116cbfdb18fd776374a792c3fc514feb66155ddc9cb79e9fb8ff37",
   "fixtureUncommittedChanges": 0,
@@ -19,8 +19,8 @@
   "rows": 40,
   "framerate": 10,
   "gifsicle": "-O3 --lossy=40 --batch",
-  "gifFrames": 48,
-  "gifFullScreenFrames": 17,
+  "gifFrames": 47,
+  "gifFullScreenFrames": 16,
   "renderedPixelSize": {
     "width": 1150,
     "height": 774
@@ -28,30 +28,30 @@
   "outputs": {
     "gif": {
       "path": "docs/vhs/secure.gif",
-      "bytes": 2112349,
-      "sha256": "72bc971e3dc02f8dbb7b503d9f306460161d9c32c0edcb6ad5625dad56dda5de"
+      "bytes": 2017145,
+      "sha256": "f9f7685c2d3dc0edb7e45b13f56807c30473c3189b75f995d8be33af4667e187"
     },
     "mp4": {
       "path": "docs/vhs/out/secure.mp4",
-      "bytes": 1278058,
-      "sha256": "83210ace35bf57070a7d702d4b8fd363fd63cb5015e0f348f52e8f6ece8fdc24"
+      "bytes": 1237105,
+      "sha256": "afa10dfabc3f3b2cb152bd5aa19ae00f6865294f6b7a71716447dc9983dea281"
     },
     "frames": [
       {
         "path": "docs/vhs/secure-report.png",
-        "bytes": 301234,
-        "sha256": "bfa2276fdd50a69c02bcbd518f911c97cbb27cca7397d34b9781388914a64cf7"
+        "bytes": 330207,
+        "sha256": "53d4840ac164760284b54d8074083cc4a0aaaad91ab0ac71dd48a57fa62a1e60"
       },
       {
         "path": "docs/vhs/secure-fix.png",
-        "bytes": 318405,
-        "sha256": "86c3b370e48e9ba52f6d0e813226a83c67efa7448ec4a6555fbdb93a2e809ed4"
+        "bytes": 371349,
+        "sha256": "47d115ae64cb619b2f8f233214d025325ba193a8d40db7dd4d6045d0fa68ecd0"
       }
     ],
     "capture": "docs/vhs/secure-capture.txt"
   },
-  "durationSeconds": 33.8,
-  "wallClockSeconds": 39.8,
+  "durationSeconds": 27.4,
+  "wallClockSeconds": 34.5,
   "meteredCostUsd": 0,
   "exitCodes": [
     1,
