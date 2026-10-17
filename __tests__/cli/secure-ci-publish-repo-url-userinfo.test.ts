@@ -27,6 +27,7 @@ import * as path from 'node:path';
 import { assertDistFresh, BUILT_CLI as CLI } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
 import { gitFreeEnv, initThrowawayRepo } from '../helpers/throwaway-repo';
+import { setOriginUrlCommand } from '../../src/ui/fail-closed-commands';
 
 // The cases read runs of the built CLI, so a checkout that has not built
 // fails here, naming the command to run, rather than skipping the suite.
@@ -223,6 +224,10 @@ describe('secure --ci-publish: an origin that is a local path', () => {
     expect(run.stdout).not.toContain('CI scan result submitted to registry.');
     expect(run.stderr).toContain('The git remote origin is a local path, not a repository URL, so the CI scan result was not sent.');
     expect(run.stderr).toContain('git remote get-url origin');
-    expect(run.stderr).toContain('git remote set-url origin https://<host>/<org>/<repo>.git');
+    // The operand fails closed when pasted unset (#1132); the paste itself is
+    // measured in __tests__/ui/fix-verify-spans-fail-closed.test.ts.
+    expect(run.stderr).toContain(`Set it to the repository URL: ${setOriginUrlCommand()}`);
+    expect(run.stderr).toContain('git remote set-url origin "${REPO_URL:?set REPO_URL to the repository URL');
+    expect(run.stderr).not.toContain('<host>');
   });
 });

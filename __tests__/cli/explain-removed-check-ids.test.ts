@@ -24,7 +24,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { assertDistFresh, assertDistFreshIfPresent, BUILT_CLI as CLI } from '../helpers/dist-freshness';
-import { REMOVED_CHECKS, STATIC_EXPLANATIONS, isKnownExplainId } from '../../src/explain-registry';
+import { REMOVED_CHECKS, STATIC_EXPLANATIONS, explainBody, isKnownExplainId } from '../../src/explain-registry';
+import { getCheckDefinition } from '../../src/hardening/check-definitions';
 import { CREDENTIAL_ATTACK_PREFIXES } from '../../src/narrative/build-narrative';
 import { getTaxonomyMap } from '../../src/hardening/taxonomy';
 import {
@@ -84,8 +85,12 @@ describe('explain knows every check ID the code records as removed', () => {
     const text = STATIC_EXPLANATIONS[id];
     expect(text, `explain ${id} falls back to the generic prefix line`).toBeTruthy();
     expect(text).not.toMatch(/\bremoved\b/i);
-    expect(text).toMatch(/\bFix:/);
     expect(text).toMatch(phrase);
+    // The fix is the one the finding carries, printed from the check
+    // definition after the hand-written line (#1132).
+    const body = explainBody(id) ?? [];
+    expect(body).toContain(`Fix: ${getCheckDefinition(id)?.fix}`);
+    expect(body.join('\n')).not.toMatch(/\bremoved\b/i);
   });
 
   it.each(REMOVED_IDS)('%s is answered, says it is removed and names a check that remains', (id) => {

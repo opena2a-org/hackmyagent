@@ -593,7 +593,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     description: 'npm scripts contain potentially dangerous commands',
     category: 'dependencies',
     why: 'Scripts that pipe curl/wget to sh execute arbitrary remote code during npm install. An attacker who compromises the URL controls your build environment.',
-    fix: 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact <package>  or vendor the script with a pinned checksum.',
+    fix: 'Remove the curl|sh or wget|sh pattern from package.json scripts. Replace with a pinned package install: npm install --save-exact "${PACKAGE:?set PACKAGE to the package the script installs}"  or vendor the script with a pinned checksum.',
   },
   'DNA-001': {
     name: 'No behavioral fingerprint',

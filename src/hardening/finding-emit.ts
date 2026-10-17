@@ -76,8 +76,17 @@ const BYTE_CARRYING_FIELDS = [
 ] as const satisfies readonly (keyof SecurityFindingDraft)[];
 
 /**
- * The report boundary for one string: every shape the detector can recognise,
+ * The report boundary for one string: the shapes the registry pass removes,
  * read off the shape registry, then the report table's own rules.
+ *
+ * The registry pass is narrower than the detector in three places, each
+ * stated at `redactDetectedCredentialShapesReporting`: it applies no rule for
+ * `entropy-blob`; it matches the `sk-` and `sk_` vendor heads only where no
+ * ASCII letter or digit comes right before them, unless the head is glued to
+ * a token already being removed; and it matches the JWT only where no ASCII
+ * letter or digit comes right before the token. A value of one of
+ * those kinds that the detector reports, and that the report table does not
+ * remove by its own rules, stays in the text.
  *
  * The registry pass runs FIRST. The report table removes several vendor
  * tokens at a fixed width, and once it has consumed a head, the rest of a
