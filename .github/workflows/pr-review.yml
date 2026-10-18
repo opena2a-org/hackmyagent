@@ -57,10 +57,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BASE_REF: ${{ github.base_ref }}
         run: |
-          # PR metadata. GitHub's diff API rejects PRs over 20,000 changed
-          # lines (HTTP 406 "diff exceeded the maximum number of lines"), so
-          # fall back to building the same diff locally — the checkout is
-          # full-history and HEAD is the PR merge ref.
+          # PR metadata. GitHub's diff API refuses a pull request over 300 changed
+          # files OR over 20,000 changed lines, both as HTTP 406 with different
+          # messages (measured 2026-10-17 on #1180: 308 files, "the diff exceeded
+          # the maximum number of files (300)", both run attempts). The condition
+          # for the fallback is the EXIT STATUS of `gh pr diff`, never a count and
+          # never the message text. A release pull request on this repository (one
+          # commit folding every changelog.d/ fragment into CHANGELOG.md) takes this
+          # path whenever the fragment count nears 300, so the fallback is the
+          # ordinary release path. It builds the same diff locally — the checkout
+          # is full-history and HEAD is the PR merge ref.
+          #
+          # THE FALLBACK IS HARDENED AS IN THE SIBLING REPOSITORIES (2026-08-23).
+          # An in-PR .gitattributes marking a path `-diff` would print "Binary files
+          # differ" for it and blank it from the review. $GIT_DIR/info/attributes
+          # has the highest precedence, so `* !diff` marks the attribute unspecified
+          # everywhere (not `-diff`, which would print "Binary files differ" for
+          # every path) and git classifies by content. `--no-ext-diff` keeps any
+          # external diff driver out and `core.quotePath=false` keeps non-ASCII
+          # paths readable by the partitioner's header parse. An empty fallback
+          # diff is a failure, not a review of nothing.
           #
           # WHICH PATH PRODUCED THE DIFF IS RECORDED, not left to be inferred
           # from whatever `gh` happened to print to stderr. The fallback is a
@@ -69,13 +85,17 @@ jobs:
           # carried the step" has to be a claim the run log can settle, and one
           # that survives `gh` rewording its own error message.
           DIFF_SOURCE=api
-          if ! gh pr diff "$PR_NUMBER" > /tmp/pr_diff.txt; then
+          if gh pr diff "$PR_NUMBER" > /tmp/pr_diff.txt; then :; else
+            echo "::warning::gh pr diff exited $? for this pull request; reviewing a locally built diff"
             DIFF_SOURCE=local-git
-            git diff "origin/${BASE_REF}...HEAD" > /tmp/pr_diff.txt
+            mkdir -p .git/info
+            printf '* !diff\n' >> .git/info/attributes
+            git -c core.quotePath=false diff --no-ext-diff "refs/remotes/origin/${BASE_REF}...HEAD" > /tmp/pr_diff.txt
+            [ -s /tmp/pr_diff.txt ] || { echo "::error::the local fallback diff is empty"; exit 1; }
           fi
           if ! gh pr diff "$PR_NUMBER" --name-only > /tmp/pr_changed_files.txt; then
             DIFF_SOURCE="${DIFF_SOURCE},local-git-names"
-            git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/pr_changed_files.txt
+            git -c core.quotePath=false diff --name-only "refs/remotes/origin/${BASE_REF}...HEAD" > /tmp/pr_changed_files.txt
           fi
           echo "diff source: $DIFF_SOURCE"
           gh pr view "$PR_NUMBER" --json title -q '.title' > /tmp/pr_title.txt
@@ -487,6 +507,18 @@ jobs:
             printf '\n[FULL SOURCE TRUNCATED — lines 1-%s of %s shown. Every changed file in this pull request is cut at the same level, so this is not a judgement about this file. There is no source context here for anything below line %s, and absence of a mitigation outside lines 1-%s is not evidence that none exists.]\n' "$1" "$2" "$1" "$1"
           }
 
+          # THE DEEPER CUT, said where the model reads it. It states that this file's
+          # own changes fill most of a request, that the cut is deeper than the common
+          # level the other files got, and that the DIFF is complete — the three facts
+          # the model would otherwise guess at.
+          deep_cut_notice() {
+            if [ "$1" -eq 0 ]; then
+              printf '\n[FULL SOURCE NOT SHOWN — this file'"'"'s own changes fill nearly a whole review request, so none of its %s lines of source fit beside them. This cut is deeper than the common level applied to the other files in this pull request. The DIFF below is complete and is the whole of what changed; absence of a mitigation is not evidence that none exists.]\n' "$2"
+              return
+            fi
+            printf '\n[FULL SOURCE TRUNCATED — lines 1-%s of %s shown. This file'"'"'s own changes fill most of a review request, so its source is cut deeper than the common level applied to the other files in this pull request. The DIFF below is complete and is the whole of what changed; there is no source context below line %s, and absence of a mitigation outside lines 1-%s is not evidence that none exists.]\n' "$1" "$2" "$1" "$1"
+          }
+
           # Full source context, one file per change, subject to the same
           # exclusions single mode applies. The exclusions govern CONTEXT only.
           # A diff is never withheld from review by file type — that predicate
@@ -688,7 +720,6 @@ jobs:
               fi
               cut_notice "$SHOWN" "$TOTAL_LINES" >> "$CTXF"
             fi
-            rm -f "$CTXF.raw"
           done < "$CTXMAN"
 
           # Per-batch overhead, measured rather than estimated, by building the
@@ -741,6 +772,7 @@ jobs:
           PLAN="$WORK_DIR/plan.tsv"
           : > "$PLAN"
           NBATCH=0
+          DEEP_CUT=0
           USED=0
           # The preamble rides in batch 1's diff section, so it spends batch
           # 1's budget. Counting the batches but not everything that goes in
@@ -761,8 +793,6 @@ jobs:
             L=0
             [ -z "$FPATH" ] || L=$(($(printf '%s' "$FPATH" | wc -c | tr -d ' ') + 1))
             OWN=$((D + C + L))
-            UNIT=$((OWN + CARRY))
-            CARRY=0
             if [ "$OWN" -gt "$BUDGET" ]; then
               # BOUND THE AUTHOR'S BYTES BEFORE THEY GO IN A COMMENT. This
               # message becomes the posted review body, which humans read and
@@ -788,11 +818,53 @@ jobs:
               [ "$FBYTES" -le 120 ] || SAFE="$SAFE..."
               WHAT="\`$SAFE\`"
               [ -n "$FPATH" ] || WHAT="one file"
-              # NO FILE-TYPE CARVE-OUT. Exempting generated files, lock files
-              # or vendored trees would make the gate's coverage a function of
-              # what the author called the file.
-              refuse "$WHAT alone needs $OWN bytes of diff and source, against a $BUDGET-byte budget for one review request. Batches are cut on file boundaries, so this cannot be split any further, and this gate does not exempt a file from review because of its type, its name or its size."
+              # THE DIFF IS NEVER CUT. If this file's changes alone — its diff chunk
+              # plus its line in the file list — do not fit one request, the pull
+              # request is refused: batches are cut on file boundaries, and a reviewer
+              # shown half of a file's changes reports on code it was not given.
+              # NO FILE-TYPE CARVE-OUT. Exempting generated files, lock files or
+              # vendored trees would make the gate's coverage a function of what the
+              # author called the file.
+              if [ $((D + L)) -gt "$BUDGET" ]; then
+                refuse "$WHAT's changes alone are $((D + L)) bytes of diff, against a $BUDGET-byte budget for one review request. Batches are cut on file boundaries, so this cannot be split any further, and this gate does not exempt a file from review because of its type, its name or its size."
+              fi
+              # ITS CHANGES FIT; ITS SOURCE CONTEXT DOES NOT. Cut this one file's
+              # source context to what the budget leaves after its complete diff, and
+              # say so where the model reads it. This is the bound the aggregate budget
+              # already applies to every file, taken one step further for a file whose
+              # own changes fill most of a request. The predicate is the budget
+              # arithmetic on bytes this packer already counts, never the file's name,
+              # type or size alone: the same file in a smaller pull request gets the
+              # common level. An author who wants this branch for a file must put
+              # BUDGET-minus-context bytes of REVIEWED change into it, which is the
+              # opposite of hiding; the refusal this replaces sent that author to split
+              # the change across pull requests on a boundary of their own choosing.
+              # Measured 2026-10-17 on the 0.34.0 release pull request: CHANGELOG.md's
+              # changes were 286,956 bytes against a 414,199-byte budget, and it was
+              # refused only because the common cut level added 169,101 bytes of source.
+              if [ -s "$WORK_DIR/$IDX.ctx.raw" ]; then
+                HDR_BYTES=$(printf '\n=== %s ===\n' "$FPATH" | wc -c | tr -d ' ')
+                TOTAL_LINES=$(wc -l < "$WORK_DIR/$IDX.ctx.raw" | tr -d ' ')
+                NOTICE_MAX=$(deep_cut_notice "$TOTAL_LINES" "$TOTAL_LINES" | wc -c | tr -d ' ')
+                NOTICE_ZERO=$(deep_cut_notice 0 "$TOTAL_LINES" | wc -c | tr -d ' ')
+                [ "$NOTICE_ZERO" -le "$NOTICE_MAX" ] || NOTICE_MAX=$NOTICE_ZERO
+                ALLOW=$((BUDGET - D - L - HDR_BYTES - NOTICE_MAX))
+                SHOWN=0
+                printf '\n=== %s ===\n' "$FPATH" > "$WORK_DIR/$IDX.ctx"
+                if [ "$ALLOW" -gt 0 ]; then
+                  SHOWN=$(head -c "$ALLOW" < "$WORK_DIR/$IDX.ctx.raw" | wc -l | tr -d ' ')
+                  [ "$SHOWN" -eq 0 ] || head -n "$SHOWN" < "$WORK_DIR/$IDX.ctx.raw" >> "$WORK_DIR/$IDX.ctx"
+                fi
+                deep_cut_notice "$SHOWN" "$TOTAL_LINES" >> "$WORK_DIR/$IDX.ctx"
+                C=$(wc -c < "$WORK_DIR/$IDX.ctx" | tr -d ' ')
+                DEEP_CUT=$((DEEP_CUT + 1))
+                echo "source context for $WHAT cut to lines 1-$SHOWN of $TOTAL_LINES so that its complete diff fits one request"
+              fi
+              OWN=$((D + C + L))
+              [ "$OWN" -le "$BUDGET" ] || refuse "$WHAT's changes and the header for its source context exceed a $BUDGET-byte budget for one review request. This is a defect in the gate's own accounting, not in the pull request."
             fi
+            UNIT=$((OWN + CARRY))
+            CARRY=0
             if [ "$NBATCH" -eq 0 ] || [ $((USED + UNIT)) -gt "$BUDGET" ]; then
               NBATCH=$((NBATCH + 1))
               USED=0
@@ -800,6 +872,10 @@ jobs:
             USED=$((USED + UNIT))
             printf '%s\t%s\t%s\t%s\n' "$IDX" "$NBATCH" "$HUNKS" "$FPATH" >> "$PLAN"
           done < "$MAN"
+          # The numbered source pass 1 built is kept until here so that the
+          # deeper cut reads it, rather than reading an author-chosen path a
+          # second time: the eligibility rules exist once, in pass 1.
+          rm -f "$WORK_DIR"/*.ctx.raw
 
           # COMPOSE. Each batch file IS a user message: in batch mode the
           # action does not read `user-message-file` at all.
@@ -882,6 +958,7 @@ jobs:
           printf 'batch-dir=%s\n' "$BATCH_DIR" >> "$GITHUB_OUTPUT"
           printf 'refused=false\n' >> "$GITHUB_OUTPUT"
           printf 'batches=%s\n' "$NBATCH" >> "$GITHUB_OUTPUT"
+          printf 'deep-cut=%s\n' "$DEEP_CUT" >> "$GITHUB_OUTPUT"
           echo "Partitioned into $NBATCH batches; every byte of the diff accounted for."
 
       - name: Run automated review
@@ -944,6 +1021,7 @@ jobs:
           REVIEW_PATH: ${{ steps.review.outputs.review-path }}
           INPUT_TOKENS: ${{ steps.review.outputs.input-tokens }}
           BATCHES: ${{ steps.partition.outputs.batches }}
+          DEEP_CUT: ${{ steps.partition.outputs.deep-cut }}
           IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
           REFUSED: ${{ steps.partition.outputs.refused }}
         run: |
@@ -1030,6 +1108,18 @@ jobs:
             *) BATCH_NOTE=" The change did not fit in one request and was reviewed in ${BATCHES} batches, split on file boundaries." ;;
           esac
 
+          # How many files had their source context cut below the common level
+          # so that their complete changes fit one request. Emitted only beside
+          # the "Reviewed N files" sentence, for the same reason as the batch
+          # count: it is a claim about work that happened. The partition step
+          # writes `deep-cut` only after a partition that succeeded, so an
+          # unset output reads as empty here, and empty is zero.
+          DEEP_NOTE=""
+          case "${DEEP_CUT:-0}" in
+            ''|0) ;;
+            *) DEEP_NOTE=" ${DEEP_CUT} file(s) had their source context cut below the common level so that their complete changes fit one request." ;;
+          esac
+
           # The "Reviewed N files" sentence is a factual claim about work that
           # happened, so it is emitted ONLY when a request produced a review. On
           # `none` and on empty the machine verdict is correctly INCONCLUSIVE,
@@ -1037,7 +1127,7 @@ jobs:
           # a human reads failing OPEN.
           case "$REVIEW_PATH" in
             primary|fallback)
-              FOOTER="*Reviewed ${FILE_COUNT} files changed (${DIFF_SIZE} bytes, ${INPUT_TOKENS:-unmeasured} input tokens) — ${PATH_NOTE}${BATCH_NOTE}*"
+              FOOTER="*Reviewed ${FILE_COUNT} files changed (${DIFF_SIZE} bytes, ${INPUT_TOKENS:-unmeasured} input tokens) — ${PATH_NOTE}${BATCH_NOTE}${DEEP_NOTE}*"
               ;;
             *)
               FOOTER="*No review was produced. The change measured ${FILE_COUNT} files (${DIFF_SIZE} bytes) — ${PATH_NOTE}*"
@@ -1092,25 +1182,46 @@ jobs:
           fi
 
       - name: Enforce verdict
+        id: enforce
         # The job conclusion IS the policy decision, and it is decided here so
         # that nothing upstream can turn a REQUEST_CHANGES or an INCONCLUSIVE
         # into a green check by succeeding at something unrelated. `always()`
         # means a crashed or skipped review step still lands here with no
         # verdict at all, which is INCONCLUSIVE, which is not a pass.
+        #
+        # THREE FAILURES, NAMED APART. This is the step a failed-run reader
+        # quotes, so it states which of three things happened — changes were
+        # requested, the gate refused before any request went out, or requests
+        # went out and none produced a review — and whether re-running can
+        # change it. The conclusion is `failure` for all three: a skipped or
+        # neutral conclusion does not hold a required check, so it is never
+        # used for "not reviewed". Nothing here asks for the check to be waived;
+        # a pull request this gate cannot review is changed until it can.
         if: always()
         env:
           VERDICT: ${{ steps.review.outputs.verdict }}
+          REFUSED: ${{ steps.partition.outputs.refused }}
+          REVIEW_PATH: ${{ steps.review.outputs.review-path }}
         run: |
           case "${VERDICT:-INCONCLUSIVE}" in
             APPROVE)
               echo "Automated review approved."
               ;;
             REQUEST_CHANGES)
-              echo "::error::Review found CRITICAL/HIGH issues that must be resolved before merge."
+              echo "::error title=Automated code review — changes requested::Review found CRITICAL/HIGH issues that must be resolved before merge. The findings are in the review comment on the pull request."
               exit 1
               ;;
             *)
-              echo "::error::Automated review was inconclusive (${VERDICT:-no verdict recorded}). Treated as not passing; a human review is required."
+              if [ "${REFUSED:-false}" = "true" ]; then
+                # The partitioner's reason line, bounded: it already carries the
+                # author-chosen path sanitised and cut to 120 bytes.
+                REASON=$(sed -n '3p' /tmp/pr_gate_refusal.txt 2>/dev/null | head -c 600)
+                echo "::error title=Automated code review — not reviewed (refused before any request was sent)::${REASON:-The partition step refused this pull request.} Re-running this job changes nothing; the review comment on the pull request says what to change."
+              elif [ "${REVIEW_PATH:-}" = "none" ]; then
+                echo "::error title=Automated code review — not reviewed (no request produced a review)::Requests were sent and none of them produced a review. Re-running the job may succeed; the review comment on the pull request carries the HTTP cause."
+              else
+                echo "::error title=Automated code review — not reviewed (no verdict)::Automated review was inconclusive (${VERDICT:-no verdict recorded}). The review comment on the pull request states the cause. This pull request cannot merge until a review completes."
+              fi
               exit 1
               ;;
           esac
