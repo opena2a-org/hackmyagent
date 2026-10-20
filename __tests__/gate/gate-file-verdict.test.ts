@@ -634,7 +634,7 @@ describe('gate-file verdict: the approver set is the owner and the gate-reviewer
     expect(r.title).toBe('Gate-file change approved');
   });
 
-  it('an approving review by the fleet bot on the current head leaves the gate at action_required', () => {
+  it('an approving review on the current head by the App that opens gate-file pull requests leaves the gate at action_required', () => {
     const r = runChain({ files: GATED, pages: [[{ login: FLEET_BOT, type: 'Bot', state: 'APPROVED', commit: HEAD }]] });
     expect(r.status, r.report).toBe(0);
     expect(r.reviewState).toBe('');
