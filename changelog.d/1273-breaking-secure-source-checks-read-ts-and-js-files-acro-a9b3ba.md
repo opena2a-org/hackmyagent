@@ -17,12 +17,16 @@ breaking: true
   top level, LOG-002 passed and `secure --ci` exited 0. LOG-002 now fails at
   high on `src/index.ts` line 1 and `secure --ci` exits 1 in both layouts. The
   same file at the top level gives the same record as before.
-- Symbolic links are not followed, files more than 10 directory levels below
-  the scanned directory are not read, and `--include-dist` does not add
-  `dist/` to these checks. A directory the scan cannot list is reported by
-  SCAN-UNREAD-001. The .json files that AUTH-003, SEC-004, RATE-003,
-  SESSION-002, ENCRYPT-004 and AUDIT-002 also read are still read at the top
-  level only.
+- Below the top level, symbolic links are not followed. A .ts or .js file at
+  the top level that is a symbolic link is read as before: linked to a file
+  inside the scanned tree, it is read and cited under its own name; linked to
+  a file outside the tree, it is not read and the report lists it among the
+  links that resolve outside the scanned tree. Files more than 10 directory
+  levels below the scanned directory are not read, and `--include-dist` does
+  not add `dist/` to these checks. A directory the scan cannot list is
+  reported by SCAN-UNREAD-001. The .json files that AUTH-003, SEC-004,
+  RATE-003, SESSION-002, ENCRYPT-004 and AUDIT-002 also read are still read
+  at the top level only.
 - The not-applicable reason reads "No .ts or .js files in the scanned tree, so
   there is no source to inspect.", and for the six checks that also read .json
   "No .ts or .js files in the scanned tree and no .json files at the scanned
