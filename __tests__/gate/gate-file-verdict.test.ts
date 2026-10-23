@@ -9,7 +9,7 @@ import * as yaml from 'js-yaml';
  * The Gate file approval verdict, executed rather than read.
  *
  * `.github/workflows/gate-file-approval.yml` decides which changed files
- * require a human approving review before merge and encodes that decision as
+ * require an approver's approval before merge and encodes that decision as
  * a check-run conclusion. The decision is written in bash inside a workflow,
  * which is the one kind of code in this repository that nothing else executes
  * before it reaches main — so, following `pr-review-partition.test.ts`, this
