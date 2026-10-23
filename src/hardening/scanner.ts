@@ -969,6 +969,48 @@ function readCheckDirents(dir: string, admit: (entry: DirEntryLike) => boolean):
   return classifyDirRead<DirEntryLike>(() => fs.readdir(dir, { withFileTypes: true }), admit);
 }
 
+/** #1273 — the extensions the source checks select across the tree (widening them is #414). */
+const SOURCE_CHECK_EXTENSIONS = ['.ts', '.js'];
+
+function isSourceCheckFile(name: string): boolean {
+  return SOURCE_CHECK_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+/**
+ * #1273 — `readCheckDir` for the 27 checks whose subject is the tree's `.ts`
+ * and `.js` source (LOG-002 through AUDIT-004).
+ *
+ * Their subject used to be the top-level listing alone, so code under `src/`
+ * read as absent, and one config file at the top level was enough for a check
+ * to decide on that file and pass over code it never read (#1207). The source
+ * files now come from `sourceFiles`, the scan's one tree-wide selection
+ * (`HardeningScanner.sourceCheckFiles`), as paths relative to `dir`; every
+ * other name `admit` takes (a site's `.json` files) still comes from the
+ * top-level listing, because that subject is configuration at the root.
+ *
+ * The three states keep their meaning:
+ * - `read`: at least one admitted file in the selection or at the root. The
+ *   entries are the admitted paths, so the caller's loop and its
+ *   `path.join(dir, file)` are unchanged.
+ * - `absent`: no admitted file anywhere in the selection or at the root, the
+ *   only state that emits the not-applicable record.
+ * - `unread`: the top-level listing failed for a reason other than
+ *   not-there, as before. The walk is not started. A subdirectory the walk
+ *   cannot list is not a state of its own: the tracked `fs` namespace ledgers
+ *   the failed listing, which reaches `coverage.unreadableInputs`.
+ */
+async function readSourceCheckDir(
+  dir: string,
+  sourceFiles: () => Promise<string[]>,
+  admit: (file: string) => boolean,
+): Promise<DirRead<string>> {
+  const root = await readCheckDir(dir, admit);
+  if (root.state === 'unread') return root;
+  const atRoot = root.state === 'read' ? root.entries.filter((name) => admit(name) && !isSourceCheckFile(name)) : [];
+  const entries = [...(await sourceFiles()).filter(admit), ...atRoot];
+  return entries.length > 0 ? { state: 'read', entries } : { state: 'absent' };
+}
+
 /**
  * Defines which checks apply to which project types
  * Key: check ID prefix or full ID
@@ -4375,6 +4417,8 @@ interface ScanRun extends BackupRunState {
   archiveDirAnswers: Map<string, 'yes' | 'no' | 'unknown'>;
   /** Per-directory memo for `resolvesToANestedArchive`. */
   nestedArchiveDirs: Map<string, boolean>;
+  /** Per-directory memo for `sourceCheckFiles`: one walk per scanned directory per run. */
+  sourceCheckFiles: Map<string, Promise<string[]>>;
   /** Every unreadable input this run recorded, before scope filtering. */
   unreadableAll: UnreadInput[];
 }
@@ -4394,6 +4438,7 @@ function newScanRun(coverage: CoverageLedger): ScanRun {
     archiveBases: new Map(),
     archiveDirAnswers: new Map(),
     nestedArchiveDirs: new Map(),
+    sourceCheckFiles: new Map(),
     lastBackupCovered: [],
     lastBackupIdent: undefined,
     lastBackupWithheldLinks: [],
@@ -9368,7 +9413,7 @@ dist/
     let sensitiveLogFile: string | undefined;
     let sensitiveLogLine: number | undefined;
 
-    const dirReadLog002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadLog002 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadLog002.state === 'read') {
       for (const file of dirReadLog002.entries) {
         // Extension list deliberately UNCHANGED here — widening it is #414,
@@ -9412,7 +9457,7 @@ dist/
     const sensitiveInLogs = sensitiveLogFile !== undefined;
 
     if (dirReadLog002.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'LOG-002', name: 'Sensitive Data in Logs', description: 'Potential sensitive data being logged', category: 'logging' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'LOG-002', name: 'Sensitive Data in Logs', description: 'Potential sensitive data being logged', category: 'logging' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadLog002.state === 'read') {
       findings.push({
         checkId: 'LOG-002',
@@ -9760,7 +9805,7 @@ dist/
     let hasSecureSessions = false;
     const sessionIndicators = ['express-session', 'cookie-session', 'secure: true', 'httpOnly: true'];
 
-    const dirReadAuth003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    const dirReadAuth003 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
     if (dirReadAuth003.state === 'read') {
       for (const file of dirReadAuth003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
@@ -9778,7 +9823,7 @@ dist/
     }
 
     if (dirReadAuth003.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'AUTH-003', name: 'Secure Session Configuration', description: 'Session security configuration not detected', category: 'authentication' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'AUTH-003', name: 'Secure Session Configuration', description: 'Session security configuration not detected', category: 'authentication' }, 'source or config files (.ts, .js, .json)', 'No .ts or .js files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.'));
     } else if (dirReadAuth003.state === 'read') {
       findings.push({
         checkId: 'AUTH-003',
@@ -9933,7 +9978,7 @@ dist/
 
     // PROC-004: Check for error handling
     let hasErrorHandling = false;
-    const dirReadProc004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadProc004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadProc004.state === 'read') {
       for (const file of dirReadProc004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -9949,7 +9994,7 @@ dist/
     }
 
     if (dirReadProc004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'PROC-004', name: 'Error Handling', description: 'No error handling patterns detected', category: 'process' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'PROC-004', name: 'Error Handling', description: 'No error handling patterns detected', category: 'process' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadProc004.state === 'read') {
       findings.push({
         checkId: 'PROC-004',
@@ -10248,7 +10293,7 @@ dist/
 
     // NET-003: Check for HTTPS enforcement
     let hasHttpsEnforcement = false;
-    const dirReadNet003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadNet003 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadNet003.state === 'read') {
       for (const file of dirReadNet003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -10264,7 +10309,7 @@ dist/
     }
 
     if (dirReadNet003.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'NET-003', name: 'HTTPS Configuration', description: 'No HTTPS/TLS configuration detected', category: 'network' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'NET-003', name: 'HTTPS Configuration', description: 'No HTTPS/TLS configuration detected', category: 'network' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadNet003.state === 'read') {
       findings.push({
         checkId: 'NET-003',
@@ -10285,7 +10330,7 @@ dist/
     let hasDebugEndpoints = false;
     const debugEndpoints = ['/debug', '/admin', '/metrics', '/health', '/status', '/__debug'];
 
-    const dirReadNet004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadNet004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadNet004.state === 'read') {
       for (const file of dirReadNet004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -10303,7 +10348,7 @@ dist/
     }
 
     if (dirReadNet004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'NET-004', name: 'Debug Endpoints', description: 'Debug or admin endpoints may be exposed', category: 'network' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'NET-004', name: 'Debug Endpoints', description: 'Debug or admin endpoints may be exposed', category: 'network' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadNet004.state === 'read') {
       findings.push({
         checkId: 'NET-004',
@@ -10399,7 +10444,7 @@ dist/
 
     // API-001: Check for API versioning
     let hasApiVersioning = false;
-    const dirReadApi001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadApi001 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadApi001.state === 'read') {
       for (const file of dirReadApi001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -10415,7 +10460,7 @@ dist/
     }
 
     if (dirReadApi001.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'API-001', name: 'API Versioning', description: 'API versioning not detected', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'API-001', name: 'API Versioning', description: 'API versioning not detected', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadApi001.state === 'read') {
       findings.push({
         checkId: 'API-001',
@@ -10460,7 +10505,7 @@ dist/
 
     // API-003: Check for API key in URL
     let hasKeyInUrl = false;
-    const dirReadApi003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadApi003 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadApi003.state === 'read') {
       for (const file of dirReadApi003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -10478,7 +10523,7 @@ dist/
     }
 
     if (dirReadApi003.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'API-003', name: 'API Key in URL', description: 'API keys may be passed in URL query parameters', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'API-003', name: 'API Key in URL', description: 'API keys may be passed in URL query parameters', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadApi003.state === 'read') {
       findings.push({
         checkId: 'API-003',
@@ -10497,7 +10542,7 @@ dist/
 
     // API-004: Check for response headers security
     let hasSecurityHeaders = false;
-    const dirReadApi004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadApi004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadApi004.state === 'read') {
       for (const file of dirReadApi004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -10513,7 +10558,7 @@ dist/
     }
 
     if (dirReadApi004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'API-004', name: 'API Security Headers', description: 'Security headers not explicitly set', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'API-004', name: 'API Security Headers', description: 'Security headers not explicitly set', category: 'api' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadApi004.state === 'read') {
       findings.push({
         checkId: 'API-004',
@@ -10635,7 +10680,7 @@ dist/
     let hasHardcodedConnStr = false;
     const connPatterns = ['mongodb://', 'postgres://', 'mysql://', 'redis://', 'amqp://'];
 
-    const dirReadSec004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    const dirReadSec004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
     if (dirReadSec004.state === 'read') {
       for (const file of dirReadSec004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
@@ -10653,7 +10698,7 @@ dist/
     }
 
     if (dirReadSec004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'SEC-004', name: 'Hardcoded Connection Strings', description: 'Connection strings may be hardcoded', category: 'secrets' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'SEC-004', name: 'Hardcoded Connection Strings', description: 'Connection strings may be hardcoded', category: 'secrets' }, 'source or config files (.ts, .js, .json)', 'No .ts or .js files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.'));
     } else if (dirReadSec004.state === 'read') {
       findings.push({
         checkId: 'SEC-004',
@@ -10790,7 +10835,7 @@ dist/
 
     // IO-004: Check for path traversal protection
     let hasPathTraversal = false;
-    const dirReadIo004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadIo004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadIo004.state === 'read') {
       for (const file of dirReadIo004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -10808,7 +10853,7 @@ dist/
     }
 
     if (dirReadIo004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'IO-004', name: 'Path Traversal Protection', description: 'Potential path traversal vulnerability', category: 'io' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'IO-004', name: 'Path Traversal Protection', description: 'Potential path traversal vulnerability', category: 'io' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadIo004.state === 'read') {
       findings.push({
         checkId: 'IO-004',
@@ -10984,7 +11029,7 @@ dist/
 
     // INJ-001: Check for input validation in MCP handlers
     let hasInputValidation = false;
-    const dirReadInj001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadInj001 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadInj001.state === 'read') {
       for (const file of dirReadInj001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11007,7 +11052,7 @@ dist/
     }
 
     if (dirReadInj001.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'INJ-001', name: 'Input Validation Library', description: 'Applications should use schema validation for inputs', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'INJ-001', name: 'Input Validation Library', description: 'Applications should use schema validation for inputs', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadInj001.state === 'read') {
       findings.push({
         checkId: 'INJ-001',
@@ -11026,7 +11071,7 @@ dist/
 
     // INJ-002: Check for XSS protection patterns
     let hasXssProtection = false;
-    const dirReadInj002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadInj002 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadInj002.state === 'read') {
       for (const file of dirReadInj002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11048,7 +11093,7 @@ dist/
     }
 
     if (dirReadInj002.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'INJ-002', name: 'XSS Protection', description: 'Output should be properly escaped to prevent XSS', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'INJ-002', name: 'XSS Protection', description: 'Output should be properly escaped to prevent XSS', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadInj002.state === 'read') {
       findings.push({
         checkId: 'INJ-002',
@@ -11067,7 +11112,7 @@ dist/
 
     // INJ-003: Check for SQL injection protection
     let hasSqlProtection = false;
-    const dirReadInj003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadInj003 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadInj003.state === 'read') {
       for (const file of dirReadInj003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11091,7 +11136,7 @@ dist/
     }
 
     if (dirReadInj003.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'INJ-003', name: 'SQL Injection Protection', description: 'Database queries should use parameterized statements', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'INJ-003', name: 'SQL Injection Protection', description: 'Database queries should use parameterized statements', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadInj003.state === 'read') {
       findings.push({
         checkId: 'INJ-003',
@@ -11110,7 +11155,7 @@ dist/
 
     // INJ-004: Check for command injection protection
     let hasCmdProtection = false;
-    const dirReadInj004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadInj004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadInj004.state === 'read') {
       let hasExec = false;
       for (const file of dirReadInj004.entries) {
@@ -11135,7 +11180,7 @@ dist/
     }
 
     if (dirReadInj004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'INJ-004', name: 'Command Injection Protection', description: 'Shell commands should use safe execution patterns', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'INJ-004', name: 'Command Injection Protection', description: 'Shell commands should use safe execution patterns', category: 'input-validation' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadInj004.state === 'read') {
       findings.push({
         checkId: 'INJ-004',
@@ -11200,7 +11245,7 @@ dist/
 
     // RATE-002: Check for retry/backoff patterns
     let hasBackoff = false;
-    const dirReadRate002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadRate002 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadRate002.state === 'read') {
       for (const file of dirReadRate002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11221,7 +11266,7 @@ dist/
     }
 
     if (dirReadRate002.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'RATE-002', name: 'Retry with Backoff', description: 'External calls should implement exponential backoff', category: 'rate-limiting' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'RATE-002', name: 'Retry with Backoff', description: 'External calls should implement exponential backoff', category: 'rate-limiting' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadRate002.state === 'read') {
       findings.push({
         checkId: 'RATE-002',
@@ -11240,7 +11285,7 @@ dist/
 
     // RATE-003: Check for timeout configurations
     let hasTimeouts = false;
-    const dirReadRate003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    const dirReadRate003 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
     if (dirReadRate003.state === 'read') {
       for (const file of dirReadRate003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
@@ -11260,7 +11305,7 @@ dist/
     }
 
     if (dirReadRate003.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'RATE-003', name: 'Timeout Configuration', description: 'Operations should have appropriate timeouts', category: 'rate-limiting' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'RATE-003', name: 'Timeout Configuration', description: 'Operations should have appropriate timeouts', category: 'rate-limiting' }, 'source or config files (.ts, .js, .json)', 'No .ts or .js files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.'));
     } else if (dirReadRate003.state === 'read') {
       findings.push({
         checkId: 'RATE-003',
@@ -11279,7 +11324,7 @@ dist/
 
     // RATE-004: Check for concurrent request limiting
     let hasConcurrencyLimit = false;
-    const dirReadRate004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadRate004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadRate004.state === 'read') {
       for (const file of dirReadRate004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11300,7 +11345,7 @@ dist/
     }
 
     if (dirReadRate004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'RATE-004', name: 'Concurrency Limits', description: 'Concurrent operations should be limited', category: 'rate-limiting' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'RATE-004', name: 'Concurrency Limits', description: 'Concurrent operations should be limited', category: 'rate-limiting' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadRate004.state === 'read') {
       findings.push({
         checkId: 'RATE-004',
@@ -11331,7 +11376,7 @@ dist/
 
     // SESSION-001: Check for secure session configuration
     let hasSecureSessions = false;
-    const dirReadSession001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadSession001 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadSession001.state === 'read') {
       for (const file of dirReadSession001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11351,7 +11396,7 @@ dist/
     }
 
     if (dirReadSession001.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'SESSION-001', name: 'Secure Cookie Settings', description: 'Session cookies should have secure flags', category: 'session-security' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'SESSION-001', name: 'Secure Cookie Settings', description: 'Session cookies should have secure flags', category: 'session-security' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadSession001.state === 'read') {
       findings.push({
         checkId: 'SESSION-001',
@@ -11370,7 +11415,7 @@ dist/
 
     // SESSION-002: Check for session expiry
     let hasSessionExpiry = false;
-    const dirReadSession002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    const dirReadSession002 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
     if (dirReadSession002.state === 'read') {
       for (const file of dirReadSession002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
@@ -11391,7 +11436,7 @@ dist/
     }
 
     if (dirReadSession002.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'SESSION-002', name: 'Session Expiry', description: 'Sessions should have appropriate expiry times', category: 'session-security' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'SESSION-002', name: 'Session Expiry', description: 'Sessions should have appropriate expiry times', category: 'session-security' }, 'source or config files (.ts, .js, .json)', 'No .ts or .js files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.'));
     } else if (dirReadSession002.state === 'read') {
       findings.push({
         checkId: 'SESSION-002',
@@ -11440,7 +11485,7 @@ dist/
 
     // SESSION-004: Check for secure token storage
     let hasSecureStorage = false;
-    const dirReadSession004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadSession004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadSession004.state === 'read') {
       for (const file of dirReadSession004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11461,7 +11506,7 @@ dist/
     }
 
     if (dirReadSession004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'SESSION-004', name: 'Secure Token Storage', description: 'Tokens should be stored securely', category: 'session-security' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'SESSION-004', name: 'Secure Token Storage', description: 'Tokens should be stored securely', category: 'session-security' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadSession004.state === 'read') {
       findings.push({
         checkId: 'SESSION-004',
@@ -11492,7 +11537,7 @@ dist/
 
     // ENCRYPT-001: Check for encryption at rest
     let hasEncryption = false;
-    const dirReadEncrypt001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadEncrypt001 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadEncrypt001.state === 'read') {
       for (const file of dirReadEncrypt001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11513,7 +11558,7 @@ dist/
     }
 
     if (dirReadEncrypt001.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-001', name: 'Encryption Implementation', description: 'Sensitive data should be encrypted at rest', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-001', name: 'Encryption Implementation', description: 'Sensitive data should be encrypted at rest', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadEncrypt001.state === 'read') {
       findings.push({
         checkId: 'ENCRYPT-001',
@@ -11532,7 +11577,7 @@ dist/
 
     // ENCRYPT-002: Check for secure hashing
     let hasSecureHashing = false;
-    const dirReadEncrypt002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadEncrypt002 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadEncrypt002.state === 'read') {
       for (const file of dirReadEncrypt002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11553,7 +11598,7 @@ dist/
     }
 
     if (dirReadEncrypt002.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-002', name: 'Secure Password Hashing', description: 'Passwords should use secure hashing algorithms', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-002', name: 'Secure Password Hashing', description: 'Passwords should use secure hashing algorithms', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadEncrypt002.state === 'read') {
       findings.push({
         checkId: 'ENCRYPT-002',
@@ -11572,7 +11617,7 @@ dist/
 
     // ENCRYPT-003: Check for weak algorithms
     let hasWeakAlgorithms = false;
-    const dirReadEncrypt003 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadEncrypt003 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadEncrypt003.state === 'read') {
       for (const file of dirReadEncrypt003.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11593,7 +11638,7 @@ dist/
     }
 
     if (dirReadEncrypt003.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-003', name: 'Weak Cryptographic Algorithms', description: 'Avoid using weak cryptographic algorithms', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-003', name: 'Weak Cryptographic Algorithms', description: 'Avoid using weak cryptographic algorithms', category: 'encryption' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadEncrypt003.state === 'read') {
       findings.push({
         checkId: 'ENCRYPT-003',
@@ -11612,7 +11657,7 @@ dist/
 
     // ENCRYPT-004: Check for TLS configuration
     let hasTlsConfig = false;
-    const dirReadEncrypt004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    const dirReadEncrypt004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
     if (dirReadEncrypt004.state === 'read') {
       for (const file of dirReadEncrypt004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
@@ -11633,7 +11678,7 @@ dist/
     }
 
     if (dirReadEncrypt004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-004', name: 'TLS Configuration', description: 'Communications should use TLS', category: 'encryption' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'ENCRYPT-004', name: 'TLS Configuration', description: 'Communications should use TLS', category: 'encryption' }, 'source or config files (.ts, .js, .json)', 'No .ts or .js files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.'));
     } else if (dirReadEncrypt004.state === 'read') {
       findings.push({
         checkId: 'ENCRYPT-004',
@@ -11664,7 +11709,7 @@ dist/
 
     // AUDIT-001: Check for audit logging
     let hasAuditLogging = false;
-    const dirReadAudit001 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadAudit001 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadAudit001.state === 'read') {
       for (const file of dirReadAudit001.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11685,7 +11730,7 @@ dist/
     }
 
     if (dirReadAudit001.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'AUDIT-001', name: 'Audit Logging', description: 'Security-relevant events should be logged', category: 'audit' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'AUDIT-001', name: 'Audit Logging', description: 'Security-relevant events should be logged', category: 'audit' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadAudit001.state === 'read') {
       findings.push({
         checkId: 'AUDIT-001',
@@ -11704,7 +11749,7 @@ dist/
 
     // AUDIT-002: Check for log rotation
     let hasLogRotation = false;
-    const dirReadAudit002 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
+    const dirReadAudit002 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json'));
     if (dirReadAudit002.state === 'read') {
       for (const file of dirReadAudit002.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js') || file.endsWith('.json')) {
@@ -11724,7 +11769,7 @@ dist/
     }
 
     if (dirReadAudit002.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'AUDIT-002', name: 'Log Rotation', description: 'Logs should have rotation configured', category: 'audit' }, 'source or config files (.ts, .js, .json)', 'No .ts, .js or .json files at the scanned root, so there is nothing to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'AUDIT-002', name: 'Log Rotation', description: 'Logs should have rotation configured', category: 'audit' }, 'source or config files (.ts, .js, .json)', 'No .ts or .js files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.'));
     } else if (dirReadAudit002.state === 'read') {
       findings.push({
         checkId: 'AUDIT-002',
@@ -11773,7 +11818,7 @@ dist/
 
     // AUDIT-004: Check for no sensitive data in logs
     let hasLogSanitization = false;
-    const dirReadAudit004 = await readCheckDir(targetDir, (file) => file.endsWith('.ts') || file.endsWith('.js'));
+    const dirReadAudit004 = await readSourceCheckDir(targetDir, () => this.sourceCheckFiles(targetDir), (file) => file.endsWith('.ts') || file.endsWith('.js'));
     if (dirReadAudit004.state === 'read') {
       for (const file of dirReadAudit004.entries) {
         if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -11793,7 +11838,7 @@ dist/
     }
 
     if (dirReadAudit004.state === 'absent') {
-      findings.push(notApplicableRecord({ checkId: 'AUDIT-004', name: 'Log Sanitization', description: 'Sensitive data should be redacted from logs', category: 'audit' }, 'source files (.ts, .js)', 'No .ts or .js files at the scanned root, so there is no source to inspect.'));
+      findings.push(notApplicableRecord({ checkId: 'AUDIT-004', name: 'Log Sanitization', description: 'Sensitive data should be redacted from logs', category: 'audit' }, 'source files (.ts, .js)', 'No .ts or .js files in the scanned tree, so there is no source to inspect.'));
     } else if (dirReadAudit004.state === 'read') {
       findings.push({
         checkId: 'AUDIT-004',
@@ -15066,6 +15111,37 @@ dist/
     }
 
     return files;
+  }
+
+  /**
+   * #1273 — the `.ts`/`.js` files the source checks read (`readSourceCheckDir`),
+   * as paths relative to `targetDir`.
+   *
+   * One walk of the scanned tree per run, shared by every site: `walkDirectory`
+   * (no symlink followed; `node_modules`, `.git` and hidden directories never
+   * entered; depth bound 10), then every path under a `DECODE_SKIP_DIRS`
+   * directory dropped, which removes `build/`, and `dist/` whatever
+   * `includeDist` says: opting these checks into `dist/` is a change of its
+   * own. The promise is memoized rather than its result, so checks that ask
+   * while the walk is running share it. Outside a scan nothing is memoized: a caller
+   * that changes the tree between two direct calls gets a fresh walk.
+   *
+   * Top-level files come first, in listing order, so a record that cites the
+   * first matching file still cites the top-level one it cited before the
+   * checks read below the top level.
+   */
+  private sourceCheckFiles(targetDir: string): Promise<string[]> {
+    const memo = activeScanRuns.getStore()?.get(this)?.sourceCheckFiles;
+    const walked = memo?.get(targetDir);
+    if (walked) return walked;
+    const selection = this.walkDirectory(targetDir, SOURCE_CHECK_EXTENSIONS, 0, 10).then((files) => {
+      const rels = files
+        .map((file) => path.relative(targetDir, file))
+        .filter((rel) => !rel.split(path.sep).slice(0, -1).some((dir) => DECODE_SKIP_DIRS.has(dir)));
+      return [...rels.filter((rel) => !rel.includes(path.sep)), ...rels.filter((rel) => rel.includes(path.sep))];
+    });
+    memo?.set(targetDir, selection);
+    return selection;
   }
 
   /**
