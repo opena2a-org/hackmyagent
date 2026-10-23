@@ -83,9 +83,9 @@ describe('check-count single source of truth', () => {
   // in package.json (a release fails recording-sidecars.test.ts until it is
   // re-rendered) and while the capture states a count other than the derived
   // one. Once a re-render prints the derived count, drop the entry.
-  const RECORDED_FROM_PUBLISHED_BUILD = [
-    { capture: 'docs/vhs/secure-capture.txt', sidecar: 'docs/vhs/secure.json' },
-  ];
+  // docs/vhs/secure-capture.txt left at the 0.34.0 cut: re-rendered from the
+  // tarball packed at that checkout, it states the derived count.
+  const RECORDED_FROM_PUBLISHED_BUILD: { capture: string; sidecar: string }[] = [];
 
   // #970: README and docs carried the static count in eight more places than
   // the two sentences pinned below, sample captures of the scan Observations

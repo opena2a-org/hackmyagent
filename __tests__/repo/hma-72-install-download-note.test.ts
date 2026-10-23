@@ -5,10 +5,12 @@
  * on Linux x64 downloads an execution-provider package from nuget.org that this
  * tool never loads. docs/install.md (the README's Install detail since the
  * README was cut to its reading-load limits) says so and carries the two
- * switches that skip it. CHANGELOG.md corrects, exactly once and under
- * [Unreleased], the [0.27.0] claim that the script "exits before requiring
- * adm-zip on a default install", without rewriting the released entry. Both
- * texts keep the wording rules the release notes are held to.
+ * switches that skip it. CHANGELOG.md corrects, exactly once, the [0.27.0]
+ * claim that the script "exits before requiring adm-zip on a default
+ * install", without rewriting the released entry: the correction sits under
+ * [Unreleased] until the release cut moves it into that release's dated
+ * section, and the test finds it by its content either way. Both texts keep
+ * the wording rules the release notes are held to.
  *
  * CHANGELOG.md is hard-wrapped, so every reading over its text collapses runs
  * of whitespace, newlines included, to a single space before comparison.
@@ -17,7 +19,7 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { virtualChangelog } from '../helpers/changelog-record';
+import { expectRecordUnderUnreleasedOrRelease, sectionRecording, virtualChangelog } from '../helpers/changelog-record';
 
 const ROOT = join(__dirname, '..', '..');
 const INSTALL = readFileSync(join(ROOT, 'docs', 'install.md'), 'utf-8');
@@ -143,9 +145,13 @@ describe('HMA-72: docs/install.md and the CHANGELOG say what a default install d
     expect(withScripts).toEqual(['node_modules/onnxruntime-node']);
   });
 
-  it('HMA-72.AC2 CHANGELOG.md carries exactly one retraction of the [0.27.0] postinstall claim, under [Unreleased], quoting the claim and stating that the path runs', () => {
+  it('HMA-72.AC2 CHANGELOG.md carries exactly one retraction of the [0.27.0] postinstall claim, under [Unreleased] or the release that cut it, quoting the claim and stating that the path runs', () => {
     expect(count(CHANGELOG, RETRACTION_MARKER)).toBe(1);
-    expect(section(CHANGELOG, '\n## [Unreleased]\n')).toContain(RETRACTION_MARKER);
+    // The retraction sits under [Unreleased] until the release cut moves it into
+    // that release's dated section: above the entry it corrects, never inside it.
+    const recording = sectionRecording(CHANGELOG, RETRACTION_MARKER);
+    expectRecordUnderUnreleasedOrRelease(recording);
+    expect(recording.startsWith('## [0.27.0]'), 'the retraction sits inside the entry it corrects').toBe(false);
 
     const text = collapse(retraction());
     expect(text).toContain('`[0.27.0]`');
