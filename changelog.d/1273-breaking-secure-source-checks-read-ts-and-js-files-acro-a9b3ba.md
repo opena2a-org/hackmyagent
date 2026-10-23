@@ -53,4 +53,4 @@ breaking: true
     ENCRYPT-001 and SESSION-001 on one.
   - Passed to failed, with no file, where the pattern sits below the top
     level: API-003, NET-004 and SEC-004 on this repository and on secretless,
-    ENCRYPT-003 on this repository.
+    ENCRYPT-003 and IO-004 on this repository.
