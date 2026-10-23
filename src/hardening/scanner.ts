@@ -972,27 +972,28 @@ function readCheckDirents(dir: string, admit: (entry: DirEntryLike) => boolean):
 /** #1273 — the extensions the source checks select across the tree (widening them is #414). */
 const SOURCE_CHECK_EXTENSIONS = ['.ts', '.js'];
 
-function isSourceCheckFile(name: string): boolean {
-  return SOURCE_CHECK_EXTENSIONS.some((ext) => name.endsWith(ext));
-}
-
 /**
  * #1273 — `readCheckDir` for the 27 checks whose subject is the tree's `.ts`
  * and `.js` source (LOG-002 through AUDIT-004).
  *
  * Their subject used to be the top-level listing alone, so code under `src/`
  * read as absent, and one config file at the top level was enough for a check
- * to decide on that file and pass over code it never read (#1207). The source
- * files now come from `sourceFiles`, the scan's one tree-wide selection
- * (`HardeningScanner.sourceCheckFiles`), as paths relative to `dir`; every
- * other name `admit` takes (a site's `.json` files) still comes from the
- * top-level listing, because that subject is configuration at the root.
+ * to decide on that file and pass over code it never read (#1207). The top
+ * level is still that listing: every admitted entry that is not a directory,
+ * in listing order, so a `.ts`/`.js` file that is a symbolic link is read
+ * through the tracked `fs` as before (its containment policy refuses and
+ * discloses a target outside the tree), and the other names `admit` takes (a
+ * site's `.json` files) stay top-level only, because that subject is
+ * configuration at the root. Below the top level the source files come from
+ * `sourceFiles`, the scan's one tree-wide selection
+ * (`HardeningScanner.sourceCheckFiles`), as paths relative to `dir`; the walk
+ * behind it follows no symbolic link.
  *
  * The three states keep their meaning:
- * - `read`: at least one admitted file in the selection or at the root. The
+ * - `read`: at least one admitted file at the root or in the selection. The
  *   entries are the admitted paths, so the caller's loop and its
  *   `path.join(dir, file)` are unchanged.
- * - `absent`: no admitted file anywhere in the selection or at the root, the
+ * - `absent`: no admitted file at the root or anywhere in the selection, the
  *   only state that emits the not-applicable record.
  * - `unread`: the top-level listing failed for a reason other than
  *   not-there, as before. The walk is not started. A subdirectory the walk
@@ -1004,10 +1005,13 @@ async function readSourceCheckDir(
   sourceFiles: () => Promise<string[]>,
   admit: (file: string) => boolean,
 ): Promise<DirRead<string>> {
-  const root = await readCheckDir(dir, admit);
+  const root = await readCheckDirents(dir, (entry) => admit(entry.name));
   if (root.state === 'unread') return root;
-  const atRoot = root.state === 'read' ? root.entries.filter((name) => admit(name) && !isSourceCheckFile(name)) : [];
-  const entries = [...(await sourceFiles()).filter(admit), ...atRoot];
+  const atRoot = root.state === 'read'
+    ? root.entries.filter((entry) => admit(entry.name) && !entry.isDirectory()).map((entry) => entry.name)
+    : [];
+  const below = (await sourceFiles()).filter((rel) => rel.includes(path.sep) && admit(rel));
+  const entries = [...atRoot, ...below];
   return entries.length > 0 ? { state: 'read', entries } : { state: 'absent' };
 }
 

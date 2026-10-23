@@ -9,10 +9,11 @@
  * that file alone, so LOG-002 passed over a `console.log(password)` it never
  * opened and `secure` exited 0.
  *
- * The selection is now one walk of the tree per scan (`sourceCheckFiles`):
- * no symlink followed, `node_modules`, `.git` and hidden directories never
- * entered, every path under `dist/` or `build/` dropped, depth bound 10. A
- * site's `.json` files stay top-level only. The cells below are:
+ * The selection is now the top-level listing, as before, plus one walk of the
+ * tree per scan below it (`sourceCheckFiles`): no symlink followed by the
+ * walk, `node_modules`, `.git` and hidden directories never entered, every
+ * path under `dist/` or `build/` dropped, depth bound 10. A site's `.json`
+ * files stay top-level only. The cells below are:
  *
  *   (a) `src/index.ts` logging `password`: LOG-002 fails at high on
  *       `src/index.ts`, and the CLI exits 1;
@@ -27,6 +28,11 @@
  *       file is still judged, and the unlistable directory is disclosed;
  *   (g) a top-level directory symlink to a tree outside the target is not
  *       followed;
+ *   (h) a top-level `index.js` that is a symbolic link: linked to a file
+ *       under a hidden directory inside the tree, it is read as the top-level
+ *       listing read it (LOG-002 fails on `index.js` line 1, the CLI exits
+ *       1); linked to a file outside the tree, it is withheld and disclosed,
+ *       as before;
  *
  * plus the selection's own contract: one walk per scan, per run (two
  * overlapping scans on one scanner each read their own tree, and a second
@@ -131,6 +137,14 @@ describe('(a) and (b) through the built CLI: the verdict reaches the exit code',
       'src/index.ts': LOGS_PASSWORD,
     }));
     expect(log).toMatchObject({ passed: false, severity: 'high', file: path.join('src', 'index.ts') });
+    expect(status).toBe(1);
+  });
+
+  it('(h) exits 1 with LOG-002 failing on a top-level index.js that links to a file under a hidden directory', () => {
+    const dir = project({ 'package.json': PROBE_PACKAGE, '.hidden/real.js': LOGS_PASSWORD });
+    fs.symlinkSync(path.join('.hidden', 'real.js'), path.join(dir, 'index.js'), 'file');
+    const { status, log } = secure(dir);
+    expect(log).toMatchObject({ passed: false, severity: 'high', file: 'index.js', line: 1 });
     expect(status).toBe(1);
   });
 });
@@ -354,6 +368,39 @@ describe('(g) a symlinked directory', () => {
       .filter((f) => SOURCE_CHECK_IDS.includes(f.checkId))
       .flatMap((f) => [f.file ?? '', ...(((f.details as { files?: string[] } | undefined)?.files) ?? [])]);
     expect(named.filter((p) => p.startsWith('linked'))).toEqual([]);
+  });
+});
+
+describe('(h) a top-level index.js that is a symbolic link', () => {
+  it('(h) linked to a file under a hidden directory inside the tree: read, with the record the top-level listing gave', async () => {
+    const dir = project({ 'package.json': PROBE_PACKAGE, '.hidden/real.js': LOGS_PASSWORD });
+    fs.symlinkSync(path.join('.hidden', 'real.js'), path.join(dir, 'index.js'), 'file');
+    const result = await scan(dir);
+    expect(record(result, 'LOG-002')).toMatchObject({
+      passed: false,
+      severity: 'high',
+      file: 'index.js',
+      line: 1,
+      details: { files: ['index.js'] },
+    });
+    // The target is inside the tree, so nothing was withheld and nothing was lost.
+    expect(result.withheldLinks).toBeUndefined();
+    expect(result.coverage?.unreadableInputs?.count ?? 0).toBe(0);
+  });
+
+  it('(h) linked to a file outside the tree: not read, and disclosed as a withheld link', async () => {
+    const outside = project({ 'real.js': LOGS_PASSWORD }, 'hma-1273-outside-');
+    const dir = project({ 'package.json': PROBE_PACKAGE });
+    fs.symlinkSync(path.join(outside, 'real.js'), path.join(dir, 'index.js'), 'file');
+    const result = await scan(dir);
+    // The name was admitted and the read was refused, so the check has a
+    // verdict and cites nothing, as the top-level listing left it.
+    const log = record(result, 'LOG-002');
+    expect(log).toMatchObject({ passed: true, severity: 'high' });
+    expect(log?.file).toBeUndefined();
+    expect(log?.details).toBeUndefined();
+    expect((result.withheldLinks ?? []).map((w) => w.rel)).toEqual(['index.js']);
+    expect(result.withheldLinks?.[0]?.resolved).toBe(fs.realpathSync.native(path.join(outside, 'real.js')));
   });
 });
 
