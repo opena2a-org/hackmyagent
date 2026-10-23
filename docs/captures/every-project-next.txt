@@ -15,7 +15,7 @@ NanoMind: 7 artifact(s) compiled, 3 semantic finding(s) added
   ── Observations ────────────────────────────────────────────
   Surfaces    library · 7 semantic artifacts · all 7 artifacts reached 2-6 of 7 analyzer families
   Checks      261 static declared · 63 of 63 check groups ran · 7 semantic (NanoMind AST, 2-6 of 7 analyzer families) · 7 files read by static checks
-  Coverage    20 of 25 categories examined · 5 unexamined (read no file) · 23 checks reported an absent mitigation (not shown)
+  Coverage    20 of 25 categories examined · 5 unexamined (read no file) · 37 checks reported an absent mitigation (not shown)
   Unexamined  A2A, capabilities, heartbeat, prompt, skill
   Unresolved  MCP, sandbox, auth
   Artifacts   .mcp.json  mcp_config · malicious · no inferred capabilities  (no declared constraints)
