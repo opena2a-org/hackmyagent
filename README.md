@@ -7,7 +7,7 @@
 
 > **[OpenA2A](https://github.com/opena2a-org)**: [CLI](https://github.com/opena2a-org/opena2a) · **HackMyAgent** · [Secretless](https://github.com/opena2a-org/secretless-ai) · [AIM](https://github.com/opena2a-org/agent-identity-management) · [Browser Guard](https://github.com/opena2a-org/ai-browserguard) · [DVAA](https://github.com/opena2a-org/damn-vulnerable-ai-agent)
 
-[Website](https://hackmyagent.com) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
+[Website](https://opena2a.org/hackmyagent) · [Demos](https://opena2a.org/demos) · [Discord](https://discord.gg/uRZa3KXgEn)
 
 Security scanner for AI agents. It finds the shadow AI on a machine, scans agent projects and packages for credentials, risky MCP configs, prompt injection and weak governance, and tests agents with attack payloads.
 
