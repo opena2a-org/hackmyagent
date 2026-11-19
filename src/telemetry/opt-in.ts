@@ -5,16 +5,16 @@
  * with the OpenA2A Registry. Uses a delayed consent tip shown
  * after the 3rd scan (non-interactive, no blocking prompts).
  *
- * Config/counting is delegated to @opena2a/shared (the canonical
- * source for ~/.opena2a/config.json). If @opena2a/shared is not
- * available at runtime, falls back to a local implementation.
+ * The setting, the scan count and the tip dismissal are kept in
+ * ~/.opena2a/config.json (or $OPENA2A_HOME/config.json), which this
+ * module reads and writes itself.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 // ---------------------------------------------------------------------------
-// Shared-library delegation with graceful fallback
+// Backend
 // ---------------------------------------------------------------------------
 
 interface ConfigBackend {
@@ -35,48 +35,23 @@ export function _resetBackend(): void {
 }
 
 function resolveBackend(): ConfigBackend {
-  if (_backend) return _backend;
-
-  // When OPENA2A_HOME is set, always use local backend so the custom
-  // home directory is respected (important for testing and isolation).
-  if (!process.env.OPENA2A_HOME) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const shared = require('@opena2a/shared');
-      if (
-        typeof shared.isContributeEnabled === 'function' &&
-        typeof shared.setContributeEnabled === 'function' &&
-        typeof shared.incrementScanCount === 'function' &&
-        typeof shared.shouldPromptContribute === 'function' &&
-        typeof shared.dismissContributePrompt === 'function'
-      ) {
-        _backend = {
-          isContributeEnabled: shared.isContributeEnabled,
-          setContributeEnabled: shared.setContributeEnabled,
-          incrementScanCount: shared.incrementScanCount,
-          getScanCount: shared.getScanCount || (() => 0),
-          shouldPromptContribute: shared.shouldPromptContribute,
-          dismissContributePrompt: shared.dismissContributePrompt,
-        };
-        return _backend;
-      }
-    } catch {
-      // @opena2a/shared not installed -- fall through to local backend
-    }
-  }
-
-  _backend = createLocalBackend();
+  if (!_backend) _backend = createLocalBackend();
   return _backend;
 }
 
 // ---------------------------------------------------------------------------
-// Local fallback (preserves original HMA behavior for environments
-// where @opena2a/shared is not installed)
+// Local backend: the config file
 // ---------------------------------------------------------------------------
+
+/** Version of the consent text a recorded choice answers. */
+const CONSENT_VERSION = '1.0';
 
 interface Opena2aConfig {
   contribute?: {
     enabled?: boolean;
+    /** When the user said yes (ISO-8601); null after a no. */
+    consentedAt?: string | null;
+    consentVersion?: string;
   };
   telemetry?: {
     scanCount?: number;
@@ -105,7 +80,8 @@ function readConfig(): Opena2aConfig {
 function writeConfig(config: Opena2aConfig): void {
   const configPath = getConfigPath();
   const dir = require('path').dirname(configPath);
-  mkdirSync(dir, { recursive: true });
+  // A directory created here holds the consent record: owner only.
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
 }
 
@@ -123,6 +99,11 @@ function createLocalBackend(): ConfigBackend {
       const config = readConfig();
       if (!config.contribute) config.contribute = {};
       config.contribute.enabled = enabled;
+      config.contribute.consentedAt = enabled ? new Date().toISOString() : null;
+      // A version the file already records is kept.
+      if (config.contribute.consentVersion === undefined) {
+        config.contribute.consentVersion = CONSENT_VERSION;
+      }
       writeConfig(config);
     },
 
@@ -175,9 +156,8 @@ function createLocalBackend(): ConfigBackend {
  * Check whether the contribution setting is enabled.
  *
  * Returns:
- *   true  - user explicitly opted in
- *   false - user explicitly opted out (or default in shared backend)
- *   undefined - not yet configured
+ *   true      - user explicitly opted in
+ *   undefined - opted out, or not yet configured
  */
 export function isContributeEnabled(): boolean | undefined {
   return resolveBackend().isContributeEnabled() || undefined;
