@@ -69,7 +69,14 @@ function readConfig(): Opena2aConfig {
   const configPath = getConfigPath();
   try {
     if (existsSync(configPath)) {
-      return JSON.parse(readFileSync(configPath, 'utf-8'));
+      const parsed: unknown = JSON.parse(readFileSync(configPath, 'utf-8'));
+      // Only a JSON object is a config. null, an array or a scalar reads as
+      // empty, like a file that is not JSON: a read of null would throw, and
+      // NanoMind reads the setting in a per-file step that skips the file on
+      // a throw.
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Opena2aConfig;
+      }
     }
   } catch {
     // Corrupt config -- treat as empty

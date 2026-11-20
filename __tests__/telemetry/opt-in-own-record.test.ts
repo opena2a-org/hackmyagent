@@ -13,6 +13,11 @@
  *       one that only NODE_PATH reaches, as in a consumer tree that hoists it.
  *   (d) An explicit no in the file means no tip, with or without a dismissal
  *       recorded.
+ *   (e) A file whose JSON value is not an object (null, an array, a string, a
+ *       number, true) reads as empty: the setting reads as not configured
+ *       without a throw, no tip is due, and the scan count writes an object
+ *       in its place. With a file holding null, NanoMind's per-file step,
+ *       which reads the setting ahead of the analyzers, still runs them.
  *
  * The other halves of the tip rule (fewer than 3 scans, an explicit yes, a
  * dismissal inside 30 days) are pinned in contribute.test.ts.
@@ -26,8 +31,11 @@ import { assertDistFresh } from '../helpers/dist-freshness';
 import {
   saveContributeChoice,
   shouldPromptContribute,
+  isContributeEnabled,
+  incrementScanCount,
   _resetBackend,
 } from '../../src/telemetry/opt-in';
+import { runNanoMindScan } from '../../src/nanomind-core/scanner-bridge';
 
 const ROOT = path.resolve(__dirname, '../..');
 const BUILT_OPT_IN = path.join(ROOT, 'dist', 'telemetry', 'opt-in.js');
@@ -244,5 +252,65 @@ describe('(d) an explicit no in the file means no tip', () => {
       telemetry: { scanCount: 5, contributePromptDismissedAt: null },
     });
     expect(shouldPromptContribute()).toBe(false);
+  });
+});
+
+describe('(e) a config file whose JSON value is not an object reads as empty', () => {
+  /** [label, the file's whole text]: valid JSON, but not an object. */
+  const NOT_AN_OBJECT: Array<[string, string]> = [
+    ['null', 'null'],
+    ['an array', '[]'],
+    ['a string', '"text"'],
+    ['a number', '42'],
+    ['true', 'true'],
+  ];
+
+  it.each(NOT_AN_OBJECT)(
+    'a file holding %s: the setting reads as not configured, no tip is due, and the scan count writes an object',
+    (_label, text) => {
+      const file = useHome(tempDir('hma-optin-e-'));
+      fs.writeFileSync(file, text + '\n', { mode: 0o600 });
+
+      const read = () => isContributeEnabled();
+      expect(read).not.toThrow();
+      expect(read()).toBeUndefined();
+      expect(shouldPromptContribute()).toBe(false);
+
+      expect(incrementScanCount()).toBe(1);
+      expect(readConfig(file)).toEqual({ telemetry: { scanCount: 1 } });
+    },
+  );
+
+  it('a file holding null: NanoMind still runs the analyzers on a scanned artifact', async () => {
+    // The scanner reads the setting, to queue its classification statistic,
+    // inside its per-file step and ahead of the analyzers; that step skips
+    // the file on a throw.
+    const file = useHome(tempDir('hma-optin-e-'));
+    fs.writeFileSync(file, 'null\n', { mode: 0o600 });
+
+    // An MCP server granted every tool: the scope analyzer flags it.
+    const target = tempDir('hma-optin-e-target-');
+    fs.writeFileSync(
+      path.join(target, 'mcp.json'),
+      JSON.stringify(
+        {
+          mcpServers: {
+            filesystem: {
+              command: 'npx',
+              args: ['-y', '@modelcontextprotocol/server-filesystem'],
+              allowedTools: ['*'],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const result = await runNanoMindScan(target, []);
+
+    expect(result.compiledArtifacts).toBe(1);
+    const scope = result.astFindings.filter((f) => f.checkId.startsWith('AST-SCOPE') && !f.passed);
+    expect(scope.length).toBeGreaterThan(0);
   });
 });
