@@ -26,6 +26,7 @@ import { lineFromOffset } from '../types/text-position';
 import { HeadTailRegExp, WordChainAlternationRegExp, WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
+import { shellLineWritesToTmp } from './shell-tmp-write';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
 import {
   parseDeclaredCapabilities as parseSkillDeclaredCaps,
@@ -16975,9 +16976,12 @@ dist/
           // Skip lines that ARE mktemp commands
           if (/mktemp/.test(line)) continue;
           // Match hardcoded /tmp/ writes
+          // The line-level test is only a prefilter; whether /tmp/ is in a
+          // write position is decided on the parsed command.
           if (
             /\/tmp\//.test(line) &&
-            (/>/.test(line) || />>/.test(line) || /-o\s+\/tmp\//.test(line) || installToTmp.test(line))
+            (/>/.test(line) || /-o\s*["']?\/tmp\//.test(line) || installToTmp.test(line)) &&
+            shellLineWritesToTmp(line)
           ) {
             nemo006Found = true;
             findings.push({
