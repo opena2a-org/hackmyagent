@@ -3240,10 +3240,10 @@ export function isPathIgnored(filePath: string, ignoredPaths: string[]): boolean
 export function matchesCheckPattern(checkId: string, pattern: string): boolean {
   if (!checkId || !pattern) return false;
   const upper = checkId.toUpperCase();
-  const p = pattern.toUpperCase();
-  if (!p.includes('*')) return upper === p;
+  const compiled = compileCheckPattern(pattern);
+  if (compiled.literal !== undefined) return upper === compiled.literal;
 
-  const pieces = p.split('*');
+  const pieces = compiled.pieces;
   const first = pieces[0];
   const last = pieces[pieces.length - 1];
   if (upper.length < first.length + last.length) return false;
@@ -3258,6 +3258,32 @@ export function matchesCheckPattern(checkId: string, pattern: string): boolean {
     pos = at + piece.length;
   }
   return true;
+}
+
+/**
+ * A check pattern upper-cased and split at its stars, once. A finding is
+ * matched against every rule's pattern, so doing this per call made a scan
+ * with many findings pay for a multi-megabyte `.hmaignore` line once per
+ * finding. The cache is bounded; a scan holds few distinct patterns.
+ */
+interface CompiledCheckPattern {
+  /** The upper-cased pattern when it has no star; otherwise undefined. */
+  literal?: string;
+  pieces: string[];
+}
+const COMPILED_CHECK_PATTERNS = new Map<string, CompiledCheckPattern>();
+const COMPILED_CHECK_PATTERNS_MAX = 512;
+
+function compileCheckPattern(pattern: string): CompiledCheckPattern {
+  const cached = COMPILED_CHECK_PATTERNS.get(pattern);
+  if (cached) return cached;
+  const p = pattern.toUpperCase();
+  const compiled: CompiledCheckPattern = p.includes('*')
+    ? { pieces: p.split('*') }
+    : { literal: p, pieces: [] };
+  if (COMPILED_CHECK_PATTERNS.size >= COMPILED_CHECK_PATTERNS_MAX) COMPILED_CHECK_PATTERNS.clear();
+  COMPILED_CHECK_PATTERNS.set(pattern, compiled);
+  return compiled;
 }
 
 /**

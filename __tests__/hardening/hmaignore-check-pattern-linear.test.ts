@@ -110,3 +110,19 @@ describe('#926 check patterns match in time linear in their length', () => {
     expect(matchesCheckPattern('NEMO-009', '')).toBe(false);
   });
 });
+
+describe('#931 a long check pattern is prepared once, not per comparison', () => {
+  it('answers many comparisons against a 4 MB pattern within budget', () => {
+    const long = 'a*'.repeat(2 * 1024 * 1024);
+    const literal = 'x'.repeat(4 * 1024 * 1024);
+    matchesCheckPattern(ID, long);
+    matchesCheckPattern(ID, literal);
+
+    const started = performance.now();
+    for (let i = 0; i < 2000; i++) {
+      expect(matchesCheckPattern(ID, long)).toBe(false);
+      expect(matchesCheckPattern(ID, literal)).toBe(false);
+    }
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+});
