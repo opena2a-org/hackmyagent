@@ -18,7 +18,8 @@ import { assertDistFreshIfPresent } from '../helpers/dist-freshness';
 beforeAll(assertDistFreshIfPresent);
 
 /**
- * Load-bearing end-to-end gate (per feedback_verify_security_claims_end_to_end.md):
+ * Load-bearing end-to-end gate (#160, #172): a security claim is verified
+ * end to end, against the built CLI.
  *
  * The README bullet promising "Tampered binaries enter QUARANTINE mode (exit
  * code 3)" must have a regression test that produces the exact failure mode

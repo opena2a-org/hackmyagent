@@ -174,12 +174,11 @@ function scan(
 }
 
 // Frozen per-file counts of lines matching the first expression, measured on
-// the delivered tree: 4 files, 40 lines. Line numbers are deliberately not
+// the delivered tree: 3 files, 23 lines. Line numbers are deliberately not
 // pinned — unrelated edits would shift them. No file under __tests__ has an
 // entry: a test comment states its constraint in plain words, so a matching
 // line in a test file is always reported, never pinned.
 const PATTERN_BASELINE: Record<string, number> = {
-  'CHANGELOG.md': 17,
   'docs/release-playbook.md': 11,
   'docs/testing/release-smoke.md': 2,
   'src/attack/payloads/capability-abuse.ts': 10,
@@ -401,8 +400,8 @@ describe('internal attribution stays off the public surfaces', () => {
   });
 
   it('HMA-37.AC3 every public-surface file carries exactly the frozen number of lines matching the first expression', () => {
-    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(4);
-    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(40);
+    expect(Object.keys(PATTERN_BASELINE)).toHaveLength(3);
+    expect(Object.values(PATTERN_BASELINE).reduce((a, b) => a + b, 0)).toBe(23);
     const { hits } = scan(REPO_ROOT, PATTERN);
     expect(compareToBaseline(hits, PATTERN_BASELINE, PATTERN_GUIDANCE)).toEqual([]);
   });
