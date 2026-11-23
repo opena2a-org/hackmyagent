@@ -3001,6 +3001,22 @@ function boundHmaIgnoreEcho(text: string): string {
 }
 
 /**
+ * The last whitespace-separated token of `text` and the index it starts at,
+ * or null when `text` is blank. Scans from the end, so a long line costs time
+ * linear in its length; `text.match(/(\S+)\s*$/)` retried the match at every
+ * non-space character and took quadratic time on a long token.
+ */
+function lastHmaIgnoreToken(text: string): { token: string; start: number } | null {
+  const isSpace = (c: string) => /\s/.test(c);
+  let end = text.length;
+  while (end > 0 && isSpace(text[end - 1])) end--;
+  if (end === 0) return null;
+  let start = end - 1;
+  while (start > 0 && !isSpace(text[start - 1])) start--;
+  return { token: text.slice(start, end), start };
+}
+
+/**
  * The two-step `.hmaignore` parser, steps (a)-(h).
  * `today` is the scan clock's UTC calendar date as `YYYY-MM-DD`, injected so
  * the row table in the tests is deterministic; a rule is active while
@@ -3037,9 +3053,9 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
     let expires: string | undefined;
     let attrError: string | undefined;
     for (;;) {
-      const m = text.match(/(\S+)\s*$/);
-      if (!m || !/^expires:/i.test(m[1])) break;
-      const token = m[1];
+      const last = lastHmaIgnoreToken(text);
+      if (!last || !/^expires:/i.test(last.token)) break;
+      const token = last.token;
       if (expires !== undefined) {
         attrError = 'two `expires:` attributes on one line; keep one';
         break;
@@ -3050,7 +3066,7 @@ export function parseHmaIgnore(content: string, today: string): { rules: HmaIgno
         break;
       }
       expires = value;
-      text = text.slice(0, text.length - m[0].length).trimEnd();
+      text = text.slice(0, last.start).trimEnd();
     }
     if (attrError) { fail(attrError); continue; }
     if (/(^|\s)expires:/i.test(text)) {
