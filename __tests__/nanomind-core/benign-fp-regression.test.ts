@@ -9,7 +9,7 @@
  * This corresponds to oracle "expected score ≤ 30" (informational only).
  *
  * DO NOT loosen these tests — they are the P0-1 regression lock.
- * Reference: results/REDTEAM_RESULTS_tme-v5_2026-04-15.md
+ * Reference: #99, the pull request that brought the FPR from 90.9% to 0%.
  */
 
 import { describe, it, expect } from 'vitest';

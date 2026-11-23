@@ -13,10 +13,11 @@
  * and the Go domain constants, with the CLI array and the client filter
  * DELETED.
  *
- * The registry leg is REG-10; this suite runs against the in-process mock, so
- * neither leg waits for the other. Spawn-based like its siblings in this
- * directory, and gated on a built CLI through `assertDistFreshIfPresent`
- * (#285) so it can never measure a stale binary and report a pass.
+ * The registry side of the change lives in the registry repository; this
+ * suite runs against the in-process mock, so neither side waits for the
+ * other. Spawn-based like its siblings in this directory, and gated on a
+ * built CLI through `assertDistFreshIfPresent` (#285) so it can never
+ * measure a stale binary and report a pass.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';

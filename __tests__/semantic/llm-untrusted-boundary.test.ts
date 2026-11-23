@@ -18,7 +18,8 @@
  * These tests are the part that runs with no network and no API key, which is
  * the reason this shipped for nineteen minor versions: the only way to exercise
  * the path was to hold a live key, so nothing in the suite ever did. The live
- * measurements are recorded in the session file and the roadmap unit.
+ * measurements are the ones in the table above, taken for #462 and fixed by
+ * #485.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as llmPrompts from '../../src/semantic/llm/prompts';
