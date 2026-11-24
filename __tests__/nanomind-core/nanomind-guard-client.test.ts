@@ -592,7 +592,16 @@ describe('nanomind-guard-client — isDaemonStopped', () => {
     ]);
     expect(existsSync(socketPath)).toBe(true);
 
-    expect(await isDaemonStopped({ socketPath, timeoutMs: 500 })).toBe(true);
+    // The answer must come from the refused connection, not from beating a
+    // short clock: when the timeout passes first, isDaemonStopped returns
+    // false. A 500 ms timeout was missed on a heavily loaded machine, so the
+    // timeout here is one no machine misses, and the elapsed time shows the
+    // refusal settled the probe long before it.
+    const timeoutMs = 30_000;
+    const start = Date.now();
+    const stopped = await isDaemonStopped({ socketPath, timeoutMs });
+    expect(stopped).toBe(true);
+    expect(Date.now() - start).toBeLessThan(timeoutMs / 2);
   });
 
   it('is false, without waiting out the timeout, when a daemon accepts the connection and stays silent', async () => {
