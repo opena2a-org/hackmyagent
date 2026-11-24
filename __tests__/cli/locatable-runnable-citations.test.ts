@@ -8,15 +8,10 @@
  *   scan-root prefix, so `sed -n '10p' 'app/config.ts'` only ran if the
  *   reader's shell already sat at the scan target.
  *
- * WHAT IT NO LONGER LOCKS, AND WHY. `AST-CRED-003 Hardcoded Secret Detected`
- * still ships with no `line` on a `source_code` artifact: its two line sources
- * are both empty there — no CRED evidence span, and an evidence summary that is
- * a SYNTHESIZED label rather than a verbatim substring — so the CRITICAL
- * renders as `app/config.ts` with no `:N` and no `Verify:`. A change that gave
- * it one by carrying the producer's offset was withdrawn after three
- * adversarial rounds each found it citing a value the finding was not about.
- * #497 carries that work. Assertions here were rewritten to the honest
- * behaviour rather than deleted, so the gap stays visible.
+ * `AST-CRED-003 Hardcoded Secret Detected` and `AST-CRED-001` both cite the
+ * line the canonical credential scan recorded for the key (#497), so the
+ * CRITICAL renders as `app/config.ts:N` with a `Verify:`, which is asserted
+ * below.
  *
  * NOT IN SCOPE, AND STILL OPEN AS #353: that same synthesized label carries a
  * truncated prefix of the key into `message` and `evidence`. No assertion here
@@ -380,15 +375,16 @@ describe("locatable, runnable citations (#368, #286)", () => {
     );
     expect(highCritical.length).toBeGreaterThanOrEqual(MIN_HIGH_CRITICAL);
 
-    // AST-CRED-003 DELIBERATELY HAS NO LINE ON A `source_code` ARTIFACT, and
-    // this file used to assert the opposite. A change that carried the
-    // producer's offset gave it one; that change was withdrawn after three
-    // review rounds each found it citing a value the finding was not about —
-    // see #497, which carries the measurements and the four properties any
-    // revival has to satisfy together. Asserting a line here again is the
-    // signal that #497 has landed, not something to restore by itself.
-    const cred = findings.find(f => f.checkId === "AST-CRED-003");
-    expect(cred, "AST-CRED-003 must fire on the planted key").toBeDefined();
+    // Both credential findings cite the line the producer located the key on
+    // (#497). The four cases that change has to hold together — a digest above
+    // a key, a PEM header used as a string constant, a real PEM key, an AWS
+    // secret containing `/` — are pinned in
+    // `__tests__/nanomind-core/credential-citation-producer-offset.test.ts`.
+    for (const checkId of ["AST-CRED-003", "AST-CRED-001"]) {
+      const cred = findings.find(f => f.checkId === checkId);
+      expect(cred, `${checkId} must fire on the planted key`).toBeDefined();
+      expect(cred.line, `${checkId} cites the key's line`).toBe(EXPECTED_LINE);
+    }
 
     // What DOES hold: any finding that reports a line reports an honest one,
     // and the renderer shows it as `<file>:<line>`.
@@ -404,6 +400,9 @@ describe("locatable, runnable citations (#368, #286)", () => {
     const rendered = parseRenderedFindings(textRun.combined);
     const credBlock = rendered.find(f => f.name.includes("Hardcoded Secret"));
     expect(credBlock, "the CRITICAL block must render").toBeDefined();
+    expect(credBlock!.verify, "the CRITICAL cites its line in a Verify").toMatch(
+      new RegExp(`^sed -n '${EXPECTED_LINE}p' `),
+    );
   });
 
   it("every rendered HIGH/CRITICAL Verify command runs from a foreign cwd", () => {

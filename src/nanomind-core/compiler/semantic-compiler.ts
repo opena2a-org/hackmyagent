@@ -1574,7 +1574,7 @@ function hasCanonicalCredentialFormat(content: string): boolean {
   if (exceedsCredentialScanBytes(content)) {
     return false;
   }
-  for (const { regex, accept } of CANONICAL_CREDENTIAL_PATTERNS) {
+  for (const { regex, accept, isPlaceholder } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
     let match = regex.exec(content);
     // A match the shape's own predicate rejects is not a credential, so look
@@ -1585,9 +1585,17 @@ function hasCanonicalCredentialFormat(content: string): boolean {
     if (match) {
       // Skip obvious test fixtures (FAKE, EXAMPLE, PLACEHOLDER, YOUR_)
       const ctxStart = Math.max(0, match.index - 40);
-      const ctxEnd = Math.min(content.length, match.index + match[0].length + 40);
-      const window = content.slice(ctxStart, ctxEnd).toUpperCase();
-      if (/FAKE|EXAMPLE|PLACEHOLDER|YOUR_|<YOUR|DUMMY/.test(window)) {
+      const matchEnd = match.index + match[0].length;
+      const ctxEnd = Math.min(content.length, matchEnd + 40);
+      // A shape with its own placeholder test (the PEM block, whose random
+      // body can spell a marker by chance) is judged by it; only the label
+      // and the bytes around the match are read for the marker words.
+      const window = (
+        isPlaceholder
+          ? `${content.slice(ctxStart, match.index)}\n${content.slice(matchEnd, ctxEnd)}`
+          : content.slice(ctxStart, ctxEnd)
+      ).toUpperCase();
+      if (/FAKE|EXAMPLE|PLACEHOLDER|YOUR_|<YOUR|DUMMY/.test(window) || isPlaceholder?.(match[0])) {
         regex.lastIndex = 0;
         continue;
       }
@@ -1755,6 +1763,47 @@ function hasUpperAndLowerAscii(body: string): boolean {
   return /[A-Z]/.test(body) && /[a-z]/.test(body);
 }
 
+/**
+ * Markers that, embedded in the key bytes themselves, say the value is a
+ * placeholder rather than a credential. Shared by the canonical scan and the
+ * PEM body test below so the two cannot disagree on the vocabulary.
+ */
+const IN_KEY_FIXTURE_MARKER_SOURCE =
+  'FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE';
+
+/**
+ * The body of a matched PEM block: what lies between the header's closing
+ * dashes and the footer, or to the end of the match when it has no footer.
+ */
+function pemBody(matched: string): string {
+  // The header opens with five dashes and closes with five more.
+  const headerEnd = matched.indexOf('-----', 5) + 5;
+  const footer = matched.lastIndexOf('-----END');
+  return matched.slice(headerEnd, footer > headerEnd ? footer : matched.length);
+}
+
+/**
+ * True when a PEM body holds key material: one base64 run of at least 40
+ * characters with more than six distinct characters (the low-entropy rule the
+ * other shapes apply). Every private-key encoding has one; a header followed
+ * by a quote, by prose or by `...` has none. A split, not a quantified regex,
+ * so it is linear however long the body is.
+ */
+function hasPemKeyMaterial(body: string): boolean {
+  return body.split(/[^A-Za-z0-9+/=]+/).some(run => run.length >= 40 && new Set(run).size > 6);
+}
+
+/**
+ * True when a PEM body is a placeholder: once the placeholder markers are
+ * taken out, no key material is left (`FAKEKEYFAKEKEY…`, `<YOUR_KEY>`). A real
+ * body whose random base64 happens to spell `fake` or `dummy` somewhere keeps
+ * its key material after the cut and is still reported, which a test of the
+ * whole block for the marker would have skipped.
+ */
+function isMarkerOnlyPemBody(body: string): boolean {
+  return !hasPemKeyMaterial(body.replace(new RegExp(IN_KEY_FIXTURE_MARKER_SOURCE, 'gi'), ''));
+}
+
 const CANONICAL_CREDENTIAL_PATTERNS: Array<{
   label: string;
   regex: RegExp;
@@ -1765,6 +1814,13 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
    * from every start position, and that is how a quadratic scan gets in.
    */
   accept?: (matched: string) => boolean;
+  /**
+   * Optional replacement for the in-key placeholder-marker test, for a shape
+   * whose match is long enough that random bytes spell a marker by chance (a
+   * whole PEM block). When present it alone decides whether the matched bytes
+   * are a placeholder.
+   */
+  isPlaceholder?: (matched: string) => boolean;
 }> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
   { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
@@ -1854,7 +1910,39 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
   // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
   // was positively identified as a credential once already — see the note in
   // src/types/credential-format.ts). Do not relax them.
-  { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g },
+
+  // The WHOLE block, not the armor header (#497). A header alone is a marker
+  // that a key may follow, and a scanner, a parser or a test names it as a
+  // string constant (a `PEM_HEADER` holding the armor line and nothing else)
+  // with no key anywhere near it. Matching the header alone reported that
+  // constant as a hardcoded private key and, through the recorded offset,
+  // handed it the citation over the real secret further down the file.
+  //
+  // So the match runs on through the body — base64 lines, the `Proc-Type:` /
+  // `DEK-Info:` headers of an encrypted PKCS#1 key, real line breaks or the
+  // `\n` escapes of a key held in one string literal — and the closing armor
+  // when it is there, and `accept` asks the body for key material: a base64
+  // run of at least 40 characters with real character diversity, which every
+  // private key encoding has (an Ed25519 PKCS#8 body, the smallest, is one
+  // 64-character line) and a header followed by a quote, prose or `...` does
+  // not. No marker flag rides alongside the offset: the match either holds a
+  // key or is not a match.
+  //
+  // Every part of the body is optional and so is the footer, so once the
+  // header has matched the pattern cannot fail and never backtracks into the
+  // body; the header alternative is tried first so a `Proc-Type:` line is not
+  // cut short by the base64 class. The scan stays linear in the body.
+  {
+    label: 'PEM private key',
+    regex: new RegExp(
+      String.raw`-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----` +
+        String.raw`(?:(?:Proc-Type|DEK-Info):[^\r\n\\]*|[A-Za-z0-9+/=\s]|\\[rn])*` +
+        String.raw`(?:-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----)?`,
+      'g',
+    ),
+    accept: matched => hasPemKeyMaterial(pemBody(matched)),
+    isPlaceholder: matched => isMarkerOnlyPemBody(pemBody(matched)),
+  },
 ];
 
 /**
@@ -1998,7 +2086,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
   // Using word-boundary anchors on the match (not the surrounding code)
   // so a comment like "// for testing" in the same file doesn't mask a
   // real planted key.
-  const inKeyFixtureMarker = /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE/i;
+  const inKeyFixtureMarker = new RegExp(IN_KEY_FIXTURE_MARKER_SOURCE, 'i');
   // Markers in the immediate preceding window (label / variable name)
   // that strongly suggest a template value (e.g. `YOUR_API_KEY=...`).
   const preKeyTemplateMarker = /(<\s*YOUR_|\bYOUR[_-]?(?:KEY|TOKEN|SECRET)|example[_-]?key|template[_-]?key|placeholder)/i;
@@ -2006,7 +2094,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
   // definition rather than a concrete key literal.
   const regexContextMarker = /\\d|\\w|\\s|\[a-z|\[A-Z|\[0-9|\{\d+,|\*\?|\+\?/;
 
-  for (const { label, regex, accept } of CANONICAL_CREDENTIAL_PATTERNS) {
+  for (const { label, regex, accept, isPlaceholder } of CANONICAL_CREDENTIAL_PATTERNS) {
     regex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(content)) !== null) {
@@ -2027,8 +2115,10 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
         continue;
       }
 
-      // Skip if the key bytes themselves contain placeholder markers.
-      if (inKeyFixtureMarker.test(matched)) {
+      // Skip if the key bytes themselves are a placeholder. A shape with its
+      // own test (the PEM block) asks it instead of the whole-match marker
+      // test, which random key bytes can trip by chance.
+      if (isPlaceholder ? isPlaceholder(matched) : inKeyFixtureMarker.test(matched)) {
         continue;
       }
 

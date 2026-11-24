@@ -116,8 +116,20 @@ function checkCredentialsInNonEnvContext(
   // values (`$OPENAI_API_KEY`, `${OPENAI_API_KEY}`) deliberately do NOT
   // match. SDKs are also gated — flagging an SDK source file that only
   // mentions the word "credential" was the same false-positive shape.
+  //
+  // WHERE the finding points is the producer's answer, not a re-search (#497).
+  // The canonical credential scan records the offset of every value it
+  // matched, so the citation is the leftmost of those offsets: the first
+  // credential in the file that a detector actually stood behind. Searching
+  // the bytes again for the leftmost credential-SHAPED string found a SHA-256
+  // digest or an integrity pin above the real key and cited that instead. The
+  // re-search stays as the fallback for an artifact the canonical scan found
+  // nothing in, which is where it was the only answer before too. A producer
+  // offset also satisfies the gate: an AWS secret carrying `/` or a PEM body
+  // with no 40-character alphanumeric run is a value the producer matched even
+  // where the shared format matcher has nothing to say.
   const credLocation = artifactContent !== undefined
-    ? findFirstCredentialFormat(artifactContent)
+    ? firstProducerLocated(ast, artifactContent) ?? findFirstCredentialFormat(artifactContent)
     : undefined;
   if (!credLocation) {
     return findings;
@@ -553,8 +565,12 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   // "Credential Harvesting Pattern" from the same surfaces.
   // When the caller supplied no content there are no raw bytes to judge,
   // so doc/test contexts keep the evidence-text check as the fallback.
+  // A value the canonical scan located satisfies the gate on its own: it IS a
+  // secret-shaped value in the raw bytes, matched by a stricter shape than the
+  // shared matcher's, and the shared matcher misses some of them (an AWS secret
+  // carrying `/`, a PEM body with no 40-character alphanumeric run).
   if (artifactContent !== undefined) {
-    if (!hasCredentialFormat(artifactContent)) {
+    if (!hasCredentialFormat(artifactContent) && producerOffsets(credentialRisks).size === 0) {
       return findings;
     }
   } else if (isTestOrDoc && !evidenceShowsCredentialFormat(evidenceTexts)) {
@@ -640,12 +656,7 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   // exactly the finding it produced before, at the same severity, plus the
   // line it always had the data for.
   if (artifactContent !== undefined) {
-    const located = new Map<number, string>();
-    for (const r of credentialRisks) {
-      if (typeof r.offset === 'number' && r.offset >= 0 && !located.has(r.offset)) {
-        located.set(r.offset, r.evidence);
-      }
-    }
+    const located = producerOffsets(credentialRisks);
     if (located.size > 0) {
       for (const [offset, summary] of [...located.entries()].sort((a, b) => a[0] - b[0])) {
         findings.push(emit(summary, lineFromOffset(artifactContent, offset)));
@@ -1121,6 +1132,55 @@ function shouldSuppressCredentialChecks(
   return false;
 }
 
+
+/**
+ * How far past a producer offset the value is read to mask it for `evidence`.
+ * Bounded so a long single-line artifact costs a fixed amount here; the mask
+ * prints at most the vendor prefix and 16 stars, so a longer read adds nothing.
+ */
+const PRODUCER_VALUE_READ_CHARS = 1024;
+
+/**
+ * Every credential value the producer located, offset to its (masked)
+ * classification, first occurrence of an offset kept. Only the canonical
+ * credential scan records an offset on a CRED-HARVEST surface; a prose-derived
+ * surface carries none and is not a location.
+ */
+function producerOffsets(risks: SecurityAST['inferredRiskSurface']): Map<number, string> {
+  const located = new Map<number, string>();
+  for (const r of risks) {
+    if (r.attackClass !== 'CRED-HARVEST') continue;
+    if (typeof r.offset === 'number' && Number.isInteger(r.offset) && r.offset >= 0 && !located.has(r.offset)) {
+      located.set(r.offset, r.evidence);
+    }
+  }
+  return located;
+}
+
+/**
+ * The leftmost credential value the producer located in `content`, as a
+ * 1-based line and a masked rendering of the value: the same prefix-preserving
+ * mask the re-search route gives when the shared matcher reads a value at that
+ * exact offset, else the producer's classification (which carries no byte of
+ * the value). Undefined when the producer located nothing, or recorded an
+ * offset past the end of the content it is being read against.
+ */
+function firstProducerLocated(
+  ast: SecurityAST,
+  content: string,
+): { line: number; match: string } | undefined {
+  let first: [number, string] | undefined;
+  for (const entry of producerOffsets(ast.inferredRiskSurface)) {
+    if (entry[0] < content.length && (first === undefined || entry[0] < first[0])) first = entry;
+  }
+  if (first === undefined) return undefined;
+  const [offset, classification] = first;
+  const atOffset = findCredentialFormatMatch(content.slice(offset, offset + PRODUCER_VALUE_READ_CHARS));
+  return {
+    line: lineFromOffset(content, offset),
+    match: atOffset?.index === 0 ? maskCredentialValue(atOffset.value) : classification,
+  };
+}
 
 /**
  * Scan `content` for the first credential-format substring (per
