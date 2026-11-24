@@ -9,8 +9,9 @@ issue: 1003
   that file, such as an `api_key:` line in `config.yaml`, reached the probe
   executor. The text and the tool names read from it now pass through the
   redaction `attack` applies to its target. It replaces only the values it
-  recognises, for example the value in `api_key: abcd1234efgh` or
-  `password=abc` and the user name and password in a URL, and it does not
+  recognises with a `[REDACTED]` or `[REDACTED_<KIND>]` marker, for example
+  the value in `api_key: abcd1234efgh` or `password=abc` and the user name
+  and password in a URL, and it does not
   recognise every credential: `api_key: abc1234`, `DB_PASS=supersecretvalue`
   and `password: "it's-a-secret-123"` are sent as written, and
   `password=h;unter2` is sent as `password=[REDACTED];unter2`. This holds for
