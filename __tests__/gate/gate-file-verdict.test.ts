@@ -53,10 +53,11 @@ const WORKFLOW = path.join(__dirname, '..', '..', '.github', 'workflows', 'gate-
  * The approver set the workflow carries; the harness plants the same one, and
  * a row below fails if the two differ. The owner, then the gate-reviewer
  * App's bot login exactly as the reviews API returns it on that App's
- * reviews: user.login benign-gate-reviewer[bot], user.type Bot.
+ * reviews: user.login benign-gate-reviewer[bot], user.type Bot; then the CI
+ * reviewer App's bot login, in the same form.
  */
-const APPROVERS = 'thebenignhacker benign-gate-reviewer[bot]';
-const [OWNER, GATE_BOT] = APPROVERS.split(' ');
+const APPROVERS = 'thebenignhacker benign-gate-reviewer[bot] lication-reviewer[bot]';
+const [OWNER, GATE_BOT, CI_BOT] = APPROVERS.split(' ');
 
 /** The App that opens gate-file pull requests. Its approval never counts. */
 const FLEET_BOT = 'benignhacker-fleet[bot]';
@@ -596,7 +597,7 @@ describe('gate-file verdict: AC3 — the conclusion vocabulary blocks auto-merge
   });
 });
 
-describe('gate-file verdict: the approver set is the owner and the gate-reviewer bot, matched by exact login and account type', () => {
+describe('gate-file verdict: the approver set is the owner, the gate-reviewer bot and the CI reviewer bot, matched by exact login and account type', () => {
   it('the workflow assigns the approver set once, and the harness plants that same set', () => {
     const assigns = evaluateScript()
       .split('\n')
@@ -645,6 +646,28 @@ describe('gate-file verdict: the approver set is the owner and the gate-reviewer
     const r = runChain({ files: GATED, pages: [[{ login: GATE_BOT, type: 'Bot', state: 'APPROVED', commit: STALE }]] });
     expect(r.status, r.report).toBe(0);
     expect(r.reviewCommit).toBe(STALE);
+    expect(r.conclusion).toBe('action_required');
+  });
+
+  it('an approving review by the CI reviewer bot, from a Bot account, on the current head lifts the gate to success', () => {
+    const r = runChain({ files: GATED, pages: [[{ login: CI_BOT, type: 'Bot', state: 'APPROVED', commit: HEAD }]] });
+    expect(r.status, r.report).toBe(0);
+    expect(r.reviewState).toBe('APPROVED');
+    expect(r.reviewCommit).toBe(HEAD);
+    expect(r.conclusion).toBe('success');
+  });
+
+  it('an approving review by the CI reviewer bot on an older head leaves the gate at action_required', () => {
+    const r = runChain({ files: GATED, pages: [[{ login: CI_BOT, type: 'Bot', state: 'APPROVED', commit: STALE }]] });
+    expect(r.status, r.report).toBe(0);
+    expect(r.reviewCommit).toBe(STALE);
+    expect(r.conclusion).toBe('action_required');
+  });
+
+  it('the CI reviewer login carried by a User account does not count', () => {
+    const r = runChain({ files: GATED, pages: [[{ login: CI_BOT, type: 'User', state: 'APPROVED', commit: HEAD }]] });
+    expect(r.status, r.report).toBe(0);
+    expect(r.reviewState).toBe('');
     expect(r.conclusion).toBe('action_required');
   });
 
