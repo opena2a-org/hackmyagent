@@ -211,8 +211,10 @@ describe('new', () => {
 /**
  * #875: five fragments were filed as `hma-i1-2026-10-04-<hex>.md` and
  * `hma-i2-2026-10-04-<hex>.md`, after the branches they were written on, which
- * say nothing about the change. The branch names a fragment only when it
- * carries one of the entry's issue numbers; otherwise the entry names itself.
+ * say nothing about the change. The last part of the branch name names a
+ * fragment when it carries one of the entry's issue numbers, or when the entry
+ * names no issue; otherwise the entry's first issue number and the words of its
+ * first line name it.
  */
 describe('new: the default name', () => {
   const WORK = 'issues/hma-i1-2026-10-04';
