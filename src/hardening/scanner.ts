@@ -3886,6 +3886,98 @@ function isEmojiVariationSelector(buf: Buffer, vsStart: number): boolean {
 }
 
 /**
+ * The code points UNICODE-STEGO-001 and UNICODE-STEGO-004 report: variation
+ * selectors, zero-width characters, U+FEFF, bidi overrides and isolates, and
+ * plane 14 (U+E0000-E01FF).
+ */
+const STEGO_INVISIBLE_CODEPOINT =
+  /[\u{FE00}-\u{FE0F}\u{200B}-\u{200D}\u{FEFF}\u{202A}-\u{202E}\u{2066}-\u{2069}\u{E0000}-\u{E01FF}]/gu;
+
+/** The first two UTF-8 bytes of every code point in U+E0000-E0FFF. */
+const PLANE_14_LEAD = Buffer.from([0xF3, 0xA0]);
+
+/** A script file a minifier wrote: `*.min.js`, or one with a line no person writes. */
+function isMinifiedScript(relativePath: string, content: string): boolean {
+  if (/[.-]min\.[cm]?js$/i.test(path.basename(relativePath))) return true;
+  if (!/\.[cm]?js$/i.test(relativePath)) return false;
+  let start = 0;
+  while (start < content.length) {
+    let end = content.indexOf('\n', start);
+    if (end === -1) end = content.length;
+    if (end - start >= 1000) return true;
+    start = end + 1;
+  }
+  return false;
+}
+
+/**
+ * #447: vendored Unicode regex data, such as XRegExp's category and script
+ * tables in Django's `xregexp.min.js`. The source spells a class body as
+ * `\u200B-\u200F\u202A-\u202E\uFE00-\uFE0F`; a minifier writes those escapes
+ * out as the characters themselves, so the bundle carries literal invisible
+ * code points that are range endpoints in a sorted table, not a payload.
+ *
+ * True when the file is minified and every reported code point sits in such
+ * a table: the run of non-ASCII characters and `-` around it holds at least
+ * four ranges, and its entries strictly ascend, as a generated Unicode table
+ * does. A payload breaks that: it is a sequence of selectors or zero-width
+ * characters with no ranges, and appended to a table it repeats or descends.
+ */
+export function isMinifiedUnicodeClassData(relativePath: string, content: string): boolean {
+  if (!isMinifiedScript(relativePath, content)) return false;
+  let found = false;
+  // The end of the last run read; a code point before it was read with it.
+  let runEnd = 0;
+  for (const m of content.matchAll(STEGO_INVISIBLE_CODEPOINT)) {
+    const at = m.index ?? 0;
+    // A BOM at offset 0 is not reported by UNICODE-STEGO-001.
+    if (at === 0 && m[0] === '\uFEFF') continue;
+    found = true;
+    if (at < runEnd) continue;
+    let start = at;
+    while (start > runEnd && isClassDataUnit(content.charCodeAt(start - 1))) start--;
+    let end = at + m[0].length;
+    while (end < content.length && isClassDataUnit(content.charCodeAt(end))) end++;
+    if (!isSortedRangeTable(content.slice(start, end))) return false;
+    runEnd = end;
+  }
+  return found;
+}
+
+function isClassDataUnit(unit: number): boolean {
+  return unit >= 0x80 || unit === 0x2D;
+}
+
+function isSortedRangeTable(run: string): boolean {
+  const cps = Array.from(run, (ch) => ch.codePointAt(0)!);
+  let ranges = 0;
+  let previous = -1;
+  let i = 0;
+  // A `-` at either end of the run joins an ASCII endpoint outside it. At the
+  // start it opens a range (`{-\xA9`): skip it and the endpoint it closes on.
+  // At the end it cannot close an ascending range: skip it alone.
+  if (cps[0] === 0x2D) i = cps.length > 1 && cps[1] !== 0x2D ? 2 : 1;
+  let last = cps.length;
+  if (last > i && cps[last - 1] === 0x2D) last--;
+  while (i < last) {
+    const lo = cps[i];
+    if (lo === 0x2D) return false;
+    let hi = lo;
+    if (i + 2 < last && cps[i + 1] === 0x2D && cps[i + 2] !== 0x2D) {
+      hi = cps[i + 2];
+      if (hi <= lo) return false;
+      ranges++;
+      i += 3;
+    } else {
+      i += 1;
+    }
+    if (lo <= previous) return false;
+    previous = hi;
+  }
+  return ranges >= 4;
+}
+
+/**
  * An integer literal in any spelling JavaScript or Python accepts: hex, octal,
  * binary or decimal, numeric separators allowed, an optional BigInt `n`. Group 1
  * is a hex body, 2 octal, 3 binary, 4 decimal. A decimal with a leading zero is
@@ -16002,6 +16094,23 @@ dist/
         }
       }
 
+      // #447: a minified bundle's Unicode regex table (XRegExp in Django) holds
+      // these code points as range endpoints. They are data, not a payload,
+      // so neither UNICODE-STEGO-001 nor UNICODE-STEGO-004 reports them, and
+      // they do not corroborate UNICODE-STEGO-002.
+      const isUnicodeClassData =
+        (hasVariationSelectors || hasTagCharsIn001 || hasZeroWidth || hasMidFileBom ||
+          hasBidiOverride || hasEmojiPresentationSelectors || rawBuffer.includes(PLANE_14_LEAD)) &&
+        isMinifiedUnicodeClassData(relativePath, rawBuffer.toString('utf-8'));
+      if (isUnicodeClassData) {
+        hasVariationSelectors = false;
+        hasEmojiPresentationSelectors = false;
+        hasTagCharsIn001 = false;
+        hasZeroWidth = false;
+        hasMidFileBom = false;
+        hasBidiOverride = false;
+      }
+
       // Bidi and variation/tag chars are critical; zero-width-only is high
       const hasCriticalInvisible = hasVariationSelectors || hasTagCharsIn001 || hasBidiOverride;
       const hasAnyInvisible = hasCriticalInvisible || hasZeroWidth || hasMidFileBom;
@@ -16399,7 +16508,7 @@ dist/
         }
       }
 
-      if (hasTagBlock) {
+      if (hasTagBlock && !isUnicodeClassData) {
         // Only add UNICODE-STEGO-004 if we did not already flag tag chars in 001
         // (004 is broader - covers U+E0000-U+E01FF, 001 only covers U+E0100-E01FF)
         const already001 = findings.some(
