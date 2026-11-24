@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import * as fsp from 'fs/promises';
+import * as path from 'path';
 import { shellLineWritesToTmp } from '../../src/hardening/shell-tmp-write';
+import { HardeningScanner } from '../../src/hardening/scanner';
+import { tempDir } from '../helpers/temp-dir';
 
 describe('shellLineWritesToTmp (NEMO-006 write position)', () => {
   it.each([
@@ -32,5 +36,24 @@ describe('shellLineWritesToTmp (NEMO-006 write position)', () => {
     'echo x >&2 "/tmp/foo"',
   ])('does not flag %s', line => {
     expect(shellLineWritesToTmp(line)).toBe(false);
+  });
+});
+
+describe('NEMO-006 through the scanner', () => {
+  it('reports real /tmp writes and not /tmp literals in quoted arguments', async () => {
+    const root = tempDir('nemo006-quoted-');
+    const sh = [
+      '#!/bin/sh',
+      'assert_eq "$(normalize "/tmp/foo/bar")" "/tmp/foo/bar"',
+      "run_case --input '/tmp/fixture.json' --expect \"/tmp/out > /tmp/log\"",
+      'echo x > /tmp/foo',
+      'mkdir -p /tmp/work',
+      '',
+    ].join('\n');
+    await fsp.mkdir(path.join(root, 'scripts'), { recursive: true });
+    await fsp.writeFile(path.join(root, 'scripts', 'test.sh'), sh);
+    const drafts: any[] = await (new HardeningScanner() as any).checkNemoClawPatterns(root, false);
+    const lines = drafts.filter(f => f.checkId === 'NEMO-006' && !f.passed).map(f => f.line);
+    expect(lines).toEqual([4, 5]);
   });
 });

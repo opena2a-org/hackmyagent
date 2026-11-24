@@ -16980,7 +16980,10 @@ dist/
           // write position is decided on the parsed command.
           if (
             /\/tmp\//.test(line) &&
-            (/>/.test(line) || /-o\s*["']?\/tmp\//.test(line) || installToTmp.test(line)) &&
+            (/>/.test(line) ||
+              /-o\s*["']?\/tmp\//.test(line) ||
+              /\b(?:mkdir|touch|cp|mv|tee|ln)\b/.test(line) ||
+              installToTmp.test(line)) &&
             shellLineWritesToTmp(line)
           ) {
             nemo006Found = true;
