@@ -169,7 +169,12 @@ export function analyzeGovernance(
   const findings: ASTFinding[] = [];
 
   findings.push(...checkDomainCoverage(ast, effectiveConstraints));
-  findings.push(...checkConstraintEnforceability(ast, effectiveConstraints, artifactContent));
+  // Enforceability is a property of the wording, so it is judged only on the
+  // constraints this artifact's own text holds. A sibling SOUL.md's
+  // constraints still count toward coverage and ratio above, but their weak
+  // wording is reported once, on SOUL.md at its own line, when SOUL.md is
+  // scanned — not again on mcp.json, which holds none of it.
+  findings.push(...checkConstraintEnforceability(ast, ast.declaredConstraints, artifactContent));
   findings.push(...checkMissingGovernance(ast, effectiveConstraints));
 
   // Override resistance and governance ratio are agent-level checks.
@@ -298,12 +303,12 @@ function checkDomainCoverage(ast: SecurityAST, effectiveConstraints: Constraint[
  */
 function checkConstraintEnforceability(
   ast: SecurityAST,
-  effectiveConstraints: Constraint[],
+  ownConstraints: Constraint[],
   artifactContent?: string,
 ): ASTFinding[] {
   const findings: ASTFinding[] = [];
 
-  for (const constraint of effectiveConstraints) {
+  for (const constraint of ownConstraints) {
     if (constraint.enforceability >= 0.6) {
       continue; // Acceptably enforceable
     }
@@ -328,9 +333,8 @@ function checkConstraintEnforceability(
       fixable: false,
       file: ast.artifactPath,
       // constraint.text is extracted verbatim from the artifact; indexOf
-      // recovers the source line. Project-level constraints (loaded from
-      // a sibling SOUL.md) won't be findable in the current artifact's
-      // content — line stays undefined for those, which is correct.
+      // recovers the source line. Only this artifact's own constraints reach
+      // here, so the cited file is the one whose text holds the wording.
       line: findLineFromString(artifactContent, constraint.text),
       fix:
         `Replace advisory language with mandatory language. ` +
