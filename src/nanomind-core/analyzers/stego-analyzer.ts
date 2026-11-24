@@ -30,7 +30,7 @@ const STEGO_RANGES: Array<[number, number]> = [
   [0x202A, 0x202E],   // Bidi overrides (LRE, RLE, PDF, LRO, RLO)
   [0x2066, 0x2069],   // Bidi isolates (LRI, RLI, FSI, PDI)
   [0xFE00, 0xFE0F],   // Variation selectors
-  [0xE0000, 0xE01EF], // Tag characters
+  [0xE0000, 0xE01FF], // Tag characters
 ];
 
 // Cyrillic characters commonly used as Latin homoglyphs
@@ -344,7 +344,7 @@ export function analyzeSteganography(
   const zwsChars = contexts.filter(c => c.codepoint === 0x200B);
   const bidiChars = contexts.filter(c => (c.codepoint >= 0x202A && c.codepoint <= 0x202E) ||
                                           (c.codepoint >= 0x2066 && c.codepoint <= 0x2069));
-  const tagChars = contexts.filter(c => c.codepoint >= 0xE0000 && c.codepoint <= 0xE01EF);
+  const tagChars = contexts.filter(c => c.codepoint >= 0xE0000 && c.codepoint <= 0xE01FF);
   const softHyphens = contexts.filter(c => c.codepoint === 0x00AD);
   const wordJoiners = contexts.filter(c => c.codepoint === 0x2060);
 
