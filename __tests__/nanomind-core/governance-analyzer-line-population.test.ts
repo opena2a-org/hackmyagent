@@ -90,10 +90,11 @@ describe("AST-GOV-002 line population (#147)", () => {
     expect(gov002?.line).toBeUndefined();
   });
 
-  it("leaves line undefined for project-level constraints not in this artifact's content", () => {
+  it("does not report a sibling SOUL.md's weak constraint on mcp.json", () => {
     // A constraint coming from a SIBLING SOUL.md (passed as projectConstraints)
-    // won't match the current artifact's content. The analyzer must NOT
-    // fabricate a line — that would mis-cite the source location.
+    // is wording mcp.json does not hold. It is reported once, on SOUL.md at its
+    // own line, when SOUL.md is scanned; reporting it here too cited a file
+    // with none of the words the fix names, and no line.
     const ast = makeAST({
       artifactType: "mcp_config",
       artifactPath: "mcp.json",
@@ -122,8 +123,6 @@ describe("AST-GOV-002 line population (#147)", () => {
       projectConstraints,
       mcpJsonContent,
     );
-    const gov002 = findings.find((f) => f.checkId === "AST-GOV-002");
-    expect(gov002).toBeDefined();
-    expect(gov002?.line).toBeUndefined();
+    expect(findings.filter((f) => f.checkId === "AST-GOV-002")).toEqual([]);
   });
 });

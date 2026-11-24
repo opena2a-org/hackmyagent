@@ -217,7 +217,7 @@ coverage.
 | Known-bad tree | `"$BAD"` (§0.5) | 69/100, ≥ 1 CRITICAL credential finding, exit 1 |
 | Local repo (clean) | `../ai-trust` or `../secretless` | 60–90 |
 | Empty dir | `"$CLEAN"` (§0.5) | 98 (`.gitignore` LOW only: `DEP-001` reads `package.json` as its subject and records not-applicable on a tree without one; measured 0.34.0) |
-| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 98/100 (no `package.json`, so `DEP-001` is not-applicable; measured 0.34.0) |
+| Governed MCP | `node dist/cli.js secure test/fixtures/governed-mcp` | 96/100: `.gitignore` LOW and one AST-GOV-002 MEDIUM at `SOUL.md:39`, none on `mcp.json` (no `package.json`, so `DEP-001` is not-applicable; measured 0.34.0) |
 | Standalone SOUL.md | `node dist/cli.js scan-soul test/` | see note below |
 | One text (PR body) | `node dist/cli.js scan-text "$PRBODY" --as pr-body` (§0.5) | no score, by design: 2 findings (`TEXT-001` and `TEXT-002`, both at line 1) and exit 1. A `/100` or the word `Score` anywhere in this output is a defect |
 | One text (stdin, clean) | `printf 'LGTM, approved.\n' \| node dist/cli.js scan-text - --json` | no score: `findings: []` and exit 0. A benign approval is not a payload |
