@@ -7,9 +7,9 @@ issue: 1007
 - When a critical control is not detected, `hackmyagent scan-soul` prints a
   clause under `By hand:` that satisfies it. The clause for `SOUL-IH-003`
   ended with "regardless of conversational framing", and `scan-soul` infers
-  the profile from the words of the file. Pasting the clause into a SOUL.md
-  read as `custom` made the next scan read it as `conversational`, which
-  evaluates 4 of 9 domains. A BASIC-tier file went from 6 domains evaluated
+  the profile from the words of the file. Pasting the clause into a BASIC-tier
+  SOUL.md read as custom made the next scan read it as `conversational`, which
+  evaluates 4 of 9 domains. That file went from 6 domains evaluated
   to 4, with Trust Hierarchy and Data Handling no longer checked; a
   TOOL-USING file went from 8 to 4, and a MULTI-AGENT file from 9 to 4.
   The clause for `SOUL-HB-001` said "hardcoded", which contains the `code`
