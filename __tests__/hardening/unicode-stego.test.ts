@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HardeningScanner, hasStegoRangeLiteral } from '../../src/hardening/scanner';
 import type { SecurityFinding } from '../../src/hardening/security-check';
+import { getCheckDefinition } from '../../src/hardening/check-definitions';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -1660,6 +1661,18 @@ describe('UNICODE-STEGO checks', () => {
         expect(text).not.toMatch(/tag block characters|the Unicode Tag block/i);
       }
       expect(stego004[0].message).toBe('Found invisible plane-14 characters (U+E0000-U+E01FF) in tag-names.js');
+    });
+
+    it('the UNICODE-STEGO-001 and -004 definitions `explain` prints use the same names', () => {
+      // #959 — the 004 definition's fix text still called U+E0000-E01FF
+      // "Plane-14 tag characters" after the scanner's text was corrected.
+      for (const id of ['UNICODE-STEGO-001', 'UNICODE-STEGO-004']) {
+        const def = getCheckDefinition(id)!;
+        for (const text of [def.name, def.description, def.why ?? '', def.fix ?? '']) {
+          expect(text, id).not.toMatch(/tag characters|tag block characters|the Unicode Tag block/i);
+        }
+      }
+      expect(getCheckDefinition('UNICODE-STEGO-004')!.fix).toContain('invisible plane-14 characters (U+E0000-U+E01FF)');
     });
 
     it('does not duplicate when 001 already flagged tag characters', async () => {

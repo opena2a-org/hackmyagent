@@ -1883,7 +1883,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     description: 'Source file contains Unicode Tags block, Variation Selectors Supplement or unassigned plane-14 characters (U+E0000-U+E01FF), which have no visible rendering and can be used to hide data',
     category: 'unicode-stego',
     why: 'Unicode Tags block, Variation Selectors Supplement and unassigned plane-14 characters (U+E0000-U+E01FF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all of these characters.',
-    fix: 'xxd <file> | grep "f3a0" to locate the Plane-14 tag characters in the file named in the finding, then remove them.',
+    fix: 'xxd <file> | grep "f3a0" to locate the invisible plane-14 characters (U+E0000-U+E01FF) in the file named in the finding, then remove them.',
   },
   'UNICODE-STEGO-005': {
     name: 'Homoglyph Confusable Characters Detected',
