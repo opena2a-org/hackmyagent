@@ -1,9 +1,10 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
+import { tempDir } from '../helpers/temp-dir';
 
 /**
  * The PR review gate's caller-side partitioner, executed rather than read.
@@ -42,49 +43,45 @@ const TARGET_BYTES = 420000;
  */
 const MAX_FULL_TOTAL = 200000;
 
-// The step writes fixed `/tmp/pr_*` paths, matching the rest of the workflow
-// and the runner it was written for, where a job owns the machine. Two of
-// these suites running at once would therefore hand each other's fixtures
-// around — the failure reads exactly like a real partitioner defect, which is
-// how it cost a previous session two discarded runs on the shared action's
-// harness.
+// WHERE THE STEP'S `/tmp` FILES GO WHEN THIS SUITE RUNS IT.
 //
-// The lock is hardcoded to `/tmp` for the same reason: `os.tmpdir()` honours
-// $TMPDIR and is per-process on macOS, so it would take a different lock than
-// the resource it guards and both holders would believe they were serialised.
-const LOCK = '/tmp/hma-pr-review-partition.lock';
+// The step reads and writes fixed paths — `/tmp/pr_diff.txt`,
+// `/tmp/pr_batches`, `/tmp/system_prompt.txt` and the rest — matching the rest
+// of the workflow and the runner it was written for, where a job owns the
+// machine. A test machine is not owned by one run: two copies of this suite at
+// once (a developer's run beside a check, two checks) used to hand each
+// other's fixtures around, and the failure read exactly like a partitioner
+// defect ("the step did not report a cut level", an empty batch). A lock in
+// `/tmp` serialised them, and broke itself after 20 seconds, which a loaded
+// machine outlasts.
+//
+// So each run now gets its own directory, and the copy of the block that runs
+// has its literal `/tmp/` prefix rewritten to it. Rewriting the text was
+// chosen over running the block under a private root (a mount namespace or
+// chroot), because that needs privileges neither macOS nor a CI runner grants
+// a test, and over changing the step, which would change what runs on
+// GitHub's runner. The rewrite is safe only while `/tmp/` is the block's ONE
+// spelling of a temporary path — a later `mktemp`, `$TMPDIR` or `$RUNNER_TEMP`
+// would escape it silently and be shared again — so `privateCopy` refuses to
+// run a block with any other spelling. Everything the step reports is mapped
+// back to `/tmp/` before a row sees it, so rows still assert what the runner
+// would print. Nothing is shared between runs any more, so there is no lock.
 
-function withLock<T>(fn: () => T): T {
-  // WELL UNDER vitest's 60s per-test timeout, on purpose. A deadline longer
-  // than the timeout turns a stale lock into "Test timed out in 60000ms",
-  // which says nothing about the lock and reads as a hung partitioner. Short
-  // enough and the wait ends in a break-and-proceed that names the cause.
-  // A real run of this step takes well under a second.
-  const deadline = Date.now() + 20_000;
-  let fd: number | undefined;
-  for (;;) {
-    try {
-      fd = fs.openSync(LOCK, 'wx');
-      break;
-    } catch {
-      if (Date.now() > deadline) {
-        // A stale lock must not wedge the suite forever, but it must not be
-        // silently ignored either.
-        // eslint-disable-next-line no-console
-        console.warn(`[pr-review-partition] breaking a stale lock at ${LOCK} after 20s`);
-        try { fs.unlinkSync(LOCK); } catch { /* raced with the holder */ }
-        fd = fs.openSync(LOCK, 'w');
-        break;
-      }
-      execFileSync('sleep', ['0.05']);
-    }
+/** Every spelling of a temporary path the block may use: only `/tmp/`. */
+function privateCopy(script: string, tmp: string): string {
+  const fixed = (script.match(/\/tmp\//g) ?? []).length;
+  const anyTemp = (script.match(/tmp|temp/gi) ?? []).length;
+  if (anyTemp !== fixed) {
+    throw new Error(
+      `the partition step names a temporary path other than the literal /tmp/ ` +
+        `(${anyTemp} mentions, ${fixed} of them /tmp/); rewriting /tmp/ would no ` +
+        `longer keep two runs of this suite apart`,
+    );
   }
-  try {
-    return fn();
-  } finally {
-    try { fs.closeSync(fd!); } catch { /* already closed */ }
-    try { fs.unlinkSync(LOCK); } catch { /* already gone */ }
-  }
+  // The block's paths are unquoted (`BATCH_DIR=/tmp/pr_batches`), so the
+  // replacement must be a word bash will not split or glob.
+  if (!/^\/[A-Za-z0-9_./-]+$/.test(tmp)) throw new Error(`unusable private /tmp: ${tmp}`);
+  return script.split('/tmp/').join(`${tmp}/`);
 }
 
 interface Workflow {
@@ -113,6 +110,8 @@ interface RunResult {
   batches: string[];
   batchNames: string[];
   refusal: string;
+  /** This run's private stand-in for `/tmp`; removed when the test ends. */
+  tmp: string;
 }
 
 interface Fixture {
@@ -151,96 +150,134 @@ function utf8Locale(): string | null {
   return null;
 }
 
+/** A run of the step laid out on disk and ready to start. */
+interface Staged {
+  base: string;
+  cwd: string;
+  tmp: string;
+  scriptPath: string;
+  outPath: string;
+  env: NodeJS.ProcessEnv;
+}
+
 /**
- * Run the partition step exactly as Actions would: same script text, same
- * `/tmp` inputs `Gather review context` and `Build review prompt` leave behind,
- * cwd at the checkout root.
+ * Lay out what Actions would: same script text, the `/tmp` inputs `Gather
+ * review context` and `Build review prompt` leave behind, cwd at the checkout
+ * root. `/tmp` is this run's private directory (see `privateCopy`) unless
+ * `sharedTmp` names one, which only the row proving the isolation uses.
  */
+function stagePartition(
+  fx: Fixture,
+  opts: { mutate?: (s: string) => string; sharedTmp?: string } = {},
+): Staged {
+  const base = tempDir('hma-part-');
+  const cwd = path.join(base, 'tree');
+  const tmp = opts.sharedTmp ?? path.join(base, 'tmp');
+  fs.mkdirSync(cwd);
+  fs.mkdirSync(tmp, { recursive: true });
+  for (const [p, c] of fx.tree ?? []) {
+    const fp = path.join(cwd, p);
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, c);
+  }
+
+  for (const [link, target] of fx.symlinks ?? []) {
+    const lp = path.join(cwd, link);
+    fs.mkdirSync(path.dirname(lp), { recursive: true });
+    fs.symlinkSync(target, lp);
+  }
+
+  const title = fx.title ?? 'A large change';
+  const body = fx.body ?? 'Description body.';
+  const sys = fx.systemPrompt ?? 'SYSTEM PROMPT\n';
+  fs.writeFileSync(path.join(tmp, 'pr_diff.txt'), fx.diff);
+  fs.writeFileSync(path.join(tmp, 'pr_title.txt'), title);
+  fs.writeFileSync(path.join(tmp, 'pr_body.txt'), body);
+  fs.writeFileSync(path.join(tmp, 'pr_previous_review.txt'), fx.previousReview ?? '');
+  fs.writeFileSync(path.join(tmp, 'system_prompt.txt'), sys);
+  // What `Build review prompt` composes, in the same order.
+  fs.writeFileSync(
+    path.join(tmp, 'pr_user_msg.txt'),
+    `PR #7: ${title}\n\nDescription:\n${body}\n\nChanged files:\n\n\n` +
+      `FULL SOURCE FILES (line-numbered — use for verifying mitigations):\n\n\n` +
+      `DIFF (changes introduced in this PR):\n${fx.diff}`,
+  );
+  fs.rmSync(path.join(tmp, 'pr_gate_refusal.txt'), { force: true });
+  fs.rmSync(path.join(tmp, 'pr_batches'), { recursive: true, force: true });
+
+  let script = partitionScript();
+  if (opts.mutate) {
+    const mutated = opts.mutate(script);
+    // A mutation that did not apply is indistinguishable from coverage: the
+    // suite goes green because nothing changed, and reads as if the row had
+    // caught something.
+    if (mutated === script) throw new Error('mutation did not apply — the anchor is stale');
+    script = mutated;
+  }
+
+  const scriptPath = path.join(base, 'step.sh');
+  fs.writeFileSync(scriptPath, `#!/bin/bash\n${privateCopy(script, tmp)}`);
+  const outPath = path.join(base, 'gh_output');
+  fs.writeFileSync(outPath, '');
+  const env = { ...process.env, GITHUB_OUTPUT: outPath, PR_NUMBER: '7', ...(fx.env ?? {}) };
+  return { base, cwd, tmp, scriptPath, outPath, env };
+}
+
+/** Read back what a finished run left, with its `/tmp` spelled as the runner's. */
+function collect(st: Staged, status: number, stdout: string, stderr: string): RunResult {
+  const asRunner = (t: string): string => t.split(`${st.tmp}/`).join('/tmp/');
+  const outputs: Record<string, string> = {};
+  for (const line of fs.readFileSync(st.outPath, 'utf8').split('\n')) {
+    const eq = line.indexOf('=');
+    if (eq > 0) outputs[line.slice(0, eq)] = asRunner(line.slice(eq + 1));
+  }
+
+  const batchDir = path.join(st.tmp, 'pr_batches');
+  let batchNames: string[] = [];
+  let batches: string[] = [];
+  if (fs.existsSync(batchDir)) {
+    batchNames = fs.readdirSync(batchDir).sort();
+    batches = batchNames.map((n) => fs.readFileSync(path.join(batchDir, n), 'utf8'));
+  }
+  const refusalPath = path.join(st.tmp, 'pr_gate_refusal.txt');
+  const refusal = fs.existsSync(refusalPath) ? fs.readFileSync(refusalPath, 'utf8') : '';
+
+  // The tree can be large; the private `/tmp` stays for rows that inspect it
+  // and goes when the test ends.
+  fs.rmSync(st.cwd, { recursive: true, force: true });
+  return {
+    status,
+    stdout: asRunner(stdout),
+    stderr: asRunner(stderr),
+    outputs,
+    batches,
+    batchNames,
+    refusal: asRunner(refusal),
+    tmp: st.tmp,
+  };
+}
+
+/** Run the partition step exactly as Actions would, in a private `/tmp`. */
 function runPartition(fx: Fixture, mutate?: (s: string) => string): RunResult {
-  return withLock(() => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hma-part-'));
-    for (const [p, c] of fx.tree ?? []) {
-      const fp = path.join(dir, p);
-      fs.mkdirSync(path.dirname(fp), { recursive: true });
-      fs.writeFileSync(fp, c);
-    }
-
-    for (const [link, target] of fx.symlinks ?? []) {
-      const lp = path.join(dir, link);
-      fs.mkdirSync(path.dirname(lp), { recursive: true });
-      fs.symlinkSync(target, lp);
-    }
-
-    const title = fx.title ?? 'A large change';
-    const body = fx.body ?? 'Description body.';
-    const sys = fx.systemPrompt ?? 'SYSTEM PROMPT\n';
-    fs.writeFileSync('/tmp/pr_diff.txt', fx.diff);
-    fs.writeFileSync('/tmp/pr_title.txt', title);
-    fs.writeFileSync('/tmp/pr_body.txt', body);
-    fs.writeFileSync('/tmp/pr_previous_review.txt', fx.previousReview ?? '');
-    fs.writeFileSync('/tmp/system_prompt.txt', sys);
-    // What `Build review prompt` composes, in the same order.
-    fs.writeFileSync(
-      '/tmp/pr_user_msg.txt',
-      `PR #7: ${title}\n\nDescription:\n${body}\n\nChanged files:\n\n\n` +
-        `FULL SOURCE FILES (line-numbered — use for verifying mitigations):\n\n\n` +
-        `DIFF (changes introduced in this PR):\n${fx.diff}`,
-    );
-    fs.rmSync('/tmp/pr_gate_refusal.txt', { force: true });
-    fs.rmSync('/tmp/pr_batches', { recursive: true, force: true });
-
-    let script = partitionScript();
-    if (mutate) {
-      const mutated = mutate(script);
-      // A mutation that did not apply is indistinguishable from coverage: the
-      // suite goes green because nothing changed, and reads as if the row had
-      // caught something.
-      if (mutated === script) throw new Error('mutation did not apply — the anchor is stale');
-      script = mutated;
-    }
-
-    const scriptPath = path.join(dir, 'step.sh');
-    fs.writeFileSync(scriptPath, `#!/bin/bash\n${script}`);
-    const outPath = path.join(dir, 'gh_output');
-    fs.writeFileSync(outPath, '');
-
-    let status = 0;
-    let stdout = '';
-    let stderr = '';
-    try {
-      stdout = execFileSync('bash', [scriptPath], {
-        cwd: dir,
-        env: { ...process.env, GITHUB_OUTPUT: outPath, PR_NUMBER: '7', ...(fx.env ?? {}) },
-        encoding: 'utf8',
-        maxBuffer: 64 * 1024 * 1024,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (e: unknown) {
-      const err = e as { status?: number; stdout?: string; stderr?: string };
-      status = err.status ?? 1;
-      stdout = err.stdout ?? '';
-      stderr = err.stderr ?? '';
-    }
-
-    const outputs: Record<string, string> = {};
-    for (const line of fs.readFileSync(outPath, 'utf8').split('\n')) {
-      const eq = line.indexOf('=');
-      if (eq > 0) outputs[line.slice(0, eq)] = line.slice(eq + 1);
-    }
-
-    let batchNames: string[] = [];
-    let batches: string[] = [];
-    if (fs.existsSync('/tmp/pr_batches')) {
-      batchNames = fs.readdirSync('/tmp/pr_batches').sort();
-      batches = batchNames.map((n) => fs.readFileSync(path.join('/tmp/pr_batches', n), 'utf8'));
-    }
-    const refusal = fs.existsSync('/tmp/pr_gate_refusal.txt')
-      ? fs.readFileSync('/tmp/pr_gate_refusal.txt', 'utf8')
-      : '';
-
-    fs.rmSync(dir, { recursive: true, force: true });
-    return { status, stdout, stderr, outputs, batches, batchNames, refusal };
-  });
+  const st = stagePartition(fx, { mutate });
+  let status = 0;
+  let stdout = '';
+  let stderr = '';
+  try {
+    stdout = execFileSync('bash', [st.scriptPath], {
+      cwd: st.cwd,
+      env: st.env,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e: unknown) {
+    const err = e as { status?: number; stdout?: string; stderr?: string };
+    status = err.status ?? 1;
+    stdout = err.stdout ?? '';
+    stderr = err.stderr ?? '';
+  }
+  return collect(st, status, stdout, stderr);
 }
 
 // ---------------------------------------------------------------- fixtures
@@ -783,7 +820,7 @@ describe('PR review gate: batch mode cuts on file boundaries', () => {
     const r = runPartition(manyFiles(12, 1200));
     expect(r.batchNames.length).toBeGreaterThan(0);
     for (const n of r.batchNames) {
-      const st = fs.statSync(path.join('/tmp/pr_batches', n));
+      const st = fs.statSync(path.join(r.tmp, 'pr_batches', n));
       expect(st.isFile()).toBe(true);
       expect(st.size).toBeGreaterThan(0);
       expect(n).toMatch(/^\d{3}\.txt$/);
@@ -808,7 +845,7 @@ describe('PR review gate: what it refuses, and what it refuses to exempt', () =>
     expect(r.refusal).not.toMatch(/APPROVE/);
     // Nothing left behind that a later reader could mistake for a partition
     // that succeeded.
-    expect(fs.existsSync('/tmp/pr_batches')).toBe(false);
+    expect(fs.existsSync(path.join(r.tmp, 'pr_batches'))).toBe(false);
   });
 
   it('states that the budget is not raised and no file is exempt', () => {
@@ -1588,4 +1625,102 @@ describe('PR review gate: the rows above can fail', () => {
       ).toThrow();
     });
   }
+});
+
+describe('PR review gate: this suite runs beside another copy of itself', () => {
+  /**
+   * Two runs of the step started together, each behind the same barrier so
+   * that neither has finished before the other begins — the arrangement of
+   * two copies of this suite on one machine. Children, not two calls in this
+   * process, because only separate processes overlap.
+   */
+  async function raceTwo(a: Staged, b: Staged): Promise<[RunResult, RunResult]> {
+    const gate = tempDir('hma-part-gate-');
+    const go = path.join(gate, 'go');
+    const run = (st: Staged, tag: string) =>
+      new Promise<{ status: number; stdout: string; stderr: string }>((resolve, reject) => {
+        // Announce readiness, wait for the shared start, then become the step.
+        const child = spawn(
+          'bash',
+          ['-c', 'touch "$1"; while [ ! -e "$2" ]; do sleep 0.01; done; exec bash "$3"', 'race',
+            path.join(gate, tag), go, st.scriptPath],
+          { cwd: st.cwd, env: st.env, stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8').on('data', (d: string) => { stdout += d; });
+        child.stderr.setEncoding('utf8').on('data', (d: string) => { stderr += d; });
+        child.on('error', reject);
+        child.on('close', (code) => resolve({ status: code ?? 1, stdout, stderr }));
+      });
+    const pa = run(a, 'ready-a');
+    const pb = run(b, 'ready-b');
+    const deadline = Date.now() + 30_000;
+    while (!(fs.existsSync(path.join(gate, 'ready-a')) && fs.existsSync(path.join(gate, 'ready-b')))) {
+      if (Date.now() > deadline) throw new Error('the two runs never both started');
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    fs.writeFileSync(go, '');
+    const [ra, rb] = await Promise.all([pa, pb]);
+    return [collect(a, ra.status, ra.stdout, ra.stderr), collect(b, rb.status, rb.stdout, rb.stderr)];
+  }
+
+  /** Did this run partition THIS fixture, and nothing else? */
+  function ownResult(r: RunResult, fx: Fixture): boolean {
+    try {
+      return (
+        r.status === 0 &&
+        r.outputs.refused === 'false' &&
+        Number(r.outputs.batches) > 1 &&
+        r.batches.length === Number(r.outputs.batches) &&
+        r.batches.map(diffSection).join('') === fx.diff
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // Two different changes, both large enough to be cut into several batches,
+  // so a run that read or collected the other's files cannot look right.
+  const fixtureA = (): Fixture => manyFiles(12, 1200);
+  const fixtureB = (): Fixture => unevenMultiHunkFixture(14);
+
+  it('two runs started together each partition their own change', async () => {
+    const fa = fixtureA();
+    const fb = fixtureB();
+    expect(fa.diff).not.toBe(fb.diff);
+    const [ra, rb] = await raceTwo(stagePartition(fa), stagePartition(fb));
+    expect(ra.tmp).not.toBe(rb.tmp);
+    expect(ownResult(ra, fa), `run A: ${ra.stderr.slice(-2000)}`).toBe(true);
+    expect(ownResult(rb, fb), `run B: ${rb.stderr.slice(-2000)}`).toBe(true);
+    assertWholeFilesOnly(ra.batches, fa.diff);
+    assertWholeFilesOnly(rb.batches, fb.diff);
+    // Both report the runner's path, as the step prints it on GitHub.
+    expect(ra.outputs['batch-dir']).toBe('/tmp/pr_batches');
+    expect(rb.outputs['batch-dir']).toBe('/tmp/pr_batches');
+  });
+
+  it('non-vacuous: the same race over ONE shared /tmp, as this suite used to run, is caught', async () => {
+    // The arrangement before the private directories: every run's `/tmp` was
+    // the same directory. The row above must be able to see that, or its
+    // green says nothing.
+    const shared = path.join(tempDir('hma-part-shared-'), 'tmp');
+    const fa = fixtureA();
+    const fb = fixtureB();
+    const [ra, rb] = await raceTwo(
+      stagePartition(fa, { sharedTmp: shared }),
+      stagePartition(fb, { sharedTmp: shared }),
+    );
+    expect(ownResult(ra, fa) && ownResult(rb, fb)).toBe(false);
+  });
+
+  it('refuses to run a block that names a temporary path other than /tmp/', () => {
+    const tmp = tempDir('hma-part-guard-');
+    expect(privateCopy('cp /tmp/pr_diff.txt "$SRC"', tmp)).toBe(`cp ${tmp}/pr_diff.txt "$SRC"`);
+    for (const escape of ['W=$(mktemp -d)', 'W="$TMPDIR/x"', 'W="$RUNNER_TEMP/x"', 'cd /tmp && ls']) {
+      expect(() => privateCopy(`cp /tmp/pr_diff.txt x\n${escape}`, tmp)).toThrow(/other than the literal/);
+    }
+    // And the real block passes the guard today.
+    expect(() => privateCopy(partitionScript(), tmp)).not.toThrow();
+  });
 });

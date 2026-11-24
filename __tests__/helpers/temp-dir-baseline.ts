@@ -67,7 +67,6 @@ export const RAW_MKDTEMP_BASELINE: Record<string, number> = {
   '__tests__/cli/telemetry-on-findings.test.ts': 1,
   '__tests__/gate/gate-file-verdict.test.ts': 1,
   '__tests__/gate/no-internal-attribution.test.ts': 1,
-  '__tests__/gate/pr-review-partition.test.ts': 1,
   '__tests__/hardening/absent-subject-not-applicable.test.ts': 1,
   '__tests__/hardening/analyst-escalation-redaction.test.ts': 1,
   '__tests__/hardening/archive-extraction-fence.test.ts': 1,
