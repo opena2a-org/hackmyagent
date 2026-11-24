@@ -706,8 +706,15 @@ function getHardenGeneratedLines(): ReadonlySet<string> {
 // Profile detection keywords
 // ---------------------------------------------------------------------------
 
+// Orchestrator signals that are patterns, not literal substrings. Bounded to
+// one line and 200 characters so a long file full of "delegate" stays linear.
+const ORCHESTRATOR_PATTERNS: RegExp[] = [
+  /delegate[^\n]{0,200}agent/,
+  /agent[^\n]{0,200}delegate/,
+];
+
 const PROFILE_KEYWORDS = {
-  orchestrator: ['orchestrat', 'multi-agent', 'multi_agent', 'swarm', 'coordinator', 'delegate.*agent', 'agent.*delegate'],
+  orchestrator: ['orchestrat', 'multi-agent', 'multi_agent', 'swarm', 'coordinator'],
   autonomous: ['autonomous', 'self-directed', 'agent loop', 'auto-run', 'agentic', 'self-improving'],
   'tool-agent': ['tool_use', 'function_calling', 'mcp', 'modelcontextprotocol', 'function call', 'tool call'],
   'code-assistant': ['code', 'file access', 'code generation', 'repository', 'codebase', 'programming'],
@@ -1613,6 +1620,9 @@ export class SoulScanner {
     // Check from most specific to least
     for (const kw of PROFILE_KEYWORDS.orchestrator) {
       if (lower.includes(kw.toLowerCase())) return 'orchestrator';
+    }
+    for (const re of ORCHESTRATOR_PATTERNS) {
+      if (re.test(lower)) return 'orchestrator';
     }
     for (const kw of PROFILE_KEYWORDS.autonomous) {
       if (lower.includes(kw.toLowerCase())) return 'autonomous';
