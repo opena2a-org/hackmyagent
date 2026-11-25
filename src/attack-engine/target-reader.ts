@@ -121,9 +121,11 @@ type Replacer = (match: string, ...groups: any[]) => string;
  * The marker in place of a quoted value of at least `minLength` characters,
  * quotes kept. With `onlyWithInnerQuote`, only a value holding a quote
  * character or a backslash is replaced: that is the pass run BEFORE the shared
- * boundary, whose name-gated rule ends a value at its first quote of either
- * kind and leaves the rest in the text (`secret = "abcdefgh'ijklmn"` came out
- * as `secret =[REDACTED]ijklmn"`).
+ * boundary, whose name-gated rule ended a value at its first quote of either
+ * kind and left the rest in the text (`secret = "abcdefgh'ijklmn"` came out
+ * as `secret =[REDACTED]ijklmn"`). That rule now ends a value at the quote
+ * that opened it too, and this pass still runs first so that the marker here
+ * keeps the value's quotes.
  */
 function quotedValueReplacer(minLength: number, onlyWithInnerQuote: boolean): Replacer {
   return (match: string, prefix: string, doubleQuoted?: string, singleQuoted?: string) => {

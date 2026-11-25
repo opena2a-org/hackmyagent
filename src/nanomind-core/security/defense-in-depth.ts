@@ -313,6 +313,37 @@ export function redactCredentialShapes(content: string): string {
 }
 
 
+/** The name-gated rules' replacement: the name kept, the separator and quoted value replaced. */
+function nameGatedMarker(match: string): string {
+  return `${match.split(/[=:]/)[0]}=[REDACTED]`;
+}
+
+/**
+ * A quoted value of 8 or more characters after a password/secret/token/key
+ * name, for the report boundary. The value ends at the quote character that
+ * opened it, so it may hold the other quote character, a backslash escape
+ * (`\"`) or, single-quoted, a doubled quote (`''`). It holds no whitespace.
+ *
+ * The rule before this one ended a value at its first quote of either kind
+ * (#1024): `password: "it's-a-secret-123"` was left as written, and
+ * `secret = "abcdefgh'ijklmn"` came out as `secret=[REDACTED]ijklmn"`. That
+ * rule still runs after this one, for a value whose closing quote is not the
+ * one that opened it.
+ *
+ * Each alternative's first character is distinct from the others' and from
+ * the closing quote, so a start that finds no closing quote gives back only
+ * its own run.
+ */
+const REPORT_QUOTED_VALUE =
+  /(?:password|secret|token|key)\s*[=:]\s*(?:"(?:[^"\\\s]|\\\S){8,}"|'(?:[^'\\\s]|\\\S|''){8,}')/gi;
+
+/**
+ * The daemon boundary's spelling of `REPORT_QUOTED_VALUE`: whitespace inside
+ * the value is allowed, a line break is not.
+ */
+const DAEMON_QUOTED_VALUE =
+  /(?:password|secret|token|key)\s*[=:]\s*(?:"(?:[^"\\\n]|\\.){8,}"|'(?:[^'\\\n]|\\.|''){8,}')/gi;
+
 /**
  * Daemon boundary. Shapes, plus an aggressive name-gated rule that redacts ANY
  * sufficiently long quoted value assigned to a password/secret/token/key
@@ -323,10 +354,9 @@ export function redactCredentialShapes(content: string): string {
  * hands NanoMind a live secret.
  */
 export function redactSecretsForNanoMind(content: string): string {
-  return redactCredentialShapes(content).replace(
-    /(?:password|secret|token|key)\s*[=:]\s*['"][^'"]{8,}['"]/gi,
-    (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
-  );
+  return redactCredentialShapes(content)
+    .replace(DAEMON_QUOTED_VALUE, nameGatedMarker)
+    .replace(/(?:password|secret|token|key)\s*[=:]\s*['"][^'"]{8,}['"]/gi, nameGatedMarker);
 }
 
 /**
@@ -368,10 +398,9 @@ export function redactSecretsForReportReporting(content: string): {
   shapes: ShapeId[];
 } {
   const shapePass = redactCredentialShapesReporting(content);
-  const text = shapePass.text.replace(
-    /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi,
-    (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
-  );
+  const text = shapePass.text
+    .replace(REPORT_QUOTED_VALUE, nameGatedMarker)
+    .replace(/(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi, nameGatedMarker);
   return { text, shapes: shapePass.shapes };
 }
 

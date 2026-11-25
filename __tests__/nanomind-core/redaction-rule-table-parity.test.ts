@@ -23,6 +23,7 @@ import {
   redactCredentialShapesReporting,
   redactSecretsForReport,
   redactSecretsForReportReporting,
+  redactSecretsForNanoMind,
 } from '../../src/nanomind-core/security/defense-in-depth';
 
 /**
@@ -212,6 +213,37 @@ describe('the report boundary — a key-name heuristic resolves NO shape (C9)', 
     // daemon one: whitespace in the value means it is not a secret.
     const prose = 'key = "example fixture value for tests only"';
     expect(redactSecretsForReport(prose)).toBe(prose);
+  });
+});
+
+describe('a quoted value holding a quote character is replaced whole (#1024)', () => {
+  // The name-gated rules ended a value at its first quote of either kind:
+  // `"it's-a-secret-123"` never reached 8 characters and was kept as written,
+  // and `"abcdefgh'ijklmn"` was cut after `abcdefgh'`, leaving `ijklmn"`.
+  const cases: Array<[string, string]> = [
+    [`password: "it's-a-secret-123"`, 'password=[REDACTED]'],
+    [`secret = "abcdefgh'ijklmn" next`, 'secret =[REDACTED] next'],
+    [`token: 'it''s-a-secret-123'`, 'token=[REDACTED]'],
+    [`token = 'say"hi"abcd'`, 'token =[REDACTED]'],
+    ['key = "ab\\"cdefghij" rest', 'key =[REDACTED] rest'],
+  ];
+
+  for (const [input, expected] of cases) {
+    it(`report boundary: ${input}`, () => {
+      expect(redactSecretsForReport(input)).toBe(expected);
+    });
+    it(`daemon boundary: ${input}`, () => {
+      expect(redactSecretsForNanoMind(input)).toBe(expected);
+    });
+  }
+
+  it('still leaves a quoted value with whitespace at the report boundary', () => {
+    const prose = `key = "it's an example fixture value"`;
+    expect(redactSecretsForReport(prose)).toBe(prose);
+  });
+
+  it('still replaces a value whose closing quote is not the one that opened it', () => {
+    expect(redactSecretsForReport(`password="abcdefghij'`)).toBe('password=[REDACTED]');
   });
 });
 
