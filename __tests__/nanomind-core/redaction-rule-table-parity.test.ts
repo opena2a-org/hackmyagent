@@ -23,6 +23,7 @@ import {
   redactCredentialShapesReporting,
   redactSecretsForReport,
   redactSecretsForReportReporting,
+  redactSecretsForNanoMind,
 } from '../../src/nanomind-core/security/defense-in-depth';
 
 /**
@@ -212,6 +213,43 @@ describe('the report boundary — a key-name heuristic resolves NO shape (C9)', 
     // daemon one: whitespace in the value means it is not a secret.
     const prose = 'key = "example fixture value for tests only"';
     expect(redactSecretsForReport(prose)).toBe(prose);
+  });
+});
+
+describe('a quoted password under 8 characters is replaced (#1024)', () => {
+  // The name-gated rules need 8 characters, so `PASSWORD="abc"` reached a
+  // finding, its evidence and the text sent to NanoMind as written.
+  const cases: Array<[string, string]> = [
+    ['PASSWORD="abc"', 'PASSWORD="[REDACTED]"'],
+    ["password: 'abc'", "password: '[REDACTED]'"],
+    ['{ "password": "pw1" }', '{ "password": "[REDACTED]" }'],
+    ['DB_PASS="hunter2" next', 'DB_PASS="[REDACTED]" next'],
+    ['pwd = "a"', 'pwd = "[REDACTED]"'],
+  ];
+
+  for (const [input, expected] of cases) {
+    it(`report boundary: ${input}`, () => {
+      expect(redactSecretsForReport(input)).toBe(expected);
+    });
+    it(`daemon boundary: ${input}`, () => {
+      expect(redactSecretsForNanoMind(input)).toBe(expected);
+    });
+  }
+
+  it('resolves no shape: the rule reads the name, not the value', () => {
+    expect(redactSecretsForReportReporting('PASSWORD="abc"')).toEqual({ text: 'PASSWORD="[REDACTED]"', shapes: [] });
+  });
+
+  it('leaves a short value under a name that is not a password, and an empty password', () => {
+    for (const text of ['token: "none"', 'key = "id"', 'bypass: "no"', 'passthrough: "yes"', 'PASSWORD=""']) {
+      expect(redactSecretsForReport(text)).toBe(text);
+      expect(redactSecretsForNanoMind(text)).toBe(text);
+    }
+  });
+
+  it('leaves a short quoted value with whitespace at the report boundary only', () => {
+    expect(redactSecretsForReport('password: "a b c"')).toBe('password: "a b c"');
+    expect(redactSecretsForNanoMind('password: "a b c"')).toBe('password: "[REDACTED]"');
   });
 });
 
