@@ -2566,7 +2566,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // scored and still in the verdict, so the label it supported stays. Only
     // the stubs that know their path can match an artifact; the rest are inert.
     const { artifacts: reconciledArtifacts, suppressed: suppressedIntents } =
-      reconcileArtifactIntents(opts.artifactSummaries ?? [], [...failed, ...suppressedStubs]);
+      reconcileArtifactIntents(opts.artifactSummaries ?? [], [...failed, ...suppressedStubs], scanRoot);
 
     // The renderer prints `0 skipped` whenever it is handed no skip list, and
     // hackmyagent never handed it one — so `0 skipped` was emitted on every
