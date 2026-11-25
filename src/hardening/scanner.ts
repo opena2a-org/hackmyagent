@@ -4663,6 +4663,7 @@ function newScanRun(coverage: CoverageLedger): ScanRun {
     lastBackupCovered: [],
     lastBackupIdent: undefined,
     lastBackupWithheldLinks: [],
+    lastBackupStoreSetAside: undefined,
     unreadableAll: [],
   };
 }
@@ -12468,6 +12469,11 @@ dist/
   /** Candidates the last backup withheld because they resolve outside the scanned tree. */
   backupWithheldLinks(): WithheldLink[] {
     return this.backups.backupWithheldLinks();
+  }
+
+  /** Where the last backup moved a store under this target's key that was not this target's (#1035). */
+  backupStoreSetAside(): string | undefined {
+    return this.backups.backupStoreSetAside();
   }
 
   /**

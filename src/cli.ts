@@ -3639,16 +3639,36 @@ function printBenchmarkUnreadDisclosure(result: ScanResult): void {
 function printFixBackupDisclosure(
   result: { backupPath?: string },
   directory: string,
+  // Where this run moved a store under the directory's key that was not the
+  // directory's (#1035): `HardeningScanner.backupStoreSetAside()`.
+  setAside: string | undefined,
   // stderr for a `-b` report whose format has no field to carry the path
   // (`sarif`, `html`, `asp`): stdout is the document there.
   write: (line: string) => void = console.log,
 ): void {
+  // Before the backup check: the store is moved before the run's backup
+  // directory is made, so a run whose backup then failed has moved it too.
+  if (setAside) write(setAsideStoreLine(setAside));
   if (!result.backupPath) return;
   // #339 — the backup path is rendered escaped, and the rollback hint is a
   // command the report tells the user to paste.
   write(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
   write(`  ${backupContentsNotice()}`);
   write(`${colors.yellow}Something wrong?${RESET()} Run \`${CLI_PREFIX} rollback ${citationTarget(directory)}\` to undo all changes.\n`);
+}
+
+/**
+ * #1035 — the one line `--fix` prints when it moved a store aside. The store
+ * was under this directory's key with a record HackMyAgent did not write, or
+ * one naming a directory created at another time, so it is kept whole under a
+ * new name and a new store is started. It can hold another directory's pre-fix
+ * copies, credentials among them, so the move is said, with the path it went
+ * to and the command that lists it.
+ */
+function setAsideStoreLine(setAside: string): string {
+  return `${colors.yellow}Backup store set aside:${RESET()} ${escapePathForDisplay(setAside)} — the store under this `
+    + 'directory\'s key was not recorded for this directory, so --fix moved it there, deleted nothing in it, and '
+    + `started a new one. \`${CLI_PREFIX} backups\` lists it.`;
 }
 
 /**
@@ -6365,7 +6385,7 @@ Backups (--fix):
             }
             process.stdout.write('\n');
           }
-          printFixBackupDisclosure(result, directory);
+          printFixBackupDisclosure(result, directory, scanner.backupStoreSetAside());
           // #376 — the benchmark text reports say what the store holds for
           // this directory too: the line is owed on every `secure` text run,
           // and `-b` is the same scan read against a control list.
@@ -6489,20 +6509,20 @@ Backups (--fix):
             // (#670): a failing record the plain scan does not list still
             // failed its control and gets its own SARIF result.
             output = generateSarifOutput(benchmarkResult, result.allFindings || result.findings, targetDir, result);
-            printFixBackupDisclosure(result, directory, console.error);
+            printFixBackupDisclosure(result, directory, scanner.backupStoreSetAside(), console.error);
             break;
           case 'html':
             output = generateHtmlReport(benchmarkResult, targetDir, benchmarkRunFlags);
-            printFixBackupDisclosure(result, directory, console.error);
+            printFixBackupDisclosure(result, directory, scanner.backupStoreSetAside(), console.error);
             break;
           case 'asp':
             output = generateAspOutput(benchmarkResult, result, targetDir);
-            printFixBackupDisclosure(result, directory, console.error);
+            printFixBackupDisclosure(result, directory, scanner.backupStoreSetAside(), console.error);
             break;
           default: // text
             printBenchmarkReport(benchmarkResult, options.verbose ?? false, targetDir, benchmarkRunFlags);
             printBenchmarkUnreadDisclosure(result);
-            printFixBackupDisclosure(result, directory);
+            printFixBackupDisclosure(result, directory, scanner.backupStoreSetAside());
             await printArchiveStoreNotice(targetDir);
             output = '';
         }
@@ -7023,7 +7043,7 @@ Backups (--fix):
 
       // #610 — not nested under `fixedFindings.length > 0`, where a run that
       // attempted nothing added a backup run directory without a word.
-      printFixBackupDisclosure(result, directory);
+      printFixBackupDisclosure(result, directory, scanner.backupStoreSetAside());
       // #376 — and every run, fixing or not, says what the store holds for
       // this directory and how to delete it.
       await printArchiveStoreNotice(targetDir);
@@ -7672,6 +7692,8 @@ Examples:
       // (a GIT-001 `.gitignore`) before this command's filter runs, so an arm
       // with no OpenClaw check to evaluate can still have rewritten the tree.
       const printBackupDisclosure = (): void => {
+        const setAside = scanner.backupStoreSetAside();
+        if (setAside) console.log(setAsideStoreLine(setAside));
         if (!result.backupPath) return;
         console.log(`${colors.yellow}Backup created:${RESET()} ${escapePathForDisplay(result.backupPath)}`);
         console.log(`  ${backupContentsNotice()}`);
@@ -8296,7 +8318,8 @@ A moved or renamed project still finds its backups. A .hackmyagent-backup/
 that an earlier version wrote inside the project is used only when rollback
 finds no backup for the project in the store. A store kept under the
 project's device and inode number and another creation time is named and
-never restored from.
+never restored from. ${CLI_PREFIX} backups lists every backup store, the
+directory each was last used for, and whether rollback restores from it.
 
 A file it cannot restore is named, with the reason. The backup is then kept
 rather than deleted, since it holds the only remaining copy, and the command
