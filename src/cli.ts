@@ -462,7 +462,7 @@ import {
   OBSERVATION_LABEL_WIDTH,
 } from './ui/quick-scan-labels';
 import { checkGroupTally, scanDepthDisclosure } from './ui/scan-depth-disclosure';
-import { reconcileArtifactIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
+import { reconcileArtifactIntents, reconcileFindingIntents, rawIntentDisclosureLines } from './ui/artifact-intent';
 import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { attachSuppressedLocations, clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, locateSuppressed, retainForVerdict, summarizeSuppressed, type MeasuredFinding, type SuppressedLocation } from './ui/verdict-band';
@@ -1151,7 +1151,12 @@ Examples:
             // suppressed credential finding does not ship a second copy of its
             // evidence (#370). `findings`, `critical`, `high` and `risk` above
             // count the suppressed penalties; the two summaries say so.
-            details: issues,
+            // #1024 — a `benign` intent this scan contradicts reads `unknown`,
+            // as the text `Artifacts` line does, from the same finding set.
+            details: reconcileFindingIntents(issues, [
+              ...result.findings.filter((f: any) => countsAgainstScore(f)),
+              ...attachSuppressedLocations(expandSuppressed(result.suppressed), scanner.lastSuppressedLocations),
+            ]),
             ...(result.suppressed?.length ? { suppressed: result.suppressed } : {}),
             ...(result.outOfScope?.length ? { outOfScope: result.outOfScope } : {}),
             // Presence keyed on the FILE, not on the rules: an empty or

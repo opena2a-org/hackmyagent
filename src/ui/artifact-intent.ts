@@ -138,6 +138,64 @@ export function reconcileArtifactIntents<T extends { path: string; intent: Artif
 }
 
 /**
+ * A finding's `nanomindIntent` as `check --json` writes it (#1024). The same
+ * signal the scanner attached, except that a `benign` read this scan
+ * contradicts reads `unknown`, as it does on the text `Artifacts` line, and
+ * carries the raw label and the count that contradicted it.
+ */
+export interface ReconciledIntentSignal {
+  classification: ArtifactIntent;
+  confidence: number;
+  modelVersion: string;
+  /** Set only when the label was rewritten: the classifier's raw label. */
+  rawClassification?: ArtifactIntent;
+  /** Set only when the label was rewritten: HIGH/CRITICAL findings on the artifact. */
+  contradictedBy?: number;
+}
+
+/**
+ * Apply the `Artifacts` line's contradicted-benign rule to the advisory
+ * intent each finding carries (#1024). `check --json` wrote
+ * `nanomindIntent.classification: "benign"` on a HIGH finding whose artifact
+ * the text output labelled `unknown`, so the two channels of one scan
+ * disagreed about the same file. `corroborating` must be the set the text
+ * reconciliation reads: the reported findings plus the suppressed stubs that
+ * know their path (#1000). Pure; returns copies and never mutates its input.
+ */
+export function reconcileFindingIntents<
+  T extends { file?: string; nanomindIntent?: { classification: string; confidence: number; modelVersion: string } },
+>(
+  findings: readonly T[],
+  corroborating: readonly { file?: string; severity?: string }[],
+): Array<Omit<T, 'nanomindIntent'> & { nanomindIntent?: ReconciledIntentSignal }> {
+  const highOrCriticalFiles = corroborating
+    .filter(f => typeof f.file === 'string' && f.file.length > 0)
+    .filter(f => CORROBORATING_SEVERITIES.has((f.severity ?? '').toLowerCase()))
+    .map(f => f.file as string);
+
+  return findings.map(f => {
+    const intent = f.nanomindIntent;
+    if (!intent || intent.classification !== 'benign' || !f.file) {
+      return f as Omit<T, 'nanomindIntent'> & { nanomindIntent?: ReconciledIntentSignal };
+    }
+    const artifactPath = f.file;
+    const onArtifact = highOrCriticalFiles.filter(file => isSameArtifact(file, artifactPath)).length;
+    if (onArtifact === 0) {
+      return f as Omit<T, 'nanomindIntent'> & { nanomindIntent?: ReconciledIntentSignal };
+    }
+    return {
+      ...f,
+      nanomindIntent: {
+        ...intent,
+        classification: 'unknown' as ArtifactIntent,
+        rawClassification: 'benign' as ArtifactIntent,
+        contradictedBy: onArtifact,
+      },
+    };
+  });
+}
+
+/**
  * The `--verbose` disclosure lines for withheld labels. The heading says the
  * raw class is advisory, and every line says why its label was withheld, so
  * the raw class can never be read as a verdict even when it is shown. The
