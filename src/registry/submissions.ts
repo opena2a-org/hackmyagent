@@ -457,6 +457,26 @@ export const PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES = new Set([
 ]);
 
 /**
+ * Checks, by id, that describe how the consumer builds or deploys a project,
+ * not what a package ships. Filtered alongside
+ * PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES when scanning a downloaded package, and
+ * kept when scanning a user's own project directory:
+ * - DEP-001 asks for a lock file, which `npm publish` never includes in a
+ *   tarball, so every npm package failed it.
+ * - SANDBOX-001 asks for a Dockerfile, which describes where the consumer
+ *   runs the code, not the library they install.
+ * Their categories (`dependencies`, `sandboxing`) hold other checks that
+ * read what the package ships, so these are filtered by id.
+ */
+export const PACKAGE_SCAN_LOCAL_ONLY_CHECK_IDS = new Set(['DEP-001', 'SANDBOX-001']);
+
+/** True when a finding describes the local environment rather than a downloaded package. */
+export function isPackageScanLocalOnly(f: { category: string; checkId?: string }): boolean {
+  return PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category)
+    || (f.checkId !== undefined && PACKAGE_SCAN_LOCAL_ONLY_CHECK_IDS.has(f.checkId));
+}
+
+/**
  * The name a `check` share is sent under: without a git URL's user name and
  * password, query string and fragment. A name made from a git URL with a
  * query (`gitlab.com/org/repo.git?ref=main`) keeps the `.git` the query hid
@@ -488,7 +508,7 @@ export function checkShareSubmission(
     projectType: result.projectType,
     toolVersion: VERSION,
     findings: result.findings
-      .filter((f) => !PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category))
+      .filter((f) => !isPackageScanLocalOnly(f))
       // #458 — result.findings holds measured records only (the render filter in
       // scanner.ts drops a not-applicable record, which has no pass/fail state
       // and no severity); this narrows the type to say both and drops nothing:

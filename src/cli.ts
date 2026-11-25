@@ -519,7 +519,7 @@ import {
   type StubEvidence,
 } from './registry/stub-writeback';
 import {
-  PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES,
+  isPackageScanLocalOnly,
   attackCommunityReport,
   attackPublishSubmission,
   attackVersionReport,
@@ -14576,8 +14576,10 @@ function filterLocalOnlyFindings(
   scanner: HardeningScanner,
 ): void {
   result.findings = result.findings.filter(f => {
-    // Remove local-only categories (git, permissions, env, etc.)
-    if (PACKAGE_SCAN_LOCAL_ONLY_CATEGORIES.has(f.category)) return false;
+    // Remove local-only categories (git, permissions, env, etc.) and the
+    // checks that ask for files npm never publishes (a lock file) or that
+    // describe the consumer's deployment (a Dockerfile): DEP-001, SANDBOX-001.
+    if (isPackageScanLocalOnly(f)) return false;
 
     // Exclude ALL findings on AI tooling files (CLAUDE.md, .claude/, .cursorrules, etc.)
     // These files contain instructions to AI assistants, not package source code.
