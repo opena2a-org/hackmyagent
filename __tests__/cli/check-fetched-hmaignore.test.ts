@@ -20,7 +20,12 @@
  * hosts, so the source cells at the bottom hold their wiring.
  *
  * RED-ON-BASE: on ea751a6f the fetched run omits the `lib/config.js` finding
- * and `DEP-001`, and its score differs from the control's.
+ * and the check-ID rule's finding, and its score differs from the control's.
+ *
+ * The check-ID rule names AST-GOV-003 (the package's `mcp.json`, which sets
+ * no governance).
+ * It named DEP-001 until `check` stopped reporting DEP-001 on a downloaded
+ * package: npm never publishes a lock file, so there it was not a finding.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
@@ -39,11 +44,12 @@ const PLANTED = ['sk', 'proj', 'Q7vT2mX9kL4pR8sW1nB6yH3jD5fG0cZaE2uI7oK9wMxN4bV1
 
 // One path rule (the scope channel) and one check-ID rule (the suppression
 // channel): the package asks for both of its findings to disappear.
-const SHIPPED_HMAIGNORE = 'lib/config.js\n!DEP-001\n';
+const SHIPPED_HMAIGNORE = 'lib/config.js\n!AST-GOV-003\n';
 
 const FILES: Array<[string, string]> = [
   ['package.json', '{ "name": "fx455", "version": "1.0.0", "main": "lib/index.js" }\n'],
   ['lib/index.js', 'module.exports = (n) => `hi ${n}`;\n'],
+  ['mcp.json', '{ "mcpServers": { "notes": { "command": "node", "args": ["lib/index.js"] } } }\n'],
   ['lib/config.js', `const OPENAI_API_KEY = "${PLANTED}";\nmodule.exports = { OPENAI_API_KEY };\n`],
 ];
 
@@ -133,17 +139,17 @@ describe('#455 an .hmaignore inside a fetched package does not narrow check', ()
     ]);
 
     // Non-vacuous: without the file, the package has the credential finding
-    // and DEP-001, so there is something for the shipped rules to hide.
+    // and AST-GOV-003, so there is something for the shipped rules to hide.
     const controlFailed = failed(control.body);
     expect(controlFailed.some((k) => k.endsWith(' lib/config.js')), controlFailed.join('\n')).toBe(true);
-    expect(controlFailed.some((k) => k.startsWith('DEP-001 ')), controlFailed.join('\n')).toBe(true);
+    expect(controlFailed.some((k) => k.startsWith('AST-GOV-003 ')), controlFailed.join('\n')).toBe(true);
 
     const fetchedFailed = failed(fetched.body);
     const credential = (fetched.body.findings as any[]).find(
       (f) => f.passed === false && f.file === 'lib/config.js' && f.severity === 'critical',
     );
     expect(credential, fetchedFailed.join('\n')).toBeDefined();
-    expect(fetchedFailed.some((k) => k.startsWith('DEP-001 ')), fetchedFailed.join('\n')).toBe(true);
+    expect(fetchedFailed.some((k) => k.startsWith('AST-GOV-003 ')), fetchedFailed.join('\n')).toBe(true);
 
     // Scope, score and exit are the package's own, not the ones it asked for.
     expect(fetchedFailed).toEqual(controlFailed);
@@ -159,7 +165,15 @@ describe('#455 an .hmaignore inside a fetched package does not narrow check', ()
     expect(outOfScope.some((s) => s.severity === 'critical' && s.suppressedBy === 'hmaignore-path')).toBe(true);
     const excluded = ((local.body.hmaignore?.rules ?? []) as any[]).flatMap((r) => r.excluded ?? []);
     expect(excluded.some((e: any) => e.file === 'lib/config.js' && e.severity === 'critical')).toBe(true);
-    expect(excluded.some((e: any) => e.checkId === 'DEP-001')).toBe(true);
+    expect(excluded.some((e: any) => e.checkId === 'AST-GOV-003')).toBe(true);
+  }, 300_000);
+
+  it('a fetched package is not held to a lock file or a Dockerfile: no DEP-001 or SANDBOX-001', async () => {
+    const control = await check(`${base}/control.tar.gz`);
+    const ids = ((control.body.findings ?? []) as any[]).map((f) => f.checkId);
+    expect(ids.length, control.stderr.slice(0, 400)).toBeGreaterThan(0);
+    expect(ids).not.toContain('DEP-001');
+    expect(ids).not.toContain('SANDBOX-001');
   }, 300_000);
 });
 

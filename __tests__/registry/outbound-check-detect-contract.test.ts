@@ -263,13 +263,16 @@ describe('what check and detect send, against what the unchanged source sent', (
 
 /**
  * The fields this change corrects, per site. A share's name kept the
- * remote's query string and fragment (`.git?ref=main#readme`). The detect
- * event sent `totalChecks: 0`, no high finding, `score: 0` and
- * `verdict: 'pass'` for a run that printed a high finding and 3/100.
+ * remote's query string and fragment (`.git?ref=main#readme`). A share's
+ * findings held DEP-001 (no lock file), which a fetched package never ships
+ * and `check` no longer reports on one. The detect event sent
+ * `totalChecks: 0`, no high finding, `score: 0` and `verdict: 'pass'` for a
+ * run that printed a high finding and 3/100.
  */
 const CHANGED: Record<string, readonly string[]> = {
-  'check: failed share': ['name'],
-  'check: retried share': ['name'],
+  'check: failed share': ['name', 'findings'],
+  'check: retried share': ['name', 'findings'],
+  'check: own share after the retry': ['findings'],
   'detect: contribution event': [
     'scanSummary.totalChecks',
     'scanSummary.high',
