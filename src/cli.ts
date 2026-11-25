@@ -4262,6 +4262,7 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
     }
     .category-header {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 0.75rem;
       padding: 1rem 1.25rem;
@@ -4270,8 +4271,11 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
     }
     .category-header:hover { background: var(--bg-tertiary); }
     .category-icon { font-size: 1.1rem; }
-    .category-name { flex: 1; font-weight: 500; }
-    .category-meta { display: flex; align-items: center; gap: 0.75rem; }
+    /* The name keeps at least 8rem on the header's first line; below that the
+       meta block moves to a line of its own, so a header never runs past the
+       card at a phone width (#954). */
+    .category-name { flex: 1 1 8rem; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+    .category-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-left: auto; }
     .category-score { color: var(--text-secondary); font-size: 0.85rem; font-weight: 500; }
     .mini-bar { width: 60px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
     .mini-fill { height: 100%; border-radius: 3px; }
@@ -4284,6 +4288,11 @@ function generateHtmlReport(result: BenchmarkResult, targetDir: string, flags?: 
     }
     .category.collapsed .chevron { transform: rotate(-90deg); }
     .category.collapsed .category-content { display: none; }
+    @media (max-width: 480px) {
+      .header { flex-wrap: wrap; gap: 1rem; }
+      .category-header { gap: 0.5rem; padding: 0.75rem 1rem; }
+      .category-meta { gap: 0.5rem; }
+    }
 
     .category-content { border-top: 1px solid var(--border); }
     .controls-table { width: 100%; border-collapse: collapse; }
@@ -9602,6 +9611,7 @@ function generateAttackHtmlReport(report: AttackReport): string {
     }
     .category-header {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 0.75rem;
       padding: 1rem 1.25rem;
@@ -9616,8 +9626,11 @@ function generateAttackHtmlReport(report: AttackReport): string {
       font-weight: 600;
     }
     .category-icon { font-size: 1.1rem; }
-    .category-name { flex: 1; font-weight: 500; }
-    .category-meta { display: flex; align-items: center; gap: 0.75rem; }
+    /* The name keeps at least 8rem on the header's first line; below that the
+       meta block moves to a line of its own, so a header never runs past the
+       card at a phone width (#954). */
+    .category-name { flex: 1 1 8rem; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+    .category-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-left: auto; }
     .category-score { color: var(--text-secondary); font-size: 0.85rem; font-weight: 500; }
     .mini-bar { width: 60px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
     .mini-fill { height: 100%; border-radius: 3px; }
@@ -9629,6 +9642,11 @@ function generateAttackHtmlReport(report: AttackReport): string {
     }
     .category.collapsed .chevron { transform: rotate(-90deg); }
     .category.collapsed .category-content { display: none; }
+    @media (max-width: 480px) {
+      .header { flex-wrap: wrap; gap: 1rem; }
+      .category-header { gap: 0.5rem; padding: 0.75rem 1rem; }
+      .category-meta { gap: 0.5rem; }
+    }
 
     .category-content { border-top: 1px solid var(--border); }
     .attacks-table { width: 100%; border-collapse: collapse; }
