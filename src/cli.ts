@@ -11282,7 +11282,7 @@ Examples:
         // verdict text. The full block (declared vs. inferred + signals)
         // renders below.
         soulVerdictColor = colors.brightRed;
-        soulVerdictText = `Profile mismatch: declared=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} domains the body content suggests should be evaluated`;
+        soulVerdictText = `Profile mismatch: ${result.profileMismatch.source === 'keywords' ? 'detected' : 'declared'}=${result.profileMismatch.declaredProfile} skips ${result.profileMismatch.skippedDomains.length} domains the body content suggests should be evaluated`;
       } else if (result.tierMismatch) {
         // #451: same eclipse as the profile mismatch above.
         soulVerdictColor = colors.brightRed;
@@ -11383,7 +11383,11 @@ Examples:
         const pm = result.profileMismatch;
         console.log();
         console.log(`  ${colors.brightRed}${colors.bold}HIGH${RESET()}  ${colors.bold}SOUL-PROFILE-MISMATCH${RESET()}  ${colors.dim}Profile narrows scope past body content${RESET()}`);
-        console.log(`  ${colors.dim}Declared profile=${RESET()}${colors.bold}${pm.declaredProfile}${RESET()}${colors.dim} via marker or --profile flag.${RESET()}`);
+        if (pm.source === 'keywords') {
+          console.log(`  ${colors.dim}Detected profile=${RESET()}${colors.bold}${pm.declaredProfile}${RESET()}${colors.dim} from a keyword in the text (no marker or --profile flag).${RESET()}`);
+        } else {
+          console.log(`  ${colors.dim}Declared profile=${RESET()}${colors.bold}${pm.declaredProfile}${RESET()}${colors.dim} via ${pm.source === 'flag' ? '--profile flag' : 'marker'}.${RESET()}`);
+        }
         console.log(`  ${colors.dim}Body content suggests profile=${RESET()}${colors.bold}${pm.inferredProfile}${RESET()}${colors.dim} based on:${RESET()}`);
         for (const sig of pm.signals.slice(0, 6)) {
           console.log(`    ${colors.dim}• ${sig}${RESET()}`);
@@ -11400,6 +11404,14 @@ Examples:
           console.log(`  ${colors.dim}Anyone scanning this file without the flag gets the narrowed scope instead.${RESET()}`);
           console.log(`  ${colors.cyan}Fix:${RESET()} remove the ${colors.bold}<!-- soul:profile=${pm.declaredProfile} -->${RESET()} marker from the file so the`);
           console.log(`       narrowed scope is not what other scanners see, or revise the body to match it.`);
+        } else if (pm.source === 'keywords') {
+          console.log(`  ${colors.dim}Skipped domains:${RESET()} ${pm.skippedDomains.join(', ')}`);
+          console.log(`  ${colors.cyan}Fix:${RESET()} add ${colors.bold}<!-- soul:profile=${pm.inferredProfile} -->${RESET()} to the file so the scanner evaluates`);
+          console.log(`       the domains its body describes, or revise the body to match ${pm.declaredProfile}.`);
+        } else if (pm.source === 'flag') {
+          console.log(`  ${colors.dim}Skipped domains:${RESET()} ${pm.skippedDomains.join(', ')}`);
+          console.log(`  ${colors.cyan}Fix:${RESET()} re-run with ${colors.bold}--profile ${pm.inferredProfile}${RESET()} or without --profile,`);
+          console.log(`       or revise the body to match the declared profile.`);
         } else {
           console.log(`  ${colors.dim}Skipped domains:${RESET()} ${pm.skippedDomains.join(', ')}`);
           console.log(`  ${colors.cyan}Fix:${RESET()} remove the ${colors.bold}<!-- soul:profile=${pm.declaredProfile} -->${RESET()} marker (let the scanner detect),`);
@@ -11773,7 +11785,7 @@ Examples:
           ? ` (--profile ${pm.evaluatedUnderForcedProfile} evaluated them this run; the file still declares the narrower scope)`
           : '';
         process.stderr.write(
-          `SOUL-PROFILE-MISMATCH HIGH: declared profile=${pm.declaredProfile} skips ${pm.skippedDomains.length} of 9 domains; body suggests profile=${pm.inferredProfile}${forcedNote}.\n`,
+          `SOUL-PROFILE-MISMATCH HIGH: ${pm.source === 'keywords' ? 'detected' : 'declared'} profile=${pm.declaredProfile} skips ${pm.skippedDomains.length} of 9 domains; body suggests profile=${pm.inferredProfile}${forcedNote}.\n`,
         );
         await exitRecorded(1, 'findings');
       }

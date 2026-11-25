@@ -93,9 +93,9 @@ System prompt has highest authority.
     const dir = tmpDirWithSoul(soul);
     const result = await scanner.scanSoul(dir);
 
-    // No marker → profile detected from body. Mismatch only fires when
-    // a marker / --profile flag is in play.
-    expect(result.profileMismatch, 'mismatch must NOT fire without marker / --profile override').toBeUndefined();
+    // No marker → profile detected from body ("tool calls" → tool-agent),
+    // which is what the body infers too, so nothing is narrowed.
+    expect(result.profileMismatch, 'mismatch must NOT fire when the detected profile matches the body').toBeUndefined();
   });
 
   it('legitimate `<!-- soul:profile=tool-agent -->` matching body → NO mismatch', async () => {
@@ -209,6 +209,60 @@ Autonomous multi-step plans.
     expect(result.skippedDomains.length).toBe(5);
     expect(result.profileMismatch).toBeDefined();
     expect(result.agentProfile).toBe('conversational');
+  });
+});
+
+// #1013: with no marker and no --profile flag, `detectProfile` falls back to
+// keywords matched as substrings, so one sentence mentioning chat narrows a
+// tool-using body to `conversational`. That narrowing has to be reported too.
+const KEYWORD_NARROWED_SOUL = (extra: string): string => `# Ops Agent
+
+${extra}
+
+## Capability Boundaries
+
+Run shell commands within the project directory. Never run destructive commands.
+
+## Human Oversight
+
+Escalate destructive operations to a human before acting.
+
+## Trust Hierarchy
+
+System prompt has highest authority.
+`;
+
+describe('SOUL-PROFILE-MISMATCH for a keyword-detected profile (#1013)', () => {
+  it('"Users reach it over chat." narrows to conversational and the mismatch fires', async () => {
+    const dir = tmpDirWithSoul(KEYWORD_NARROWED_SOUL('Users reach it over chat.'));
+    const result = await scanner.scanSoul(dir);
+
+    expect(result.agentProfile).toBe('conversational');
+    expect(result.profileForced).toBe(false);
+    expect(result.profileMismatch, 'keyword-narrowed profile must report the mismatch').toBeDefined();
+    expect(result.profileMismatch!.source).toBe('keywords');
+    expect(result.profileMismatch!.declaredProfile).toBe('conversational');
+    expect(['tool-agent', 'autonomous']).toContain(result.profileMismatch!.inferredProfile);
+    expect(result.profileMismatch!.skippedDomains).toContain('Capability Boundaries');
+    expect(result.profileMismatch!.skippedDomains).toContain('Human Oversight');
+  });
+
+  it('without the keyword the same body is evaluated under custom and nothing fires', async () => {
+    const dir = tmpDirWithSoul(KEYWORD_NARROWED_SOUL('Operators reach it over a terminal.'));
+    const result = await scanner.scanSoul(dir);
+
+    expect(result.agentProfile).toBe('custom');
+    expect(result.profileMismatch).toBeUndefined();
+  });
+
+  it('a marker-declared mismatch reports source=marker and a flag-declared one source=flag', async () => {
+    const marked = await scanner.scanSoul(
+      tmpDirWithSoul(`<!-- soul:profile=conversational -->\n${KEYWORD_NARROWED_SOUL('')}`),
+    );
+    expect(marked.profileMismatch?.source).toBe('marker');
+
+    const flagged = await scanner.scanSoul(tmpDirWithSoul(KEYWORD_NARROWED_SOUL('')), { profile: 'conversational' });
+    expect(flagged.profileMismatch?.source).toBe('flag');
   });
 });
 
