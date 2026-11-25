@@ -26,6 +26,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
   reconcileArtifactIntents,
+  reconcileFindingIntents,
   rawIntentDisclosureLines,
   type ArtifactIntent,
 } from '../../src/ui/artifact-intent';
@@ -227,6 +228,53 @@ describe('artifact intent reconciliation (deterministic — #252 contract gate)'
 
   it('emits no disclosure when nothing was withheld', () => {
     expect(rawIntentDisclosureLines([])).toEqual([]);
+  });
+});
+
+// #1024 — `check --json` kept `nanomindIntent.classification: "benign"` on a
+// HIGH finding whose artifact the text `Artifacts` line labelled `unknown`.
+describe('finding intent reconciliation for check --json (#1024)', () => {
+  const BENIGN = { classification: 'benign' as const, confidence: 0.81, modelVersion: 'nanomind-tme-v0.5.0' };
+
+  function finding(file: string, severity: string, intent?: typeof BENIGN | { classification: 'malicious'; confidence: number; modelVersion: string }) {
+    return { checkId: 'SOUL-001', file, severity, ...(intent ? { nanomindIntent: intent } : {}) };
+  }
+
+  it('agrees with the Artifacts line on a benign label a HIGH finding contradicts', () => {
+    const findings = [finding('SOUL.md', 'high', BENIGN), finding('SOUL.md', 'low', BENIGN)];
+    const json = reconcileFindingIntents(findings, findings);
+    const text = reconcileArtifactIntents([artifact('SOUL.md', 'benign')], findings);
+
+    expect(text.artifacts[0].intent).toBe('unknown');
+    for (const f of json) {
+      expect(f.nanomindIntent?.classification).toBe(text.artifacts[0].intent);
+      expect(f.nanomindIntent?.rawClassification).toBe('benign');
+      expect(f.nanomindIntent?.contradictedBy).toBe(1);
+      expect(f.nanomindIntent?.confidence).toBe(0.81);
+    }
+    // Copies, not mutation.
+    expect(findings[0].nanomindIntent?.classification).toBe('benign');
+  });
+
+  it('counts a suppressed stub that knows its path, as the text line does (#1000)', () => {
+    const findings = [finding('SOUL.md', 'medium', BENIGN)];
+    const json = reconcileFindingIntents(findings, [...findings, { file: 'SOUL.md', severity: 'critical' }]);
+    expect(json[0].nanomindIntent?.classification).toBe('unknown');
+  });
+
+  it('leaves a benign label no HIGH or CRITICAL finding on that artifact contradicts', () => {
+    const findings = [finding('SOUL.md', 'medium', BENIGN), finding('SKILL.md', 'high')];
+    const json = reconcileFindingIntents(findings, findings);
+    expect(json[0]).toBe(findings[0]);
+    expect(json[0].nanomindIntent).toEqual(BENIGN);
+  });
+
+  it('leaves findings without a signal and non-benign labels untouched', () => {
+    const malicious = { classification: 'malicious' as const, confidence: 0.9, modelVersion: 'nanomind-tme-v0.5.0' };
+    const findings = [finding('SOUL.md', 'high'), finding('SOUL.md', 'high', malicious)];
+    const json = reconcileFindingIntents(findings, findings);
+    expect(json[0]).toBe(findings[0]);
+    expect(json[1]).toBe(findings[1]);
   });
 });
 
