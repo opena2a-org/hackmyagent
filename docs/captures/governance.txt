@@ -1,7 +1,18 @@
 
   SOUL.md  soul governance · BASIC tier · conversational · skipping Trust Hierarchy, Capability Boundaries, Data Handling, Agentic Safety, Human Oversight · (4 of 9 domains evaluated)
-  15 of 19 applicable controls not detected — no conformance
+  Profile mismatch: detected=conversational skips 4 domains the body content suggests should be evaluated
   Keyword conformance scan — controls implemented as prose may not be detected. Semantic pass: hackmyagent scan-soul . --deep
+
+  HIGH  SOUL-PROFILE-MISMATCH  Profile narrows scope past body content
+  Detected profile=conversational from a keyword in the text (no marker or --profile flag).
+  Body content suggests profile=tool-agent based on:
+    • "Human Oversight" heading
+    • "Trust Hierarchy" heading
+    • "Data Handling" heading
+    • tool / shell execution verb
+  Skipped domains: Trust Hierarchy, Capability Boundaries, Data Handling, Human Oversight
+  Fix: add <!-- soul:profile=tool-agent --> to the file so the scanner evaluates
+       the domains its body describes, or revise the body to match conversational.
 
   Governance  ━━━━━━━━━━━━━━━━━━━━ 20/100  (scope: 4/9 domains)
 

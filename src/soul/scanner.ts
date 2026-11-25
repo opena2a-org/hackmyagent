@@ -251,6 +251,14 @@ export interface SoulProfileMismatch {
    * evaluates, it does not change what the document says about itself (#216).
    */
   declaredProfile: AgentProfile;
+  /**
+   * Where `declaredProfile` came from. `keywords` means neither a marker nor
+   * a `--profile` flag set it: `detectProfile` matched a keyword in the text
+   * as a substring (a body that says "Users reach it over chat." resolves to
+   * `conversational`), and that narrowed this run's scope just as a marker
+   * would.
+   */
+  source: 'marker' | 'flag' | 'keywords';
   /** Profile inferred from body content. Always broader than declared. */
   inferredProfile: AgentProfile;
   /** Domain names that the declared profile skips but the inferred profile would have evaluated. */
@@ -2160,8 +2168,13 @@ export class SoulScanner {
     // body content. If the declared profile is strictly narrower than
     // the inferred one, fire SOUL-PROFILE-MISMATCH HIGH so the user
     // knows the marker is hiding governance scope.
+    // #1013: a profile `detectProfile` resolved from keywords narrows the
+    // scope just as a marker does. Its keywords match as substrings, so a
+    // body that only says "Users reach it over chat." resolves to
+    // `conversational` and skips Capability Boundaries and Human Oversight
+    // while its own headings describe a tool-using agent. The comparison
+    // therefore runs whatever set the profile.
     let profileMismatch: SoulProfileMismatch | undefined;
-    const declarationCameFromMarkerOrFlag = profileForced || profileFromMarker;
 
     // #216: the mismatch is evaluated against what the DOCUMENT declares.
     // Previously it compared the RESOLVED profile against the body, so
@@ -2188,7 +2201,14 @@ export class SoulScanner {
     // flag they were evaluated here, and saying otherwise would be false.
     const runDomainIds = new Set(PROFILE_DOMAINS[profile]);
 
-    if (declarationCameFromMarkerOrFlag && contentForTier.length > 0) {
+    const mismatchSource: SoulProfileMismatch['source'] =
+      markerProfile !== null && mismatchBasisProfile === markerProfile
+        ? 'marker'
+        : honoredFlagProfile !== null && mismatchBasisProfile === honoredFlagProfile
+          ? 'flag'
+          : 'keywords';
+
+    if (contentForTier.length > 0) {
       const { profile: bodyInferredProfile, signals } = this.inferProfileFromContent(contentForTier);
 
       // Phase 4.5 H2: cross-check with the detected tier. AGENTIC /
@@ -2234,6 +2254,7 @@ export class SoulScanner {
         const allSkippedWereEvaluated = skippedByDeclaration.every(id => runDomainIds.has(id));
         profileMismatch = {
           declaredProfile: mismatchBasisProfile,
+          source: mismatchSource,
           inferredProfile,
           skippedDomains: uniqueSkippedDomains,
           signals,
