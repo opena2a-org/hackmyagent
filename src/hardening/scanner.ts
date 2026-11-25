@@ -17150,9 +17150,11 @@ dist/
 
     // ---------- NEMO-008: TOCTOU race between verify and apply ----------
     let nemo008Found = false;
-    // Heuristic: look for verify/validate in one file AND exec/spawn in the same directory tree
-    const dirVerifyMap = new Map<string, { verifyFile: string; verifyLine: number }>();
-    const dirExecMap = new Map<string, { execFile: string; execLine: number }>();
+    // Heuristic: look for verify/validate AND exec/spawn in the same file. A
+    // check in one file and a use in another file are not paired: nothing says
+    // the two run on the same artifact or in one call path.
+    const fileVerifyMap = new Map<string, { verifyFile: string; verifyLine: number }>();
+    const fileExecMap = new Map<string, { execFile: string; execLine: number }>();
     const verifyIntegrity = new WordChainAlternationRegExp(/verify.*digest|validate.*hash|check.*integrity/i);
     // An export or import list names functions without calling them, so the
     // verify chain can match across two unrelated names on it (compiled
@@ -17174,40 +17176,39 @@ dist/
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
-        const dir = path.dirname(file);
         let importsChildProcess: boolean | undefined;
         for (let i = 0; i < lines.length; i++) {
           if (verifyIntegrity.test(lines[i]) && !exportOrImportList.test(lines[i])) {
-            if (!dirVerifyMap.has(dir)) {
-              dirVerifyMap.set(dir, { verifyFile: file, verifyLine: i + 1 });
+            if (!fileVerifyMap.has(file)) {
+              fileVerifyMap.set(file, { verifyFile: file, verifyLine: i + 1 });
             }
           }
           if (/\bspawn\s*\(|\bexec\s*\(|\bexecSync\s*\(|\bexecFile\s*\(/.test(lines[i]) &&
               (execCallNotMethod.test(lines[i]) || (importsChildProcess ??= childProcessImport.test(content)))) {
-            if (!dirExecMap.has(dir)) {
-              dirExecMap.set(dir, { execFile: file, execLine: i + 1 });
+            if (!fileExecMap.has(file)) {
+              fileExecMap.set(file, { execFile: file, execLine: i + 1 });
             }
           }
         }
       } catch { /* skip */ }
     }
-    for (const [dir, verify] of dirVerifyMap) {
-      const exec = dirExecMap.get(dir);
-      if (exec && verify.verifyFile !== exec.execFile) {
+    for (const [file, verify] of fileVerifyMap) {
+      const exec = fileExecMap.get(file);
+      if (exec) {
         nemo008Found = true;
         findings.push({
           checkId: 'NEMO-008',
           name: 'TOCTOU race between verify and apply',
-          description: 'Integrity verification and execution happen in separate files, creating a time-of-check-time-of-use window where the artifact can be swapped between verification and use.',
+          description: 'Integrity verification and execution happen in the same file with no atomic binding, creating a time-of-check-time-of-use window where the artifact can be swapped between verification and use.',
           category: 'nemo-integrity',
           severity: 'high',
           passed: false,
-          message: `Verify in ${path.relative(targetDir, verify.verifyFile)}:${verify.verifyLine}, exec in ${path.relative(targetDir, exec.execFile)}:${exec.execLine}`,
+          message: `Verify at ${path.relative(targetDir, verify.verifyFile)}:${verify.verifyLine}, exec at ${path.relative(targetDir, exec.execFile)}:${exec.execLine}`,
           fixable: false,
           file: path.relative(targetDir, verify.verifyFile),
           line: verify.verifyLine,
           fix: 'Copy artifact to temp dir, verify the copy, execute from the copy (atomic verify-then-execute in the same function).',
-          guidance: 'When verify and execute are in separate files, an attacker can swap the artifact between verification and use (TOCTOU). Atomic verify-then-execute eliminates this race window.',
+          guidance: 'When verify and execute are separate steps, an attacker can swap the artifact between verification and use (TOCTOU). Atomic verify-then-execute eliminates this race window.',
         });
       }
     }

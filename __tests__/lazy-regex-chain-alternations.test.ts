@@ -557,9 +557,8 @@ describe('the checks still report their positives in 1 MiB files, after a flood 
     const reload = "app.post('/admin/policy', (req, res) => policy.reload(req.body));";
     const verify = 'const ok = await verifyDigest(artifact, expected);';
     const source = floodLines('hot policy ', WIDE, 512 * KiB) + floodLines('verify validate check ', WIDE, 512 * KiB) +
-      reload + '\n' + verify + '\n';
+      reload + '\n' + verify + '\n' + "execSync('install ./artifact');\n";
     await writeFile(root, 'src/policy.ts', source);
-    await writeFile(root, 'src/apply.ts', "execSync('install ./artifact');\n");
     const drafts = await check('checkNemoClawPatterns', root, false);
     expect(failed(drafts, 'NEMO-003').map((f: any) => [f.file, f.line])).toEqual([[path.join('src', 'policy.ts'), lineOf(source, reload)]]);
     expect(failed(drafts, 'NEMO-008').map((f: any) => [f.file, f.line])).toEqual([[path.join('src', 'policy.ts'), lineOf(source, verify)]]);

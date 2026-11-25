@@ -5,9 +5,9 @@ import { HardeningScanner } from '../../src/hardening/scanner';
 import { tempDir } from '../helpers/temp-dir';
 
 /**
- * NEMO-008 pairs a verify line with an exec line in another file of the same
- * directory. On a TypeScript package compiled with tsc it paired two lines
- * that are neither:
+ * NEMO-008 pairs a verify line with an exec line in the same file; a check in
+ * one file and a use in a separate file are not paired. On a TypeScript
+ * package compiled with tsc it paired two lines that are neither:
  *
  *   - the barrel's CommonJS export list, `exports.validateToken = ...
  *     = exports.hashName = void 0;`, where the verify chain `validate.*hash`
@@ -73,11 +73,17 @@ describe('NEMO-008 on compiled export lists and regular-expression exec calls', 
     expect(await nemo008(root)).toEqual([]);
   });
 
-  it('still reports verify(file, digest) beside a child_process execFile call, at the verify line', async () => {
+  it('still reports verify(file, digest) beside a child_process execFile call in one file, at the verify line', async () => {
     const root = tempDir('nemo008-positive-');
-    await writeFile(root, 'lib/verify.js', VERIFY);
-    await writeFile(root, 'lib/apply.js', EXEC_FILE);
-    expect(await nemo008(root)).toEqual([[path.join('lib', 'verify.js'), 3]]);
+    await writeFile(root, 'lib/apply.js', VERIFY + EXEC_FILE);
+    expect(await nemo008(root)).toEqual([[path.join('lib', 'apply.js'), 3]]);
+  });
+
+  it('does not pair a check in one file with a use in a separate file', async () => {
+    const root = tempDir('nemo008-two-files-');
+    await writeFile(root, 'lib/verify.test.js', VERIFY);
+    await writeFile(root, 'lib/apply.test.js', EXEC_FILE);
+    expect(await nemo008(root)).toEqual([]);
   });
 
   it.each([
@@ -92,8 +98,7 @@ describe('NEMO-008 on compiled export lists and regular-expression exec calls', 
     ['an opening module.exports = { line', 'module.exports = { validateToken, hashName,'],
   ])('%s is not a verify site', async (_name, line) => {
     const root = tempDir('nemo008-list-');
-    await writeFile(root, 'src/index.js', `${line}\n`);
-    await writeFile(root, 'src/apply.js', EXEC_FILE);
+    await writeFile(root, 'src/index.js', `${line}\n${EXEC_FILE}`);
     expect(await nemo008(root)).toEqual([]);
   });
 
@@ -104,15 +109,13 @@ describe('NEMO-008 on compiled export lists and regular-expression exec calls', 
     ['an exports assignment of a call', 'exports.ok = exports.validateHash = check(file);'],
   ])('%s is still a verify site', async (_name, line) => {
     const root = tempDir('nemo008-list-call-');
-    await writeFile(root, 'src/index.js', `${line}\n`);
-    await writeFile(root, 'src/apply.js', EXEC_FILE);
+    await writeFile(root, 'src/index.js', `${line}\n${EXEC_FILE}`);
     expect(await nemo008(root)).toEqual([[path.join('src', 'index.js'), 1]]);
   });
 
   it('does not pair a verify call with a regular-expression exec call in a file without child_process', async () => {
     const root = tempDir('nemo008-regex-exec-');
-    await writeFile(root, 'lib/verify.js', VERIFY);
-    await writeFile(root, 'lib/semver.js', REGEX_EXEC);
+    await writeFile(root, 'lib/semver.js', VERIFY + REGEX_EXEC);
     expect(await nemo008(root)).toEqual([]);
   });
 
@@ -123,16 +126,14 @@ describe('NEMO-008 on compiled export lists and regular-expression exec calls', 
     ['import * as cp from "node:child_process";'],
   ])('a .exec( method call counts in a file that imports child_process: %s', async (importLine) => {
     const root = tempDir('nemo008-cp-exec-');
-    await writeFile(root, 'lib/verify.js', VERIFY);
-    await writeFile(root, 'lib/apply.js', `${importLine}\nfunction apply(cmd) {\n  cp.exec(cmd);\n}\n`);
-    expect(await nemo008(root)).toEqual([[path.join('lib', 'verify.js'), 3]]);
+    await writeFile(root, 'lib/apply.js', `${VERIFY}${importLine}\nfunction apply(cmd) {\n  cp.exec(cmd);\n}\n`);
+    expect(await nemo008(root)).toEqual([[path.join('lib', 'apply.js'), 3]]);
   });
 
   it('a bare exec( call counts as before, in a file without a child_process import', async () => {
     const root = tempDir('nemo008-bare-exec-');
-    await writeFile(root, 'lib/verify.js', VERIFY);
-    await writeFile(root, 'lib/apply.js', 'function apply(cmd) {\n  exec(cmd);\n}\n');
-    expect(await nemo008(root)).toEqual([[path.join('lib', 'verify.js'), 3]]);
+    await writeFile(root, 'lib/apply.js', `${VERIFY}function apply(cmd) {\n  exec(cmd);\n}\n`);
+    expect(await nemo008(root)).toEqual([[path.join('lib', 'apply.js'), 3]]);
   });
 
   // An unclosed list line that matches the verify chain and ends in a long
