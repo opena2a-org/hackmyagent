@@ -15787,7 +15787,13 @@ dist/
         const pkgPath = path.join(targetDir, 'package.json');
         const pkgContent = await fs.readFile(pkgPath, 'utf-8');
         const pkg = JSON.parse(pkgContent);
-        if (pkg.agentCard || pkg.a2a || pkg.keywords?.some((k: string) => k.includes('agent') || k.includes('a2a'))) {
+        // A keyword marks an agent project only when it is exactly `agent` or
+        // `a2a`. A substring match took `ai-agent`, `user-agent` or
+        // `agentic-tools` for a claim to be an agent.
+        const agentKeyword = Array.isArray(pkg.keywords) && pkg.keywords.some(
+          (k: unknown) => typeof k === 'string' && ['agent', 'a2a'].includes(k.trim().toLowerCase()),
+        );
+        if (pkg.agentCard || pkg.a2a || agentKeyword) {
           findings.push({
             checkId: 'AIM-001',
             name: 'No agent identity declaration',
