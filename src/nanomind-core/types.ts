@@ -230,6 +230,12 @@ export interface RiskSurface {
    * is recorded at the point of the match instead, where it is exact.
    */
   offset?: number;
+  /**
+   * True when the line carrying `evidence` forbids it, and a prohibition there
+   * governs that very command (`isForbiddenByItsLine`). The risk is still
+   * reported; its finding is informational and says the line forbids it.
+   */
+  forbiddenByItsLine?: boolean;
   /** How to mitigate */
   mitigation?: string;
 }

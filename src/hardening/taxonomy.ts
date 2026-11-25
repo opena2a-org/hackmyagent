@@ -829,7 +829,7 @@ const SEVERITY_OVERRIDES: Record<string, string> = {
   // finding the scanner actually reported. Other AST/SEM checks assign
   // severity per finding at analysis time and keep the prefix default here.
   'AST-MANIP-001': 'critical', // capability-analyzer.ts, fixed critical
-  'AST-HEARTBEAT-001': 'critical', // capability-analyzer.ts, fixed critical
+  'AST-HEARTBEAT-001': 'critical', // capability-analyzer.ts, critical; info only where the line forbids the pipe
   'AST-INJECT-001': 'critical', // capability-analyzer.ts, fixed critical
   'AST-GOV-004': 'high', // governance-analyzer.ts, fixed high
   'AST-PERSIST-001': 'high', // capability-analyzer.ts, fixed high

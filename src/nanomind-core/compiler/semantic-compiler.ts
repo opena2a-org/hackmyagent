@@ -29,6 +29,7 @@ import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import { buildAnalysisView } from './source-code-preprocessor.js';
 import { skillPermissionCapabilities } from './skill-permissions.js';
+import { SHELL_PIPE_FORBIDDEN_SURFACE, findShellPipeOccurrences } from './shell-pipe-prohibition.js';
 import {
   CREDENTIAL_NOUN,
   EXFIL_VERB,
@@ -2865,13 +2866,34 @@ function mapRiskSurfaces(
       evidence: codeExecMatch[0],
     });
   }
-  const shellPipeMatch = /curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh/i.exec(content);
-  if (shellPipeMatch) {
+  // A download piped into a shell is reported whenever the pattern is in the
+  // text. A prohibition never removes it: when, and only when, a prohibition on
+  // its own line governs that very command (`isForbiddenByItsLine`), it is
+  // reported as informational and says the line forbids it. Any occurrence no
+  // prohibition governs is reported critical, as the first such occurrence,
+  // even on a line that forbids another one. One surface per artifact, as
+  // before: two rows of one check on one file are rolled up downstream and
+  // lose their line.
+  const shellPipes = findShellPipeOccurrences(content);
+  const allowedShellPipe = shellPipes.find(p => !p.forbidden);
+  if (allowedShellPipe) {
     surfaces.push({
       surface: 'Shell pipe execution',
       attackClass: 'HEARTBEAT-RCE',
       confidence: 0.95,
-      evidence: shellPipeMatch[0],
+      evidence: allowedShellPipe.text,
+      offset: allowedShellPipe.index,
+    });
+  } else if (shellPipes.length > 0) {
+    surfaces.push({
+      surface: SHELL_PIPE_FORBIDDEN_SURFACE,
+      attackClass: 'HEARTBEAT-RCE',
+      // Below the 0.7 the scan-evasion count reads: a line that forbids the
+      // pattern is not a risk surface it should count.
+      confidence: 0.3,
+      evidence: shellPipes[0].text,
+      offset: shellPipes[0].index,
+      forbiddenByItsLine: true,
     });
   }
   // Compound: timer + remote URL. Use the timer span as anchor — it's the

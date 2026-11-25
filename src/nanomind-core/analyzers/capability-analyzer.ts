@@ -362,17 +362,27 @@ function checkRemoteInstructionFetch(ast: SecurityAST): ASTFinding[] {
   );
 
   for (const surface of heartbeatSurfaces) {
+    // A line that forbids the pattern is still listed, informational, and says
+    // so; the compiler sets this only when a prohibition governs that very
+    // command. Every other surface is critical.
+    const forbidden = surface.forbiddenByItsLine === true;
     findings.push({
       checkId: `AST-HEARTBEAT-001`,
       name: 'Remote Instruction Fetch',
-      description: surface.surface,
+      description: forbidden
+        ? `${surface.surface}: this line forbids piping a download into a shell, so it is listed as informational, not critical`
+        : surface.surface,
       category: 'Remote Code Execution',
-      severity: 'critical',
+      severity: forbidden ? 'info' : 'critical',
       passed: false,
-      message: `Heartbeat RCE risk: ${surface.evidence}`,
+      message: forbidden
+        ? `Prohibition, not an instruction: this line forbids ${surface.evidence}`
+        : `Heartbeat RCE risk: ${surface.evidence}`,
       fixable: false,
       file: ast.artifactPath,
-      fix: 'Remove remote instruction fetching. Configuration should be local, not fetched from external URLs.',
+      fix: forbidden
+        ? 'No change needed if this line is meant to forbid the command. Make sure no other line runs it.'
+        : 'Remove remote instruction fetching. Configuration should be local, not fetched from external URLs.',
       attackClass: 'HEARTBEAT-RCE',
       confidence: surface.confidence,
       evidence: surface.evidence,
