@@ -2189,6 +2189,69 @@ export function isGovernanceContent(text: string): boolean {
 }
 
 // ============================================================================
+// The shell-pipe rule: a download piped into a shell, unless its clause forbids it
+// ============================================================================
+
+/** A download piped into a shell: `curl … | bash`, `wget … | sh`. */
+const SHELL_PIPE = /curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh/i;
+
+/**
+ * Where a clause ends: a line end, or a sentence terminator or semicolon with
+ * whitespace or the end of the text after it, so `install.sh` and
+ * `https://x.example/a?b` mid-token do not cut a command in two.
+ */
+const SHELL_PIPE_CLAUSE_BOUNDARY = /\n|[.!?;]+(?=\s|$)/;
+
+/**
+ * A negator ahead of the pipe in its clause: "Never run curl … | bash",
+ * "Do not pipe curl … | sh", "Avoid curl | bash installs", "Forbid curl | sh".
+ * A prohibition that follows the pipe is `SHELL_PIPE_PROHIBITED_AFTER`.
+ */
+const SHELL_PIPE_NEGATOR_BEFORE = new RegExp(
+  [
+    `\\b(?:never|not|cannot|avoid(?:s|ed|ing)?|refrain(?:s|ed|ing)?|refuse[sd]?|forbidden|prohibited|disallowed`,
+    `|forbid(?:s|ding)?|prohibit(?:s|ing)?|ban(?:s|ning)?)\\b|n['’]t\\b`,
+  ].join(''),
+  'i',
+);
+
+/**
+ * Bare `no` is a determiner far more often than a negator, so it counts only
+ * where it determines the pipe itself: "no curl | bash patterns",
+ * "No `wget … | sh`".
+ */
+const SHELL_PIPE_NO_DETERMINER = /\bno\s+[`'"*]*$/i;
+
+/** "curl | bash is forbidden", "curl | sh installs are not allowed". */
+const SHELL_PIPE_PROHIBITED_AFTER =
+  /^[`'"*]*\s*(?:\w+\s+){0,2}?(?:is|are)\s+(?:never\s+allowed|not\s+allowed|not\s+permitted|forbidden|prohibited|banned|disallowed)\b/i;
+
+/**
+ * The first `curl … | sh` / `wget … | sh` span in `content` that its own
+ * clause does not forbid, or undefined when there is none.
+ *
+ * A governance line that forbids the pattern ("no curl | bash patterns",
+ * "Never run curl … | bash") names it to rule it out; reporting it as a remote
+ * code execution directive reports the rule against itself. The scope of a
+ * negation is its clause, so "Never run wget … | sh. Run curl … | bash." is
+ * still reported on its second sentence.
+ */
+export function findShellPipeDirective(content: string): string | undefined {
+  if (!SHELL_PIPE.test(content)) return undefined;
+  for (const clause of content.split(SHELL_PIPE_CLAUSE_BOUNDARY)) {
+    const match = SHELL_PIPE.exec(clause);
+    if (!match) continue;
+    const before = clause.slice(0, match.index);
+    const after = clause.slice(match.index + match[0].length);
+    if (SHELL_PIPE_NEGATOR_BEFORE.test(before)) continue;
+    if (SHELL_PIPE_NO_DETERMINER.test(before)) continue;
+    if (SHELL_PIPE_PROHIBITED_AFTER.test(after)) continue;
+    return match[0];
+  }
+  return undefined;
+}
+
+// ============================================================================
 // The CRED-HARVEST prose rule: the signal is a CLAUSE, never the file
 // ============================================================================
 
@@ -2865,13 +2928,13 @@ function mapRiskSurfaces(
       evidence: codeExecMatch[0],
     });
   }
-  const shellPipeMatch = /curl\s+.*\|\s*(ba)?sh|wget\s+.*\|\s*(ba)?sh/i.exec(content);
-  if (shellPipeMatch) {
+  const shellPipeEvidence = findShellPipeDirective(content);
+  if (shellPipeEvidence !== undefined) {
     surfaces.push({
       surface: 'Shell pipe execution',
       attackClass: 'HEARTBEAT-RCE',
       confidence: 0.95,
-      evidence: shellPipeMatch[0],
+      evidence: shellPipeEvidence,
     });
   }
   // Compound: timer + remote URL. Use the timer span as anchor — it's the
