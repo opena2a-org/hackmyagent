@@ -1158,9 +1158,9 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
   },
   'NEMO-008': {
     name: 'TOCTOU race between verify and apply',
-    description: 'Integrity verification and execution happen in separate files, creating a time-of-check-time-of-use window where the artifact can be swapped between verification and use.',
+    description: 'Integrity verification and execution happen in the same file with no atomic binding, creating a time-of-check-time-of-use window where the artifact can be swapped between verification and use.',
     category: 'nemo-integrity',
-    why: 'When verify and execute are in separate files, an attacker can swap the artifact between verification and use (TOCTOU). Atomic verify-then-execute eliminates this race window.',
+    why: 'When verify and execute are separate steps, an attacker can swap the artifact between verification and use (TOCTOU). Atomic verify-then-execute eliminates this race window.',
     fix: 'Copy artifact to temp dir, verify the copy, execute from the copy (atomic verify-then-execute in the same function).',
   },
   'NEMO-009': {
