@@ -353,6 +353,88 @@ export function unsearchableAncestorSync(absPath: string, targetDir: string): st
   return shallowest ? (path.relative(root, shallowest) || '.') : undefined;
 }
 
+// Who grants approval, and what they grant, in the SOUL-CONSENT approval phrasings.
+const APPROVER = String.raw`(?:the\s+)?(?:user|human|operator|owner|principal)`;
+const APPROVAL_NOUN = String.raw`(?:approval|confirmation|sign[- ]?off|go[- ]ahead)`;
+const APPROVAL_OBJECT =
+  String.raw`(?:the\s+)?(?:(?:explicit|express|prior|written|direct|manual)\s+)?` +
+  String.raw`(?:${APPROVER}(?:'s|’s|s')?\s+)?(?:(?:explicit|express|prior|written|direct|manual)\s+)?${APPROVAL_NOUN}` +
+  String.raw`(?:\s+(?:from|of|by)\s+${APPROVER})?`;
+
+/** Phrasings that make an action wait on the user's approval or confirmation. */
+const APPROVAL_REQUIREMENTS: RegExp[] = [
+  // "requires explicit user approval", "ask for confirmation", "only with the user's approval"
+  new RegExp(
+    String.raw`\b(?:requir(?:e|es|ed|ing)|need(?:s|ed|ing)?|ask(?:s|ed|ing)?\s+for|request(?:s|ed|ing)?|obtain(?:s|ed|ing)?|seek(?:s|ing)?|sought|get(?:s|ting)?|wait(?:s|ed|ing)?\s+for|with|after|upon|until|pending)\s+${APPROVAL_OBJECT}\b`,
+    'gi',
+  ),
+  // "explicit approval is required", "user confirmation is mandatory"
+  new RegExp(
+    String.raw`\b(?:(?:explicit|express|prior|written|manual)\s+|${APPROVER}\s+)${APPROVAL_NOUN}\s+(?:is\s+|will\s+be\s+)?(?:always\s+)?(?:required|needed|mandatory|necessary)\b`,
+    'gi',
+  ),
+  // "ask the user to confirm", "prompt the user for approval"
+  new RegExp(
+    String.raw`\b(?:ask|prompt)(?:s|ed|ing)?\s+${APPROVER}\s+(?:to|for)\s+(?:(?:explicitly|explicit|their|his|her)\s+)?(?:approv|confirm)`,
+    'gi',
+  ),
+  // "confirm with the user before deleting"
+  new RegExp(String.raw`\b(?:confirm|check)(?:s|ed|ing)?\s+with\s+${APPROVER}\b`, 'gi'),
+  // "the user must approve", "the operator has to confirm first"
+  new RegExp(
+    String.raw`\b${APPROVER}\s+(?:must|has\s+to|needs\s+to|shall|will\s+need\s+to)\s+(?:first\s+)?(?:explicitly\s+)?(?:approve|confirm|sign\s+off)\b`,
+    'gi',
+  ),
+  // "must be explicitly approved by the user"
+  new RegExp(
+    String.raw`\b(?:must|shall|will|should|has\s+to|have\s+to)\s+(?:first\s+)?be\s+(?:explicitly\s+)?(?:approved|confirmed|signed\s+off)\s+by\s+${APPROVER}\b`,
+    'gi',
+  ),
+];
+
+/**
+ * "until the user approves", "only if the operator confirms": a negation
+ * before these ("never delete files until the user approves") bars the action,
+ * so they are read without the negation test.
+ */
+const APPROVAL_CONDITION = new RegExp(
+  String.raw`\b(?:until|unless|once|after|only\s+if|only\s+when)\s+${APPROVER}\s+(?:has\s+)?(?:explicitly\s+)?(?:approves|approved|confirms|confirmed|signs\s+off|signed\s+off)\b`,
+  'i',
+);
+
+/** "never ... without explicit user approval": the action is barred unless the user approves. */
+const WITHOUT_APPROVAL = new RegExp(
+  String.raw`\bwithout\s+(?:first\s+)?(?:(?:requiring|asking\s+for|getting|obtaining|seeking|receiving)\s+)?${APPROVAL_OBJECT}\b`,
+  'gi',
+);
+
+/** A negation of the words that follow it: "does not require", "no approval needed", "never asks". */
+const NEGATED_VERB = /(?:\b(?:no|not|never|without|cannot)|n[’']t)\s+(?:\w+\s+)?$/i;
+const NEGATION = /\b(?:no|not|never|cannot)\b|n[’']t\b/i;
+
+/** The clause of `content` that ends at `offset`, at most `width` characters long. */
+function clauseBefore(content: string, offset: number, width: number): string {
+  return content.slice(Math.max(0, offset - width), offset).split(/[.!?;\n]/).pop() ?? '';
+}
+
+/**
+ * SOUL-CONSENT: the SOUL file makes risky actions wait on the user's explicit
+ * approval or confirmation. "Does not require approval" and "without approval"
+ * on their own grant nothing; "never ... without approval" is a requirement.
+ */
+function hasApprovalRequirement(content: string): boolean {
+  if (APPROVAL_CONDITION.test(content)) return true;
+  for (const pattern of APPROVAL_REQUIREMENTS) {
+    for (const m of content.matchAll(pattern)) {
+      if (!NEGATED_VERB.test(clauseBefore(content, m.index ?? 0, 40))) return true;
+    }
+  }
+  for (const m of content.matchAll(WITHOUT_APPROVAL)) {
+    if (NEGATION.test(clauseBefore(content, m.index ?? 0, 160))) return true;
+  }
+  return false;
+}
+
 /** `p` (resolved) is the root or beneath it — never a lexical prefix match on an unresolved path (#617). */
 function withinRoot(p: string, root: string): boolean {
   return p === root || p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
@@ -18899,7 +18981,7 @@ dist/
       })();
       const hasBroadCapability = broadCapabilityOffset !== undefined;
       const irrevocableMatch = new WordChainAlternationRegExp(/irrevocable\s+consent|grants.*irrevocable|permanent.*consent/i).exec(content);
-      const hasConsentLanguage = /\bconsent\b|\bauthori[sz]/i.test(content);
+      const hasConsentLanguage = /\bconsent\b|\bauthori[sz]/i.test(content) || hasApprovalRequirement(content);
 
       if (hasBroadCapability && !hasConsentLanguage) {
         findings.push({
