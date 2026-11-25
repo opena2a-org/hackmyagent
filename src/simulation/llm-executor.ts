@@ -242,19 +242,25 @@ export async function executeProbeLLM(
  * file's text and the tool names read from it pass through the redaction
  * `attack` applies to its target first. It replaces the credential shapes it
  * recognises with a marker: known key and token formats, a database
- * connection string, a user name and password in a URL, an `Authorization`
+ * connection string, the user name and password in a URL, an `Authorization`
  * header value, a Bearer or Basic token of 16 or more characters, the value
  * after a `--password`-style flag, and a YAML block scalar under a
- * credential-named key. After a credential-named key and `:`, `=` or `=>` it
- * replaces a quoted password value of any length, any other quoted value of
- * 8 or more characters, an unquoted `password=` value of any length and any
- * other unquoted value of 8 or more characters. Names count when they hold
- * `password`, `passwd`, `passphrase`, `pwd`, `secret`, `token`, `key` or
- * `credential`, or have `pass` or `auth` as a whole part (`DB_PASS`, `AUTH`). A shorter value
- * after another name (`api_key: abc1234`), a quoted value with a space in it,
- * or a credential written in prose is sent as written. Content over the
- * redaction's size limit becomes the withheld marker alone, so
- * `runDeepSimulation` sends no probe for such a file.
+ * credential-named key.
+ *
+ * After a credential-named key and `:`, `=` or `=>` it replaces a quoted value
+ * of 8 or more characters, and a quoted value of any length when the name
+ * holds `password`, `passwd`, `passphrase` or `pwd`, or has `pass` as a whole
+ * part (`DB_PASS`). For a quoted value the name counts when it holds
+ * `password`, `passwd`, `pwd`, `pass`, `secret`, `token`, `key`, `credential`
+ * or `auth` anywhere in it. An unquoted value is read only after `:` or `=`
+ * (not `=>`): 8 or more characters under a name that holds `password`,
+ * `passwd`, `passphrase`, `pwd`, `secret`, `token`, `key` or `credential`, or
+ * has `pass` or `auth` as a whole part (`DB_PASS`, `AUTH`), and any length
+ * for `password=`, `passwd=` and `pwd=`. A shorter value after another name
+ * (`api_key: abc1234`), a quoted value with a space in it, or a credential
+ * written in prose is sent as written. Content over the redaction's size
+ * limit becomes the withheld marker alone, so `runDeepSimulation` sends no
+ * probe for such a file.
  *
  * Built once per skill profile (#1017): every probe of one artifact gets the
  * same prompt, and `secure --deep` sends 20 probes per file, so redacting the
