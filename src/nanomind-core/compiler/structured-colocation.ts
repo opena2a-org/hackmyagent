@@ -39,8 +39,15 @@
  * cross-leaf split documented on `findStructuredCredentialTransmission`.
  * The read pass (`DATA_TYPE_NOUNS`, for AST-CRED-001) keeps bare `session`;
  * only the forwarding pairing is narrowed.
+ *
+ * An SSH private key is a credential that never says so: `@~/.ssh/id_rsa` names
+ * no "credential" word, so the key file names (`id_rsa`, `id_ed25519`,
+ * `id_ecdsa`) and the `.ssh/` directory are nouns too (#1052). The key file
+ * alternative comes first and takes an optional `.ssh/` prefix, so the term a
+ * finding cites is the whole `.ssh/id_rsa` path rather than its directory.
  */
-export const CREDENTIAL_NOUN = /credentials?|session[\s_-]?(?:token|cookie|id|key|secret)/i;
+export const CREDENTIAL_NOUN =
+  /credentials?|session[\s_-]?(?:token|cookie|id|key|secret)|(?:\.ssh\/)?(?<![A-Za-z0-9])id_(?:rsa|ed25519|ecdsa)|\.ssh\//i;
 
 /**
  * Transmit verbs of the data-access pass, matched as WORD STEMS: an optional `re`/`re-`
