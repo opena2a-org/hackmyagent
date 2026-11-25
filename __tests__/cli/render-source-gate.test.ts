@@ -191,8 +191,10 @@ describe('the command classification agrees with what the commands print', () =>
     // is blind to, so the runtime property is known to be the only thing
     // covering them. `detect`, `check` and `wild` render their paths from
     // `src/scanner/detect.ts`, `src/check/**` and `src/wild/index.ts`, where
-    // there is no `.command(…)` for the call to be attributed to.
-    expect(rendersElsewhere).toEqual(['check', 'detect', 'wild']);
+    // there is no `.command(…)` for the call to be attributed to. `backups`
+    // (#1035) builds its lines in `src/store/backups-report.ts` and prints
+    // them from a local array.
+    expect(rendersElsewhere).toEqual(['backups', 'check', 'detect', 'wild']);
   });
 });
 

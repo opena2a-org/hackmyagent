@@ -80,7 +80,7 @@ const HMA_VERBS = [
   'secure-openclaw', 'secure-nemoclaw', 'harden-soul', 'harden-skill',
   'scan-soul', 'scan-history', 'fix-all', 'init-mcp', 'check-metadata',
   'pull-stubs', 'mark-stub', 'secure', 'scan', 'check', 'attack', 'detect', 'wild',
-  'rollback', 'trust', 'telemetry', 'nanomind', 'harden', 'review',
+  'rollback', 'backups', 'trust', 'telemetry', 'nanomind', 'harden', 'review',
   'protect', 'benchmark', 'oracle', 'init', 'verify',
 ] as const;
 

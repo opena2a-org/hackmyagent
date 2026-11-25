@@ -86,6 +86,8 @@ export const COMMAND_CLASSIFICATION: Record<string, 'renders-paths' | string> = 
   'harden-soul': 'renders-paths',
   wild: 'renders-paths',
   rollback: 'renders-paths',
+  // #1035 — the path each store's target.json records, and a delete command per store.
+  backups: 'renders-paths',
   'fix-all': 'renders-paths',
   'secure-openclaw': 'renders-paths',
   'secure-nemoclaw': 'renders-paths',
