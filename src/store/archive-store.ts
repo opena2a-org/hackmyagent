@@ -596,6 +596,215 @@ export async function findOtherBirthStores(targetDir: string): Promise<OtherBirt
 }
 
 /**
+ * What `hackmyagent backups` says about one entry under the store root
+ * (#1035). Read from the entry's name, its `target.json` and the identity
+ * (device, inode number, birth time) of the directory at the path that record
+ * names. Nothing here writes, moves or deletes.
+ *
+ * - `in-use`: the directory at the recorded path has the device, inode number
+ *   and birth time the store's name carries, so `rollback` there restores from it.
+ * - `other-birth`: the directory there has the store's device and inode number
+ *   and another birth time (#1049). `targetBornEarlier` says which way.
+ * - `other-directory`: something with another device or inode number is there.
+ * - `directory-gone`: nothing is there.
+ * - `no-path`: the record names no path.
+ * - `no-record`: the store holds no `target.json`.
+ * - `invalid-record`: its `target.json` is not a record HackMyAgent wrote, or
+ *   names another device, inode number or birth time than the store's name.
+ * - `not-owned`: the store directory or its `target.json` belongs to another
+ *   user account (#1051).
+ * - `not-a-directory`: a symbolic link or a file stands at a store's name.
+ * - `replaced`: a `<key>.replaced-...` directory a later `--fix` moved aside.
+ * - `unknown`: the filesystem would not answer; `reason` says what.
+ */
+export type BackupStoreState =
+  | 'in-use'
+  | 'other-birth'
+  | 'other-directory'
+  | 'directory-gone'
+  | 'no-path'
+  | 'no-record'
+  | 'invalid-record'
+  | 'not-owned'
+  | 'not-a-directory'
+  | 'replaced'
+  | 'unknown';
+
+/** One entry under the store root that is, or is named as, a backup store. */
+export interface BackupStoreEntry {
+  /** The full path of the entry. */
+  dir: string;
+  state: BackupStoreState;
+  /** The path its `target.json` names, when it names one. */
+  lastKnownPath?: string;
+  /** Its run directories; undefined when they were not counted. */
+  runs?: number;
+  /** `other-birth` only: the directory at `lastKnownPath` reports the earlier birth time. */
+  targetBornEarlier?: boolean;
+  /** Why, for `unknown`, `not-owned` and `invalid-record`. */
+  reason?: string;
+  /** A directory this account owns, which the account can delete. */
+  deletable: boolean;
+}
+
+/**
+ * Every backup store under the store root, read and never changed.
+ *
+ * `no-root`: nothing is at the root, so no `--fix` has kept a backup there.
+ * `unknown`: the root could not be resolved or listed. `sharedRoot` is set when
+ * other accounts can write the root without the sticky bit, where `rollback`
+ * refuses every store (#1051). `otherEntries` counts the entries whose names
+ * are not store names, which are not listed.
+ */
+export type BackupStoreListing =
+  | { kind: 'listed'; root: string; stores: BackupStoreEntry[]; otherEntries: number; sharedRoot?: string }
+  | { kind: 'no-root'; root: string }
+  | { kind: 'unknown'; root?: string; reason: string };
+
+/** `<dev>-<ino>-<birth>`, as `storeDirFor` names a store. */
+const STORE_NAME = /^(\d+)-(\d+)-(-?\d+)$/;
+/** `<key>.replaced-<ms>-<hex>`, as `prepareArchiveStore` moves one aside. */
+const REPLACED_STORE_NAME = /^\d+-\d+--?\d+\.replaced-\d+-[0-9a-f]+$/;
+
+/** The path a store's record names, when it can be read; never throws. */
+async function recordedPath(dir: string): Promise<string | undefined> {
+  try {
+    const found = await readRecord(dir);
+    return found.kind === 'record' ? found.record.lastKnownPath || undefined : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function describeStoreEntry(dir: string, replaced: boolean, key?: TargetIdentity): Promise<BackupStoreEntry | undefined> {
+  let st: fsSync.Stats;
+  try {
+    st = await fs.lstat(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
+    return { dir, state: 'unknown', reason: 'the filesystem would not say what it is', deletable: false };
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) return { dir, state: 'not-a-directory', deletable: false };
+  if (!ownedByCurrentUser(st)) return { dir, state: 'not-owned', reason: NOT_OWNED_REASON, deletable: false };
+
+  let runs: number;
+  try {
+    runs = (await listArchiveRuns(dir)).length;
+  } catch {
+    return { dir, state: 'unknown', reason: 'its run directories could not be listed', deletable: true };
+  }
+  if (replaced || !key) {
+    return { dir, state: 'replaced', lastKnownPath: await recordedPath(dir), runs, deletable: true };
+  }
+
+  let found: RecordRead;
+  try {
+    found = await readRecord(dir);
+  } catch {
+    return { dir, state: 'unknown', reason: `its ${TARGET_RECORD} could not be read`, runs, deletable: true };
+  }
+  if (found.kind === 'absent') return { dir, state: 'no-record', runs, deletable: true };
+  if (found.kind === 'foreign') {
+    return { dir, state: 'not-owned', reason: `its ${TARGET_RECORD} belongs to another user account`, runs, deletable: true };
+  }
+  if (found.kind === 'invalid') {
+    return { dir, state: 'invalid-record', reason: `its ${TARGET_RECORD} is not a record HackMyAgent wrote`, runs, deletable: true };
+  }
+  const { record } = found;
+  const lastKnownPath = record.lastKnownPath || undefined;
+  if (record.dev !== key.dev || record.ino !== key.ino || !sameBirth(record.birthtimeNs, key.birthtimeNs)) {
+    return {
+      dir,
+      state: 'invalid-record',
+      reason: `its ${TARGET_RECORD} names another directory than the store's name does`,
+      lastKnownPath,
+      runs,
+      deletable: true,
+    };
+  }
+  if (!lastKnownPath) return { dir, state: 'no-path', runs, deletable: true };
+
+  let current: TargetIdentity;
+  try {
+    current = await targetIdentity(lastKnownPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { dir, state: 'directory-gone', lastKnownPath, runs, deletable: true };
+    return {
+      dir, state: 'unknown', reason: 'the directory its record names could not be examined', lastKnownPath, runs, deletable: true,
+    };
+  }
+  if (current.dev !== key.dev || current.ino !== key.ino) {
+    return { dir, state: 'other-directory', lastKnownPath, runs, deletable: true };
+  }
+  if (current.birthtimeNs !== key.birthtimeNs) {
+    return {
+      dir,
+      state: 'other-birth',
+      lastKnownPath,
+      runs,
+      targetBornEarlier: bornEarlier(current.birthtimeNs, key.birthtimeNs),
+      deletable: true,
+    };
+  }
+  return { dir, state: 'in-use', lastKnownPath, runs, deletable: true };
+}
+
+/**
+ * Every backup store under the store root `rollback` searches, with its state
+ * (#1035). Reads only: nothing is created, written, moved or deleted, not even
+ * the root. Never throws.
+ */
+export async function listBackupStores(): Promise<BackupStoreListing> {
+  let root: string;
+  try {
+    root = searchedBackupStoreRoot();
+  } catch (err) {
+    return {
+      kind: 'unknown',
+      reason: (err as NodeJS.ErrnoException)?.code === 'HMA-BACKUP-RELATIVE-ROOT'
+        ? relativeRootReason(backupStoreRootVariable())
+        : 'the backup store location could not be resolved',
+    };
+  }
+  let rootStat: fsSync.Stats;
+  try {
+    rootStat = await fs.lstat(root);
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT'
+      ? { kind: 'no-root', root }
+      : { kind: 'unknown', root, reason: 'the filesystem would not say what it is' };
+  }
+  if (!rootStat.isDirectory()) return { kind: 'unknown', root, reason: 'it is not a directory' };
+  let names: string[];
+  try {
+    names = await fs.readdir(root);
+  } catch {
+    return { kind: 'unknown', root, reason: 'it could not be listed' };
+  }
+  const stores: BackupStoreEntry[] = [];
+  let otherEntries = 0;
+  for (const name of names.sort()) {
+    const m = STORE_NAME.exec(name);
+    const replaced = !m && REPLACED_STORE_NAME.test(name);
+    if (!m && !replaced) {
+      otherEntries += 1;
+      continue;
+    }
+    const key = m ? { dev: m[1], ino: m[2], birthtimeNs: m[3] } : undefined;
+    const entry = await describeStoreEntry(path.join(root, name), replaced, key);
+    if (entry) stores.push(entry);
+  }
+  return {
+    kind: 'listed',
+    root,
+    stores,
+    otherEntries,
+    ...(openToOtherUsers(rootStat) ? { sharedRoot: sharedRootReason(root) } : {}),
+  };
+}
+
+/**
  * The store for `targetDir` and how many runs it holds, for the line `secure`
  * prints about it. Undefined when there is no store or it holds no run, and on
  * any failure: the line is information, never a gate.

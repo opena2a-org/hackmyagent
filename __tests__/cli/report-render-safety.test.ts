@@ -40,7 +40,7 @@ import {
   SPLIT_MARKER,
 } from '../helpers/render-safety';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
-import { archiveStoreDirFor } from '../../src/store/archive-store';
+import { archiveStoreDirFor, prepareArchiveStore } from '../../src/store/archive-store';
 
 const FAKE_GH_TOKEN = `ghp_${'a'.repeat(36)}`;
 
@@ -213,6 +213,24 @@ describe('#328 every report that renders a tree-derived path renders it safely',
     const out = run(['rollback', rollbackDir]);
     expect(out, 'rollback never named the hostile path').toContain(SPLIT_MARKER);
     assertRenderSafe(out, 'rollback', [HOSTILE_NAME]);
+  }, 300_000);
+
+  // #1035 — `backups` names the path each store's `target.json` records, which
+  // is the name of a directory `--fix` ran in, and cites `rm -rf` for each store.
+  it('backups', async () => {
+    const storeRoot = path.join(root, 'backups-1035');
+    const saved = process.env.HMA_BACKUP_HOME;
+    process.env.HMA_BACKUP_HOME = storeRoot;
+    let storeDir: string;
+    try {
+      storeDir = await prepareArchiveStore(hostileDir);
+    } finally {
+      if (saved === undefined) delete process.env.HMA_BACKUP_HOME; else process.env.HMA_BACKUP_HOME = saved;
+    }
+    const out = run(['backups'], { HMA_BACKUP_HOME: storeRoot });
+    expect(out, 'backups never named the hostile path').toContain(SPLIT_MARKER);
+    expect(out, 'backups printed no delete command, so its quoting is unmeasured').toMatch(/^ {2}delete: {3}rm -rf \S/m);
+    assertRenderSafe(out, 'backups', [], [storeDir]);
   }, 300_000);
 
   it('check', () => {

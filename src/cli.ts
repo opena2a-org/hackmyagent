@@ -507,7 +507,8 @@ import {
   setOriginUrlCommand,
   wildAttackCommand,
 } from './ui/fail-closed-commands';
-import { describeArchiveStore } from './store/archive-store';
+import { describeArchiveStore, listBackupStores, backupStoreRootSource } from './store/archive-store';
+import { renderBackupsReport } from './store/backups-report';
 import { RollbackNothingRestoredError } from './hardening/scanner';
 import {
   preflight,
@@ -8615,6 +8616,49 @@ Examples:
       }
       await exitRecorded(1, 'error');
     }
+  });
+
+// #1035 — the backup stores `--fix` has kept, which nothing listed before:
+// `secure` names only the store of the directory it scans, so a store whose
+// directory was moved, deleted or given another creation time stayed on disk,
+// holding plaintext pre-fix copies, with no command that would name it.
+program
+  .command('backups')
+  .description(`List the backup stores --fix has kept, and the state of each
+
+Lists every store under the root rollback searches: $HMA_BACKUP_HOME, else
+$OPENA2A_HOME/backups, else ~/.opena2a/backups. Each store is named by the
+device, inode number and creation time of the directory it was written for,
+and its target.json records the path that directory had at its last --fix.
+A store is in use when the directory at that path has the store's device,
+inode number and creation time: rollback run there restores from it. Each
+store is printed with the command that deletes it. This command reads only:
+it creates, changes and deletes nothing.
+
+Exit codes:
+  0  every store is in use, or there is no store
+  1  at least one store is not in use
+  2  the root or a store could not be read, or an argument was given
+
+Examples:
+  $ ${CLI_PREFIX} backups`)
+  .allowExcessArguments(true)
+  .allowUnknownOption(true)
+  .action(async (_options: Record<string, unknown>, command: Command) => {
+    // Takes nothing, and refuses anything rather than ignore it: a directory
+    // typed here would read as "the backups of this directory", which is not
+    // what the listing is.
+    if (command.args.length > 0) {
+      console.error(
+        `Error: backups takes no arguments or options, and was given: ${command.args.map((a) => escapeForDisplay(a)).join(' ')}`,
+      );
+      console.error(`  It lists every store under the backup store root. Run: ${CLI_PREFIX} backups`);
+      raiseExitCode(EXIT_UNMEASURED);
+      return;
+    }
+    const report = renderBackupsReport(await listBackupStores(), { rootSource: backupStoreRootSource() });
+    for (const line of report.lines) console.log(line);
+    raiseExitCode(report.exitCode);
   });
 
 // Attack command - adversarial security testing
