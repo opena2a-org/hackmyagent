@@ -5188,7 +5188,7 @@ export class HardeningScanner {
 
     // Git security checks (skip for downloaded npm packages — not a source repo)
     if (!options.isNpmPackage) {
-      const gitFindings = await this.coverage.run('checkGitSecurity', () => this.checkGitSecurity(targetDir, shouldFix));
+      const gitFindings = await this.coverage.run('checkGitSecurity', () => this.checkGitSecurity(targetDir, shouldFix, options.ignorePaths || []));
       findings.push(...gitFindings);
     } else {
       this.coverage.skip('checkGitSecurity', 'target is a downloaded npm package, not a source repo');
@@ -7846,7 +7846,8 @@ export class HardeningScanner {
 
   private async checkGitSecurity(
     targetDir: string,
-    autoFix: boolean
+    autoFix: boolean,
+    ignorePaths: string[] = [],
   ): Promise<SecurityFindingDraft[]> {
     const findings: SecurityFindingDraft[] = [];
 
@@ -7989,11 +7990,42 @@ dist/
           return b === 'secrets.json' || b === 'credentials.json';
         }),
       ];
-      const exposedFiles = await this.committableSensitiveFiles(
+      const committableFiles = await this.committableSensitiveFiles(
         targetDir,
         presentSensitive,
         gitignoreContent,
       );
+      // GIT-002 speaks for the committable files it names, so its severity
+      // is computed from the ones in scope. A file an `.hmaignore` scope rule
+      // excludes (whole-path, or `<path>:GIT-002`) is reported on a record of
+      // its own, which the scope pass moves to `outOfScope`. Folding both into
+      // one record kept it in `findings` at HIGH: `file` is the in-scope
+      // `.gitignore`, so the path rule only re-pointed it, and `.gitignore`
+      // took the excluded files' place in `details.files`. Each probe names
+      // one committable file, so a `.gitignore:GIT-002` rule never scopes one
+      // out.
+      const scopeRules = this.currentRun.hmaIgnore
+        ?? { present: false, file: '.hmaignore', rules: [], errors: [] };
+      const outOfScopeFiles = committableFiles.filter((p) => {
+        const m = matchHmaIgnore({ checkId: 'GIT-002', file: p }, scopeRules, ignorePaths);
+        return !!m && isScopeChannel(m.channel);
+      });
+      const exposedFiles = committableFiles.filter((p) => !outOfScopeFiles.includes(p));
+      if (outOfScopeFiles.length > 0) {
+        findings.push({
+          checkId: 'GIT-002',
+          name: 'Incomplete .gitignore',
+          description: `Committable sensitive files present: ${outOfScopeFiles.slice(0, 3).join(', ')}${outOfScopeFiles.length > 3 ? ` (+${outOfScopeFiles.length - 3} more)` : ''}`,
+          category: 'git',
+          severity: 'high',
+          passed: false,
+          message: 'Ignore or remove the committable sensitive files',
+          file: outOfScopeFiles[0],
+          fixable: false,
+          details: { files: outOfScopeFiles },
+          guidance: `These sensitive files are not git-ignored and would be committed by a single git add . (${outOfScopeFiles.slice(0, 3).join(', ')}). Ignore them; if any was already committed, rotate its contents and run git rm --cached on it.`,
+        });
+      }
 
       // Fire when the gitignore is missing hygiene patterns OR a present
       // sensitive file is actually committable.
