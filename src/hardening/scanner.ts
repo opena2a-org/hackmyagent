@@ -46,6 +46,7 @@ import {
 import { withheldLinkRecords } from './withheld-links';
 import { firstPrivateKeyField, privateKeyFieldsInJson } from './embedded-private-key';
 import { onlyRegExpExecCalls, regExpIdentifiers } from './regexp-exec';
+import { constantIdentifiers, onlyConstantExecCalls } from './constant-exec';
 import { GOVERNANCE_FILES } from '../soul/governance-files';
 // One definition of which file each MCP client loads and which top-level key
 // it loads from, shared with the command that WRITES those files (#757,
@@ -17127,11 +17128,18 @@ dist/
 
     // ---------- NEMO-005: exec() with user-controlled string interpolation ----------
     let nemo005Found = false;
+    let nemo005ProductionFiles = 0;
     for (const file of cappedTsJs) {
+      const relativeFile = path.relative(targetDir, file);
+      // A test file's exec() runs on the test runner, under the developer's
+      // own arguments, not in the shipped code a user can reach.
+      const inTest = isTestPath(relativeFile);
+      if (!inTest) nemo005ProductionFiles++;
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
         let regExpIdents: Set<string> | undefined;
+        let constantIdents: Set<string> | undefined;
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           // Match exec( or execSync( with template literal containing user-controlled vars
@@ -17144,17 +17152,26 @@ dist/
             // RegExp.prototype.exec runs a pattern match, not a shell.
             regExpIdents ??= regExpIdentifiers(content);
             if (onlyRegExpExecCalls(line, regExpIdents)) continue;
+            // A command built only from constants (process.execPath, a path
+            // next to the file, a mkdtemp directory, literals) has nothing a
+            // user controls in it.
+            constantIdents ??= constantIdentifiers(content);
+            if (onlyConstantExecCalls(line, constantIdents)) continue;
             nemo005Found = true;
             findings.push({
               checkId: 'NEMO-005',
               name: 'exec() with user-controlled string interpolation',
-              description: 'exec() or execSync() is called with a template literal containing user-controlled variables. This enables command injection.',
+              description: inTest
+                ? 'exec() or execSync() is called in a test file with a template literal whose interpolated values are not all constants. The test runner executes it, not the shipped code, but a value that reaches it from outside the test still reaches a shell.'
+                : 'exec() or execSync() is called with a template literal containing user-controlled variables. This enables command injection.',
               category: 'nemo-injection',
-              severity: 'critical',
+              severity: inTest ? 'low' : 'critical',
               passed: false,
-              message: `exec() with user-controlled interpolation at line ${i + 1}`,
+              message: inTest
+                ? `exec() with non-constant interpolation in a test file at line ${i + 1}`
+                : `exec() with user-controlled interpolation at line ${i + 1}`,
               fixable: false,
-              file: path.relative(targetDir, file),
+              file: relativeFile,
               line: i + 1,
               fix: 'Use execFile() or spawn() with array arguments instead of exec() with string interpolation.',
               guidance: 'exec() passes the entire string to /bin/sh, which interprets shell metacharacters. execFile() and spawn() with arrays bypass the shell entirely, preventing injection.',
@@ -17163,7 +17180,9 @@ dist/
         }
       } catch { /* skip */ }
     }
-    if (!nemo005Found && cappedTsJs.length > 0) {
+    // A pass drawn only from test files says nothing about the code the
+    // project ships, so it is not reported as one.
+    if (!nemo005Found && nemo005ProductionFiles > 0) {
       findings.push({
         checkId: 'NEMO-005',
         name: 'exec() with user-controlled string interpolation',

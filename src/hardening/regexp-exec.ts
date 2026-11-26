@@ -36,7 +36,7 @@ const REGEXP_ANNOTATION = /:[ \t]*RegExp[ \t]*=/;
 const IDENT_MENTION = new RegExp(`(?<![\\w$.])(${IDENT})(?![\\w$])`, 'g');
 
 /** Index of the string or template literal end that matches the quote at `start`; -1 if the line ends first. */
-function stringEnd(line: string, start: number): number {
+export function stringEnd(line: string, start: number): number {
   const quote = line[start];
   for (let i = start + 1; i < line.length; i++) {
     const c = line[i];
@@ -51,7 +51,7 @@ function stringEnd(line: string, start: number): number {
 }
 
 /** Index of the `)` or `}` that closes the bracket at `open`, skipping string and template literals; -1 if the line ends first. */
-function matchingClose(line: string, open: number): number {
+export function matchingClose(line: string, open: number): number {
   const opener = line[open];
   const closer = opener === '(' ? ')' : '}';
   let depth = 0;
