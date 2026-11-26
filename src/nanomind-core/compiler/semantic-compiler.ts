@@ -1579,7 +1579,7 @@ function hasCanonicalCredentialFormat(content: string): boolean {
     let match = regex.exec(content);
     // A match the shape's own predicate rejects is not a credential, so look
     // past it rather than letting it decide for the whole pattern.
-    while (match && accept && !accept(match[0])) {
+    while (match && accept && !accept(match[0], content, match.index + match[0].length)) {
       match = regex.exec(content);
     }
     if (match) {
@@ -1763,8 +1763,10 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
    * filters. A shape whose regex alone admits ordinary identifiers carries its
    * discriminator here instead of in a lookahead: a lookahead re-reads the run
    * from every start position, and that is how a quadratic scan gets in.
+   * `content` and `end` (the offset just past the match) are for a shape that
+   * judges what follows the match; such a check must bound its own reading.
    */
-  accept?: (matched: string) => boolean;
+  accept?: (matched: string, content: string, end: number) => boolean;
 }> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
   { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
@@ -1854,8 +1856,63 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
   // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
   // was positively identified as a credential once already — see the note in
   // src/types/credential-format.ts). Do not relax them.
-  { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g },
+  // `accept` holds out an armor header whose body is a placeholder or a
+  // redaction (`<your key here>`, `...`, `[REDACTED]`) closed by an END marker
+  // — see `pemHeaderClosesOnPlaceholder`. A header with a real or truncated
+  // body, or with no END marker in reach, is still reported.
+  {
+    label: 'PEM private key',
+    regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g,
+    accept: (_matched, content, end) => !pemHeaderClosesOnPlaceholder(content, end),
+  },
 ];
+
+/**
+ * How far after a PEM private-key header an END marker may begin and still
+ * close the block, and how many base64-alphabet characters the text between
+ * them must hold to be a key body.
+ *
+ * 40 is less than one line of a real PEM body (64 characters), and more than
+ * the letters of a placeholder sentence such as `<YOUR PRIVATE KEY HERE>` (18)
+ * or `[REDACTED]` (8). The smallest private key in PEM, an Ed25519 PKCS#8 key,
+ * has a 64-character body.
+ */
+const PEM_END_WINDOW_CHARS = 4096;
+const PEM_MIN_BODY_BASE64_CHARS = 40;
+const PEM_END_MARKER = '-----END ';
+
+/** `A-Z`, `a-z`, `0-9`, `+` and `/`: the 64 characters of the base64 alphabet. */
+function isBase64AlphabetCode(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57)
+    || code === 43 || code === 47;
+}
+
+/**
+ * True when an END marker begins within `PEM_END_WINDOW_CHARS` characters of
+ * `bodyStart` (the end of a private-key header) and fewer than
+ * `PEM_MIN_BODY_BASE64_CHARS` base64-alphabet characters lie between: the
+ * header frames a placeholder, not a key. Anything else — a full body, a body
+ * truncated after its first line, a header with no END in reach — is false,
+ * so the hit is kept.
+ *
+ * No placeholder list and no whitespace or run-length rule: the count is the
+ * whole judgement. The walk stops at the END marker, at the 40th alphabet
+ * character, or at the window edge, so it reads at most 4096 characters per
+ * header. And it cannot pass more than two later headers before stopping —
+ * each holds at least 15 alphabet characters (`BEGINPRIVATEKEY`) — so on
+ * content packed with headers every character is read a bounded number of
+ * times and the scan stays linear (`openai-style-sk-key.test.ts` times 1 MB).
+ */
+function pemHeaderClosesOnPlaceholder(content: string, bodyStart: number): boolean {
+  const limit = Math.min(content.length, bodyStart + PEM_END_WINDOW_CHARS);
+  let alphabet = 0;
+  for (let i = bodyStart; i < limit; i++) {
+    const code = content.charCodeAt(i);
+    if (code === 45 /* - */ && content.startsWith(PEM_END_MARKER, i)) return true;
+    if (isBase64AlphabetCode(code) && ++alphabet >= PEM_MIN_BODY_BASE64_CHARS) return false;
+  }
+  return false;
+}
 
 /**
  * Name-gated credential patterns: contextless secret formats that have NO
@@ -2012,7 +2069,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
     while ((match = regex.exec(content)) !== null) {
       const matched = match[0];
       // The shape's own discriminator first, then the shared filters below.
-      if (accept && !accept(matched)) {
+      if (accept && !accept(matched, content, match.index + matched.length)) {
         continue;
       }
       // Narrow preceding context: just the 40 chars before the match,
