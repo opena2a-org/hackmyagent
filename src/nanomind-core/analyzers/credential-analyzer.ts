@@ -20,6 +20,8 @@ import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
 import {
   findCredentialFormatMatch,
+  findJwtMatch,
+  vendorAlternation,
   hasCredentialFormat,
   hasAnyCredentialCandidate,
   hasAnchoredVendorCredential,
@@ -734,6 +736,63 @@ function findNounGovernedCredentialValue(
  */
 const URL_IN_PURPOSE = /\b[a-z][a-z0-9+.-]*(:\/\/[^\s"<>]*)?/g;
 
+/** The shared matcher's high-entropy candidate run, as `findCredentialFormatMatch` reads it. */
+const ENTROPY_RUN_IN_PURPOSE = /\b[A-Za-z0-9+=_]{40,}\b/g;
+
+/**
+ * `text` with every credential-shaped value overwritten with `x`: each vendor-
+ * prefixed match, each JWT, and each high-entropy run from its first credible
+ * window to its end, the spans `findCredentialFormatMatch` reports. With no
+ * frontmatter the declared purpose is the artifact's first long line, which
+ * for `const openai = "sk-…"` is the key's own line. A key is reported
+ * whatever its own characters spell, so a body that spells `test` or `demo`
+ * does not make the file a test or a demo. A value containing EXAMPLE is kept
+ * as it is: that word in a key marks a placeholder, and the purpose keeps
+ * reading it as one.
+ *
+ * `x` rather than a space, and one per character, so that the URL removal
+ * after this sees the same shape: a long scheme the entropy rule accepts still
+ * starts a `scheme://` URL, which is removed whole. The fill completes no
+ * purpose word: of the five only `fixture` holds an `x`, and only a span of
+ * one character could supply it, where every credential shape is far longer.
+ *
+ * Linear in `text`, which a frontmatter description leaves unbounded: the
+ * vendor and entropy passes are single global scans, each JWT search resumes
+ * past the previous match, and each entropy run is judged once.
+ */
+function withoutCredentialValues(text: string): string {
+  const blank = new Uint8Array(text.length);
+  let any = false;
+  const mark = (start: number, value: string): void => {
+    if (/example/i.test(value)) return;
+    blank.fill(1, start, start + value.length);
+    any = true;
+  };
+  const vendorRe = new RegExp(vendorAlternation(), 'g');
+  for (let m = vendorRe.exec(text); m !== null; m = vendorRe.exec(text)) {
+    if (m[0].length === 0) {
+      vendorRe.lastIndex++;
+      continue;
+    }
+    mark(m.index, m[0]);
+  }
+  for (let from = 0; from < text.length; ) {
+    const jwt = findJwtMatch(text.slice(from), false);
+    if (jwt === undefined) break;
+    mark(from + jwt.index, jwt.value);
+    from += jwt.index + Math.max(jwt.value.length, 1);
+  }
+  ENTROPY_RUN_IN_PURPOSE.lastIndex = 0;
+  for (let m = ENTROPY_RUN_IN_PURPOSE.exec(text); m !== null; m = ENTROPY_RUN_IN_PURPOSE.exec(text)) {
+    const hit = findCredentialFormatMatch(m[0]);
+    if (hit !== undefined) mark(m.index + hit.index, m[0].slice(hit.index));
+  }
+  if (!any) return text;
+  let out = '';
+  for (let i = 0; i < text.length; i++) out += blank[i] === 1 ? 'x' : text[i];
+  return out;
+}
+
 /**
  * Determine if the artifact is a documentation example or test fixture.
  * Test fixtures contain "FAKE", "EXAMPLE", "placeholder", etc.
@@ -800,8 +859,9 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   // frontmatter the purpose is the artifact's first long line, so a JSON
   // document whose first value was `https://example-corp.com/collect` read as
   // an "example" and silenced every credential check here, a live forwarding
-  // hook included. Words outside a URL keep their reading.
-  const purpose = ast.declaredPurpose
+  // hook included. Words outside a URL keep their reading. Credential-shaped
+  // values are removed first: a key's own characters are not a purpose.
+  const purpose = withoutCredentialValues(ast.declaredPurpose)
     .toLowerCase()
     .replace(URL_IN_PURPOSE, (run: string, url?: string) => (url === undefined ? run : ' '));
   if (
