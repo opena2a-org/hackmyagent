@@ -2102,19 +2102,45 @@ export function dropPathlessNoiseFloor(
  *    execution' }` is still inside a string. A match that sits inside a
  *    regex literal answers true: like a string, it is a mention, not a
  *    call site.
- *  - Returns false when the match is in real code.
+ *  - Returns false when the match is in real code, AND when the walk
+ *    cannot settle the position (see `stringLiteralVerdict`): every caller
+ *    uses a true answer to drop or lower a finding, so "not known" reaches
+ *    each of them as "in code" and the finding is reported. When the
+ *    scanner cannot tell, it reports.
  *
  * Complexity: the walk computes an inside/outside mask for the WHOLE line
  * in one pass and caches it per line (HMA-31.AC10), so asking about every
  * sink mention on a line — the corroborator's per-match loop — costs one
- * walk, not one forked walk per mention. Undecidable slashes fork the
- * walk, bounded by 2^MAX_UNDECIDABLE_SLASHES paths per line, paid once
- * per line; MAX_WALK_ITERATIONS caps each path as a belt-and-suspenders
- * bound that fires only on inputs already pathological enough to be a
- * different problem (past it a path keeps the pre-lexer walker's
- * conservative default and marks the rest of its line "inside").
+ * walk, not one forked walk per mention. One lexing path takes at most
+ * WALK_STEPS_PER_CHAR steps per character: every step consumes at least one
+ * character, and the only extra charge (a word, a block comment, a regex
+ * literal) is the count of characters that token consumes. Undecidable
+ * slashes fork the walk, bounded by 2^MAX_UNDECIDABLE_SLASHES paths per
+ * line, so each character is read by at most that many paths: the walk is
+ * linear in the line. Its step limit (`walkStepLimit`) grows with the line
+ * and sits above that per-path bound, so it is a guard against a future
+ * edit that stops advancing, never a length cutoff; if it is ever reached
+ * the rest of the path answers "not known", never "inside".
  */
 const MAX_WALK_ITERATIONS = 100000;
+
+/** The most steps one lexing path takes per character of its line. */
+const WALK_STEPS_PER_CHAR = 2;
+
+/**
+ * The step limit of one lexing path on `line`. A path that advances takes
+ * at most WALK_STEPS_PER_CHAR steps per character, below this limit at
+ * every length; the fixed MAX_WALK_ITERATIONS part keeps every line that
+ * stayed under the earlier fixed limit walking exactly as it did.
+ */
+function walkStepLimit(line: string): number {
+  return MAX_WALK_ITERATIONS + WALK_STEPS_PER_CHAR * line.length;
+}
+
+/** Mask values the string-literal walk writes per position. */
+const MASK_CODE = 0;
+const MASK_INSIDE = 1;
+const MASK_UNKNOWN = 2;
 
 /**
  * HMA-31.AC2: how many undecidable slashes on ONE lexing path may fork the
@@ -2166,15 +2192,40 @@ const WORD_CHAR = /[\p{ID_Continue}$]/u;
 let insideMaskLine: string | null = null;
 let insideMaskCache: Uint8Array | null = null;
 
-export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
-  if (matchIndex < 0 || matchIndex >= line.length) return false;
+/**
+ * The last line a blanker (`blankCommentRegions`, `blankTemplateLiteralSpans`)
+ * could not settle: it reached its step limit, so the line it returned may
+ * hold a phantom quote or backtick where it stopped. The predicate answers
+ * "not known" for every position of that line. Same single-entry shape as
+ * the mask cache: each caller asks about the line a blanker just returned
+ * before it blanks the next one. Every blanker call resets it first.
+ */
+let unsettledBlankedLine: string | null = null;
+
+/**
+ * Where `matchIndex` on `line` sits: 'inside' a string literal, template
+ * literal, comment or regex literal; 'code'; or 'unknown' when the walk
+ * could not settle it. `isMatchInsideStringLiteral` answers true only for
+ * 'inside'.
+ */
+export function stringLiteralVerdict(
+  line: string,
+  matchIndex: number,
+): 'inside' | 'code' | 'unknown' {
+  if (matchIndex < 0 || matchIndex >= line.length) return 'code';
+  if (line === unsettledBlankedLine) return 'unknown';
   if (line !== insideMaskLine) {
     const mask = new Uint8Array(line.length);
     lexMaskInto(line, 0, 'regex', false, [], 0, 0, mask);
     insideMaskLine = line;
     insideMaskCache = mask;
   }
-  return insideMaskCache![matchIndex] === 1;
+  const v = insideMaskCache![matchIndex];
+  return v === MASK_INSIDE ? 'inside' : v === MASK_UNKNOWN ? 'unknown' : 'code';
+}
+
+export function isMatchInsideStringLiteral(line: string, matchIndex: number): boolean {
+  return stringLiteralVerdict(line, matchIndex) === 'inside';
 }
 
 /** End (exclusive) of the word token starting at `i`. */
@@ -2265,12 +2316,13 @@ function lexMaskInto(
   let slashMeaning: SlashMeaning = slashMeaningIn;
   let afterDot = afterDotIn;
   let iters = itersIn;
+  const limit = walkStepLimit(line);
   while (i < line.length) {
-    if (++iters > MAX_WALK_ITERATIONS) {
-      // Pathological input. The pre-lexer walker's conservative default,
-      // kept per path: over-suppression is a smaller harm than a walker
-      // hang on a CI pipeline.
-      mask.fill(1, i);
+    if (++iters > limit) {
+      // Unreachable while every step advances (see walkStepLimit). If an
+      // edit ever breaks that, the rest of this path is "not known", which
+      // every caller reads as code: the finding is reported.
+      mask.fill(MASK_UNKNOWN, i);
       return;
     }
     const c = line[i];
@@ -2302,12 +2354,22 @@ function lexMaskInto(
           return;
         }
         // Lex both ways; a position is "inside" only where both lexings
-        // say so — disagreement fails toward corroboration.
+        // say so — disagreement fails toward corroboration — and "not
+        // known" where either lexing could not settle it.
         const regexMask = new Uint8Array(line.length);
         const divisionMask = new Uint8Array(line.length);
         lexMaskInto(line, i, 'regex', false, [...parenStack], undecidableCount + 1, iters, regexMask);
         lexMaskInto(line, i, 'division', false, [...parenStack], undecidableCount + 1, iters, divisionMask);
-        for (let k = i; k < line.length; k++) mask[k] = regexMask[k] & divisionMask[k];
+        for (let k = i; k < line.length; k++) {
+          const r = regexMask[k];
+          const d = divisionMask[k];
+          mask[k] =
+            r === MASK_INSIDE && d === MASK_INSIDE
+              ? MASK_INSIDE
+              : r === MASK_UNKNOWN || d === MASK_UNKNOWN
+                ? MASK_UNKNOWN
+                : MASK_CODE;
+        }
         return;
       }
       if (slashMeaning === 'division') {
@@ -2335,8 +2397,8 @@ function lexMaskInto(
       let j = i + 1;
       let closed = false;
       while (j < line.length) {
-        if (++iters > MAX_WALK_ITERATIONS) {
-          mask.fill(1, i + 1);
+        if (++iters > limit) {
+          mask.fill(MASK_UNKNOWN, i);
           return;
         }
         const cj = line[j];
@@ -2366,8 +2428,8 @@ function lexMaskInto(
       let j = i + 1;
       let closed = false;
       while (j < line.length) {
-        if (++iters > MAX_WALK_ITERATIONS) {
-          mask.fill(1, j);
+        if (++iters > limit) {
+          mask.fill(MASK_UNKNOWN, j);
           return;
         }
         const cj = line[j];
@@ -2386,8 +2448,8 @@ function lexMaskInto(
           let depth = 1;
           let k = j + 2;
           while (k < line.length && depth > 0) {
-            if (++iters > MAX_WALK_ITERATIONS) {
-              mask.fill(1, k);
+            if (++iters > limit) {
+              mask.fill(MASK_UNKNOWN, k);
               return;
             }
             const ck = line[k];
@@ -2517,10 +2579,21 @@ function lexMaskInto(
  * corroboration direction the predicate rules.
  */
 function blankCommentRegions(line: string, state: { inBlockComment: boolean }): string {
+  unsettledBlankedLine = null;
   const blank = new Uint8Array(line.length);
-  state.inBlockComment = blankMaskInto(
+  const endsInBlock = blankMaskInto(
     line, 0, 'regex', false, [], state.inBlockComment, 0, 0, blank,
   );
+  if (endsInBlock === null) {
+    // The walk reached its step limit (unreachable while it advances, see
+    // walkStepLimit): nothing on the line is blanked, the carry is dropped,
+    // and the predicate answers "not known" for every position of it, so
+    // a caller reports what it finds there.
+    state.inBlockComment = false;
+    unsettledBlankedLine = line;
+    return line;
+  }
+  state.inBlockComment = endsInBlock;
   let out = '';
   for (let i = 0; i < line.length; i++) out += blank[i] === 1 ? ' ' : line[i];
   return out;
@@ -2529,7 +2602,8 @@ function blankCommentRegions(line: string, state: { inBlockComment: boolean }): 
 /**
  * One lexing of `line` from `start` for the blanker: writes 1 into `blank`
  * at every comment character (delimiters included) and returns whether the
- * line ends inside a block comment. Token walking — words, parens, the
+ * line ends inside a block comment, or null when the walk reached its step
+ * limit and the line is not settled. Token walking — words, parens, the
  * opener set, `.`-prefixed property names — mirrors `lexMaskInto` through
  * the shared helpers, because which `/` opens a comment is decided by the
  * same slash meaning that decides which `/` opens a regex.
@@ -2544,17 +2618,20 @@ function blankMaskInto(
   undecidableCount: number,
   itersIn: number,
   blank: Uint8Array,
-): boolean {
+): boolean | null {
   let i = start;
   let slashMeaning: SlashMeaning = slashMeaningIn;
   let afterDot = afterDotIn;
   let inBlock = inBlockIn;
   let iters = itersIn;
+  const limit = walkStepLimit(line);
   while (i < line.length) {
-    if (++iters > MAX_WALK_ITERATIONS) {
-      // Pathological input: stop blanking. The predicate still owns the
-      // string-or-code question for whatever is left unblanked.
-      return inBlock;
+    if (++iters > limit) {
+      // Unreachable while every step advances (see walkStepLimit). A
+      // partly blanked line could leave a phantom quote where the walk
+      // stopped, so the whole line is unsettled: blankCommentRegions
+      // blanks none of it and the predicate answers "not known" for it.
+      return null;
     }
     if (inBlock) {
       if (line[i] === '*' && line[i + 1] === '/') {
@@ -2599,6 +2676,7 @@ function blankMaskInto(
         const divisionEndsInBlock = blankMaskInto(
           line, i, 'division', false, [...parenStack], false, undecidableCount + 1, iters, divisionBlank,
         );
+        if (regexEndsInBlock === null || divisionEndsInBlock === null) return null;
         for (let k = i; k < line.length; k++) blank[k] = regexBlank[k] & divisionBlank[k];
         return regexEndsInBlock && divisionEndsInBlock;
       }
@@ -2622,7 +2700,7 @@ function blankMaskInto(
       let j = i + 1;
       let closed = false;
       while (j < line.length) {
-        if (++iters > MAX_WALK_ITERATIONS) return false;
+        if (++iters > limit) return null;
         if (line[j] === '\\' && j + 1 < line.length) {
           j += 2;
           continue;
@@ -2691,6 +2769,48 @@ function blankMaskInto(
 }
 
 /**
+ * NEMO-002's digest-skip shape, `if (… digest &&` or `if (! … digest)`,
+ * occurring as CODE on `line`: the `if (` that opens it and the `&&` or `)`
+ * that closes it must both sit outside string literals, template literals,
+ * comments and regex literals. Both ends are asked rather than the whole
+ * span, so `if (!load('m.json').digest)` still counts while
+ * `'if (!digest) skip'` and `if (x) log("no digest && y")` do not. Every
+ * code-level `if (` and every closing token after it is tried, so a quoted
+ * mention earlier on the line cannot hide real code later on it. A position
+ * the string-literal walk cannot settle counts as code.
+ *
+ * Linear in the line: the closers are found in one pass (two of them never
+ * overlap, so the closers after an opener are exactly those a scan from that
+ * opener would find), and an opener only needs the LAST code-level closer
+ * of each kind to sit at or after its body.
+ */
+export function hasDigestSkipInCode(line: string): boolean {
+  if (!line.includes('digest')) return false;
+  let lastAnd = -1;
+  let lastParen = -1;
+  const closer = /digest\s*(&&|\))/g;
+  let close: RegExpExecArray | null;
+  while ((close = closer.exec(line)) !== null) {
+    const closeIndex = close.index + close[0].length - close[1].length;
+    if (isMatchInsideStringLiteral(line, closeIndex)) continue;
+    if (close[1] === '&&') lastAnd = close.index;
+    else lastParen = close.index;
+  }
+  if (lastAnd < 0 && lastParen < 0) return false;
+  const opener = /if\s*\(/g;
+  const negation = /\s*!/y;
+  let open: RegExpExecArray | null;
+  while ((open = opener.exec(line)) !== null) {
+    if (isMatchInsideStringLiteral(line, open.index)) continue;
+    const bodyStart = open.index + open[0].length;
+    if (lastAnd >= bodyStart) return true;
+    negation.lastIndex = bodyStart;
+    if (lastParen >= bodyStart && negation.test(line)) return true;
+  }
+  return false;
+}
+
+/**
  * Blank the spans of ONE line that sit inside a MULTI-LINE template literal,
  * carrying the template state across the line boundary in `state`, and return
  * a line of the same length with every such character replaced by a space.
@@ -2723,40 +2843,11 @@ function blankMaskInto(
  * and reads the next line as code: over-reporting, never under-reporting,
  * the direction every walker in this file rules.
  */
-/**
- * NEMO-002's digest-skip shape, `if (… digest &&` or `if (! … digest)`,
- * occurring as CODE on `line`: the `if (` that opens it and the `&&` or `)`
- * that closes it must both sit outside string literals, template literals,
- * comments and regex literals. Both ends are asked rather than the whole
- * span, so `if (!load('m.json').digest)` still counts while
- * `'if (!digest) skip'` and `if (x) log("no digest && y")` do not. Every
- * code-level `if (` and every closing token after it is tried, so a quoted
- * mention earlier on the line cannot hide real code later on it.
- */
-export function hasDigestSkipInCode(line: string): boolean {
-  if (!line.includes('digest')) return false;
-  const opener = /if\s*\(/g;
-  let open: RegExpExecArray | null;
-  while ((open = opener.exec(line)) !== null) {
-    if (isMatchInsideStringLiteral(line, open.index)) continue;
-    const bodyStart = open.index + open[0].length;
-    const negated = /^\s*!/.test(line.slice(bodyStart));
-    const closer = /digest\s*(&&|\))/g;
-    closer.lastIndex = bodyStart;
-    let close: RegExpExecArray | null;
-    while ((close = closer.exec(line)) !== null) {
-      if (close[1] === ')' && !negated) continue;
-      const closeIndex = close.index + close[0].length - close[1].length;
-      if (!isMatchInsideStringLiteral(line, closeIndex)) return true;
-    }
-  }
-  return false;
-}
-
 function blankTemplateLiteralSpans(
   line: string,
   state: { inTemplateLiteral: boolean; inBlockComment: boolean },
 ): string {
+  unsettledBlankedLine = null;
   // A line that starts in code state and holds neither a backtick nor a
   // block-comment opener can neither blank anything nor change the carry,
   // so the walk is skipped rather than run over every line of every file.
@@ -2772,6 +2863,18 @@ function blankTemplateLiteralSpans(
   const end = templateMaskInto(
     line, 0, 'regex', false, [], state.inTemplateLiteral, state.inBlockComment, [], 0, 0, blank,
   );
+  if (end === null) {
+    // The walk reached its step limit (unreachable while it advances, see
+    // walkStepLimit). Blanking up to that point would leave the closing
+    // backtick of a template standing as a phantom opener over the real
+    // code after it, so nothing on the line is blanked, the carry is
+    // dropped, and the predicate answers "not known" for every position of
+    // the line: a caller reports what it finds there.
+    state.inTemplateLiteral = false;
+    state.inBlockComment = false;
+    unsettledBlankedLine = line;
+    return line;
+  }
   state.inTemplateLiteral = end.inTemplateLiteral;
   state.inBlockComment = end.inBlockComment;
   let out = '';
@@ -2795,6 +2898,7 @@ function blankTemplateLiteralSpans(
  * An interpolation still open at end of line is an unsettled state and drops
  * the carry. On an undecidable slash both readings are lexed: a character is
  * blanked, and a carry survives the line, only when both lexings agree.
+ * Returns null when the walk reached its step limit: the line is not settled.
  */
 function templateMaskInto(
   line: string,
@@ -2808,7 +2912,7 @@ function templateMaskInto(
   undecidableCount: number,
   itersIn: number,
   blank: Uint8Array,
-): { inTemplateLiteral: boolean; inBlockComment: boolean } {
+): { inTemplateLiteral: boolean; inBlockComment: boolean } | null {
   const DROP_CARRY = { inTemplateLiteral: false, inBlockComment: false };
   let i = start;
   let slashMeaning: SlashMeaning = slashMeaningIn;
@@ -2816,11 +2920,13 @@ function templateMaskInto(
   let inTemplate = inTemplateIn;
   let inBlock = inBlockIn;
   let iters = itersIn;
+  const limit = walkStepLimit(line);
   while (i < line.length) {
-    if (++iters > MAX_WALK_ITERATIONS) {
-      // Pathological input: stop blanking and drop the carry. Kept text
-      // over-reports at worst, and the predicate still owns this line.
-      return DROP_CARRY;
+    if (++iters > limit) {
+      // Unreachable while every step advances (see walkStepLimit). What is
+      // blanked so far may end inside a template, so the whole line is
+      // unsettled; blankTemplateLiteralSpans blanks none of it.
+      return null;
     }
     if (inBlock) {
       // Comment text is the predicate's business, not this walker's: no
@@ -2896,6 +3002,7 @@ function templateMaskInto(
         const divisionEnd = templateMaskInto(
           line, i, 'division', false, [...parenStack], false, false, [...interpDepths], undecidableCount + 1, iters, divisionBlank,
         );
+        if (regexEnd === null || divisionEnd === null) return null;
         for (let k = i; k < line.length; k++) blank[k] = regexBlank[k] & divisionBlank[k];
         return {
           inTemplateLiteral: regexEnd.inTemplateLiteral && divisionEnd.inTemplateLiteral,
@@ -2923,7 +3030,7 @@ function templateMaskInto(
       let j = i + 1;
       let closed = false;
       while (j < line.length) {
-        if (++iters > MAX_WALK_ITERATIONS) return DROP_CARRY;
+        if (++iters > limit) return null;
         if (line[j] === '\\' && j + 1 < line.length) {
           j += 2;
           continue;
