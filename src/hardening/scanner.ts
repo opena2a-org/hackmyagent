@@ -17839,6 +17839,9 @@ dist/
       path.join(targetDir, '.well-known', 'agent.json'),
       path.join(targetDir, 'public', '.well-known', 'agent.json'),
       path.join(targetDir, 'static', '.well-known', 'agent.json'),
+      path.join(targetDir, '.well-known', 'agent-card.json'),
+      path.join(targetDir, 'public', '.well-known', 'agent-card.json'),
+      path.join(targetDir, 'static', '.well-known', 'agent-card.json'),
     ];
 
     for (const agentJsonPath of wellKnownPaths) {
