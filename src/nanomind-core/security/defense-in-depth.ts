@@ -159,10 +159,17 @@ interface CredentialRedactionRule {
 
 /**
  * The rules, in the order they must run. Order and pattern bodies are carried
- * over verbatim from the sequential `.replace()` chain this table replaced;
+ * over from the sequential `.replace()` chain this table replaced;
  * `redaction-rule-table-parity.test.ts` pins that the folded output is
  * byte-identical to the chain's on every fixture, so the table is a
- * refactoring and not a behaviour change.
+ * refactoring and not a behaviour change. One body has been widened since, in
+ * the table and in that test's chain alike: `openai-key` from `{48,}` to
+ * `{32,}`, the floor the detector reports the shape at.
+ *
+ * Every vendor rule redacts at least the lengths the detector reports for its
+ * shape (`CANONICAL_CREDENTIAL_PATTERNS` in `compiler/semantic-compiler.ts`):
+ * text this table produces, the declared purpose among it, never carries a key
+ * the scan reports. `pinned-credential-shapes.test.ts` holds each shape to it.
  *
  * Two registry shapes are deliberately ABSENT and must stay absent in this
  * release: `entropy-blob` and `jwt`. Adding `entropy-blob` is the measured S4
@@ -179,7 +186,12 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
   // independent of the class staying that way.
   { id: 'anthropic-key', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
   { id: 'openai-project-key', pattern: /sk-proj-[a-zA-Z0-9_-]{20,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
-  { id: 'openai-key', pattern: /sk-[a-zA-Z0-9]{48,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
+  // `{32,}`, the floor the detector reports this shape at: its 'OpenAI-style
+  // sk- key' entry covers a 32 to 47 character body and its 'OpenAI legacy
+  // key' entry 48 and up (semantic-compiler.ts CANONICAL_CREDENTIAL_PATTERNS).
+  // A floor above the detector's leaves a reported key verbatim in every text
+  // this table produces, the declared purpose among them.
+  { id: 'openai-key', pattern: /sk-[a-zA-Z0-9]{32,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
   { id: 'aws-access-key-id', pattern: /AKIA[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_KEY]' },
   { id: 'github-pat', pattern: /ghp_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
   { id: 'github-oauth', pattern: /gho_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
@@ -225,7 +237,7 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
  * Upper bound, in bytes, on the content the rules above will be run against.
  *
  * Most of those patterns end in an unbounded lower-bound quantifier over a
- * single character class — `{20,}`, `{48,}`, `{24,}`, `{10,}`, `{34,}`, `{60,}`,
+ * single character class — `{20,}`, `{32,}`, `{24,}`, `{10,}`, `{34,}`, `{60,}`,
  * and the AWS rule's `[A-Za-z0-9/+=]{40,}`. Against an unbroken same-alphabet
  * run they do not merely get slow: `String.prototype.replace` exhausts V8's
  * backtrack stack and throws `RangeError: Maximum call stack size exceeded`

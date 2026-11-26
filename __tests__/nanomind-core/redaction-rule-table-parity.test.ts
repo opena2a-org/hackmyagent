@@ -36,7 +36,7 @@ function oracleChain(content: string): string {
   let r = content;
   r = r.replace(/sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]');
   r = r.replace(/sk-proj-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]');
-  r = r.replace(/sk-[a-zA-Z0-9]{48,}/g, '[REDACTED_OPENAI_KEY]');
+  r = r.replace(/sk-[a-zA-Z0-9]{32,}/g, '[REDACTED_OPENAI_KEY]');
   r = r.replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_KEY]');
   r = r.replace(/ghp_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');
   r = r.replace(/gho_[a-zA-Z0-9]{36}/g, '[REDACTED_GITHUB_TOKEN]');

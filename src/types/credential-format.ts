@@ -274,11 +274,11 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     // so one id and one marker; the split only keeps a body from being
     // reported twice.
     //
-    // KNOWN GAP on `nanomind-redaction`: the `openai-key` rule in
-    // `redactCredentialShapes` still floors at 48 (defense-in-depth.ts:182),
-    // so a 32-47 character body is detected and not yet redacted on the
-    // daemon path. `pinned-credential-shapes.test.ts` pins that gap
-    // so that closing it goes red there.
+    // On `nanomind-redaction` the `openai-key` rule in
+    // `redactCredentialShapes` floors at 32 (`sk-[a-zA-Z0-9]{32,}`), the
+    // lower of the two labels' floors, so every body the canonical scan
+    // reports is redacted, the 32-47 band included. `pinned-credential-shapes.test.ts`
+    // holds a 32-character body in its `SHAPES` list.
     surfaces: EVERY_SURFACE,
   },
   {
@@ -457,7 +457,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
       'Detected only by this module (findJwtMatch, and the JWT_PREFIX entry in ' +
       'VENDOR_PREFIX_MATCHERS). It is NOT in CANONICAL_CREDENTIAL_PATTERNS and it is NOT in ' +
       'redactCredentialShapes — its rule table, CREDENTIAL_REDACTION_RULES ' +
-      '(defense-in-depth.ts:174-222), has no eyJ rule at all. ' +
+      '(defense-in-depth.ts:181-234), has no eyJ rule at all. ' +
       'A JWT reaching redactCredentialShapes today is passed through verbatim.',
   },
   {
@@ -484,7 +484,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     rationale:
       'Not a vendor prefix and not part of this module: detected by ' +
       'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1865) and redacted by ' +
-      'defense-in-depth.ts:220. Listed here because a shape absent from the registry cannot be ' +
+      'defense-in-depth.ts:232. Listed here because a shape absent from the registry cannot be ' +
       'guarded against being copied a fourth time.',
   },
   {

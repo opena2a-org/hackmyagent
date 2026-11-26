@@ -746,9 +746,10 @@ const ENTROPY_RUN_IN_PURPOSE = /\b[A-Za-z0-9+=_]{40,}\b/g;
  * frontmatter the declared purpose is the artifact's first long line, which
  * for `const openai = "sk-…"` is the key's own line. A key is reported
  * whatever its own characters spell, so a body that spells `test` or `demo`
- * does not make the file a test or a demo. A value containing EXAMPLE is kept
- * as it is: that word in a key marks a placeholder, and the purpose keeps
- * reading it as one.
+ * does not make the file a test or a demo. A value containing EXAMPLE is
+ * removed like any other: whether a value is a placeholder is judged on the
+ * value itself, where the credential is matched, and a placeholder on the
+ * first line says nothing about a real key further down the file.
  *
  * `x` rather than a space, and one per character, so that the URL removal
  * after this sees the same shape: a long scheme the entropy rule accepts still
@@ -764,7 +765,6 @@ function withoutCredentialValues(text: string): string {
   const blank = new Uint8Array(text.length);
   let any = false;
   const mark = (start: number, value: string): void => {
-    if (/example/i.test(value)) return;
     blank.fill(1, start, start + value.length);
     any = true;
   };
