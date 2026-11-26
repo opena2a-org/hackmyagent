@@ -21,7 +21,7 @@ import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import { assertDistFresh } from '../helpers/dist-freshness';
 import { tempDir } from '../helpers/temp-dir';
-import { extractContent, type FetchedPage } from '../../src/wild/browser';
+import { extractContent, looksLikePayload, MIN_PAYLOAD_LENGTH, type FetchedPage } from '../../src/wild/browser';
 import { hiddenRuns, MIN_ZERO_WIDTH_RUN } from '../../src/wild/unicode-stego';
 import { computeResilienceScore } from '../../src/wild/scorer';
 import type { WildPageResult, WildScanReport } from '../../src/wild/types';
@@ -158,6 +158,39 @@ describe('#988 the unicode-stego surface on a page', () => {
     expect(two).toHaveLength(2);
     expect(score([]) - score(one)).toBe(7);
     expect(score([]) - score(two)).toBe(11);
+  });
+});
+
+/**
+ * #1085: every decoding was judged by looksLikePayload, however short, so a
+ * page of millions of one-character runs took seconds where every other
+ * surface took milliseconds. RED-ON-BASE: on 41b535e7 the 4M-unit page below
+ * took about 3.4 s against 30 ms for plain text of the same size.
+ */
+describe('#1085 short hidden runs are not judged one by one', () => {
+  const time = (html: string): number => {
+    const start = performance.now();
+    extractContent(page(html));
+    return performance.now() - start;
+  };
+
+  it('still records a run exactly as long as the shortest indicator', () => {
+    expect(MIN_PAYLOAD_LENGTH).toBe(6);
+    expect(looksLikePayload('bypass')).toBe(true);
+    expect(stego(`<p>${toTags('bypass')}</p>`)).toHaveLength(1);
+    expect(stego(`<p>${toZeroWidth('bypass')}</p>`)).toHaveLength(1);
+  });
+
+  it('processes a 4M-unit page of one-character runs near the time of plain text', () => {
+    const units = 4_000_000;
+    const unit = `${toTags('b')}a`;
+    const runs = unit.repeat(Math.ceil(units / unit.length));
+    const plain = 'a'.repeat(runs.length);
+    time(plain);
+    const plainMs = time(plain);
+    const runsMs = time(runs);
+    expect(stego(runs)).toEqual([]);
+    expect(runsMs).toBeLessThan(1000 + 10 * plainMs);
   });
 });
 

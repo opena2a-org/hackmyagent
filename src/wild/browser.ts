@@ -228,9 +228,12 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   // Character references in text and attribute values are decoded first
   // (#1085): `&#xE0069;` is the tag character a browser puts in the page, and
   // `&amp;#xE0069;` stays the literal text a page documenting the technique
-  // shows. Comments, scripts and styles are read as written.
+  // shows. Comments, scripts and styles are read as written. A decoding
+  // shorter than MIN_PAYLOAD_LENGTH cannot match any indicator, so it is not
+  // judged: a page of millions of one-character runs took seconds to judge
+  // one by one (#1085).
   for (const run of hiddenRuns(decodeMarkup(html))) {
-    const payload = run.decodings.find((text) => looksLikePayload(text));
+    const payload = run.decodings.find((text) => text.length >= MIN_PAYLOAD_LENGTH && looksLikePayload(text));
     if (payload !== undefined) {
       surfaces.push({
         type: 'unicode-stego',
@@ -281,10 +284,23 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   };
 }
 
-/** Page text cut to 200 code points, with control characters made visible. */
+/**
+ * Page text cut to 200 code points, with control characters made visible.
+ * 200 code points span at most 400 UTF-16 units, so the text is cut to that
+ * before it is split, and a decoding of millions of code points is not copied
+ * into an array to keep its first 200.
+ */
 function displayExcerpt(text: string): string {
-  return escapeForDisplay(Array.from(text).slice(0, 200).join(''));
+  return escapeForDisplay(Array.from(text.slice(0, 400)).slice(0, 200).join(''));
 }
+
+/**
+ * The length of the shortest text looksLikePayload accepts: `bypass`. Every
+ * other indicator and word chain needs more characters, and each needs ASCII
+ * letters, which a case-insensitive match never finds in fewer UTF-16 units.
+ * Keep this in step with the lists below.
+ */
+export const MIN_PAYLOAD_LENGTH = 'bypass'.length;
 
 /** Heuristic: does this text look like an injection payload? */
 export function looksLikePayload(text: string): boolean {
