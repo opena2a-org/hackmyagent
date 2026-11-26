@@ -13156,7 +13156,7 @@ function printWildReport(report: WildScanReport): void {
       : `${colors.green}clean${colors.reset}`;
     console.log(`  ${escapeForDisplay(f.file)}: ${f.statusCode} [${status}]`);
     if (f.payloadExcerpt) {
-      console.log(`    ${colors.dim}${f.payloadExcerpt}${colors.reset}`);
+      console.log(`    ${colors.dim}${escapeForDisplay(f.payloadExcerpt)}${colors.reset}`);
     }
   }
 
@@ -13165,7 +13165,7 @@ function printWildReport(report: WildScanReport): void {
   const categories = Object.keys(report.summary.byCategory).sort();
   for (const cat of categories) {
     const stats = report.summary.byCategory[cat];
-    console.log(`  ${cat}: ${stats.pages} pages, ${stats.payloads} payloads`);
+    console.log(`  ${escapeForDisplay(cat)}: ${stats.pages} pages, ${stats.payloads} payloads`);
   }
 
   // Injection surfaces
