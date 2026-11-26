@@ -19,7 +19,7 @@ import https from 'node:https';
 import type { IncomingMessage } from 'node:http';
 import { escapeForDisplay } from '../../ui/display-safe';
 import { modelProxyNotice, proxiedRequestOptions, resolveModelProxy } from './model-proxy';
-import { loadOnnxRuntime } from './onnx-runtime';
+import { loadOnnxRuntime, onnxRuntimeLoadsQuietly } from './onnx-runtime';
 
 // Pinned to the model repository commit the sha256 values below were taken
 // from. A branch URL follows every later commit to that repository, so a new
@@ -654,6 +654,16 @@ export class TMEClassifier {
         ? null
         : TMEClassifier.readPinnedFile(join(dirname(this.modelPath), ONNX_DATA_FILE), pinnedModelFile(ONNX_DATA_FILE));
       if (graph === null || weights === null) {
+        this.useOnnx = false;
+        return;
+      }
+      // `env.logLevel` and `logSeverityLevel` below do not reach the cpuid
+      // warning: onnxruntime prints `onnxruntime cpuid_info warning: Unknown
+      // CPU vendor` to stderr while its library loads, before either applies,
+      // on Linux arm64 under Apple silicon virtualization. Where loading the
+      // library prints anything, it is not loaded here; see
+      // `onnxRuntimeLoadsQuietly`.
+      if (!onnxRuntimeLoadsQuietly()) {
         this.useOnnx = false;
         return;
       }
