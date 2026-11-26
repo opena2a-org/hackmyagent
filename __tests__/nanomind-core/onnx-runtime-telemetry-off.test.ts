@@ -127,9 +127,10 @@ function runtimeCarriesTelemetryClient(dir: string): boolean {
 
 /**
  * An environment rooted in `root`: an empty HOME, the cache, data, config and
- * state directories and TMPDIR inside it, and no ORT_DISABLE_TELEMETRY. That
- * variable is removed because this worker may already have assigned it, and
- * a child that inherited it would pass whatever the code under test does.
+ * state directories and TMPDIR inside it, and no ORT_DISABLE_TELEMETRY or CI.
+ * ORT_DISABLE_TELEMETRY is removed because this worker may already have
+ * assigned it, and a child that inherited it would pass whatever the code
+ * under test does. CI is removed because the client does not start under it.
  */
 function freshEnvironment(root: string): NodeJS.ProcessEnv {
   const home = path.join(root, 'home');
@@ -140,6 +141,9 @@ function freshEnvironment(root: string): NodeJS.ProcessEnv {
   for (const name of ['XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'ORT_DISABLE_TELEMETRY']) {
     delete env[name];
   }
+  // The runtime's telemetry client stays off when CI is set, so a CI run
+  // would see no store in the control whatever the runtime carries.
+  delete env.CI;
   // No hosted-model request: this run measures the local runtime only.
   delete env.ANTHROPIC_API_KEY;
   if (process.env.HMA_TEST_ONNXRUNTIME_NODE) env.HMA_TEST_ONNXRUNTIME_NODE = runtimeDir();
