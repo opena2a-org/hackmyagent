@@ -2723,6 +2723,36 @@ function blankMaskInto(
  * and reads the next line as code: over-reporting, never under-reporting,
  * the direction every walker in this file rules.
  */
+/**
+ * NEMO-002's digest-skip shape, `if (… digest &&` or `if (! … digest)`,
+ * occurring as CODE on `line`: the `if (` that opens it and the `&&` or `)`
+ * that closes it must both sit outside string literals, template literals,
+ * comments and regex literals. Both ends are asked rather than the whole
+ * span, so `if (!load('m.json').digest)` still counts while
+ * `'if (!digest) skip'` and `if (x) log("no digest && y")` do not. Every
+ * code-level `if (` and every closing token after it is tried, so a quoted
+ * mention earlier on the line cannot hide real code later on it.
+ */
+export function hasDigestSkipInCode(line: string): boolean {
+  if (!line.includes('digest')) return false;
+  const opener = /if\s*\(/g;
+  let open: RegExpExecArray | null;
+  while ((open = opener.exec(line)) !== null) {
+    if (isMatchInsideStringLiteral(line, open.index)) continue;
+    const bodyStart = open.index + open[0].length;
+    const negated = /^\s*!/.test(line.slice(bodyStart));
+    const closer = /digest\s*(&&|\))/g;
+    closer.lastIndex = bodyStart;
+    let close: RegExpExecArray | null;
+    while ((close = closer.exec(line)) !== null) {
+      if (close[1] === ')' && !negated) continue;
+      const closeIndex = close.index + close[0].length - close[1].length;
+      if (!isMatchInsideStringLiteral(line, closeIndex)) return true;
+    }
+  }
+  return false;
+}
+
 function blankTemplateLiteralSpans(
   line: string,
   state: { inTemplateLiteral: boolean; inBlockComment: boolean },
@@ -16891,14 +16921,19 @@ dist/
         }
       } catch { /* skip */ }
     }
-    // Check TS/JS files for digest skip logic
+    // Check TS/JS files for digest skip logic. The pattern counts only as
+    // code: a rule table, help text or test fixture that spells
+    // `if (!digest)` inside a string or template literal is prose about the
+    // check, not a skip. A multi-line template literal is blanked first with
+    // the same carried state the NEMO-009 gate threads.
     for (const file of cappedTsJs) {
       try {
         const content = await fs.readFile(file, 'utf-8');
         const lines = content.split('\n');
+        const templateState = { inTemplateLiteral: false, inBlockComment: false };
         for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (/if\s*\(\s*!?.*digest\s*&&/.test(line) || /if\s*\(\s*!.*digest\s*\)/.test(line)) {
+          const codeLine = blankTemplateLiteralSpans(lines[i], templateState);
+          if (hasDigestSkipInCode(codeLine)) {
             nemo002Found = true;
             findings.push({
               checkId: 'NEMO-002',
