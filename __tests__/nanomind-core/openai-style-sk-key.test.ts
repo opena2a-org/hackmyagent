@@ -35,13 +35,22 @@ import { cpuTimeMs } from '../helpers/scaling-time';
 
 const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const PLACEHOLDER = /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE/i;
+/**
+ * Words that make the credential analyzer read the file as a test or a doc and
+ * drop AST-CRED-001. It reads them in the declared purpose, which for a file
+ * with no frontmatter is its first long line, and the redactor does not mask a
+ * 32-47 character `sk-` body there. A draw that spelled `tEsT` made the 32
+ * character run lose AST-CRED-001 against the 48 character one, which is
+ * masked, and failed the check-id comparison below on CI.
+ */
+const PURPOSE_WORD = /test|example|documentation|fixture|demo/i;
 
-/** `n` random alphanumerics that spell no placeholder marker. */
+/** `n` random alphanumerics that spell no placeholder marker or purpose word. */
 function randomBody(n: number): string {
   for (;;) {
     let body = '';
     for (const byte of randomBytes(n)) body += ALNUM[byte % ALNUM.length];
-    if (!PLACEHOLDER.test(body) && new Set(body).size > 6) return body;
+    if (!PLACEHOLDER.test(body) && !PURPOSE_WORD.test(body) && new Set(body).size > 6) return body;
   }
 }
 
@@ -168,10 +177,13 @@ describe('#316: the 32-47 band hands off to the legacy shape at 48', () => {
   });
 });
 
-describe('#316: scan time is linear on 1 MB of sk- and alphanumerics', () => {
+describe('#316: scan time is linear on 1 MB of sk-, alphanumerics and PEM headers', () => {
   // The cap is the largest input the scan reads, so it is the input to time.
   const size = maxCredentialScanBytesForTest();
   const fill = (unit: string, n: number) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  // Assembled from parts so this file holds no complete armor line.
+  const pemBegin = '-----B' + 'EGIN RSA PRIVATE KEY-----';
+  const pemEnd = '-----E' + 'ND RSA PRIVATE KEY-----';
   const hostile = (n: number) => [
     // One unbroken run: the legacy shape consumes it in one match.
     `sk-${fill(ALNUM, n - 3)}`,
@@ -182,6 +194,19 @@ describe('#316: scan time is linear on 1 MB of sk- and alphanumerics', () => {
     fill(`-sk-${fill(ALNUM, 40)}`, n),
     // Bare prefixes: every start fails on its second body character.
     fill('sk-', n),
+    // The PEM private-key shape reads up to 4096 characters past each header
+    // for an END marker. Headers back to back: each read stops two headers
+    // on, at its 40th base64-alphabet character.
+    fill(pemBegin, n),
+    // A header per 4 KB of text with no alphabet character and no END: each
+    // read runs the whole window.
+    fill(`${pemBegin}${'.'.repeat(4000)}`, n),
+    // A header per 4 KB of dashes: every dash in the window opens a candidate
+    // END marker and none finishes one, and a dash is not an alphabet
+    // character, so nothing stops the read early.
+    fill(`${pemBegin}${'-'.repeat(4000)}`, n),
+    // Placeholder blocks that each close: every header is read and dropped.
+    fill(`${pemBegin}\n<your private key here>\n${pemEnd}\n`, n),
   ];
 
   /**
