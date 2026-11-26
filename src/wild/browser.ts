@@ -7,6 +7,7 @@
  */
 
 import type { InjectionSurface } from './types';
+import { decodeCharacterReferences, decodeMarkup } from './char-refs';
 import { hiddenRuns } from './unicode-stego';
 import { escapeForDisplay } from '../ui/display-safe';
 import {
@@ -185,27 +186,33 @@ export function extractContent(page: FetchedPage): ExtractedContent {
     });
   }
 
-  // 6. ARIA labels with suspicious content
+  // 6. ARIA labels with suspicious content. The value is judged as a browser
+  // hands it to an agent, with character references decoded (#1085), so a
+  // payload written as `&#x69;&#x67;...` is read as the text it spells. A
+  // reference can decode to a control character, so the text is escaped.
   let match;
   const ariaRegex = /aria-label="([^"]{50,})"/gi;
   while ((match = ariaRegex.exec(html)) !== null) {
-    if (looksLikePayload(match[1])) {
+    const label = decodeCharacterReferences(match[1]);
+    if (looksLikePayload(label)) {
       surfaces.push({
         type: 'aria-label',
-        content: match[1].slice(0, 200),
+        content: displayExcerpt(label),
         stealthScore: 7,
       });
     }
   }
 
-  // 7. Image alt text with suspicious content. The matches of
-  // /<img[^>]*alt="([^"]{50,})"[^>]*\/?>/gi, found the same way.
+  // 7. Image alt text with suspicious content, decoded the same way. The
+  // matches of /<img[^>]*alt="([^"]{50,})"[^>]*\/?>/gi, found without
+  // rescanning from every unclosed `<img`.
   const imageAlts = tagAttributeMatches(html, { opener: /<img/gi, attribute: /alt="/gi, minLength: 50 });
   for (const img of imageAlts) {
-    if (looksLikePayload(img.value)) {
+    const alt = decodeCharacterReferences(img.value);
+    if (looksLikePayload(alt)) {
       surfaces.push({
         type: 'image-alt',
-        content: img.value.slice(0, 200),
+        content: displayExcerpt(alt),
         stealthScore: 6,
       });
     }
@@ -218,12 +225,16 @@ export function extractContent(page: FetchedPage): ExtractedContent {
   // characters do not render and survive into a model's context, so the
   // stealth score matches the highest above. The decoded text is page data
   // and may hold control bytes, so it is cut to 200 code points and escaped.
-  for (const run of hiddenRuns(html)) {
+  // Character references in text and attribute values are decoded first
+  // (#1085): `&#xE0069;` is the tag character a browser puts in the page, and
+  // `&amp;#xE0069;` stays the literal text a page documenting the technique
+  // shows. Comments, scripts and styles are read as written.
+  for (const run of hiddenRuns(decodeMarkup(html))) {
     const payload = run.decodings.find((text) => looksLikePayload(text));
     if (payload !== undefined) {
       surfaces.push({
         type: 'unicode-stego',
-        content: escapeForDisplay(Array.from(payload).slice(0, 200).join('')),
+        content: displayExcerpt(payload),
         stealthScore: 8,
       });
     }
@@ -268,6 +279,11 @@ export function extractContent(page: FetchedPage): ExtractedContent {
     hasCallback,
     hasCanary,
   };
+}
+
+/** Page text cut to 200 code points, with control characters made visible. */
+function displayExcerpt(text: string): string {
+  return escapeForDisplay(Array.from(text).slice(0, 200).join(''));
 }
 
 /** Heuristic: does this text look like an injection payload? */
