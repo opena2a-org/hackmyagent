@@ -55,10 +55,14 @@ describe('#524 rebaseOwnFileCitation', () => {
     const script = `'const s=require("fs").readFileSync(process.argv[1],"utf8"); console.log(s)'`;
     expect(rebaseOwnFileCitation(`node -e ${script} lib/eval.js`, 'lib/eval.js', ROOT))
       .toBe(`node -e ${script} /work/skill-out/lib/eval.js`);
+    // UNICODE-STEGO-001 cites a perl deletion, not xxd.
+    const perl = `perl -CSD -i -pe 's/[\\x{200B}-\\x{200D}]//g if $. == 3'`;
+    expect(rebaseOwnFileCitation(`${perl} tags.js`, 'tags.js', ROOT))
+      .toBe(`${perl} /work/skill-out/tags.js`);
   });
 
   it('#1017 leaves an xxd or node -e of another file as authored', () => {
-    for (const text of ['xxd other.js | grep "f3a0"', 'xxd tags.js.bak', `node -e 'x' other.js`, 'node tags.js']) {
+    for (const text of ['xxd other.js | grep "f3a0"', 'xxd tags.js.bak', `node -e 'x' other.js`, 'node tags.js', `perl -CSD -i -pe 'x' other.js`]) {
       expect(rebaseOwnFileCitation(text, 'tags.js', ROOT)).toBe(text);
     }
   });

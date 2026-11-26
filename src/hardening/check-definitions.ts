@@ -1874,7 +1874,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     description: 'Source file contains invisible Unicode codepoints that can hide malicious payloads (GlassWorm attack vector)',
     category: 'unicode-stego',
     why: 'Invisible Unicode codepoints can hide malicious payloads in source code. This is the GlassWorm attack vector.',
-    fix: 'xxd <file> | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0" to locate the invisible codepoints in the file named in the finding, then remove them.',
+    fix: 'Where a string literal needs the code point, replace the raw character with its escape sequence (\\uFEFF, \\u200B); delete every other one, e.g. perl -CSD -i -pe \'s/[\\x{200B}-\\x{200D}\\x{202A}-\\x{202E}\\x{2066}-\\x{2069}\\x{FE00}-\\x{FE0F}\\x{FEFF}\\x{E0100}-\\x{E01FF}]//g if $. == <line>\' <file> for the line and file named in the finding.',
   },
   'UNICODE-STEGO-002': {
     name: 'GlassWorm Decoder Pattern Detected',

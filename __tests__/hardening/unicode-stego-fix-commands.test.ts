@@ -70,19 +70,61 @@ describe('UNICODE-STEGO Fix commands (#999)', () => {
     expect(run.stdout).toContain("'fe00'");
   });
 
-  it('UNICODE-STEGO-001: a plain name gets the xxd command', async () => {
-    await fs.writeFile(path.join(dir, 'plain.js'), Buffer.concat([Buffer.from('const a = "x'), ZWSP, Buffer.from('";\n')]));
+  // The Fix was `xxd … | grep …`, which only locates the bytes. It now
+  // names the change: escape a code point a string literal holds, delete one
+  // anywhere else.
+  it('UNICODE-STEGO-001: a code point inside a string literal gets its escape sequence', async () => {
+    await fs.writeFile(path.join(dir, 'plain.js'), Buffer.concat([Buffer.from('// a\nconst a = "x'), ZWSP, Buffer.from('";\n')]));
     const f = await finding('UNICODE-STEGO-001', 'plain.js');
-    expect(f.fix).toBe('xxd plain.js | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"');
+    expect(f.fix).toBe(
+      'Replace the raw U+200B inside the string literal on line 2 with its escape sequence \\u200B, so the code point is visible in the source; delete it if the string does not need it.',
+    );
+  });
+
+  it('UNICODE-STEGO-001: a code point outside a string literal gets a command that deletes it', async () => {
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]); // U+FEFF mid-file
+    const file = path.join(dir, 'plain.js');
+    await fs.writeFile(file, Buffer.concat([
+      Buffer.from('const a = "x";\nconst b'), bom, Buffer.from(' = 1; // y'), ZWSP, Buffer.from('\nconst c = "'), ZWSP, Buffer.from('";\n'),
+    ]));
+    const f = await finding('UNICODE-STEGO-001', 'plain.js');
+    const printed = escapeForDisplay(f.fix ?? '');
+    expect(printed).toMatch(/^perl -CSD -i -pe '.*if \$\. == 2' plain\.js$/);
+    expect(printed).not.toMatch(/xxd/);
+
+    const run = spawnSync('/bin/sh', ['-c', printed], { cwd: dir, encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    // Line 2 loses both code points; line 3, which the command does not name, keeps its own.
+    expect(await fs.readFile(file, 'utf8')).toBe('const a = "x";\nconst b = 1; // y\nconst c = "\u200B";\n');
+
+    const rebased = escapeForDisplay(rebaseOwnFileCitation(f.fix ?? '', f.file, dir));
+    expect(rebased.endsWith(` ${path.join(dir, 'plain.js')}`)).toBe(true);
   });
 
   it('UNICODE-STEGO-001: a name carrying an invisible code point gets no command naming a different file', async () => {
     await fs.writeFile(path.join(dir, HIDDEN_NAME), Buffer.concat([Buffer.from('const a = "x'), ZWSP, Buffer.from('";\n')]));
     const f = await finding('UNICODE-STEGO-001', HIDDEN_NAME);
     const printed = escapeForDisplay(f.fix ?? '');
-    expect(printed).not.toMatch(/xxd/);
+    expect(printed).not.toMatch(/xxd|perl/);
     expect(printed).not.toContain('\\u{e0041}');
-    expect(printed).toMatch(/cannot be shown truthfully/);
+    expect(printed).toMatch(/escape sequence \\u200B/);
+  });
+
+  it('UNICODE-STEGO-001: a quoted word inside a block comment is not a string literal', async () => {
+    await fs.writeFile(path.join(dir, 'doc.js'), Buffer.concat([
+      Buffer.from('/*\n * say "x'), ZWSP, Buffer.from('"\n */\nconst a = 1;\n'),
+    ]));
+    const f = await finding('UNICODE-STEGO-001', 'doc.js');
+    expect(escapeForDisplay(f.fix ?? '')).toMatch(/^perl -CSD -i -pe '.*if \$\. == 2' doc\.js$/);
+  });
+
+  it('UNICODE-STEGO-001: a name carrying an invisible code point gets no deletion command', async () => {
+    await fs.writeFile(path.join(dir, HIDDEN_NAME), Buffer.concat([Buffer.from('const a = 1; // x'), ZWSP, Buffer.from('\n')]));
+    const f = await finding('UNICODE-STEGO-001', HIDDEN_NAME);
+    const printed = escapeForDisplay(f.fix ?? '');
+    expect(printed).not.toMatch(/xxd|perl/);
+    expect(printed).not.toContain('\\u{e0041}');
+    expect(printed).toMatch(/^Delete the invisible U\+200B .*cannot be shown truthfully/);
   });
 
   // #1017 — the text output rebases the cited file onto the scan root, as the

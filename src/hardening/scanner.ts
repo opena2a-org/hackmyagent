@@ -3665,6 +3665,45 @@ function stegoHexDumpFix(relativePath: string, filter: string): string {
 }
 
 /**
+ * The code points UNICODE-STEGO-001 reports, as a Perl character class.
+ */
+const STEGO_001_PERL_CLASS =
+  '[\\x{200B}-\\x{200D}\\x{202A}-\\x{202E}\\x{2066}-\\x{2069}\\x{FE00}-\\x{FE0F}\\x{FEFF}\\x{E0100}-\\x{E01FF}]';
+
+/**
+ * The escape sequence that spells code point `cp` visibly in a string
+ * literal: `\uFEFF`, or `\u{E0100}` above the BMP.
+ */
+function codePointEscape(cp: number): string {
+  const hex = cp.toString(16).toUpperCase();
+  return cp <= 0xFFFF ? `\\u${hex.padStart(4, '0')}` : `\\u{${hex}}`;
+}
+
+/**
+ * The UNICODE-STEGO-001 Fix: a change, not an inspection.
+ *
+ * The first reported code point decides which change. Inside a string literal
+ * it may be meant (a ZWSP separator, a BOM the code strips), so the Fix names
+ * spelling it as its escape sequence, which keeps the value and makes it
+ * visible in review. Anywhere else it has no function, so the Fix deletes the
+ * invisible code points from the reported line; or, when the file name cannot
+ * be put into a command truthfully (#999), says so in prose.
+ */
+function invisibleCodepointFix(
+  relativePath: string,
+  codePoint: number,
+  line: number,
+  insideStringLiteral: boolean,
+): string {
+  const u = `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
+  if (insideStringLiteral) {
+    return `Replace the raw ${u} inside the string literal on line ${line} with its escape sequence ${codePointEscape(codePoint)}, so the code point is visible in the source; delete it if the string does not need it.`;
+  }
+  return commandNaming(relativePath, (q) => `perl -CSD -i -pe 's/${STEGO_001_PERL_CLASS}//g if $. == ${line}' ${q}`)
+    ?? `Delete the invisible ${u} and any other invisible code points on line ${line} of the file named in this finding. Its name contains characters that cannot be shown truthfully in a shell command, so no runnable citation is offered.`;
+}
+
+/**
  * The `node -e` body UNICODE-STEGO-003 cites: every code point above U+0200 in
  * the file named by its first argument, in hex.
  *
@@ -16108,11 +16147,16 @@ dist/
       let midFileBomLine = 1;
       let hasBidiOverride = false;
       let bidiOverrideLine = 1;
+      // The first reported code point and the offset of its line, for the Fix.
+      let firstHitOffset = -1;
+      let firstHitLineStart = 0;
 
       let currentLine = 1;
+      let lineStart = 0;
       for (let i = 0; i < rawBuffer.length; i++) {
         if (rawBuffer[i] === 0x0A) {
           currentLine++;
+          lineStart = i + 1;
           continue;
         }
         // Variation selectors: EF B8 80-8F (U+FE00-FE0F)
@@ -16143,6 +16187,10 @@ dist/
           } else if (!hasVariationSelectors) {
             hasVariationSelectors = true;
             variationSelectorLine = currentLine;
+            if (firstHitOffset < 0) {
+              firstHitOffset = i;
+              firstHitLineStart = lineStart;
+            }
           }
         }
         // Supplementary variation selectors and unassigned code points in
@@ -16157,6 +16205,10 @@ dist/
           if (!hasTagCharsIn001) {
             hasTagCharsIn001 = true;
             tagCharLine001 = currentLine;
+            if (firstHitOffset < 0) {
+              firstHitOffset = i;
+              firstHitLineStart = lineStart;
+            }
           }
         }
         // Zero-width chars: U+200B/200C/200D = E2 80 8B/8C/8D
@@ -16172,6 +16224,10 @@ dist/
           if (!hasZeroWidth) {
             hasZeroWidth = true;
             zeroWidthLine = currentLine;
+            if (firstHitOffset < 0) {
+              firstHitOffset = i;
+              firstHitLineStart = lineStart;
+            }
           }
         }
         // Mid-file BOM: U+FEFF = EF BB BF (skip if at offset 0)
@@ -16185,6 +16241,10 @@ dist/
           if (!hasMidFileBom) {
             hasMidFileBom = true;
             midFileBomLine = currentLine;
+            if (firstHitOffset < 0) {
+              firstHitOffset = i;
+              firstHitLineStart = lineStart;
+            }
           }
         }
         // Bidi overrides: U+202A-202E = E2 80 AA-AE
@@ -16198,6 +16258,10 @@ dist/
           if (!hasBidiOverride) {
             hasBidiOverride = true;
             bidiOverrideLine = currentLine;
+            if (firstHitOffset < 0) {
+              firstHitOffset = i;
+              firstHitLineStart = lineStart;
+            }
           }
         }
         // Bidi isolates: U+2066-2069 = E2 81 A6-A9
@@ -16211,6 +16275,10 @@ dist/
           if (!hasBidiOverride) {
             hasBidiOverride = true;
             bidiOverrideLine = currentLine;
+            if (firstHitOffset < 0) {
+              firstHitOffset = i;
+              firstHitLineStart = lineStart;
+            }
           }
         }
       }
@@ -16257,6 +16325,31 @@ dist/
           ]
         );
 
+        // The Fix escapes the first reported code point when it sits inside a
+        // string literal, and deletes it otherwise. Comments are blanked first
+        // (block state carried from the top of the file), so one in a comment
+        // is deleted; a line too long to lex safely is read as code.
+        const firstHitCodePoint =
+          rawBuffer.subarray(firstHitOffset, firstHitOffset + 4).toString('utf-8').codePointAt(0) ?? 0;
+        const lineEnd = rawBuffer.indexOf(0x0A, firstHitOffset);
+        const firstHitLineText = rawBuffer
+          .subarray(firstHitLineStart, lineEnd < 0 ? rawBuffer.length : lineEnd)
+          .toString('utf-8');
+        const firstHitColumn = rawBuffer.subarray(firstHitLineStart, firstHitOffset).toString('utf-8').length;
+        let firstHitInsideString = false;
+        if (firstHitLineText.length <= MAX_LINE_LENGTH) {
+          const commentState = { inBlockComment: false };
+          const before = rawBuffer.subarray(0, firstHitLineStart).toString('utf-8').split('\n');
+          before.pop(); // the empty tail after the newline that ends the previous line
+          for (const prior of before) {
+            if (prior.length <= MAX_LINE_LENGTH) blankCommentRegions(prior, commentState);
+          }
+          firstHitInsideString = isMatchInsideStringLiteral(
+            blankCommentRegions(firstHitLineText, commentState),
+            firstHitColumn,
+          );
+        }
+
         findings.push({
           checkId: 'UNICODE-STEGO-001',
           name: 'Invisible Unicode Codepoints Detected',
@@ -16268,11 +16361,11 @@ dist/
           file: relativePath,
           line: firstLine,
           fixable: false,
-          fix: stegoHexDumpFix(relativePath, 'grep -iE "e280[8-9a-e]|efbb|efb8|f3a0"'),
+          fix: invisibleCodepointFix(relativePath, firstHitCodePoint, firstLine, firstHitInsideString),
           // #959 — the text channel renders `guidance`, not `message`, so the
           // detected types are named here too or the default output never says
           // which invisible characters were found.
-          guidance: `This file contains ${detectedTypes.join(' and ')}. Invisible Unicode codepoints can hide malicious payloads in source code. This is the GlassWorm attack vector. Inspect with a hex editor and remove all non-functional invisible characters.`,
+          guidance: `This file contains ${detectedTypes.join(' and ')}. Invisible Unicode codepoints can hide malicious payloads in source code. This is the GlassWorm attack vector. Replace any that a string literal needs with its escape sequence, and delete the rest.`,
         });
       }
 
