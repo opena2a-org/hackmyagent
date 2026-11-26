@@ -23,7 +23,7 @@ export interface RecordedRequest {
 }
 
 export interface MockRegistry {
-  /** Base URL to hand `--registry-url`. `localhost`, which the CLI's HTTPS rule allows. */
+  /** Base URL to hand `--registry-url`. Loopback `127.0.0.1`, which the CLI's HTTPS rule allows. */
   url: string;
   /** Every request that reached the socket, in order. */
   requests: RecordedRequest[];
@@ -67,10 +67,10 @@ export async function startMockRegistry(respond: Responder): Promise<MockRegistr
       res.end(answer.body);
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   return {
-    url: `http://localhost:${port}`,
+    url: `http://127.0.0.1:${port}`,
     requests,
     close: () => new Promise<void>((resolve) => { server.close(() => resolve()); }),
   };
@@ -84,8 +84,8 @@ export async function startMockRegistry(respond: Responder): Promise<MockRegistr
  */
 export async function closedPortUrl(): Promise<string> {
   const server = http.createServer();
-  await new Promise<void>((resolve) => server.listen(0, resolve));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   await new Promise<void>((resolve) => { server.close(() => resolve()); });
-  return `http://localhost:${port}`;
+  return `http://127.0.0.1:${port}`;
 }
