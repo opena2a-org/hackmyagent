@@ -145,6 +145,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     name: 'API Key Exposed',
     description: 'An API key was found in an HTTP response from the scanned target',
     category: 'external',
+    why: 'API keys can be used to access services, incur costs, or steal data.',
     fix: 'Remove API keys from responses and rotate compromised keys',
   },
   'AST-CAP-001': {
@@ -217,6 +218,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     altNames: ['Governance Domain Gap'],
     description: 'Governance constraints are missing for one or more governance domains; a gap in a critical domain is reported as Critical Governance Domain Gap.',
     category: 'Governance',
+    why: 'The 9 governance domains represent the minimum surface area for safe agent operation.',
     fix: `Run ${CLI_PREFIX} harden-soul . to add SOUL.md sections for the missing domains the finding names.`,
   },
   'AST-GOV-002': {
@@ -429,6 +431,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     name: 'CLAUDE.md System Instructions Exposed',
     description: 'Agent system instructions file is publicly accessible',
     category: 'external',
+    why: 'System instructions reveal agent behavior, capabilities, and potential weaknesses.',
     fix: 'Remove file from public access or configure web server to deny access',
   },
   'CLIPASS-001': {
@@ -505,6 +508,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     name: 'Configuration File Exposed',
     description: 'A configuration file on the scanned target is publicly accessible',
     category: 'external',
+    why: 'Configuration files may contain sensitive settings, API keys, or server details.',
     fix: 'Remove file from public access or configure web server to deny access',
   },
   'CRED-001': {
@@ -737,6 +741,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     name: 'Incomplete .gitignore',
     description: '.gitignore is missing entries for sensitive files, or committable sensitive files are present in the tree',
     category: 'git',
+    why: 'Sensitive files that are not git-ignored are committed by a single git add . If one was already committed, its contents must be rotated. Where none is committable yet, adding the missing patterns means a future key or secrets file is never committed by accident.',
     fix: `${CLI_PREFIX} secure --fix`,
   },
   'GIT-003': {
@@ -998,12 +1003,14 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     name: 'Hardcoded Secrets in MCP',
     description: 'Secrets found in MCP env vars',
     category: 'mcp',
+    why: 'Hardcoded API keys in an MCP config are exposed to anyone with repo access. Keys should be injected at runtime, never stored as plaintext.',
     fix: `${CLI_PREFIX} secure --fix`,
   },
   'MCP-004': {
     name: 'Default Credentials',
     description: 'MCP server using default password',
     category: 'mcp',
+    why: 'Default passwords (postgres, admin, root, etc.) are the first thing attackers try.',
     fix: 'openssl rand -base64 24',
   },
   'MCP-005': {
@@ -1054,12 +1061,14 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     name: 'MCP SSE Endpoint Exposed',
     description: 'Server-Sent Events endpoint for MCP is publicly accessible',
     category: 'external',
+    why: 'Attackers can connect to the MCP server and potentially execute commands.',
     fix: 'Restrict access with authentication or firewall rules',
   },
   'MCP-TOOLS': {
     name: 'MCP Tools Endpoint Exposed',
     description: 'MCP tools listing is publicly accessible',
     category: 'external',
+    why: 'Attackers can enumerate available MCP tools and capabilities.',
     fix: 'Restrict access with authentication or remove from public access',
   },
   'MEM-001': {
@@ -1168,6 +1177,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     altNames: ['Unsafe deserialization: pickle.load', 'Unsafe deserialization: yaml.load without SafeLoader', 'eval/exec executes code', 'Unsafe deserialization: eval()', 'Unsafe deserialization: indirect eval()', 'Unsafe deserialization: new Function()', 'Unsafe deserialization: JSON5.parse'],
     description: 'Code deserializes or evaluates data as code: pickle.load, yaml.load without SafeLoader, eval, exec, indirect eval, new Function or JSON5.parse on input that may be untrusted.',
     category: 'nemo-deserialization',
+    why: 'Unsafe deserialization (pickle, eval, yaml.load) can execute arbitrary code during data parsing. A crafted payload achieves full remote code execution.',
     fix: 'Use JSON.parse() or json.loads() for data, yaml.safe_load() for YAML, and a restricted deserializer instead of pickle for untrusted data. Decode or download a value to a file and read it instead of running it.',
   },
   'NEMO-010': {
@@ -1863,12 +1873,14 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     name: 'Invisible Unicode Codepoints Detected',
     description: 'Source file contains invisible Unicode codepoints that can hide malicious payloads (GlassWorm attack vector)',
     category: 'unicode-stego',
+    why: 'Invisible Unicode codepoints can hide malicious payloads in source code. This is the GlassWorm attack vector.',
     fix: 'xxd <file> | grep -iE "e280[8-9a-e]|efbb|efb8|f3a0" to locate the invisible codepoints in the file named in the finding, then remove them.',
   },
   'UNICODE-STEGO-002': {
     name: 'GlassWorm Decoder Pattern Detected',
     description: 'A source file references Unicode variation selector or tag character codepoints and carries corroborating evidence of a decoder: the decoder half of a GlassWorm attack, which reads hidden codepoints back into executable text.',
     category: 'unicode-stego',
+    why: 'The GlassWorm attack hides a payload in invisible Unicode characters and rebuilds it at runtime from their codepoints.',
     fix: 'Open the lines around the reported line (sed -n \'<line-5>,<line+20>p\' <file>), trace the codepoint range to whatever consumes it, then remove the decoder.',
   },
   'UNICODE-STEGO-003': {
