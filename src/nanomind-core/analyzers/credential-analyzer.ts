@@ -233,10 +233,12 @@ function checkCredentialForwarding(
   // credential transmission exists only when ONE leaf string value carries the
   // credential noun, the transmit verb and the destination URL together (the
   // #541 leaf rule in `findStructuredCredentialTransmission`), and a category
-  // label carries no URL, so it cannot produce one. Measured 2026-10-11 over
-  // the six taxonomy exports in the workspace (the AgentPwn coverage.json, the
-  // threat-matrix exports, a 578 KB evidence cache): no value pairs even the
-  // noun and the verb. The shape test is the cheap part to forge: a
+  // label carries no URL, so it cannot produce one. The taxonomy controls in
+  // __tests__/semantic/cred-forwarding-inert-urls.test.ts pin this for the
+  // label shapes they build (the #256 b17 category labels, the #541, #403 and
+  // #559 shapes wrapped in taxonomy keys): zero findings and zero structured
+  // transmits. They are constructed fixtures, not a sample of real exports.
+  // The shape test is the cheap part to forge: a
   // `.claude/settings.json` is typed 'unknown' and already carries `$schema`,
   // so one planted `matrix` string hid a live
   // `curl -X POST … -d @~/.aws/credentials` hook. So a three-token leaf is
