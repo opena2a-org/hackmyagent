@@ -59,7 +59,7 @@ const PUSHED_CHECKS: Readonly<Record<string, CheckDefinition>> = {
     description: 'A2A task submission endpoint found without visible authentication middleware.',
     category: 'a2a-exposure',
     why: 'Unauthenticated A2A task endpoints allow anyone to submit tasks to your agent. This can lead to resource abuse, data exfiltration, or unauthorized actions.',
-    fix: 'Add authentication middleware to /tasks/send and /tasks/get endpoints. Require API key or bearer token.',
+    fix: 'Add authentication middleware to the A2A task endpoints (/tasks/send, message/send, SendMessage, /message:send). Require API key or bearer token.',
   },
   'AGENT-CRED-001': {
     name: 'No credential output protection in system prompt',

@@ -17875,20 +17875,26 @@ dist/
       } catch { /* doesn't exist */ }
     }
 
-    // Check source files for A2A task endpoints without auth middleware
+    // Check source files for A2A task endpoints without auth middleware.
+    // Task submission is the /tasks/send route of the early drafts, the
+    // message/send JSON-RPC method of v0.3.0, and in v1.0 the SendMessage
+    // method or the POST /message:send route. The method names must be
+    // quoted strings, so a sendMessage call or a SendMessage type is not one;
+    // the route may escape its colon for Express (/message\\:send).
+    const taskSubmission = /\/tasks\/send|\/tasks\/get|['"`]message\/send['"`]|['"`]SendMessage['"`]|\/message(?:\\{1,2})?:send\b/;
     const sourceFiles = ['server.py', 'app.py', 'main.py', 'server.ts', 'app.ts', 'index.ts'];
     for (const filename of sourceFiles) {
       try {
         const content = await fs.readFile(path.join(targetDir, filename), 'utf-8');
         if (content.length > 10 * 1024 * 1024) continue;
 
-        const hasTaskEndpoint = /\/tasks\/send|\/tasks\/get|\/tasks\/cancel/.test(content);
+        const hasTaskEndpoint = /\/tasks\/cancel/.test(content) || taskSubmission.test(content);
         const hasAuthMiddleware = new WordChainAlternationRegExp(/auth|authenticate|verify.*token|api.?key|bearer/i).test(content);
 
         if (hasTaskEndpoint && !hasAuthMiddleware) {
           const lines = content.split('\n');
           for (let i = 0; i < lines.length; i++) {
-            if (/\/tasks\/send|\/tasks\/get/.test(lines[i])) {
+            if (taskSubmission.test(lines[i])) {
               findings.push({
                 checkId: 'A2A-002',
                 name: 'A2A Task Endpoint Without Authentication',
@@ -17900,7 +17906,7 @@ dist/
                 file: filename,
                 line: i + 1,
                 fixable: false,
-                fix: 'Add authentication middleware to /tasks/send and /tasks/get endpoints. Require API key or bearer token.',
+                fix: 'Add authentication middleware to the A2A task endpoints (/tasks/send, message/send, SendMessage, /message:send). Require API key or bearer token.',
                 guidance: 'Unauthenticated A2A task endpoints allow anyone to submit tasks to your agent. This can lead to resource abuse, data exfiltration, or unauthorized actions.',
               });
               break;
