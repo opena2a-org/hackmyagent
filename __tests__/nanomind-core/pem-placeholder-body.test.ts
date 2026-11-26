@@ -12,17 +12,19 @@
  * was reported as AST-CRED-003 "PEM private key", the finding a real key gets.
  *
  * The rule: a hit is dropped only when an END marker begins within 4096
- * characters after the header and fewer than 40 base64-alphabet characters lie
- * between. Every other header is kept: a real key, a key cut off after its
- * first body line, a header with no END marker in reach. The rows below pin
- * both sides of each bound. Linear scan time on 1 MB of hostile PEM input is
+ * characters after the header, fewer than 40 base64-alphabet characters lie
+ * between, and no base64 run of 40 characters or more stands within 4096
+ * characters before the header or after the END marker. Every other header is
+ * kept: a real key, a key cut off after its first body line, a header with no
+ * END marker in reach, a short-bodied pair with a key body beside it. When the
+ * scan cannot tell, it reports. The rows below pin both sides of each bound. Linear scan time on 1 MB of hostile PEM input is
  * timed in `openai-style-sk-key.test.ts`, with the other canonical shapes.
  *
  * The private keys are generated per run and are not secrets. Armor lines are
  * assembled from parts so this file holds no complete one.
  */
 
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -175,5 +177,78 @@ describe('end to end: AST-CRED-003', () => {
     expect(cred).toHaveLength(1);
     expect(cred[0].file).toBe('config.yaml');
     expect(cred[0].line).toBe(3);
+  });
+});
+
+describe('a short-bodied pair with a key body just outside it is still a hit', () => {
+  // A base64 body of two 64-character lines, generated per run: random bytes,
+  // not a key, so the file holds no secret. `/` is swapped for `+`, both in
+  // the alphabet: the analyzer's content gate (`hasCredentialFormat`) reads a
+  // 40-character run without `/`, and two random lines each split by `/` into
+  // shorter pieces gave no such run in about one run in sixteen, so a cell
+  // failed at random for a reason that is not the PEM shape's.
+  const keyBody = () =>
+    [randomBytes(48), randomBytes(48)].map(b => b.toString('base64').replaceAll('/', '+')).join('\n');
+  const header = BEGIN('RSA ');
+  const end = END('RSA ');
+
+  async function pemFindings(content: string) {
+    const dir = tempDir('hma-pem-around-');
+    await writeFile(join(dir, 'config.yaml'), content, 'utf-8');
+    const result = await runNanoMindScan(dir, []);
+    return result.mergedFindings.filter(
+      f => !f.passed && f.checkId === 'AST-CRED-003' && f.message.includes(PEM_LABEL),
+    );
+  }
+
+  it('P1: the END line right after the header, the body on the lines after it', async () => {
+    const content = configWith(`${header}\n${end}\n${keyBody()}\n`);
+    expect(pemHits(content)).toHaveLength(1);
+    expect(await pemFindings(content)).toHaveLength(1);
+  });
+
+  it('P2: the body before the header and its END line', async () => {
+    const content = configWith(`${keyBody()}\n${header}\n${end}\n`);
+    expect(pemHits(content)).toHaveLength(1);
+    expect(await pemFindings(content)).toHaveLength(1);
+  });
+
+  it('P3: a placeholder with nothing key-like within 4096 characters either side is not', async () => {
+    const prose = (n: number) => 'Paste the key here, then run the signer. '.repeat(Math.ceil(n / 41)).slice(0, n);
+    const content = configWith(`${prose(4200)}\n${block('<your private key here>')}${prose(4200)}\n`);
+    expect(pemHits(content)).toEqual([]);
+    expect(await pemFindings(content)).toEqual([]);
+  });
+
+  it('P3 bound: a 40-character run 4096 characters out is outside the window', () => {
+    const run = 'Ab+/'.repeat(10);
+    const pair = `${header}\n...\n${end}`;
+    // 40 characters of the run must lie in the 4096 characters before the header.
+    const before = (gap: number) => `${run}${'.'.repeat(gap)}${pair}`;
+    expect(pemHits(before(4096 - 40 + 1))).toEqual([]);
+    expect(pemHits(before(4096 - 40))).toHaveLength(1);
+    // And in the 4096 characters after the END marker.
+    const after = (gap: number) => `${pair}${'.'.repeat(gap)}${run}`;
+    expect(pemHits(after(4096 - 40 + 1))).toEqual([]);
+    expect(pemHits(after(4096 - 40))).toHaveLength(1);
+    // 39 characters is not a run.
+    expect(pemHits(`${pair}\n${run.slice(0, 39)}\n`)).toEqual([]);
+  });
+
+  it('P4: an ordinary key, with the severity a real key gets', async () => {
+    const content = configWith(`${header}\n${keyBody()}\n${end}\n`);
+    expect(pemHits(content)).toHaveLength(1);
+    const found = await pemFindings(content);
+    expect(found).toHaveLength(1);
+    expect(found[0].severity).toBe('critical');
+    // P1 and P2 are reported at the same severity.
+    const p1 = await pemFindings(configWith(`${header}\n${end}\n${keyBody()}\n`));
+    expect(p1.map(f => f.severity)).toEqual(['critical']);
+  });
+
+  it('P5: a placeholder pair, then an ordinary key in the same file', async () => {
+    const content = configWith(`${block('<your private key here>')}\n${header}\n${keyBody()}\n${end}\n`);
+    expect(pemHits(content).length).toBeGreaterThanOrEqual(1);
+    expect((await pemFindings(content)).length).toBeGreaterThanOrEqual(1);
   });
 });

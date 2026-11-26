@@ -10,6 +10,8 @@ breaking: true
   `[REDACTED]`, then the END line, was reported as a hardcoded private key
   and the run exited 1.
 - A header is now not reported when an END marker begins within 4096
-  characters after it and fewer than 40 base64 characters lie between: no
-  key body fits in that. A real key, a key cut off after its first body
-  line, and a header with no END marker in reach are still reported.
+  characters after it, fewer than 40 base64 characters lie between, and no
+  run of 40 base64 characters stands within 4096 characters before the
+  header or after the END marker. A real key, a key cut off after its first
+  body line, a header with no END marker in reach, and a header closed at
+  once with a key body above or below the pair are still reported.

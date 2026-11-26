@@ -1764,7 +1764,8 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
    * discriminator here instead of in a lookahead: a lookahead re-reads the run
    * from every start position, and that is how a quadratic scan gets in.
    * `content` and `end` (the offset just past the match) are for a shape that
-   * judges what follows the match; such a check must bound its own reading.
+   * judges the text around the match; such a check must bound its own reading,
+   * or read the content once for all of its matches.
    */
   accept?: (matched: string, content: string, end: number) => boolean;
 }> = [
@@ -1857,20 +1858,22 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
   // was positively identified as a credential once already — see the note in
   // src/types/credential-format.ts). Do not relax them.
   // `accept` holds out an armor header whose body is a placeholder or a
-  // redaction (`<your key here>`, `...`, `[REDACTED]`) closed by an END marker
-  // — see `pemHeaderClosesOnPlaceholder`. A header with a real or truncated
-  // body, or with no END marker in reach, is still reported.
+  // redaction (`<your key here>`, `...`, `[REDACTED]`) closed by an END marker,
+  // with nothing key-like in the text around the pair — see
+  // `pemPairIsPlaceholder`. A header with a real or truncated body, with no END
+  // marker in reach, or with a key body just outside the pair is still reported.
   {
     label: 'PEM private key',
     regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g,
-    accept: (_matched, content, end) => !pemHeaderClosesOnPlaceholder(content, end),
+    accept: (matched, content, end) => !pemPairIsPlaceholder(content, end - matched.length, end),
   },
 ];
 
 /**
  * How far after a PEM private-key header an END marker may begin and still
- * close the block, and how many base64-alphabet characters the text between
- * them must hold to be a key body.
+ * close the block, how many base64-alphabet characters the text between them
+ * must hold to be a key body, and how far before the header and after the END
+ * marker a key body may stand.
  *
  * 40 is less than one line of a real PEM body (64 characters), and more than
  * the letters of a placeholder sentence such as `<YOUR PRIVATE KEY HERE>` (18)
@@ -1880,6 +1883,8 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
 const PEM_END_WINDOW_CHARS = 4096;
 const PEM_MIN_BODY_BASE64_CHARS = 40;
 const PEM_END_MARKER = '-----END ';
+/** Longest label an END marker carries before its closing dashes (`ENCRYPTED PRIVATE KEY` is 21). */
+const PEM_END_LABEL_MAX_CHARS = 64;
 
 /** `A-Z`, `a-z`, `0-9`, `+` and `/`: the 64 characters of the base64 alphabet. */
 function isBase64AlphabetCode(code: number): boolean {
@@ -1888,30 +1893,113 @@ function isBase64AlphabetCode(code: number): boolean {
 }
 
 /**
- * True when an END marker begins within `PEM_END_WINDOW_CHARS` characters of
- * `bodyStart` (the end of a private-key header) and fewer than
- * `PEM_MIN_BODY_BASE64_CHARS` base64-alphabet characters lie between: the
- * header frames a placeholder, not a key. Anything else — a full body, a body
- * truncated after its first line, a header with no END in reach — is false,
- * so the hit is kept.
+ * Offset of the END marker that closes the header ending at `bodyStart`, when
+ * one begins within `PEM_END_WINDOW_CHARS` characters and fewer than
+ * `PEM_MIN_BODY_BASE64_CHARS` base64-alphabet characters lie between; -1
+ * otherwise. A full body, a body truncated after its first line, or a header
+ * with no END in reach gives -1.
  *
  * No placeholder list and no whitespace or run-length rule: the count is the
- * whole judgement. The walk stops at the END marker, at the 40th alphabet
- * character, or at the window edge, so it reads at most 4096 characters per
- * header. And it cannot pass more than two later headers before stopping —
- * each holds at least 15 alphabet characters (`BEGINPRIVATEKEY`) — so on
- * content packed with headers every character is read a bounded number of
- * times and the scan stays linear (`openai-style-sk-key.test.ts` times 1 MB).
+ * whole judgement of the body. The walk stops at the END marker, at the 40th
+ * alphabet character, or at the window edge, so it reads at most 4096
+ * characters per header. And it cannot pass more than two later headers
+ * before stopping — each holds at least 15 alphabet characters
+ * (`BEGINPRIVATEKEY`) — so on content packed with headers every character is
+ * read a bounded number of times and the scan stays linear
+ * (`openai-style-sk-key.test.ts` times 1 MB).
  */
-function pemHeaderClosesOnPlaceholder(content: string, bodyStart: number): boolean {
+function pemShortBodyEndMarker(content: string, bodyStart: number): number {
   const limit = Math.min(content.length, bodyStart + PEM_END_WINDOW_CHARS);
   let alphabet = 0;
   for (let i = bodyStart; i < limit; i++) {
     const code = content.charCodeAt(i);
-    if (code === 45 /* - */ && content.startsWith(PEM_END_MARKER, i)) return true;
-    if (isBase64AlphabetCode(code) && ++alphabet >= PEM_MIN_BODY_BASE64_CHARS) return false;
+    if (code === 45 /* - */ && content.startsWith(PEM_END_MARKER, i)) return i;
+    if (isBase64AlphabetCode(code) && ++alphabet >= PEM_MIN_BODY_BASE64_CHARS) return -1;
   }
-  return false;
+  return -1;
+}
+
+/** Offset just past the closing dashes of the END marker at `endMarker`, or past `-----END ` when none is in reach. */
+function pemEndMarkerEnd(content: string, endMarker: number): number {
+  const from = endMarker + PEM_END_MARKER.length;
+  const limit = Math.min(content.length, from + PEM_END_LABEL_MAX_CHARS);
+  for (let i = from; i < limit; i++) {
+    if (content.startsWith('-----', i)) {
+      let j = i + 5;
+      while (j < content.length && content.charCodeAt(j) === 45) j++;
+      return j;
+    }
+  }
+  return from;
+}
+
+/**
+ * The maximal base64-alphabet runs of at least `PEM_MIN_BODY_BASE64_CHARS`
+ * characters in one content string, as parallel start and end (exclusive)
+ * offsets in order. Built once per content, on the first short-bodied pair it
+ * holds, so content packed with placeholder pairs is read once here rather
+ * than 8 KB per pair.
+ */
+let pemRunsCache: { content: string; starts: number[]; ends: number[] } | undefined;
+
+function base64RunsOf(content: string): { starts: number[]; ends: number[] } {
+  if (pemRunsCache !== undefined && pemRunsCache.content === content) return pemRunsCache;
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let runStart = -1;
+  for (let i = 0; i <= content.length; i++) {
+    if (i < content.length && isBase64AlphabetCode(content.charCodeAt(i))) {
+      if (runStart < 0) runStart = i;
+    } else if (runStart >= 0) {
+      if (i - runStart >= PEM_MIN_BODY_BASE64_CHARS) {
+        starts.push(runStart);
+        ends.push(i);
+      }
+      runStart = -1;
+    }
+  }
+  pemRunsCache = { content, starts, ends };
+  return pemRunsCache;
+}
+
+/**
+ * True when at least `PEM_MIN_BODY_BASE64_CHARS` characters of one base64 run
+ * lie inside [from, to). The runs are disjoint and in order, so the first run
+ * ending far enough past `from` decides: any later run starts later still.
+ */
+function hasBase64RunWithin(content: string, from: number, to: number): boolean {
+  const { starts, ends } = base64RunsOf(content);
+  const need = PEM_MIN_BODY_BASE64_CHARS;
+  let lo = 0;
+  let hi = ends.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (ends[mid] < from + need) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === ends.length) return false;
+  return Math.min(ends[lo], to) - Math.max(starts[lo], from) >= need;
+}
+
+/**
+ * True when the private-key header at [headerStart, bodyStart) frames a
+ * placeholder: an END marker closes it on a body too short to be a key (see
+ * `pemShortBodyEndMarker`), and no base64 run of `PEM_MIN_BODY_BASE64_CHARS`
+ * characters or more stands within `PEM_END_WINDOW_CHARS` characters before
+ * the header or after the END marker. A key body beside the pair — after an
+ * END line placed straight under the header, or above the pair — makes the
+ * header a hit, as a header is when the scan cannot tell.
+ *
+ * Neither the pair's own lines nor its short body can hold such a run, and a
+ * dash ends one, so the one query over [header - 4096, END + 4096) asks
+ * exactly about the two windows.
+ */
+function pemPairIsPlaceholder(content: string, headerStart: number, bodyStart: number): boolean {
+  const endMarker = pemShortBodyEndMarker(content, bodyStart);
+  if (endMarker < 0) return false;
+  const from = Math.max(0, headerStart - PEM_END_WINDOW_CHARS);
+  const to = Math.min(content.length, pemEndMarkerEnd(content, endMarker) + PEM_END_WINDOW_CHARS);
+  return !hasBase64RunWithin(content, from, to);
 }
 
 /**
