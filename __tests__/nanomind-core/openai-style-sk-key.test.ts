@@ -202,19 +202,23 @@ describe('#316: scan time is linear on 1 MB of sk-, alphanumerics and PEM header
     fill(`-sk-${fill(ALNUM, 40)}`, n),
     // Bare prefixes: every start fails on its second body character.
     fill('sk-', n),
-    // The PEM private-key shape reads up to 4096 characters past each header
-    // for an END marker. Headers back to back: each read stops two headers
-    // on, at its 40th base64-alphabet character.
+    // The PEM private-key shape reads the whole text once for its placeholder
+    // rule, whatever the number of headers. Headers back to back: every one
+    // is a hit.
     fill(pemBegin, n),
-    // A header per 4 KB of text with no alphabet character and no END: each
-    // read runs the whole window.
+    // A header per 4 KB of text with no alphabet character and no END.
     fill(`${pemBegin}${'.'.repeat(4000)}`, n),
-    // A header per 4 KB of dashes: every dash in the window opens a candidate
-    // END marker and none finishes one, and a dash is not an alphabet
-    // character, so nothing stops the read early.
+    // A header per 4 KB of dashes: every dash opens a candidate header and a
+    // candidate END marker, and none finishes either.
     fill(`${pemBegin}${'-'.repeat(4000)}`, n),
+    // Header text one dash short, back to back: every candidate header reads
+    // to its last character before it fails.
+    fill(pemBegin.slice(0, -1), n),
     // Placeholder blocks that each close: every header is read and dropped.
     fill(`${pemBegin}\n<your private key here>\n${pemEnd}\n`, n),
+    // Escaped line breaks between body runs, as in a JSON string: none ends
+    // a run, and every block keeps its header.
+    fill(`${pemBegin}\\n${pemEnd}\\n${fill(ALNUM, 20)}\\r\\n${fill(ALNUM, 20)}\\n`, n),
   ];
 
   /**

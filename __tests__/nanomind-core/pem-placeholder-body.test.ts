@@ -11,12 +11,16 @@
  *
  * was reported as AST-CRED-003 "PEM private key", the finding a real key gets.
  *
- * The rule: a hit is dropped only when an END marker begins within 4096
- * characters after the header and fewer than 40 base64-alphabet characters lie
- * between. Every other header is kept: a real key, a key cut off after its
- * first body line, a header with no END marker in reach. The rows below pin
- * both sides of each bound. Linear scan time on 1 MB of hostile PEM input is
- * timed in `openai-style-sk-key.test.ts`, with the other canonical shapes.
+ * The rule: a header and END pair is held out only when fewer than 40
+ * base64-alphabet characters lie between them, and no base64 run of key-body
+ * length (40 alphabet characters in a row, line breaks and escaped line breaks
+ * ignored) stands between it and the neighbouring private-key header, or the
+ * start or the end of the text, on either side. There is no fixed window.
+ * Every other header is kept: a real key, a key cut off after its first body
+ * line, a header with no END marker before the next header, and a body placed
+ * anywhere around the pair. The rows below pin both sides of each bound. Linear
+ * scan time on 1 MB of hostile PEM input is timed in
+ * `openai-style-sk-key.test.ts`, with the other canonical shapes.
  *
  * The private keys are generated per run and are not secrets. Armor lines are
  * assembled from parts so this file holds no complete one.
@@ -144,10 +148,37 @@ describe('the two bounds', () => {
     expect(pemHits(`${header}\n${'=\n'.repeat(200)}${END('RSA ')}`)).toEqual([]);
   });
 
-  it('an END marker beginning 4095 characters after the header closes it, one at 4096 does not', () => {
-    const at = (offset: number) => `${header}${'.'.repeat(offset)}${END('RSA ')}`;
+  it('no window: an END marker after any amount of text without a key body closes the header', () => {
+    const at = (offset: number) => `${header}${'.\n'.repeat(offset)}${END('RSA ')}`;
     expect(pemHits(at(4095))).toEqual([]);
-    expect(pemHits(at(4096))).toHaveLength(1);
+    expect(pemHits(at(100_000))).toEqual([]);
+  });
+
+  it('a body-length run anywhere between the neighbouring headers keeps the pair; 39 in a row does not', () => {
+    const run = (n: number) => 'Ab+/'.repeat(20).slice(0, n);
+    const pair = `${header}\n...\n${END('RSA ')}\n`;
+    expect(pemHits(`${pair}${run(39)}\n`)).toEqual([]);
+    expect(pemHits(`${pair}${run(40)}\n`)).toHaveLength(1);
+    expect(pemHits(`${run(39)}\n${pair}`)).toEqual([]);
+    expect(pemHits(`${run(40)}\n${pair}`)).toHaveLength(1);
+    // Line breaks, written or escaped, do not end a run.
+    expect(pemHits(`${pair}${run(20)}\n${run(20)}\n`)).toHaveLength(1);
+    expect(pemHits(`${pair}${run(20)}\\n${run(20)}`)).toHaveLength(1);
+    expect(pemHits(`${pair}${run(20)}\\r\\n${run(20)}`)).toHaveLength(1);
+    // A space does.
+    expect(pemHits(`${pair}${run(20)} ${run(20)}\n`)).toEqual([]);
+  });
+
+  it('the neighbouring private-key header bounds what is read', () => {
+    const [, pem] = realKeys()[0];
+    const placeholder = block('<your private key here>');
+    // A real key after a placeholder block: the real key's header is reported,
+    // the placeholder's is not, the real body lying past its neighbour.
+    expect(pemHits(`${placeholder}${pem}`)).toHaveLength(1);
+    // A placeholder after a real key has the real body on its side of the
+    // neighbouring header, so it is reported too.
+    expect(pemHits(`${pem}${placeholder}`)).toHaveLength(2);
+    expect(pemHits(`${placeholder}${placeholder}`)).toEqual([]);
   });
 
   it('a dash run, or dashes before a word that only starts with END, is not an END marker', () => {
@@ -176,4 +207,72 @@ describe('end to end: AST-CRED-003', () => {
     expect(cred[0].file).toBe('config.yaml');
     expect(cred[0].line).toBe(3);
   });
+});
+
+describe('a body anywhere around a header and END pair keeps the header reported, as at the default branch', () => {
+  /** The failing AST-CRED findings of a scan, as `id` or `id:PEM` for the PEM private-key shape. */
+  async function credFindings(file: string, content: string): Promise<string[]> {
+    const dir = tempDir('hma-pem-property-');
+    await writeFile(join(dir, file), content, 'utf-8');
+    const result = await runNanoMindScan(dir, []);
+    return result.mergedFindings
+      .filter(f => !f.passed && f.checkId.startsWith('AST-CRED-'))
+      .map(f => (f.message.includes(PEM_LABEL) ? `${f.checkId}:PEM` : f.checkId))
+      .sort();
+  }
+
+  /** The body lines of a key generated for this run, without its armor. */
+  const body = realKeys()[0][1].trim().split('\n').slice(1, -1).join('\n');
+  const H = BEGIN('RSA ');
+  const E = END('RSA ');
+  const filler = 'and the deploy step reads the signing settings from here\n'.repeat(90);
+
+  /** `text` as a JS template literal, and as a one-line JSON value with escaped line ends. */
+  const forms = (text: string): Array<[string, string, string]> => [
+    ['a JS template literal', 'signer.js', `const signingKey = \`${text}\`;\nmodule.exports = { signingKey };\n`],
+    ['a one-line JSON value', 'signer.json', `${JSON.stringify({ signingKey: text })}\n`],
+  ];
+
+  const cells: Array<[string, Array<[string, string, string]>]> = [
+    ['the pair, then the body', forms(`${H}\n${E}\n${body}\n`)],
+    ['the body, then the pair', forms(`${body}\n${H}\n${E}\n`)],
+    ['the pair, more than 4,096 characters of filler on many lines, then the body', forms(`${H}\n${E}\n${filler}${body}\n`)],
+    ['the pair, the body, a second END', forms(`${H}\n${E}\n${body}\n${E}\n`)],
+    [
+      'the END text in a comment between concatenated string pieces',
+      [
+        ['a JS template literal', 'signer.js', `const signingKey = \`${H}\n\` + /* ${E} */ \`${body}\n${E}\n\`;\nmodule.exports = { signingKey };\n`],
+        ['a one-line JSON value', 'signer.json', `${JSON.stringify({ signingKeyHead: `${H}\n`, '//': E, signingKeyBody: `${body}\n${E}\n` })}\n`],
+      ],
+    ],
+  ];
+
+  /**
+   * What the default branch, whose shape reports every private-key header,
+   * reports for each form, measured with the placeholder rule switched off:
+   * the PEM finding in both, and AST-CRED-001 for the source file.
+   */
+  const EXPECTED: Readonly<Record<string, string[]>> = {
+    'signer.js': ['AST-CRED-001', 'AST-CRED-003:PEM'],
+    'signer.json': ['AST-CRED-003:PEM'],
+  };
+
+  expect(filler.length).toBeGreaterThan(4096);
+  expect(filler.split('\n').length).toBeGreaterThan(50);
+
+  for (const [name, variants] of cells) {
+    for (const [form, file, content] of variants) {
+      it(`${name}, in ${form}`, async () => {
+        expect(pemHits(content)).toHaveLength(1);
+        expect(await credFindings(file, content)).toEqual(EXPECTED[file]);
+      }, 120_000);
+    }
+  }
+
+  for (const [form, file, content] of forms(`${H}\nPaste the key generated by ssh-keygen here.\n${E}\n`)) {
+    it(`the true placeholder, a short note between header and END with nothing key-like in the text, in ${form}, is not reported`, async () => {
+      expect(pemHits(content)).toEqual([]);
+      expect(await credFindings(file, content)).toEqual([]);
+    }, 120_000);
+  }
 });

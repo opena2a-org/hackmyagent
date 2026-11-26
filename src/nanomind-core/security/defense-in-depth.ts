@@ -381,10 +381,107 @@ export function redactSecretsForReportReporting(content: string): {
 } {
   const shapePass = redactCredentialShapesReporting(content);
   const text = shapePass.text.replace(
-    /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi,
+    REPORT_NAME_GATED_VALUE,
     (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
   );
   return { text, shapes: shapePass.shapes };
+}
+
+/** The report boundary's name-gated rule: a no-whitespace quoted value assigned to a secret-named identifier. */
+const REPORT_NAME_GATED_VALUE = /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi;
+
+/**
+ * `redactSecretsForReportReporting`, with the origin of every character of
+ * the redacted text: character `i` of `text` was produced from the original
+ * characters `[from[i], to[i])`. A character the rules left alone maps to
+ * itself; every character of a replacement maps to the whole stretch the
+ * replacement took, so a position in the original can be found in the
+ * redacted text whatever the rules did around it.
+ *
+ * Built from the same rule table and the same name-gated rule, in the same
+ * order, so `text` equals `redactSecretsForReportReporting(content).text`; a
+ * caller that holds both compares them and treats a difference as a map it
+ * cannot use. Linear in the content per rule.
+ * Content refused for size maps every character of `REDACTION_WITHHELD` to the
+ * whole content.
+ */
+export function redactSecretsForReportWithOrigins(content: string): {
+  text: string;
+  from: Int32Array;
+  to: Int32Array;
+} {
+  if (Buffer.byteLength(content, 'utf-8') > MAX_REDACTION_INPUT_BYTES) {
+    const n = REDACTION_WITHHELD.length;
+    return { text: REDACTION_WITHHELD, from: new Int32Array(n), to: new Int32Array(n).fill(content.length) };
+  }
+  let text = content;
+  let from = new Int32Array(content.length);
+  let to = new Int32Array(content.length);
+  for (let i = 0; i < content.length; i++) {
+    from[i] = i;
+    to[i] = i + 1;
+  }
+
+  /**
+   * One global replace over `text`, recording origins. `keep(match, groups)`
+   * is how many leading characters of the match the replacement carries over
+   * verbatim; the rest of the replacement is `insert(match, groups)`.
+   */
+  const apply = (
+    pattern: RegExp,
+    keep: (match: string, groups: string[]) => number,
+    insert: (match: string, groups: string[]) => string,
+  ): void => {
+    const edits: Array<{ start: number; end: number; inserted: string }> = [];
+    pattern.lastIndex = 0;
+    for (let m = pattern.exec(text); m !== null; m = pattern.exec(text)) {
+      if (m[0].length === 0) {
+        pattern.lastIndex++;
+        continue;
+      }
+      const groups = m.slice(1).map(g => g ?? '');
+      const kept = keep(m[0], groups);
+      edits.push({ start: m.index + kept, end: m.index + m[0].length, inserted: insert(m[0], groups) });
+    }
+    pattern.lastIndex = 0;
+    if (edits.length === 0) return;
+
+    let length = text.length;
+    for (const e of edits) length += e.inserted.length - (e.end - e.start);
+    const pieces: string[] = [];
+    const nextFrom = new Int32Array(length);
+    const nextTo = new Int32Array(length);
+    let at = 0;
+    let last = 0;
+    const copy = (a: number, b: number): void => {
+      pieces.push(text.slice(a, b));
+      nextFrom.set(from.subarray(a, b), at);
+      nextTo.set(to.subarray(a, b), at);
+      at += b - a;
+    };
+    for (const e of edits) {
+      copy(last, e.start);
+      pieces.push(e.inserted);
+      nextFrom.fill(from[e.start], at, at + e.inserted.length);
+      nextTo.fill(to[e.end - 1], at, at + e.inserted.length);
+      at += e.inserted.length;
+      last = e.end;
+    }
+    copy(last, text.length);
+    text = pieces.join('');
+    from = nextFrom;
+    to = nextTo;
+  };
+
+  for (const rule of CREDENTIAL_REDACTION_RULES) {
+    // A `$1` replacement keeps the first group, which every such rule opens
+    // with; any other replacement is literal.
+    const keepsGroup = rule.replacement.startsWith('$1');
+    const literal = keepsGroup ? rule.replacement.slice(2) : rule.replacement;
+    apply(rule.pattern, (_m, g) => (keepsGroup ? (g[0] ?? '').length : 0), () => literal);
+  }
+  apply(REPORT_NAME_GATED_VALUE, m => m.split(/[=:]/)[0].length, () => '=[REDACTED]');
+  return { text, from, to };
 }
 
 // ============================================================================

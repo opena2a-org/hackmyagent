@@ -8,6 +8,12 @@
  * becoming one space, so removing a key's characters only ever takes words
  * away from the purpose.
  *
+ * The purpose the analyzer holds has been through the report redaction table,
+ * whose markers end in a bracket: a key glued to a URL tail loses the URL's
+ * scheme to the marker. The compiler finds the URLs on the text as written and
+ * hands their positions in the redacted purpose to the analyzer, so each cell
+ * below holds both on the line as written and on the line through the table.
+ *
  * Every key below is drawn at run time from a fixed seed: no credential-shaped
  * literal sits in the repository, and a failing line is the same on every run.
  */
@@ -17,8 +23,13 @@ import { mkdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { purposeWordsFoundForTest } from '../../src/nanomind-core/analyzers/credential-analyzer';
+import { declaredPurposeForTest } from '../../src/nanomind-core/compiler/semantic-compiler';
 import { findCredentialFormatMatch } from '../../src/types/credential-format';
 import { runNanoMindScan } from '../../src/nanomind-core/scanner-bridge';
+import {
+  redactSecretsForReport,
+  redactSecretsForReportWithOrigins,
+} from '../../src/nanomind-core/security/defense-in-depth';
 import { tempDir } from '../helpers/temp-dir';
 
 const SEED = 0x1987;
@@ -67,7 +78,13 @@ function basePurposeWords(declaredPurpose: string): string[] {
   return ['test', 'example', 'documentation', 'fixture', 'demo'].filter(w => purpose.includes(w));
 }
 
-/** Failing finding ids and severities from the real semantic pipeline. */
+/** The purpose words found in `line` once the compiler has taken it through the report redaction table. */
+function tablePurposeWords(line: string): string[] {
+  const { text, urlSpans } = declaredPurposeForTest(line);
+  return purposeWordsFoundForTest(text, urlSpans);
+}
+
+/** Failing finding ids from the real semantic pipeline. */
 async function failingFindings(file: string, content: string): Promise<string[]> {
   const dir = tempDir('hma-purpose-together-');
   mkdirSync(dirname(join(dir, file)), { recursive: true });
@@ -87,22 +104,40 @@ const d = drawer(SEED);
  * config file by the word `credential`, so the JWT and entropy lines are YAML.
  */
 const vendorLine = `const openai = "a_sk-${d.run(32)}://h/test";\n`;
+const vendorLine48 = `const openai = "a_sk-${d.run(48)}://h/test";\n`;
 const jwtLine = `credential: "a_eyJ${d.run(24, B64URL)}.${d.run(40, B64URL)}.${d.run(43, B64URL)}://h/test"\n`;
 /** A 40-character secret glued to underscore filler: the credible window starts inside the filler. */
 const entropyRun = `${'_'.repeat(45)}=${d.run(40)}`;
 const entropyLine = `credential: "${entropyRun}://h/test"\n`;
 
 describe('a key glued to a URL whose path holds a purpose word is reported, as at the base', () => {
-  it('U1: a word character and underscore, a vendor-shaped key, then ://h/test', async () => {
+  it('U1: a word character and underscore, a 32-character sk- key, then ://h/test', async () => {
     expect(basePurposeWords(vendorLine)).toEqual([]);
     expect(purposeWordsFoundForTest(vendorLine)).toEqual([]);
-    expect(await failingFindings('index.js', vendorLine)).toContain('AST-CRED-001');
+    expect(declaredPurposeForTest(vendorLine).text).toContain('[REDACTED_OPENAI_KEY]://h/test');
+    expect(tablePurposeWords(vendorLine)).toEqual([]);
+    const found = await failingFindings('index.js', vendorLine);
+    expect(found).toContain('AST-CRED-001');
+    expect(found).toContain('AST-CRED-003');
+  }, 120_000);
+
+  it('U1: the same with a 48-character sk- key', async () => {
+    expect(basePurposeWords(vendorLine48)).toEqual([]);
+    expect(purposeWordsFoundForTest(vendorLine48)).toEqual([]);
+    expect(declaredPurposeForTest(vendorLine48).text).toContain('[REDACTED_OPENAI_KEY]://h/test');
+    expect(tablePurposeWords(vendorLine48)).toEqual([]);
+    const found = await failingFindings('index.js', vendorLine48);
+    expect(found).toContain('AST-CRED-001');
+    expect(found).toContain('AST-CRED-003');
   }, 120_000);
 
   it('U2: the same with a JWT-shaped value', async () => {
     expect(basePurposeWords(jwtLine)).toEqual([]);
     expect(purposeWordsFoundForTest(jwtLine)).toEqual([]);
-    expect(await failingFindings('config.yaml', jwtLine)).toContain('AST-CRED-001');
+    expect(tablePurposeWords(jwtLine)).toEqual([]);
+    const found = await failingFindings('config.yaml', jwtLine);
+    expect(found).toContain('AST-CRED-001');
+    expect(found).toContain('AST-CRED-003');
   }, 120_000);
 
   it('U2: the same with a high-entropy run that begins partway through a longer run', async () => {
@@ -112,7 +147,10 @@ describe('a key glued to a URL whose path holds a purpose word is reported, as a
     expect(hit!.index).toBeLessThan(45);
     expect(basePurposeWords(entropyLine)).toEqual([]);
     expect(purposeWordsFoundForTest(entropyLine)).toEqual([]);
-    expect(await failingFindings('config.yaml', entropyLine)).toContain('AST-CRED-001');
+    expect(tablePurposeWords(entropyLine)).toEqual([]);
+    const found = await failingFindings('config.yaml', entropyLine);
+    expect(found).toContain('AST-CRED-001');
+    expect(found).toContain('AST-CRED-003');
   }, 120_000);
 });
 
@@ -149,9 +187,10 @@ describe('U3: removing credential values never adds a purpose word', () => {
     `${p.pick(['https', 'a', 'x.y', 'S3'])}://${p.run(3)}.${MIXED(p.pick(['test', 'demo', 'fixture', 'documentation']), p)}`,
   ];
 
-  it('for 400 generated lines the words found are a subset of the base words', () => {
+  it('for 400 generated lines the words found are a subset of the base words, as written and through the table', () => {
     const p = drawer(SEED + 1);
     let withKey = 0;
+    let redacted = 0;
     for (let n = 0; n < 400; n++) {
       const all = pieces(p);
       const count = 2 + (p.next() % 7);
@@ -161,8 +200,41 @@ describe('U3: removing credential values never adds a purpose word', () => {
       const base = new Set(basePurposeWords(line));
       const added = purposeWordsFoundForTest(line).filter(w => !base.has(w));
       expect(added, `seed ${SEED + 1}, line ${n}: ${JSON.stringify(line)}`).toEqual([]);
+      const mapped = redactSecretsForReportWithOrigins(line);
+      expect(mapped.text, `origin map, line ${n}`).toBe(redactSecretsForReport(line));
+      const purpose = declaredPurposeForTest(line).text;
+      if (purpose.includes('[REDACTED_')) redacted++;
+      const addedByTable = tablePurposeWords(line).filter(w => !base.has(w));
+      expect(addedByTable, `through the table, seed ${SEED + 1}, line ${n}: ${JSON.stringify(line)}`).toEqual([]);
     }
-    // The cell is about lines holding keys: most of them do.
+    // The cell is about lines holding keys: most of them do, and the table
+    // replaces a key on many of them.
     expect(withKey).toBeGreaterThan(200);
+    expect(redacted).toBeGreaterThan(100);
+  });
+});
+
+describe('the origin map of the report redaction', () => {
+  it('produces the report redaction text, with origins in order', () => {
+    const p = drawer(SEED + 2);
+    const pemLines = [`-----B${'EGIN'} RSA PRIVATE KEY-----`, p.run(64, `${ALNUM}+/`), p.run(64, `${ALNUM}+/`), `-----E${'ND'} RSA PRIVATE KEY-----`];
+    const inputs = [
+      `head\n${pemLines.join('\n')}\ntail https://h/x`,
+      `aws_secret_access_key = "${p.run(40, `${ALNUM}/+`)}" then postgres://u:p@h/db`,
+      `password: "${p.run(12)}" and sk-${p.run(40)} and ghp_${p.run(36)}`,
+      'nothing to redact here',
+    ];
+    for (const input of inputs) {
+      const { text, from, to } = redactSecretsForReportWithOrigins(input);
+      expect(text).toBe(redactSecretsForReport(input));
+      expect(from).toHaveLength(text.length);
+      for (let i = 0; i < text.length; i++) {
+        expect(from[i]).toBeLessThan(to[i]);
+        if (i > 0) expect(from[i]).toBeGreaterThanOrEqual(from[i - 1]);
+      }
+    }
+    // Untouched text maps to itself.
+    const plain = redactSecretsForReportWithOrigins('nothing to redact here');
+    expect([...plain.from]).toEqual([...Array(22).keys()]);
   });
 });

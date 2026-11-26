@@ -211,7 +211,7 @@ const EVERY_SURFACE: ReadonlySet<Surface> = new Set(ALL_SURFACES);
  */
 const NOT_YET_RE_ADDED_TO_CANONICAL =
   'UNDECLARED GAP, not a measured exclusion: absent from CANONICAL_CREDENTIAL_PATTERNS ' +
-  '(semantic-compiler.ts:1758-1868) only because that list is being re-populated one shape at a ' +
+  '(semantic-compiler.ts:1793-1903) only because that list is being re-populated one shape at a ' +
   'time on fix/credential-fp-siblings (#352/#353) after a first draft of eight measured an FP ' +
   'class and a quadratic scan — see __tests__/nanomind-core/pinned-credential-shapes.test.ts:9-14. ' +
   'No FP measurement exists for this shape.';
@@ -439,7 +439,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     guards: ['SG.', 'SG\\.'],
     surfaces: new Set<Surface>(['format-scan', 'vendor-alternation', 'nanomind-redaction']),
     rationale:
-      'Absent from CANONICAL_CREDENTIAL_PATTERNS: semantic-compiler.ts:1854-1858 carries the ' +
+      'Absent from CANONICAL_CREDENTIAL_PATTERNS: semantic-compiler.ts:1889-1893 carries the ' +
       'explanatory comment for this shape but no entry beneath it, so the comment reads as ' +
       'coverage that is not there.',
   },
@@ -471,7 +471,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
       'The anonymous fallback (credential-format.ts:957 ENTROPY_BLOB_ALTERNATIVE), gated by ' +
       'isCredibleEntropyBlob at credential-format.ts:1079. Deliberately confined to this module: ' +
       'it has no vendor name to report, so promoting it to the redactor or to ' +
-      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1758-1868) is an FP question nobody ' +
+      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1793-1903) is an FP question nobody ' +
       'has measured.',
   },
   {
@@ -483,7 +483,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     surfaces: new Set<Surface>(['ast-canonical', 'nanomind-redaction']),
     rationale:
       'Not a vendor prefix and not part of this module: detected by ' +
-      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1865) and redacted by ' +
+      'CANONICAL_CREDENTIAL_PATTERNS (semantic-compiler.ts:1900) and redacted by ' +
       'defense-in-depth.ts:232. Listed here because a shape absent from the registry cannot be ' +
       'guarded against being copied a fourth time.',
   },
@@ -498,7 +498,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     rationale:
       'Name-gated: a bare 40-character blob is a git SHA as often as a secret, so it fires only ' +
       'when the assignment target names it. Lives in NAME_GATED_CREDENTIAL_PATTERNS ' +
-      '(semantic-compiler.ts:1934-1961), not the canonical list, and has no vendor prefix, so it ' +
+      '(semantic-compiler.ts:2040-2067), not the canonical list, and has no vendor prefix, so it ' +
       'is on neither of this module`s surfaces.',
   },
   {

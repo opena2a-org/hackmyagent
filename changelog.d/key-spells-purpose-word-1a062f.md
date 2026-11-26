@@ -13,6 +13,11 @@ type: fixed
   line as written, and removed together, each removed stretch read as one
   space. Removing a key's characters only ever takes words away from what the
   decision reads.
+- The line is read after the report redaction has replaced the keys in it, so
+  the URLs are found on the line as written, before that redaction, and
+  removed from the redacted line at the same positions. A key glued to a URL
+  whose path holds one of those words, a 32 or 48 character `sk-` key among
+  them, is reported with AST-CRED-001.
 - A key containing EXAMPLE is still a placeholder and produces no finding, and
   a file that is a test by its path or by words outside the key keeps its
   result.
