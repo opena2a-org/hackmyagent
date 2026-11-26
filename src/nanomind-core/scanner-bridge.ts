@@ -49,7 +49,12 @@ import { readFileSync } from 'node:fs';
 import { join, relative, extname, isAbsolute } from 'node:path';
 
 import type { SecurityFinding, SecurityFindingDraft, Severity, ProjectType, NanoMindIntentSignal } from '../hardening/security-check.js';
-import { emitFinding, type RedactedFinding } from '../hardening/finding-emit.js';
+import {
+  emitFinding,
+  redactReportedCredentials,
+  reportedCredentialsOf,
+  type RedactedFinding,
+} from '../hardening/finding-emit.js';
 import type { SecurityAST, CompilationResult } from './types.js';
 import type { ASTFinding } from './analyzers/capability-analyzer.js';
 import type { IntegrityStatus } from './security/integrity-verifier.js';
@@ -530,7 +535,19 @@ export async function runNanoMindScan(
 
   // Step 7: Attach the advisory NanoMind intent to every finding whose artifact
   // the classifier read.
-  const annotatedFindings = annotateFindingsWithIntent(mergedFindings, intentByPath);
+  //
+  // Then remove, from every field of every finding of the scan (static and
+  // AST alike), each value the scan reported as a credential (AST-CRED-003).
+  // The boundary's own rules leave an anonymous high-entropy run in place,
+  // since most such runs are hashes; one the scan REPORTED is a secret, and an
+  // AST-CRED-001 request clause, or any rule that quotes a line, would
+  // otherwise carry it verbatim under `redactionStatus: 'clean'`. Read off the
+  // analyzers' own output, before deduplication folds any finding away.
+  const reportedCredentials = allASTFindings.flatMap(f => (f.passed ? [] : reportedCredentialsOf(f)));
+  const annotatedFindings = redactReportedCredentials(
+    annotateFindingsWithIntent(mergedFindings, intentByPath),
+    reportedCredentials,
+  );
 
   return {
     mergedFindings: annotatedFindings,
