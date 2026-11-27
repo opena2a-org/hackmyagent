@@ -464,6 +464,12 @@ export interface BackupRunState {
    * these with the scan-side records (`backupWithheldLinks`).
    */
   lastBackupWithheldLinks: WithheldLink[];
+  /**
+   * Where the last `createBackup` moved a store it found under this target's
+   * key and that was not this target's (#1035), or undefined when it moved
+   * none. The caller that renders the `--fix` disclosure names it.
+   */
+  lastBackupStoreSetAside: string | undefined;
 }
 
 /** What the store needs from the scanner that runs it. */
@@ -494,6 +500,8 @@ export class BackupStore {
   private set lastBackupIdent(v: FsIdentity | undefined) { this.host.run().lastBackupIdent = v; }
   private get lastBackupWithheldLinks(): WithheldLink[] { return this.host.run().lastBackupWithheldLinks; }
   private set lastBackupWithheldLinks(v: WithheldLink[]) { this.host.run().lastBackupWithheldLinks = v; }
+  private get lastBackupStoreSetAside(): string | undefined { return this.host.run().lastBackupStoreSetAside; }
+  private set lastBackupStoreSetAside(v: string | undefined) { this.host.run().lastBackupStoreSetAside = v; }
 
   private isPathWithinDirectory(filePath: string, directory: string): boolean {
     return containIsPathWithinDirectory(filePath, directory);
@@ -893,6 +901,15 @@ export class BackupStore {
   }
 
   /**
+   * Where the last backup moved a store that was under this target's key and
+   * was not this target's (#1035), or undefined when it moved none. The store
+   * is kept whole there; `backups` lists it.
+   */
+  backupStoreSetAside(): string | undefined {
+    return this.lastBackupStoreSetAside;
+  }
+
+  /**
    * The guard `secure --fix` hands to `hardenSoul` (#271).
    *
    * `harden-soul` runs AFTER `scan()` returns, from the CLI, on this same
@@ -924,7 +941,11 @@ export class BackupStore {
    * scan would report it again. See `src/store/archive-store.ts`.
    */
   private async prepareBackupRoot(targetDir: string): Promise<string> {
-    return prepareArchiveStore(targetDir);
+    const prepared = await prepareArchiveStore(targetDir);
+    // #1035 — a store moved aside is said, never silent: it can hold another
+    // directory's pre-fix copies, credentials among them.
+    this.lastBackupStoreSetAside = prepared.setAside;
+    return prepared.dir;
   }
 
   /**
@@ -1053,6 +1074,7 @@ export class BackupStore {
    */
   async createBackup(targetDir: string): Promise<string> {
     this.lastBackupWithheldLinks = [];
+    this.lastBackupStoreSetAside = undefined;
     const backupDir = await this.createRunBackupDir(await this.prepareBackupRoot(targetDir));
 
     // The identity of the directory just created, captured once. Every later
@@ -1573,6 +1595,7 @@ export class BackupStore {
       + `${cliName} rollback ${citationTarget(opts.typedDir ?? targetDir)}`,
       '  If every --fix backup of this directory has already been rolled back, or --fix never ran on it, there is '
       + 'nothing to roll back.',
+      `  To list every backup store in that root and the directory each was last used for, run: ${cliName} backups`,
     ]);
 
     // #376 — the backups `--fix` writes now are in the per-user store, keyed by
@@ -1596,7 +1619,8 @@ export class BackupStore {
         `The backup store ${store.dir} has this directory's filesystem identity but was recorded for a `
         + 'directory created at another time'
         + `${store.lastKnownPath ? ` (last seen at ${store.lastKnownPath})` : ''}, so rollback will not restore `
-        + 'its files here. If those backups are yours, copy the files back by hand from the run directories inside it.',
+        + 'its files here. If those backups are yours, copy the files back by hand from the run directories inside it. '
+        + `${cliName} backups lists every backup store and the directory each was last used for.`,
       );
     }
     if (store.kind === 'unknown') {
@@ -1672,13 +1696,15 @@ export class BackupStore {
           + `reports for it now, so rollback did not match them to it and restored nothing: ${named(own)}. `
           + 'A reported creation time moves back when the directory\'s modification time is set earlier, as '
           + 'touch -t, rsync -a, tar -x and cp -p do on macOS. Copy the files back by hand from the run '
-          + `directories inside ${own.length === 1 ? 'that store' : 'those stores'}.`,
+          + `directories inside ${own.length === 1 ? 'that store' : 'those stores'}. `
+          + `${cliName} backups lists every backup store and the directory each was last used for.`,
         );
       }
       if (otherBirthStores.length > 0 && !(await this.inTreeArchiveHoldsRun(targetReal))) {
         throw new Error(
           'No backup found. A backup store with this directory\'s device and inode number, kept under another '
-          + `creation time, was not used: ${named(otherBirthStores)}. ${OTHER_BIRTH_STORE_MEANING}`,
+          + `creation time, was not used: ${named(otherBirthStores)}. ${OTHER_BIRTH_STORE_MEANING} `
+          + `${cliName} backups lists every backup store and the directory each was last used for.`,
         );
       }
 

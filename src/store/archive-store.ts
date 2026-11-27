@@ -377,18 +377,31 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** What `prepareArchiveStore` made ready, and what it moved out of the way to do so. */
+export interface PreparedArchiveStore {
+  /** The real path of this target's store. */
+  dir: string;
+  /**
+   * The real path a store found under this target's key was moved to, when it
+   * was not this target's (#1035). Absent when nothing was moved. `--fix`
+   * names it, so the move is never silent.
+   */
+  setAside?: string;
+}
+
 /**
  * The directory this target's `--fix` runs store their archives under, created
- * and recorded. Returns its real path. Throws when no store can be used, which
- * the scanner turns into a detect-only run (FIX-BACKUP-FAILED).
+ * and recorded. Throws when no store can be used, which the scanner turns into
+ * a detect-only run (FIX-BACKUP-FAILED).
  *
  * A store under this key whose record HackMyAgent did not write, or names a
  * directory created at another time, is moved aside to
  * `<key>.replaced-<time>-<random>`, never deleted and never adopted: its runs
  * may be another directory's files, and restoring them here would put that
- * directory's content over this one.
+ * directory's content over this one. The path it was moved to is returned as
+ * `setAside`.
  */
-export async function prepareArchiveStore(targetDir: string): Promise<string> {
+export async function prepareArchiveStore(targetDir: string): Promise<PreparedArchiveStore> {
   const targetReal = fsSync.realpathSync.native(targetDir);
   const id = await targetIdentity(targetReal);
   const dir = storeDirFor(id);
@@ -419,6 +432,7 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
   await ensurePrivateDir(dir);
 
   let found = await readRecord(dir);
+  let setAside: string | undefined;
   if (found.kind === 'foreign') {
     // Not moved aside like a record HackMyAgent did not write: the store
     // directory is this account's, so another account wrote into it, and what
@@ -429,6 +443,7 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
   if (found.kind === 'invalid' || (found.kind === 'record' && !sameBirth(found.record.birthtimeNs, id.birthtimeNs))) {
     const aside = `${dir}.replaced-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     await fs.rename(dir, aside);
+    setAside = aside;
     await ensurePrivateDir(dir);
     found = { kind: 'absent' };
   }
@@ -446,7 +461,12 @@ export async function prepareArchiveStore(targetDir: string): Promise<string> {
     await writeRecord(dir, { ...found.record, lastKnownPath: targetReal });
   }
 
-  return fsSync.realpathSync.native(dir);
+  const realDir = fsSync.realpathSync.native(dir);
+  // Spelled from the store's real parent, as `dir` is: the store root can sit
+  // behind a link (`/var` -> `/private/var` on macOS).
+  return setAside
+    ? { dir: realDir, setAside: path.join(path.dirname(realDir), path.basename(setAside)) }
+    : { dir: realDir };
 }
 
 type StoreKeyLookup =

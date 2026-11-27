@@ -67,9 +67,10 @@ No config file or flag is needed. `[...]` marks omitted lines. The full output, 
 hackmyagent secure --fix --dry-run   # preview the fixes
 hackmyagent secure --fix             # apply them
 hackmyagent rollback                 # revert them
+hackmyagent backups                  # list backups
 ```
 
-Backups go to a store outside the project. Which checks it fixes, and where the backups live: [docs/SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md#auto-fix-catalogue).
+Backups stay outside the project. Which checks it fixes, and where the backups live: [docs/SECURITY_CHECKS.md](docs/SECURITY_CHECKS.md#auto-fix-catalogue).
 
 - [hackmyagent secure: scores a sample agent project, then applies the fixes it can](docs/vhs/secure.gif): [text version](docs/vhs/secure-capture.txt), [provenance](docs/vhs/secure.json).
 

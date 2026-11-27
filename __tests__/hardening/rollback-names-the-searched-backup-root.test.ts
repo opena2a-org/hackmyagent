@@ -93,6 +93,8 @@ function noBackupBlock(root: string, source: string, cited: string): string[] {
     + `hackmyagent rollback ${cited}`,
     '  If every --fix backup of this directory has already been rolled back, or --fix never ran on it, there is '
     + 'nothing to roll back.',
+    // #1035 — the command that lists the stores in that root.
+    '  To list every backup store in that root and the directory each was last used for, run: hackmyagent backups',
   ];
 }
 
@@ -354,7 +356,7 @@ describe('#1043 the rollback error renders a hostile root and target as data', (
 
     expect(run.status).toBe(1);
     assertRenderSafe(run.stderr, 'rollback no-backup error', [target]);
-    expect(lines).toHaveLength(4);
+    expect(lines).toHaveLength(5);
     expect(lines[0]).toContain(`None of the backup stores in ${escapePathForDisplay(real(root))} (set by HMA_BACKUP_HOME)`);
     expect(lines.slice(1).filter((l) => l.includes(CANARY_ROOT)), 'a line after the first names the root').toEqual([]);
     expect(lines.filter((l) => l.includes('rm ')), 'a line holds rm followed by a space').toEqual([]);
