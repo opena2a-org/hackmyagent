@@ -12,6 +12,7 @@
 
 import type { SemanticFinding, AnalysisFile, McpServerConfig } from '../types';
 import { MCP_SERVER_MAP_KEYS } from '../../mcp-clients';
+import { positiveEvidenceAt, lineHolds } from './evidence';
 
 /**
  * Paths that indicate overprivileged filesystem scope.
@@ -165,13 +166,13 @@ export class McpConfigAnalyzer {
         allCapabilities.set(serverName, caps);
 
         // Check overprivileged scope
-        findings.push(...this.checkOverprivilegedScope(serverName, serverConfig, file));
+        findings.push(...this.checkOverprivilegedScope(serverName, serverConfig, file, locate));
 
         // Check sandbox bypass
-        findings.push(...this.checkSandboxBypass(serverName, serverConfig, file));
+        findings.push(...this.checkSandboxBypass(serverName, serverConfig, file, locate));
 
         // Check secrets in args
-        findings.push(...this.checkSecretsInArgs(serverName, serverConfig, file));
+        findings.push(...this.checkSecretsInArgs(serverName, serverConfig, file, locate));
 
         // Check wildcard permissions
         findings.push(...this.checkWildcardPermissions(serverName, serverConfig, raw, file, locate));
@@ -185,6 +186,10 @@ export class McpConfigAnalyzer {
 
       // Check attack chains across servers
       findings.push(...this.checkAttackChains(allCapabilities, file));
+
+      // SEM-MCP-005 (above) and SEM-MCP-006 (below) describe the set of servers,
+      // not one place in the file, so they carry no line and no evidence. See
+      // `evidence.ts`.
 
       // Check server count
       const serverNames = Object.keys(servers);
@@ -214,15 +219,19 @@ export class McpConfigAnalyzer {
   private checkOverprivilegedScope(
     serverName: string,
     config: McpServerConfig,
-    file: AnalysisFile
+    file: AnalysisFile,
+    locate: () => Map<string, ServerLocation | null>
   ): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
     const args = config.args || [];
 
+    let argIndex = -1;
     for (const arg of args) {
+      argIndex++;
       for (const { pattern, label, severity } of OVERPRIVILEGED_PATHS) {
         if (pattern.test(arg)) {
-          const lineNum = this.findLineNumber(file.content, arg);
+          const argLine = this.locateArg(file, locate, serverName, argIndex, arg);
+          const lineNum = argLine ?? this.findLineNumber(file.content, arg);
           findings.push({
             id: 'SEM-MCP-001',
             title: 'Overprivileged MCP server scope',
@@ -237,6 +246,11 @@ export class McpConfigAnalyzer {
             layer: 2,
             autoFixable: false,
             attackClass: 'MCP-PRIV-ESC',
+            evidence: positiveEvidenceAt(
+              file.content,
+              argLine,
+              `Server "${serverName}" is given ${label}. The agent can read and write the whole ${label}, including SSH keys and credentials.`
+            ),
           });
           break;
         }
@@ -249,14 +263,18 @@ export class McpConfigAnalyzer {
   private checkSandboxBypass(
     serverName: string,
     config: McpServerConfig,
-    file: AnalysisFile
+    file: AnalysisFile,
+    locate: () => Map<string, ServerLocation | null>
   ): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
     const args = config.args || [];
 
+    let argIndex = -1;
     for (const arg of args) {
+      argIndex++;
       if (SANDBOX_BYPASS_FLAGS.some((flag) => arg.includes(flag))) {
-        const lineNum = this.findLineNumber(file.content, arg);
+        const argLine = this.locateArg(file, locate, serverName, argIndex, arg);
+        const lineNum = argLine ?? this.findLineNumber(file.content, arg);
         findings.push({
           id: 'SEM-MCP-002',
           title: 'Sandbox bypass in MCP server',
@@ -271,6 +289,11 @@ export class McpConfigAnalyzer {
           layer: 2,
           autoFixable: false,
           attackClass: 'MCP-PRIV-ESC',
+          evidence: positiveEvidenceAt(
+            file.content,
+            argLine,
+            `Server "${serverName}" starts with the sandbox bypass flag "${arg}", which removes the boundary that limits what the server can reach.`
+          ),
         });
       }
     }
@@ -281,7 +304,8 @@ export class McpConfigAnalyzer {
   private checkSecretsInArgs(
     serverName: string,
     config: McpServerConfig,
-    file: AnalysisFile
+    file: AnalysisFile,
+    locate: () => Map<string, ServerLocation | null>
   ): SemanticFinding[] {
     const findings: SemanticFinding[] = [];
     const args = config.args || [];
@@ -292,7 +316,8 @@ export class McpConfigAnalyzer {
       // Check for known secret patterns directly in args
       for (const pattern of SECRET_ARG_PATTERNS) {
         if (pattern.test(arg)) {
-          const lineNum = this.findLineNumber(file.content, arg.substring(0, 20));
+          const argLine = this.locateArg(file, locate, serverName, i, arg);
+          const lineNum = argLine ?? this.findLineNumber(file.content, arg.substring(0, 20));
           findings.push({
             id: 'SEM-MCP-003',
             title: 'Secret exposed in MCP server args',
@@ -307,6 +332,12 @@ export class McpConfigAnalyzer {
             layer: 2,
             autoFixable: false,
             attackClass: 'MCP-CRED',
+            evidence: positiveEvidenceAt(
+              file.content,
+              argLine,
+              `Server "${serverName}" has a credential-like value in its args. Args are visible to the LLM and in process listings.`,
+              [arg]
+            ),
           });
           break;
         }
@@ -316,7 +347,8 @@ export class McpConfigAnalyzer {
       if (SECRET_KEY_ARG.test(arg) && i + 1 < args.length) {
         const nextArg = args[i + 1];
         if (nextArg && nextArg.length >= 8 && !nextArg.startsWith('-')) {
-          const lineNum = this.findLineNumber(file.content, arg);
+          const argLine = this.locateArg(file, locate, serverName, i, arg);
+          const lineNum = argLine ?? this.findLineNumber(file.content, arg);
           findings.push({
             id: 'SEM-MCP-003',
             title: 'Secret exposed in MCP server args',
@@ -331,6 +363,12 @@ export class McpConfigAnalyzer {
             layer: 2,
             autoFixable: false,
             attackClass: 'MCP-CRED',
+            evidence: positiveEvidenceAt(
+              file.content,
+              argLine,
+              `Server "${serverName}" passes "${arg}" followed by its value on the command line, where process listings and the LLM can read it.`,
+              [nextArg]
+            ),
           });
         }
       }
@@ -366,6 +404,7 @@ export class McpConfigAnalyzer {
     ) => {
       if (!field) return;
       if (field.includes('*') || (typeof declared === 'string' && declared.includes('*'))) {
+        const wildcardLine = serverFieldLine(locate(), serverName, fieldName);
         findings.push({
           id: 'SEM-MCP-004',
           title: 'Wildcard permission in MCP server',
@@ -375,11 +414,16 @@ export class McpConfigAnalyzer {
           category: 'mcp-config',
           severity: 'high',
           file: file.path,
-          line: serverFieldLine(locate(), serverName, fieldName),
+          line: wildcardLine,
           recommendation: `Replace wildcard with specific allowed ${fieldName}: ["tool1", "tool2"].`,
           layer: 2,
           autoFixable: false,
           attackClass: 'MCP-SCOPE-WILDCARD',
+          evidence: positiveEvidenceAt(
+            file.content,
+            wildcardLine,
+            `Server "${serverName}" declares ${fieldName} with "*", which grants every tool or command without restriction.`
+          ),
         });
       }
     };
@@ -495,6 +539,7 @@ export class McpConfigAnalyzer {
       );
       if (!isTypo) continue;
 
+      const typoLine = serverArgLine(locate(), serverName, argIndex);
       findings.push({
         id: 'SEM-MCP-007',
         title: 'Typosquatted MCP package',
@@ -504,11 +549,18 @@ export class McpConfigAnalyzer {
         category: 'mcp-config',
         severity: 'critical',
         file: file.path,
-        line: serverArgLine(locate(), serverName, argIndex),
+        line: typoLine,
         recommendation: `Replace "${arg}" with the correct package name. Verify: npm view ${arg} to see if it exists and who publishes it.`,
         layer: 2,
         autoFixable: false,
         attackClass: 'MCP-TYPOSQUAT',
+        evidence: lineHolds(file.content, typoLine, arg)
+          ? positiveEvidenceAt(
+              file.content,
+              typoLine,
+              `Server "${serverName}" runs "${arg}", one or two characters from an official @modelcontextprotocol package.`
+            )
+          : undefined,
       });
       break; // one finding per server is sufficient
     }
@@ -527,6 +579,7 @@ export class McpConfigAnalyzer {
     // Detect curl|sh, wget|sh, bash <(curl ...) patterns — unconditional remote code execution
     const bootstrapPattern = /\bcurl\b[^|]*\|\s*(?:sh|bash)|\bwget\b[^|]*\|\s*(?:sh|bash)|bash\s+<\s*\(curl/i;
     if (bootstrapPattern.test(allArgs)) {
+      const bootstrapLine = serverKeyLine(locate(), serverName);
       findings.push({
         id: 'SEM-MCP-008',
         title: 'Remote code execution via bootstrap script',
@@ -536,15 +589,36 @@ export class McpConfigAnalyzer {
         category: 'mcp-config',
         severity: 'critical',
         file: file.path,
-        line: serverKeyLine(locate(), serverName),
+        line: bootstrapLine,
         recommendation:
           `Remove the bootstrap script. Install the MCP package via a verified package manager with a pinned version and hash. Never use curl|sh in an MCP server command.`,
         layer: 2,
         autoFixable: false,
         attackClass: 'MCP-SUPPLY-CHAIN',
+        evidence: positiveEvidenceAt(
+          file.content,
+          bootstrapLine,
+          `Server "${serverName}" runs a remote install script piped into a shell (curl|sh or similar); the entry starts on this line.`
+        ),
       });
     }
     return findings;
+  }
+
+  /**
+   * The line of `args[index]` of the server, when that line holds the argument.
+   * Undefined when the position cannot be confirmed; the caller then records no
+   * evidence rather than citing a line it has not checked.
+   */
+  private locateArg(
+    file: AnalysisFile,
+    locate: () => Map<string, ServerLocation | null>,
+    serverName: string,
+    index: number,
+    arg: string
+  ): number | undefined {
+    const line = serverArgLine(locate(), serverName, index);
+    return lineHolds(file.content, line, arg) ? line : undefined;
   }
 
   private findLineNumber(content: string, searchStr: string): number | undefined {
