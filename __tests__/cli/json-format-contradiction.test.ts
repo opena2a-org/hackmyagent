@@ -3,10 +3,10 @@
  * with a DIFFERENT format the two contradict, and the contradiction used to
  * resolve silently in --json's favor: `secure --ci --json --format sarif`
  * printed the json report at exit 0 with nothing to say the requested
- * format was discarded. Now both commands that carry the two flags (secure
- * and attack — `eval` has --format but no --json; scan-soul has --json but
- * no --format) refuse the contradiction where their other format errors are
- * raised, pre-scan.
+ * format was discarded. Now the commands that carry the two flags (secure,
+ * attack and scan-soul — `eval` has --format but no --json) refuse the
+ * contradiction where their other format errors are raised, pre-scan.
+ * scan-soul's cells live in scan-soul-format-flag.test.ts.
  *
  * The check keys on Commander's option-value SOURCE, because --format has a
  * 'text' DEFAULT: bare `--json` sees format='text' from the default and

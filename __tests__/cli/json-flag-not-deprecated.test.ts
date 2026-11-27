@@ -129,10 +129,12 @@ describe('HMA-36 `--json` is shorthand, never deprecated, across the whole comma
     // 16 → 17 and 14 → 15 with `scan-text`, which registers `--json` and no
     // `--format`: it has one machine shape and one human one, so a format
     // vocabulary would name nothing it can produce.
+    // 15 → 14 `--json`-only when `scan-soul` gained `-f, --format <text|json>`
+    // as the spelling of `--json` that `secure` and `attack` already accept.
     expect(withJson().map(label).sort()).toHaveLength(17);
-    expect(withFormat().map(label).sort()).toEqual(['attack', 'eval oracle', 'secure']);
-    expect(withJson().filter((w) => !formatOpt(w.command))).toHaveLength(15);
-    expect(withJson().filter((w) => formatOpt(w.command)).map(label).sort()).toEqual(['attack', 'secure']);
+    expect(withFormat().map(label).sort()).toEqual(['attack', 'eval oracle', 'scan-soul', 'secure']);
+    expect(withJson().filter((w) => !formatOpt(w.command))).toHaveLength(14);
+    expect(withJson().filter((w) => formatOpt(w.command)).map(label).sort()).toEqual(['attack', 'scan-soul', 'secure']);
   });
 
   it('HMA-36.AC3 (A) no --json description anywhere in the tree matches /deprecat/i', () => {
