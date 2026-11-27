@@ -133,12 +133,13 @@ describe('UNICODE-STEGO Fix commands (#999)', () => {
     const parent = path.dirname(dir);
     await fs.writeFile(path.join(dir, 'tags.js'), Buffer.concat([Buffer.from('const z = "t'), Buffer.from(String.fromCodePoint(0xe0041)), Buffer.from('";\n')]));
     const tags = await finding('UNICODE-STEGO-004', 'tags.js');
-    const xxd = escapeForDisplay(rebaseOwnFileCitation(tags.fix ?? '', tags.file, dir));
-    expect(xxd).toMatch(/^xxd /);
-    const xxdRun = spawnSync('/bin/sh', ['-c', xxd], { cwd: parent, encoding: 'utf8' });
-    expect(xxdRun.stderr).not.toMatch(/No such file/);
-    expect(xxdRun.status, xxdRun.stderr).toBe(0);
-    expect(xxdRun.stdout).toContain('f3a0');
+    const search = escapeForDisplay(rebaseOwnFileCitation(tags.fix ?? '', tags.file, dir));
+    expect(search).toMatch(/^LC_ALL=C grep -nbo /);
+    expect(search).toContain(` ${path.join(dir, 'tags.js')}   # `);
+    const searchRun = spawnSync('/bin/sh', ['-c', search], { cwd: parent });
+    expect(searchRun.stderr.toString()).not.toMatch(/No such file/);
+    expect(searchRun.status, searchRun.stderr.toString()).toBe(0);
+    expect(searchRun.stdout.toString('utf8')).toBe(`1:12:${String.fromCodePoint(0xe0041)}\n`);
 
     const payload = Buffer.concat(Array.from({ length: 40 }, () => Buffer.from([0xef, 0xb8, 0x80])));
     await fs.writeFile(path.join(dir, 'eval-hidden.js'), Buffer.concat([Buffer.from("eval('"), payload, Buffer.from("');\n")]));
@@ -158,14 +159,58 @@ describe('UNICODE-STEGO Fix commands (#999)', () => {
     await fs.writeFile(path.join(dir, 'tag-block.js'), Buffer.concat([Buffer.from('const z = "t'), TAG_0001, Buffer.from('";\n')]));
     const plain = await finding('UNICODE-STEGO-004', 'tag-block.js');
     expect(plain.name).toBe('Invisible Plane-14 Characters Detected');
-    expect(plain.fix).toBe('xxd tag-block.js | grep "f3a0"');
+    expect(plain.fix).toBe(
+      `LC_ALL=C grep -nbo "$(printf '\\363\\240[\\200-\\207][\\200-\\277]')" tag-block.js   # one row per invisible plane-14 character (U+E0000-U+E01FF): line:byte offset. Delete each one; where a string literal needs the code point, write it as an escape sequence such as \\u{E0041} instead of the raw character.`,
+    );
 
     await fs.rm(path.join(dir, 'tag-block.js'));
     const hidden = `tag${String.fromCodePoint(0xe0041)}block.js`;
     await fs.writeFile(path.join(dir, hidden), Buffer.concat([Buffer.from('const z = "t'), TAG_0001, Buffer.from('";\n')]));
     const f = await finding('UNICODE-STEGO-004', hidden);
     const printed = escapeForDisplay(f.fix ?? '');
-    expect(printed).not.toMatch(/xxd/);
+    expect(printed).not.toMatch(/xxd|grep/);
     expect(printed).toMatch(/cannot be shown truthfully/);
+    expect(printed).toMatch(/escape sequence such as \\u\{E0041\}/);
+  });
+
+  // The Fix was `xxd <file> | grep "f3a0"`. xxd prints bytes in pairs, so a
+  // character starting at an odd byte offset showed as `..f3 a0..` and the
+  // grep printed nothing for it. The byte search lists every one.
+  it('UNICODE-STEGO-004: the printed command lists every counted code point at any byte offset', async () => {
+    // A prefix of one byte before the code points at even indexes and two
+    // before the others, so they start at odd and even offsets alike.
+    function withOffsets(cps: number[]): { bytes: Buffer; rows: string[] } {
+      const parts: Buffer[] = [];
+      const rows: string[] = [];
+      let offset = 0;
+      cps.forEach((cp, i) => {
+        const prefix = Buffer.from(i % 2 === 0 ? 'a' : 'ab');
+        const ch = Buffer.from(String.fromCodePoint(cp));
+        rows.push(`1:${offset + prefix.length}:${String.fromCodePoint(cp)}`);
+        parts.push(prefix, ch);
+        offset += prefix.length + ch.length;
+      });
+      // U+E0200 (F3 A0 88 80) is outside the range the check counts.
+      parts.push(Buffer.from('a'), Buffer.from(String.fromCodePoint(0xe0200)), Buffer.from('\n'));
+      return { bytes: Buffer.concat(parts), rows };
+    }
+    function run(command: string): string[] {
+      const r = spawnSync('/bin/sh', ['-c', command], { cwd: dir });
+      expect(r.status, r.stderr.toString()).toBe(0);
+      return r.stdout.toString('utf8').trimEnd().split('\n');
+    }
+
+    // U+E0000-U+E00FF alone: UNICODE-STEGO-001 stays silent, so 004 reports.
+    const low = withOffsets([0xe0000, 0xe0001, 0xe0041, 0xe007f, 0xe0080, 0xe00ff]);
+    expect(low.rows.some((row) => Number(row.split(':')[1]) % 2 === 1)).toBe(true);
+    await fs.writeFile(path.join(dir, 'odd.js'), low.bytes);
+    const f = await finding('UNICODE-STEGO-004', 'odd.js');
+    const printed = escapeForDisplay(f.fix ?? '');
+    expect(run(printed)).toEqual(low.rows);
+
+    // The same command covers U+E0100-U+E01FF, the rest of the range it counts.
+    const high = withOffsets([0xe0100, 0xe01ef, 0xe01f0, 0xe01ff]);
+    await fs.writeFile(path.join(dir, 'high.js'), high.bytes);
+    expect(run(printed.replace(' odd.js ', ' high.js '))).toEqual(high.rows);
   });
 });

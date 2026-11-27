@@ -3740,17 +3740,35 @@ function removeFileFix(relativePath: string, why: string): string {
 }
 
 /**
- * `xxd <file> | <filter>` for the steganography checks, or prose when the file
- * name cannot be put into a command truthfully (#999).
+ * The raw-byte search that lists every code point UNICODE-STEGO-004 counts,
+ * U+E0000-U+E01FF, whose UTF-8 is F3 A0 80 80 through F3 A0 87 BF.
+ *
+ * The Fix used to be `xxd <file> | grep "f3a0"`. xxd prints the bytes in
+ * pairs, so a character starting at an odd byte offset appeared as `..f3 a0..`
+ * across two groups (or across two dump lines) and the grep missed it. This
+ * matches the bytes themselves: `LC_ALL=C` makes grep compare bytes rather than
+ * characters, `printf` spells them in octal (POSIX, unlike `$'\x..'`, which
+ * dash does not read), and `-nbo` prints one row per match with its line and
+ * byte offset.
+ */
+const STEGO_004_BYTE_SEARCH = `LC_ALL=C grep -nbo "$(printf '\\363\\240[\\200-\\207][\\200-\\277]')"`;
+
+const STEGO_004_REMEDY =
+  'Delete each one; where a string literal needs the code point, write it as an escape sequence such as \\u{E0041} instead of the raw character.';
+
+/**
+ * The UNICODE-STEGO-004 Fix: a raw-byte search listing every plane-14
+ * character in the file and what to do with each, or prose when the file name
+ * cannot be put into a command truthfully (#999).
  *
  * The name of a file that hides invisible code points may hide them too. The
- * renderer escapes the `Fix:` line for display, so `xxd` + `shellEscape` over
- * `benign<U+E0041>evil.js` printed `xxd 'benign\u{e0041}evil.js'`, which names
- * a file that does not exist.
+ * renderer escapes the `Fix:` line for display, so a command + `shellEscape`
+ * over `benign<U+E0041>evil.js` printed `xxd 'benign\u{e0041}evil.js'`, which
+ * names a file that does not exist.
  */
-function stegoHexDumpFix(relativePath: string, filter: string): string {
-  return commandNaming(relativePath, (q) => `xxd ${q} | ${filter}`)
-    ?? 'Inspect the file named in this finding with a hex editor. Its name contains characters that cannot be shown truthfully in a shell command, so no runnable citation is offered.';
+function stegoPlane14Fix(relativePath: string): string {
+  return commandNaming(relativePath, (q) => `${STEGO_004_BYTE_SEARCH} ${q}   # one row per invisible plane-14 character (U+E0000-U+E01FF): line:byte offset. ${STEGO_004_REMEDY}`)
+    ?? `Find the invisible plane-14 characters (U+E0000-U+E01FF) in the file named in this finding with a hex editor (UTF-8 bytes F3 A0 80 80 through F3 A0 87 BF, at any offset). ${STEGO_004_REMEDY} Its name contains characters that cannot be shown truthfully in a shell command, so no runnable citation is offered.`;
 }
 
 /**
@@ -16835,7 +16853,7 @@ dist/
             file: relativePath,
             line: tagBlockLine,
             fixable: false,
-            fix: stegoHexDumpFix(relativePath, 'grep "f3a0"'),
+            fix: stegoPlane14Fix(relativePath),
             guidance: 'Unicode Tags block, Variation Selectors Supplement and unassigned plane-14 characters (U+E0000-U+E01FF) are invisible and have no legitimate use in source code. They can encode hidden data or malicious payloads. Remove all of these characters.',
           });
         }

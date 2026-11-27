@@ -54,8 +54,8 @@
  * #345 — and an enumerated list is the wrong shape for this class. That list
  * grew one reporter at a time and still missed the families the scanner itself
  * hunts: the Unicode TAG block (U+E0000..U+E007F, which HackMyAgent's own
- * steganography check reports as an ATTACK, emitting `xxd … | grep "f3a0"` for
- * its UTF-8 prefix), the variation selectors, the word joiner and the invisible
+ * steganography check reports as an ATTACK, citing a byte search for its
+ * UTF-8 prefix F3 A0), the variation selectors, the word joiner and the invisible
  * operators, the Hangul fillers, the Mongolian vowel separator and the musical
  * format controls. One module called those bytes an attack while another printed
  * them silently, and `benign<U+E0041…>evil.png` renders with nothing visible
