@@ -44,6 +44,7 @@ HMA uses exit codes to signal scan results:
 | `0` | The target was measured, and no critical or high issue was found | Pipeline passes |
 | `1` | The target was measured, and a critical or high issue was found | Pipeline fails |
 | `2` | The target was **not measured**, so no result is reported | Pipeline fails |
+| `64` | The command line could not be parsed (unknown command or option, missing or extra operand), so nothing ran | Pipeline fails |
 
 Any critical or high finding causes exit code `1`, which fails the GitHub Actions step by default.
 

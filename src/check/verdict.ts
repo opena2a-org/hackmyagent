@@ -75,6 +75,13 @@ export const EXIT_PASS = 0;
 export const EXIT_FAIL = 1;
 /** Not measured. The command cannot report a risk band. */
 export const EXIT_UNMEASURED = 2;
+/**
+ * The command line itself was wrong: an unknown command or option, a missing
+ * or extra operand, an option without its value. Nothing ran, so nothing was
+ * measured or found, and the code is kept apart from EXIT_FAIL so a CI job
+ * can tell a typo from a finding. 64 is EX_USAGE in sysexits.h.
+ */
+export const EXIT_USAGE = 64;
 
 export interface CheckSeverityCounts {
   /** Failing findings at CRITICAL. */

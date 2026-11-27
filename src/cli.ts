@@ -9,6 +9,7 @@
 // QUARANTINE (exit 3), not as a module-resolution crash (#1110).
 import { startupIntegrity } from './startup-integrity';
 import { Command } from 'commander';
+import { UsageExitCommand } from './cli-usage-exit';
 import {
   VERSION,
   checkSkill,
@@ -386,6 +387,7 @@ import {
   EXIT_PASS,
   EXIT_FAIL,
   EXIT_UNMEASURED,
+  EXIT_USAGE,
   type CheckVerdict,
   type ReadFailureRecord,
 } from './check/verdict';
@@ -545,7 +547,8 @@ import { CONCEPT_EXPLAINERS, inferConceptFromFix } from './ui/concept-explainers
 import type { ConceptId } from './types/finding-evidence';
 import { trustAapGate } from './aap';
 
-const program = new Command();
+// A command line Commander cannot parse exits EXIT_USAGE, not 1 (#505).
+const program = new UsageExitCommand();
 program.showHelpAfterError('(run with --help for usage)');
 
 // Total security check + category counts, derived from the taxonomy map via
@@ -10072,7 +10075,12 @@ run prints the exact path.
 fix-all keeps no backup: commit before running it, or preview with
 --dry-run. rollback does not cover fix-all.
 
-Exit code 1 if critical/high issues remain after fixing.
+Exit codes:
+  ${EXIT_PASS}  no critical or high issue remains after fixing
+  ${EXIT_FAIL}  a critical or high issue remains after fixing (after --dry-run
+     or --scan-only nothing was fixed, so every issue remains)
+  ${EXIT_UNMEASURED}  not measured: the directory does not exist, or a plugin failed
+  ${EXIT_USAGE} the command line could not be parsed
 
 Examples:
   $ ${CLI_PREFIX} fix-all                     Scan and fix current directory
@@ -10116,7 +10124,8 @@ Examples:
           realTarget = fs.realpathSync(targetDir);
         } catch {
           console.error(`Error: Directory not found: ${escapeForDisplay(String(targetDir))}`);
-          process.exit(1); // exit-unsettled(#350/S022): pre-work refusal; events await the schema reason field (#525)
+          // Not measured, as for secure, check and scan-text on a missing path (#505).
+          process.exit(EXIT_UNMEASURED); // exit-unsettled(#350/S022): pre-work refusal; events await the schema reason field (#525)
         }
 
         // Verify resolved path is a directory (realpath already resolved any symlinks)
@@ -10973,7 +10982,9 @@ Exit codes (#390) — the same on the text and --json channels:
      grade — there is nothing to grade. Three cases reach it:
      no governance file was found; one was found but could not be
      read; or one was found and is empty. --json says which of the
-     three, in gate.reason.
+     three, in gate.reason. A directory that does not exist exits
+     ${EXIT_UNMEASURED} too.
+  ${EXIT_USAGE} the command line could not be parsed.
 
 Examples:
   $ ${CLI_PREFIX} scan-soul                    Scan current directory
@@ -11015,7 +11026,8 @@ Examples:
 
       if (!require('fs').existsSync(targetDir)) {
         process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
-        process.exit(1); // exit-unsettled(#350/S026): pre-work refusal; events await the schema reason field (#525)
+        // Not measured, as for secure, check and scan-text on a missing path (#505).
+        process.exit(EXIT_UNMEASURED); // exit-unsettled(#350/S026): pre-work refusal; events await the schema reason field (#525)
       }
 
       const prefix = getCommandPrefix();
@@ -12740,7 +12752,8 @@ program
       process.stderr.write('No check ID given: explain needs a check ID to look up (e.g., CRED-001).\n');
       process.stderr.write(`  Run: ${CLI_PREFIX} explain CRED-001\n`);
       process.stderr.write(`  Full inventory: ${CLI_PREFIX} check-metadata --json\n`);
-      return exitRecorded(1, 'refused');
+      // A usage error, like Commander's own "missing required argument" (#505).
+      return exitRecorded(EXIT_USAGE, 'refused');
     }
 
     // Trimmed before matching: `explain "CRED-001 "`
@@ -12750,7 +12763,7 @@ program
     if (checkId === '') {
       process.stderr.write('Empty check ID: explain needs a check ID to look up (e.g., CRED-001).\n');
       process.stderr.write(`  Full inventory: ${CLI_PREFIX} check-metadata --json\n`);
-      return exitRecorded(1, 'refused');
+      return exitRecorded(EXIT_USAGE, 'refused');
     }
 
     // An id outside the check inventory (static explanations, scan-soul
