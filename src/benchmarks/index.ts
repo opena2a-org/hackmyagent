@@ -26,6 +26,7 @@ export type {
   BenchmarkCategoryResult,
   BenchmarkControlResult,
   BenchmarkFailingRecord,
+  BenchmarkControlSuppression,
 } from './oasb-1';
 
 /**

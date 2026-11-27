@@ -493,7 +493,7 @@ import {
   sarifRunProperties,
   type SuppressionDisclosure,
 } from './output/suppression-disclosure';
-import { generateBenchmarkReport, failingRecordsForControl } from './benchmarks/benchmark-report';
+import { generateBenchmarkReport, failingRecordsForControl, type BenchmarkWithheld } from './benchmarks/benchmark-report';
 import { levelPopulation } from './benchmarks/oasb-1';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
@@ -4953,6 +4953,66 @@ interface BenchmarkRunFlags {
    * `targetDir` for a lone-file target, which is scanned as an isolated copy.
    */
   citationRoot?: string;
+  /** The scan's `suppressed` rows: what `--ignore` / `.hmaignore` check rules withheld. */
+  suppressed?: ScanResult['suppressed'];
+  /** The scan's `outOfScope` rows: what `.hmaignore` path rules withheld. */
+  outOfScope?: ScanResult['outOfScope'];
+}
+
+/**
+ * The flag or `.hmaignore` rule kind behind a suppression channel, in the
+ * words the person who set it would recognise.
+ */
+function suppressionChannelLabel(channel: string): string {
+  switch (channel) {
+    case 'ignore-flag': return '--ignore';
+    case 'hmaignore-check': return '.hmaignore check rule';
+    case 'hmaignore-path': return '.hmaignore path rule';
+    case 'hmaignore-path-check': return '.hmaignore path:check rule';
+    default: return escapeForDisplay(channel);
+  }
+}
+
+/** `DEP-001 by --ignore` for one control's suppression record. */
+function controlSuppressionClause(s: NonNullable<BenchmarkControlResult['suppressed']>): string {
+  return `${s.checkIds.map((id) => escapeForDisplay(id)).join(', ')} by ${s.suppressedBy.map(suppressionChannelLabel).join(', ')}`;
+}
+
+/** The controls a benchmark run left unscored because of the run's own suppression. */
+function suppressedBenchmarkControls(result: BenchmarkResult): BenchmarkControlResult[] {
+  return result.categories
+    .flatMap((c) => c.controls)
+    .filter((c) => c.status === 'unverified' && c.suppressed !== undefined);
+}
+
+/**
+ * What the person running a benchmark set aside, for the assessor: the scan's
+ * `suppressed` and `outOfScope` rows and the `--ignore` list as given.
+ */
+function benchmarkWithheld(
+  result: { suppressed?: ScanResult['suppressed']; outOfScope?: ScanResult['outOfScope'] },
+  ignoreList: readonly string[],
+): BenchmarkWithheld {
+  return {
+    rows: [...(result.suppressed ?? []), ...(result.outOfScope ?? [])],
+    ignored: ignoreList,
+  };
+}
+
+/**
+ * The stderr line beside a benchmark's exit gates when the run's own
+ * suppression left controls unscored: the compliance figure, the rating and
+ * `--fail-below` were computed without them, and this says which and why.
+ */
+function printBenchmarkSuppressionGateNote(result: BenchmarkResult, label: string): void {
+  const rows = suppressedBenchmarkControls(result);
+  if (rows.length === 0) return;
+  const by = [...new Set(rows.flatMap((r) => r.suppressed!.suppressedBy))].map(suppressionChannelLabel).join(', ');
+  console.error(
+    `${label} leaves out ${plural(rows.length, 'suppressed control')} (${rows.map((r) => r.controlId).join(', ')}) ` +
+    `set aside by ${by}: the compliance figure, the rating and --fail-below are computed without ${rows.length === 1 ? 'it' : 'them'}. ` +
+    `Run without the suppression to score ${rows.length === 1 ? 'it' : 'them'}.`,
+  );
 }
 
 /**
@@ -5167,12 +5227,20 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
     'L3': 'Level 3 - Hardened',
   };
   console.log(`Level: ${levelNames[result.level]}`);
-  console.log(`Rating: ${ratingColors[result.rating]}${ratingWithScope(result)}${RESET()}`);
+  // The controls the run's own suppression left unscored. Named beside the
+  // figures they are missing from, so a compliance or rating that moved
+  // because of --ignore or .hmaignore never reads as measured on its own.
+  const suppressedControls = suppressedBenchmarkControls(result);
+  const suppressedClause = suppressedControls.length === 0 ? ''
+    : `; ${plural(suppressedControls.length, 'suppressed control')} not scored`;
+  const ratingSuppressed = suppressedControls.length === 0 || result.rating === 'Not Assessed' ? ''
+    : ` (${plural(suppressedControls.length, 'suppressed control')} not scored)`;
+  console.log(`Rating: ${ratingColors[result.rating]}${ratingWithScope(result)}${ratingSuppressed}${RESET()}`);
   if (result.compliance === null) {
     const why = flags?.filesExamined === 0 ? zeroReadReason(targetDir) : '0/0 verified controls';
-    console.log(`Compliance: not measured (${why})`);
+    console.log(`Compliance: not measured (${why}${suppressedClause})`);
   } else {
-    console.log(`Compliance: ${result.compliance}% (${result.passedControls}/${result.passedControls + result.failedControls} verified controls)`);
+    console.log(`Compliance: ${result.compliance}% (${result.passedControls}/${result.passedControls + result.failedControls} verified controls${suppressedClause})`);
   }
   if (result.unverifiedControls > 0) {
     // #615 — the reason clause used to cover every unverified control, but
@@ -5181,13 +5249,35 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
     const unverified = result.categories
       .flatMap((c) => c.controls)
       .filter((c) => c.status === 'unverified');
-    const manual = unverified.filter((c) => unverifiedReason(c.controlId) === 'manual/forward').length;
-    const noData = unverified.length - manual;
+    const suppressedN = unverified.filter((c) => c.suppressed !== undefined).length;
+    const manual = unverified.filter((c) => c.suppressed === undefined && unverifiedReason(c.controlId) === 'manual/forward').length;
+    const noData = unverified.length - suppressedN - manual;
     const reasons: string[] = [];
     if (manual > 0) reasons.push(`${manual} require manual/forward verification`);
     if (noData > 0) reasons.push(`${noData} automated with no scanner data`);
+    if (suppressedN > 0) reasons.push(`${suppressedN} suppressed`);
     const n = result.unverifiedControls;
     console.log(`Unverified: ${n} control${n === 1 ? '' : 's'} (${reasons.join(', ')})`);
+  }
+  if (suppressedControls.length > 0) {
+    // Each suppressed control, with the checks set aside and the flag or
+    // rule that set them aside. Not credited and outside every figure.
+    const pad = ' '.repeat('Suppressed: '.length);
+    console.log(`Suppressed: ${colors.yellow}${plural(suppressedControls.length, 'control')} not scored${RESET()}`);
+    for (const c of suppressedControls) {
+      console.log(`${pad}${c.controlId} ${escapeForDisplay(c.name)}: ${controlSuppressionClause(c.suppressed!)}`);
+    }
+    console.log(`${pad}${colors.dim}Not credited, and left out of the compliance figure and the rating.${RESET()}`);
+  }
+  // The findings the suppression withheld from the assessor, by check: what
+  // the suppressed controls above would have read.
+  const withheldRows = [...(flags?.suppressed ?? []), ...(flags?.outOfScope ?? [])];
+  if (withheldRows.length > 0) {
+    const total = withheldRows.reduce((n, r) => n + r.count, 0);
+    const named = withheldRows
+      .map((r) => `${escapeForDisplay(r.checkId)} (${r.severity}${r.count > 1 ? ` x${r.count}` : ''}, ${suppressionChannelLabel(r.suppressedBy)})`)
+      .join(' · ');
+    console.log(`Withheld: ${plural(total, 'finding')} not read by the benchmark: ${named}`);
   }
   if (result.notApplicableControls > 0) {
     // #458 step 3 — a control whose every automated check reported its
@@ -5206,6 +5296,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
   console.log(`Categories:`);
   for (const catResult of result.categories) {
     const total = catResult.passed + catResult.failed;
+    const catSuppressed = catResult.suppressed ?? 0;
     if (total === 0) {
       // #458 step 3 — "no controls at this level" was the only sentence this
       // branch had; a category can now hold controls that are all
@@ -5214,20 +5305,29 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
       // --verbose fall through so the [.]/[?] rows print.
       const parts: string[] = [];
       if (catResult.notApplicable > 0) parts.push(`${catResult.notApplicable} not applicable`);
-      if (catResult.unverified > 0) parts.push(`${catResult.unverified} unverified`);
+      if (catResult.unverified - catSuppressed > 0) parts.push(`${catResult.unverified - catSuppressed} unverified`);
+      if (catSuppressed > 0) parts.push(`${catSuppressed} suppressed`);
       const label = parts.length > 0 ? parts.join(', ') : 'no controls at this level';
       console.log(`  [.] ${catResult.category}: N/A (${label})`);
-      if (!verbose || catResult.controls.length === 0) continue;
+      if ((!verbose && catSuppressed === 0) || catResult.controls.length === 0) continue;
     } else {
-    const statusIcon = catResult.failed === 0 ? '[+]' : (catResult.passed > 0 ? '[~]' : '[-]');
-    console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${total} (${catResult.compliance}%)`);
+    // A category whose controls passed while one of its controls was
+    // suppressed is not shown as passed: the suppressed control was not read.
+    const statusIcon = catResult.failed === 0 && catSuppressed === 0 ? '[+]' : (catResult.passed > 0 ? '[~]' : '[-]');
+    const suppressedNote = catSuppressed > 0 ? `, ${catSuppressed} suppressed, not scored` : '';
+    console.log(`  ${statusIcon} ${catResult.category}: ${catResult.passed}/${total} (${catResult.compliance}%${suppressedNote})`);
     }
 
-    // Show failed controls
-    if (verbose || catResult.failed > 0) {
+    // Show failed controls, and every suppressed one
+    if (verbose || catResult.failed > 0 || catSuppressed > 0) {
       for (const ctrl of catResult.controls) {
-        if (ctrl.status === 'failed') {
+        if (ctrl.status === 'unverified' && ctrl.suppressed) {
+          console.log(`     [s] ${ctrl.controlId}: ${escapeForDisplay(ctrl.name)} (suppressed: ${controlSuppressionClause(ctrl.suppressed)})`);
+        } else if (ctrl.status === 'failed') {
           console.log(`     [-] ${ctrl.controlId}: ${ctrl.name}`);
+          if (ctrl.suppressed) {
+            console.log(`        ${colors.dim}Also suppressed: ${controlSuppressionClause(ctrl.suppressed)}${RESET()}`);
+          }
           if (verbose) {
             // `failingRecords[i]` is the record behind `findings[i]` (#673):
             // each evidence line is followed by the Verify for its record.
@@ -5262,7 +5362,7 @@ function printBenchmarkReport(result: BenchmarkResult, verbose: boolean, targetD
     const pctOrNot = (v: number | null): string => (v === null ? 'not assessed' : `${v}%`);
     const byLevel: Record<BenchmarkLevel, number | null> = { L1: result.l1Compliance, L2: result.l2Compliance, L3: result.l3Compliance };
     console.log(`\nCompliance by level: ${examinedLevels(result.level).map((lv) => `${lv}=${pctOrNot(byLevel[lv])}`).join(' ')}`);
-    console.log(`Legend: [?] = unverified (manual/forward verification required, or no scanner data)`);
+    console.log(`Legend: [?] = unverified (manual/forward verification required, or no scanner data)${suppressedControls.length > 0 ? ', [s] = suppressed (not scored)' : ''}`);
   }
 
   // Show appropriate next step based on current level
@@ -5428,9 +5528,10 @@ Backups (--fix):
   // the compliance denominator, so `--ignore` moved a fixture from
   // `32% Not Passing exit 1` to `100% Certified exit 0`. Shipping the
   // unqualified claim in `--help` would make the tool assert something a user
-  // can falsify in one command. The benchmark path is tracked separately; until
-  // it is fixed the promise is scoped to where it holds.
-  .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code for this command; use --fail-below for a score floor. With --benchmark the ignored checks cannot report, so a control measured only by them stays unverified')
+  // can falsify in one command. On `-b` a control an ignored check maps to is
+  // now marked suppressed and named on every channel, so the sentence there
+  // says what the benchmark does instead.
+  .option('--ignore <checks>', 'Comma-separated check IDs to leave out of the findings list (e.g., CRED-001,GIT-002). Suppressed checks are still scored and still set the exit code for this command; use --fail-below for a score floor. With --benchmark a control any ignored check maps to is not scored: it is marked suppressed in the report and left out of compliance, the rating and --fail-below')
   .option('--json', 'Output as JSON (shorthand for --format json)')
   .option('-f, --format <format>', 'Output format: text, json, sarif, html (sarif/html not with -b oasb-2); asff without -b; asp with -b oasb-1', 'text')
   .option('--aws-account-id <id>', 'AWS account ID for ASFF format')
@@ -6269,8 +6370,10 @@ Backups (--fix):
 
       // OASB composite mode: infrastructure (50%) + governance (50%)
       if (isOasb2) {
+        // What --ignore and .hmaignore set aside reaches the assessor, so a
+        // control it touches is marked suppressed and never credited.
         const infraResult = applyZeroReadFloor(
-          generateBenchmarkReport(result.allFindings || result.findings, level, options.category),
+          generateBenchmarkReport(result.allFindings || result.findings, level, options.category, benchmarkWithheld(result, ignoreList)),
           result,
         );
 
@@ -6320,6 +6423,11 @@ Backups (--fix):
             ...(result.coverage?.unreadableInputs
               ? { unreadableInputs: result.coverage.unreadableInputs }
               : {}),
+            // What `--ignore` / `.hmaignore` withheld from the infrastructure
+            // assessor, on the keys the OASB-1 arm and `secure --json` use.
+            ...(result.suppressed?.length ? { suppressed: result.suppressed } : {}),
+            ...(result.outOfScope?.length ? { outOfScope: result.outOfScope } : {}),
+            ...(result.hmaignore ? { hmaignore: result.hmaignore } : {}),
             // The key `secure --fix --format json` carries; absent when
             // `--fix` wrote no backup.
             ...(result.backupPath ? { backupPath: result.backupPath } : {}),
@@ -6340,7 +6448,10 @@ Backups (--fix):
         } else {
           process.stdout.write('\nOASB Composite Security Assessment\n');
           process.stdout.write('----------------------------------------------------\n');
-          process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore === null ? 'not measured' : `${infraScore}%`}\n`);
+          const infraSuppressed = infraResult.suppressedControls
+            ? ` (${plural(infraResult.suppressedControls, 'suppressed control')} not scored)`
+            : '';
+          process.stdout.write(`Infrastructure Score (OASB-1): ${infraScore === null ? 'not measured' : `${infraScore}%`}${infraSuppressed}\n`);
           process.stdout.write(`Governance Score (OASB-2):     ${govScore === null ? 'not measured' : `${govScore}/100`}\n`);
           process.stdout.write('----------------------------------------------------\n');
           process.stdout.write(`Composite Score:               ${compositeScore === null ? `not measured (${compositeUnmeasured})` : `${compositeScore}/100`}\n`);
@@ -6357,6 +6468,8 @@ Backups (--fix):
             staticOnly: isStaticOnly,
             filesExamined: result.coverage?.filesExamined,
             citationRoot,
+            suppressed: result.suppressed,
+            outOfScope: result.outOfScope,
           });
           printBenchmarkUnreadDisclosure(result);
 
@@ -6405,6 +6518,7 @@ Backups (--fix):
         //
         // `conformance` is null when no governance file was read (#489):
         // nothing was graded, so there is no NONE to fail on.
+        printBenchmarkSuppressionGateNote(infraResult, 'Infrastructure Score (OASB-1)');
         const conformanceFails = conformance === 'none';
         if (conformanceFails) {
           console.error(
@@ -6450,10 +6564,12 @@ Backups (--fix):
       // Benchmark mode - output compliance report
       if (options.benchmark) {
         // allFindings: every finding regardless of the score threshold. It is
-        // not unfiltered: `--ignore` removed its checks above, so the controls
-        // they measure read as not assessed (the cited Verify repeats the flag).
+        // not unfiltered: `--ignore` and `.hmaignore` removed records above,
+        // so the assessor is told what was withheld, and every control a
+        // withheld check maps to is marked suppressed and never credited
+        // (the cited Verify repeats the flag).
         const benchmarkResult = applyZeroReadFloor(
-          generateBenchmarkReport(result.allFindings || result.findings, level, options.category),
+          generateBenchmarkReport(result.allFindings || result.findings, level, options.category, benchmarkWithheld(result, ignoreList)),
           result,
         );
 
@@ -6467,6 +6583,8 @@ Backups (--fix):
           staticOnly: isStaticOnly,
           filesExamined: result.coverage?.filesExamined,
           citationRoot,
+          suppressed: result.suppressed,
+          outOfScope: result.outOfScope,
         };
 
         // Output based on format
@@ -6539,6 +6657,7 @@ Backups (--fix):
         // write while ramping a threshold in CI, and turning it on quietly
         // removed the only gate the benchmark had. `--fail-below` adds a
         // condition; it does not replace one.
+        printBenchmarkSuppressionGateNote(benchmarkResult, 'Benchmark compliance');
         const ratingFails = benchmarkResult.rating === 'Not Passing'
           || benchmarkResult.rating === 'Needs Improvement';
         if (ratingFails) {

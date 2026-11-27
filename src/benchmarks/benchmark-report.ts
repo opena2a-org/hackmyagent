@@ -22,8 +22,9 @@ import {
   type BenchmarkResult,
   type BenchmarkCategoryResult,
   type BenchmarkFailingRecord,
+  type BenchmarkControlSuppression,
 } from './index';
-import type { SecurityFinding } from '../hardening/security-check';
+import type { SecurityFinding, ScanResult } from '../hardening/security-check';
 import { escapeForDisplay, escapePathForDisplay } from '../ui/display-safe';
 
 export interface LocalControlResult {
@@ -35,6 +36,53 @@ export interface LocalControlResult {
   remediation?: string;
   /** Absent subject artifacts, when status is `not-applicable` (#458). */
   naSubjects?: string[];
+  /** What the run's own suppression set aside from this control. */
+  suppression?: BenchmarkControlSuppression;
+}
+
+type WithheldRow = NonNullable<ScanResult['suppressed']>[number];
+
+/**
+ * What the person running the scan set aside before the assessor read the
+ * findings. `rows` are the scan result's `suppressed` and `outOfScope` rows
+ * (`--ignore`, `.hmaignore` check rules, `.hmaignore` path rules); `ignored`
+ * is the `--ignore` list as given, which also covers a check whose records
+ * were removed without a row (a clean record, or a failing one outside the
+ * reported list).
+ *
+ * A control that maps to a withheld check is never credited: unless another
+ * of its checks failed it, it is `unverified`, outside every denominator, and
+ * marked `suppressed`, so the compliance figure, the rating and the category
+ * line cannot move on a suppression the report does not name.
+ */
+export interface BenchmarkWithheld {
+  rows?: ReadonlyArray<WithheldRow>;
+  ignored?: ReadonlyArray<string>;
+}
+
+/** The suppression record for one control, or `undefined` when nothing it maps to was withheld. */
+function controlSuppression(
+  control: BenchmarkControl,
+  rowsByCheck: ReadonlyMap<string, WithheldRow[]>,
+  ignored: ReadonlySet<string>,
+): BenchmarkControlSuppression | undefined {
+  const checkIds: string[] = [];
+  const channels = new Set<string>();
+  let withheldFindings = 0;
+  for (const id of control.checkIds) {
+    const key = id.toUpperCase();
+    const rows = rowsByCheck.get(key) ?? [];
+    const byFlag = ignored.has(key);
+    if (rows.length === 0 && !byFlag) continue;
+    checkIds.push(id);
+    if (byFlag) channels.add('ignore-flag');
+    for (const row of rows) {
+      channels.add(row.suppressedBy);
+      withheldFindings += row.count;
+    }
+  }
+  if (checkIds.length === 0) return undefined;
+  return { checkIds, suppressedBy: [...channels].sort(), findings: withheldFindings };
 }
 
 /**
@@ -92,7 +140,8 @@ function failingRecordRef(checkId: string, finding: SecurityFinding): BenchmarkF
 export function generateBenchmarkReport(
   findings: ReadonlyArray<SecurityFinding>,
   level: BenchmarkLevel,
-  categoryFilter?: string
+  categoryFilter?: string,
+  withheld?: BenchmarkWithheld,
 ): BenchmarkResult {
   // Get controls for the specified level
   let controls = getControlsForLevel(level);
@@ -128,8 +177,20 @@ export function generateBenchmarkReport(
     }
   }
 
+  const rowsByCheck = new Map<string, WithheldRow[]>();
+  for (const row of withheld?.rows ?? []) {
+    const key = row.checkId.toUpperCase();
+    const group = rowsByCheck.get(key);
+    if (group) group.push(row);
+    else rowsByCheck.set(key, [row]);
+  }
+  const ignoredChecks = new Set(
+    (withheld?.ignored ?? []).map((id) => id.trim().toUpperCase()).filter((id) => id !== ''),
+  );
+
   // Evaluate each control
   const controlResults: LocalControlResult[] = [];
+  let suppressedCount = 0;
   let l1Passed = 0, l1Total = 0;
   let l2Passed = 0, l2Total = 0;
   let l3Passed = 0, l3Total = 0;
@@ -141,6 +202,7 @@ export function generateBenchmarkReport(
     const failingRecords: BenchmarkFailingRecord[] = [];
     const naSubjects: string[] = [];
     let remediation: string | undefined;
+    const suppression = controlSuppression(control, rowsByCheck, ignoredChecks);
 
     if (control.checkIds.length === 0) {
       // No automated check maps to this control (manual, forward, or an
@@ -210,6 +272,15 @@ export function generateBenchmarkReport(
         status = 'failed';
         failedCount++;
         remediation = remediation || control.remediation;
+      } else if (suppression) {
+        // A check this control maps to was set aside by the person running
+        // the scan. What it would have reported is not known to the assessor,
+        // so the control is neither credited nor counted: unverified, outside
+        // every denominator, and marked so every channel names it.
+        status = 'unverified';
+        unverifiedCount++;
+        suppressedCount++;
+        remediation = control.remediation;
       } else if (refuteOnly) {
         status = 'unverified';
         unverifiedCount++;
@@ -243,7 +314,7 @@ export function generateBenchmarkReport(
       }
     }
 
-    controlResults.push({ control, status, findings: relatedFindings, failingRecords, remediation, naSubjects });
+    controlResults.push({ control, status, findings: relatedFindings, failingRecords, remediation, naSubjects, suppression });
   }
 
   // Compliance percentages. #458 step 0 — a level with no scored control
@@ -276,6 +347,7 @@ export function generateBenchmarkReport(
     const failed = catControls.filter((r: LocalControlResult) => r.status === 'failed').length;
     const unverified = catControls.filter((r: LocalControlResult) => r.status === 'unverified').length;
     const notApplicable = catControls.filter((r: LocalControlResult) => r.status === 'not-applicable').length;
+    const suppressed = catControls.filter((r: LocalControlResult) => r.status === 'unverified' && r.suppression).length;
     // #615 — the same zero-denominator rule as the level grain above: a
     // category with no measured control has no figure. The old `: 0` put
     // `"compliance": 0` beside `"passed": 0, "failed": 0` on `--json` and
@@ -289,6 +361,7 @@ export function generateBenchmarkReport(
       failed,
       unverified,
       notApplicable,
+      ...(suppressed > 0 ? { suppressed } : {}),
       controls: catControls.map((r: LocalControlResult) => ({
         controlId: r.control.id,
         name: r.control.name,
@@ -302,6 +375,7 @@ export function generateBenchmarkReport(
         // open, so it rides on those records and nowhere else.
         ...(r.status === 'unverified' && r.control.audit ? { audit: r.control.audit } : {}),
         ...(r.status === 'not-applicable' && r.naSubjects?.length ? { notApplicableSubjects: r.naSubjects } : {}),
+        ...(r.suppression ? { suppressed: r.suppression } : {}),
       })),
     });
   }
@@ -324,6 +398,7 @@ export function generateBenchmarkReport(
     failedControls: failedCount,
     unverifiedControls: unverifiedCount,
     notApplicableControls: notApplicableCount,
+    ...(suppressedCount > 0 ? { suppressedControls: suppressedCount } : {}),
   };
 }
 
