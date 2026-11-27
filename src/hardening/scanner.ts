@@ -1060,20 +1060,19 @@ function readCheckDirents(dir: string, admit: (entry: DirEntryLike) => boolean):
  */
 const SOURCE_CHECK_EXTENSIONS: string[] = [...JS_FAMILY_EXTENSIONS];
 
-const JS_FAMILY_EXTENSION_SET: ReadonlySet<string> = new Set<string>(JS_FAMILY_EXTENSIONS);
-
 /** The not-applicable subject of a source check, naming the extensions it selects. */
 const SOURCE_CHECK_SUBJECT = `source files (${JS_FAMILY_EXTENSIONS.join(', ')})`;
 /** The same, for the source checks that also read `.json` at the scanned root. */
 const SOURCE_OR_ROOT_CONFIG_SUBJECT = `source or config files (${[...JS_FAMILY_EXTENSIONS, '.json'].join(', ')})`;
 
 /**
- * Whether `file` (a name or a path) has a JavaScript-family extension. The one
+ * Whether `file` (a name or a path) ends with a JavaScript-family extension; a name that is only the extension counts. The one
  * admission test the source checks share; case-insensitive, as `walkDirectory`
  * is, so a file the walk selected is never dropped by the check that reads it.
  */
 export function isJsFamilyFile(file: string): boolean {
-  return JS_FAMILY_EXTENSION_SET.has(path.extname(file).toLowerCase());
+  const lower = file.toLowerCase();
+  return JS_FAMILY_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
 /**

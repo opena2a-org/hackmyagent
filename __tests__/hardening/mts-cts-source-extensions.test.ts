@@ -88,4 +88,28 @@ describe('.mts and .cts are read like .ts', () => {
       expect(result.coverage?.filesExamined, `coverage.filesExamined under ${ext}`).toBe(baseline.coverage?.filesExamined);
     }
   });
+
+  it('admits every name the earlier endsWith filter admitted, whatever the stem', () => {
+    const old = (name: string): boolean => name.endsWith('.ts') || name.endsWith('.js');
+    const stems = ['', 'a', 'a.b.c', '.', '..', 'a.d', 'src/', 'src/a', 'src/a.b', 'src/.', 'src/a/b/'];
+    const extensions = ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts', '.d.ts', '.tsx', '.jsx'];
+    for (const stem of stems) {
+      for (const ext of extensions) {
+        const name = `${stem}${ext}`;
+        if (old(name)) expect(isJsFamilyFile(name), name).toBe(true);
+        if (['.mjs', '.cjs', '.mts', '.cts'].includes(ext)) expect(isJsFamilyFile(name), name).toBe(true);
+      }
+    }
+    for (const name of ['.js', '.ts', '.mjs', '.cjs', '.mts', '.cts']) {
+      expect(isJsFamilyFile(name), name).toBe(true);
+    }
+  });
+
+  it('reads a top-level file whose whole name is .js', async () => {
+    const dir = tempDir('hma-dot-js-');
+    fs.writeFileSync(path.join(dir, 'package.json'), PACKAGE);
+    fs.writeFileSync(path.join(dir, '.js'), HAZARD);
+    const result = await scan(dir);
+    expect(failing(result, 'LOG-002')).toMatchObject({ file: '.js' });
+  });
 });
