@@ -26,6 +26,7 @@ import { lineFromOffset } from '../types/text-position';
 import { HeadTailRegExp, WordChainAlternationRegExp, WordChainRegExp, quotedCallMatches } from '../types/lazy-scan';
 import { classifySkillSection, isLikelyFalsePositive } from './skill-context';
 import { isCorpusPath, isTestPath, isExamplePath } from './path-context';
+import { buildCodeView, isConstStringLiteralBinding } from './toctou-const-binding';
 import { shellLineWritesToTmp } from './shell-tmp-write';
 import { scanAssembly } from '../lifecycle/assembly-scanner';
 import {
@@ -18536,15 +18537,33 @@ dist/
           return false;
         };
 
+        // A module-scope `const NAME = '<literal>'` names a fixed path: the
+        // check and the use are the same as `existsSync('/usr/bin/true')`
+        // then `spawn('/usr/bin/true')`, which already passes. The binding
+        // is decided on a lexed code view (comments and strings blanked,
+        // every other mention of the name a plain read), so a comment or a
+        // same-named const in another scope cannot suppress a real finding.
+        let codeView: ReturnType<typeof buildCodeView> | undefined;
+        const constLiteral = new Map<string, boolean>();
+        const isConstLiteral = (varName: string): boolean => {
+          let known = constLiteral.get(varName);
+          if (known === undefined) {
+            if (codeView === undefined) codeView = buildCodeView(content);
+            known = isConstStringLiteralBinding(content, varName, codeView);
+            constLiteral.set(varName, known);
+          }
+          return known;
+        };
+
         const accessGateHit = [...content.matchAll(accessGatePattern)].some(m => {
           const varName = m[1];
           const lineIdx = content.slice(0, m.index!).split('\n').length - 1;
-          return windowHasUse(lineIdx, execUseRe(varName));
+          return windowHasUse(lineIdx, execUseRe(varName)) && !isConstLiteral(varName);
         });
         const statExecHit = [...content.matchAll(statPattern)].some(m => {
           const varName = m[1];
           const lineIdx = content.slice(0, m.index!).split('\n').length - 1;
-          return windowHasUse(lineIdx, execUseRe(varName));
+          return windowHasUse(lineIdx, execUseRe(varName)) && !isConstLiteral(varName);
         });
         const readAfterCheck = accessGateHit || statExecHit;
         // Pattern 2: integrity verify (hash/signature) followed by exec/spawn on the same path.

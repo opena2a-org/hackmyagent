@@ -3181,6 +3181,93 @@ describe('OpenClaw gateway auto-fix', () => {
       );
       expect(toctou, 'stat-then-read in content scanner should not fire TOCTOU-001').toBeUndefined();
     });
+
+    it('does NOT flag existsSync + spawn on a module const bound to a string literal', async () => {
+      // Same shape as existsSync('/usr/bin/true') then spawn('/usr/bin/true'),
+      // which already passes: the path is fixed in the source.
+      const code = [
+        'import { existsSync } from "fs";',
+        'import { spawn } from "child_process";',
+        "const TOOL='/usr/bin/true'",
+        'export function run() {',
+        '  if (existsSync(TOOL)) {',
+        '    spawn(TOOL, [], { stdio: "ignore" });',
+        '  }',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'const-tool.ts'), code);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const toctou = result.findings.find(
+        f => f.checkId === 'TOCTOU-001' && f.file === 'const-tool.ts',
+      );
+      expect(toctou, 'existsSync+spawn on a const string literal must not fire TOCTOU-001').toBeUndefined();
+    });
+
+    it('flags existsSync + spawn on a non-constant identifier', async () => {
+      const code = [
+        'import { existsSync } from "fs";',
+        'import { spawn } from "child_process";',
+        'const TOOL = process.env.TOOL_PATH;',
+        'export function run() {',
+        '  if (existsSync(TOOL)) {',
+        '    spawn(TOOL, [], { stdio: "ignore" });',
+        '  }',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'env-tool.ts'), code);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const toctou = result.findings.find(
+        f => f.checkId === 'TOCTOU-001' && f.file === 'env-tool.ts',
+      );
+      expect(toctou, 'existsSync+spawn on a non-constant identifier must fire TOCTOU-001').toBeDefined();
+    });
+
+    it('flags existsSync + spawn on a parameter when only a comment declares a same-named const', async () => {
+      const code = [
+        'import { existsSync } from "fs";',
+        'import { spawn } from "child_process";',
+        "// const p = '';",
+        "/* const p = '/usr/bin/true'; */",
+        'export function run(p: string) {',
+        '  if (existsSync(p)) {',
+        '    spawn(p, []);',
+        '  }',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'comment-const.ts'), code);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const toctou = result.findings.find(
+        f => f.checkId === 'TOCTOU-001' && f.file === 'comment-const.ts',
+      );
+      expect(toctou, 'a commented-out const must not suppress TOCTOU-001').toBeDefined();
+    });
+
+    it('flags existsSync + spawn on a parameter that shadows a same-named module const', async () => {
+      const code = [
+        'import { existsSync } from "fs";',
+        'import { spawn } from "child_process";',
+        "const p = '/usr/bin/true';",
+        'export function run(p: string) {',
+        '  if (existsSync(p)) {',
+        '    spawn(p, []);',
+        '  }',
+        '}',
+      ].join('\n');
+      await fs.writeFile(path.join(tempDir, 'SKILL.md'), '# Test Skill');
+      await fs.writeFile(path.join(tempDir, 'shadow-const.ts'), code);
+
+      const result = await scanner.scan({ targetDir: tempDir });
+      const toctou = result.findings.find(
+        f => f.checkId === 'TOCTOU-001' && f.file === 'shadow-const.ts',
+      );
+      expect(toctou, 'a shadowed module const must not suppress TOCTOU-001').toBeDefined();
+    });
   });
 
   // Bug #6 regression (2026-04-17): WEBCRED-001 was flagging Node.js compile
