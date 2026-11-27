@@ -12649,6 +12649,14 @@ dist/
     return this.backups.beginExternalBackup(targetDir);
   }
 
+  /**
+   * Remove the run `beginExternalBackup` created when it holds nothing to
+   * undo. See `BackupStore.discardExternalBackupIfEmpty`.
+   */
+  discardExternalBackupIfEmpty(): Promise<boolean> {
+    return this.backups.discardExternalBackupIfEmpty();
+  }
+
   /** Candidates the last backup withheld because they resolve outside the scanned tree. */
   backupWithheldLinks(): WithheldLink[] {
     return this.backups.backupWithheldLinks();

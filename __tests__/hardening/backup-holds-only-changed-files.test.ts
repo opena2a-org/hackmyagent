@@ -338,6 +338,8 @@ const MUTATION_CENSUS: Record<string, Record<string, Site>> = {
     'createRunBackupDir:mkdir': { reason: 'the run directory in the backup store' },
     'createBackup:writeFile': { reason: 'the run manifest' },
     'recordCreatedFiles:writeFile': { reason: 'the run manifest' },
+    'discardExternalBackupIfEmpty:unlink': { reason: 'the manifest of a harden-soul run that holds nothing to undo' },
+    'discardExternalBackupIfEmpty:rmdir': { reason: 'that run directory, once empty, never the target' },
     'restoreOneBackupFile:copyFile': { reason: 'rollback: puts a copy back' },
     'restoreOneBackupFile:chmod': { reason: 'rollback: puts a recorded mode back' },
     'restoreOneMode:chmod': { reason: 'rollback: puts a mode-only entry back' },
