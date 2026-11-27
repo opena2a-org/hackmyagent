@@ -18,8 +18,11 @@ import { urlOrigin } from '../compiler/structured-colocation.js';
 import type { ProjectType } from '../../hardening/security-check.js';
 import { assertASTIntegrity } from '../security/defense-in-depth.js';
 import { lineFromOffset, findLineFromString } from '../../types/text-position.js';
+import { URL_IN_PURPOSE } from '../compiler/declared-purpose-urls.js';
 import {
   findCredentialFormatMatch,
+  findJwtMatch,
+  vendorAlternation,
   hasCredentialFormat,
   hasAnyCredentialCandidate,
   hasAnchoredVendorCredential,
@@ -721,18 +724,129 @@ function findNounGovernedCredentialValue(
   return undefined;
 }
 
+/** The shared matcher's high-entropy candidate run, as `findCredentialFormatMatch` reads it. */
+const ENTROPY_RUN_IN_PURPOSE = /\b[A-Za-z0-9+=_]{40,}\b/g;
+
+/** The words whose presence in the declared purpose makes the file a test, an example or documentation. */
+const PURPOSE_WORDS = ['test', 'example', 'documentation', 'fixture', 'demo'] as const;
+
 /**
- * A scheme-like run inside a lowercased declared purpose and, when `://`
- * follows it, the URL it starts: up to whitespace, a double quote or an angle
- * bracket, the characters that end a URL in prose and in a JSON string value.
- * The URL part is optional so that each run is consumed once, whether or not
- * it starts a URL, and the caller puts a run without a URL back unchanged. The
- * purpose is tree-controlled text (a frontmatter description has no length cap
- * of its own), and a pattern that requires `://` re-reads the rest of a run
- * such as `a.a.a...` from every word boundary inside it, which is quadratic in
- * the length of the run.
+ * A mask over `text`, 1 on every character of a credential-shaped value: each
+ * vendor-prefixed match, each JWT, and each high-entropy run from its first
+ * credible window to its end, the spans `findCredentialFormatMatch` reports.
+ * With no frontmatter the declared purpose is the artifact's first long line,
+ * which for `const openai = "sk-…"` is the key's own line. A key is reported
+ * whatever its own characters spell, so a body that spells `test` or `demo`
+ * does not make the file a test or a demo. A value containing EXAMPLE is
+ * marked like any other: whether a value is a placeholder is judged on the
+ * value itself, where the credential is matched, and a placeholder on the
+ * first line says nothing about a real key further down the file.
+ *
+ * Linear in `text`, which a frontmatter description leaves unbounded: the
+ * vendor and entropy passes are single global scans, each JWT search resumes
+ * past the previous match, and each entropy run is judged once.
  */
-const URL_IN_PURPOSE = /\b[a-z][a-z0-9+.-]*(:\/\/[^\s"<>]*)?/g;
+function credentialValueMask(text: string): Uint8Array {
+  const mask = new Uint8Array(text.length);
+  const mark = (start: number, value: string): void => {
+    mask.fill(1, start, start + value.length);
+  };
+  const vendorRe = new RegExp(vendorAlternation(), 'g');
+  for (let m = vendorRe.exec(text); m !== null; m = vendorRe.exec(text)) {
+    if (m[0].length === 0) {
+      vendorRe.lastIndex++;
+      continue;
+    }
+    mark(m.index, m[0]);
+  }
+  for (let from = 0; from < text.length; ) {
+    const jwt = findJwtMatch(text.slice(from), false);
+    if (jwt === undefined) break;
+    mark(from + jwt.index, jwt.value);
+    from += jwt.index + Math.max(jwt.value.length, 1);
+  }
+  ENTROPY_RUN_IN_PURPOSE.lastIndex = 0;
+  for (let m = ENTROPY_RUN_IN_PURPOSE.exec(text); m !== null; m = ENTROPY_RUN_IN_PURPOSE.exec(text)) {
+    const hit = findCredentialFormatMatch(m[0]);
+    if (hit !== undefined) mark(m.index + hit.index, m[0].slice(hit.index));
+  }
+  return mask;
+}
+
+/**
+ * The declared purpose as the purpose-word test reads it: lowercased, with
+ * every URL and every credential-shaped value removed.
+ *
+ * Both removals are computed on the ORIGINAL text, independently of each
+ * other, so their order cannot matter. The URLs are found exactly as before,
+ * by `URL_IN_PURPOSE` on the lowercased purpose, and `urlSpans` adds the URLs
+ * the compiler found on the artifact before the report redaction table ran
+ * (`SecurityAST.declaredPurposeUrlSpans`): a table replacement that took a
+ * URL's scheme leaves no scheme here, and its URL is removed all the same. The
+ * credential values are found on the purpose as written, since the vendor
+ * prefixes and `eyJ` are case-sensitive. Both of those are positions in
+ * `declared`, carried over to the lowercased text character by character.
+ * The union of the three is removed.
+ *
+ * Each maximal removed stretch becomes ONE space. No purpose word holds a
+ * space, so no word can be read across a removed stretch, and no token can be
+ * joined across one; every word found lies whole inside a stretch of the
+ * lowercased purpose that neither removal touched. Those stretches are
+ * contained in the ones left by the URL removal alone, so a word found here is
+ * a word found with only the URLs removed: removing the credential values
+ * takes words away from the purpose and never adds one.
+ *
+ * Should the carried-over offsets not line up with the lowercased text, which
+ * the lowercase mapping of JavaScript does not produce, the whole purpose is
+ * removed: when the scanner cannot tell what the purpose says, it reports.
+ */
+function purposeWithoutUrlsOrCredentialValues(
+  declared: string,
+  urlSpans: ReadonlyArray<readonly [number, number]> = [],
+): string {
+  const lowered = declared.toLowerCase();
+  const removed = new Uint8Array(lowered.length);
+  for (const m of lowered.matchAll(URL_IN_PURPOSE)) {
+    if (m[1] !== undefined) removed.fill(1, m.index, m.index + m[0].length);
+  }
+
+  const fromDeclared = credentialValueMask(declared);
+  for (const [a, b] of urlSpans) fromDeclared.fill(1, Math.max(0, a), Math.min(declared.length, b));
+  let at = 0;
+  for (let i = 0; i < declared.length; ) {
+    const cp = declared.codePointAt(i) ?? 0;
+    const units = cp > 0xffff ? 2 : 1;
+    const width = String.fromCodePoint(cp).toLowerCase().length;
+    if (fromDeclared.subarray(i, i + units).includes(1)) removed.fill(1, at, at + width);
+    at += width;
+    i += units;
+  }
+  if (at !== lowered.length) return '';
+
+  let out = '';
+  for (let i = 0; i < lowered.length; ) {
+    if (removed[i] === 1) {
+      out += ' ';
+      while (i < lowered.length && removed[i] === 1) i++;
+    } else {
+      out += lowered[i];
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * The purpose words `isDocumentationOrTestContext` finds in a declared purpose
+ * and its `declaredPurposeUrlSpans`. Exported for tests.
+ */
+export function purposeWordsFoundForTest(
+  declared: string,
+  urlSpans: ReadonlyArray<readonly [number, number]> = [],
+): string[] {
+  const purpose = purposeWithoutUrlsOrCredentialValues(declared, urlSpans);
+  return PURPOSE_WORDS.filter(word => purpose.includes(word));
+}
 
 /**
  * Determine if the artifact is a documentation example or test fixture.
@@ -800,17 +914,10 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   // frontmatter the purpose is the artifact's first long line, so a JSON
   // document whose first value was `https://example-corp.com/collect` read as
   // an "example" and silenced every credential check here, a live forwarding
-  // hook included. Words outside a URL keep their reading.
-  const purpose = ast.declaredPurpose
-    .toLowerCase()
-    .replace(URL_IN_PURPOSE, (run: string, url?: string) => (url === undefined ? run : ' '));
-  if (
-    purpose.includes('test') ||
-    purpose.includes('example') ||
-    purpose.includes('documentation') ||
-    purpose.includes('fixture') ||
-    purpose.includes('demo')
-  ) {
+  // hook included. Words outside a URL keep their reading. Credential-shaped
+  // values are removed with them: a key's own characters are not a purpose.
+  const purpose = purposeWithoutUrlsOrCredentialValues(ast.declaredPurpose, ast.declaredPurposeUrlSpans);
+  if (PURPOSE_WORDS.some(word => purpose.includes(word))) {
     return true;
   }
 

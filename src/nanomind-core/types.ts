@@ -68,6 +68,14 @@ export interface SecurityAST {
    * Optional so hand-built ASTs stay valid; the compiler always sets it.
    */
   declaredPurposeRedaction?: DeclaredPurposeRedaction;
+  /**
+   * The stretches of `declaredPurpose`, as `[from, to)` code-unit offsets,
+   * that come from a URL of the text as written, found before any redaction
+   * (`compiler/declared-purpose-urls.ts`). A redaction marker that took a URL's
+   * scheme is inside one. The credential analyzer reads no purpose word in
+   * them. Optional so hand-built ASTs stay valid; the compiler always sets it.
+   */
+  declaredPurposeUrlSpans?: ReadonlyArray<readonly [number, number]>;
   declaredCapabilities: Capability[];
   declaredConstraints: Constraint[];
   declaredDataAccess: DataAccessPattern[];

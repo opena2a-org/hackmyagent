@@ -24,7 +24,8 @@
 import { createHash, createHmac } from 'node:crypto';
 import { parseArtifact } from '../ingestion/artifact-parser.js';
 import { sanitizeForNanoMind } from '../ingestion/input-sanitizer.js';
-import { redactSecretsForReportReporting } from '../security/defense-in-depth.js';
+import { redactSecretsForReportReporting, redactSecretsForReportWithOrigins } from '../security/defense-in-depth.js';
+import { urlSpansFromOriginal } from './declared-purpose-urls.js';
 import { getTMEClassifier } from '../inference/tme-classifier.js';
 import { TMENeuralClassifier } from '../inference/tme-neural.js';
 import { buildAnalysisView } from './source-code-preprocessor.js';
@@ -196,8 +197,11 @@ export class SemanticCompiler {
     // pass, so `declaredPurposeRedaction` is the only witness downstream
     // finding construction has that content was removed — see
     // `DeclaredPurposeRedaction` in `../types.ts`.
-    const { text: declaredPurpose, redaction: declaredPurposeRedaction } =
-      extractDeclaredPurpose(content, parsed.frontmatter);
+    const {
+      text: declaredPurpose,
+      redaction: declaredPurposeRedaction,
+      urlSpans: declaredPurposeUrlSpans,
+    } = extractDeclaredPurpose(content, parsed.frontmatter);
 
     // Step 5: NanoMind inference (intent + inferred capabilities)
     // Step 4b: THE DETERMINISTIC LAYER, and it runs FIRST.
@@ -365,6 +369,7 @@ export class SemanticCompiler {
       artifactSize: parsed.size,
       declaredPurpose,
       declaredPurposeRedaction,
+      declaredPurposeUrlSpans,
       declaredCapabilities,
       declaredConstraints,
       declaredDataAccess,
@@ -571,6 +576,21 @@ export class SemanticCompiler {
 interface ExtractedPurpose {
   text: string;
   redaction: DeclaredPurposeRedaction;
+  /** The stretches of `text` that come from a URL of the text as written (`declared-purpose-urls.ts`). */
+  urlSpans: Array<[number, number]>;
+}
+
+/**
+ * The URL stretches of `text`, the redacted purpose taken from
+ * `redacted[start, start + text.length)`, found on `original` before any
+ * redaction. A map that does not reproduce the redacted text cannot place
+ * them, so then the whole purpose is one stretch: unread, as a URL is.
+ */
+function purposeUrlSpans(original: string, redacted: string, start: number, text: string): Array<[number, number]> {
+  if (text.length === 0) return [];
+  const mapped = redactSecretsForReportWithOrigins(original);
+  if (mapped.text !== redacted) return [[0, text.length]];
+  return urlSpansFromOriginal(original, mapped.from, mapped.to, start, start + text.length);
 }
 
 function extractDeclaredPurpose(content: string, frontmatter?: Record<string, unknown>): ExtractedPurpose {
@@ -585,7 +605,11 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
   if (frontmatter?.description) {
     const raw = String(frontmatter.description);
     const { text, shapes } = redactSecretsForReportReporting(raw);
-    return { text, redaction: { status: text === raw ? 'clean' : 'applied', shapes } };
+    return {
+      text,
+      redaction: { status: text === raw ? 'clean' : 'applied', shapes },
+      urlSpans: purposeUrlSpans(raw, text, 0, text),
+    };
   }
 
   // The WHOLE content is redacted before it is split into candidate lines
@@ -608,8 +632,11 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
   // fixture" or "for testing" does not get mistaken for the artifact's
   // declared purpose — which would then incorrectly classify the file as
   // a test/doc context and suppress credential findings.
-  const lines = redactedContent.split('\n').filter(l => l.trim().length > 0);
-  for (const rawLine of lines) {
+  let lineStart = 0;
+  for (const rawLine of redactedContent.split('\n')) {
+    const at = lineStart;
+    lineStart += rawLine.length + 1;
+    if (rawLine.trim().length === 0) continue;
     const line = rawLine.trim();
     if (
       line.startsWith('#') ||
@@ -624,10 +651,18 @@ function extractDeclaredPurpose(content: string, frontmatter?: Record<string, un
       continue;
     }
     if (line.length > 20) {
-      return { text: line.slice(0, 200), redaction };
+      const text = line.slice(0, 200);
+      const start = at + rawLine.length - rawLine.trimStart().length;
+      return { text, redaction, urlSpans: purposeUrlSpans(content, redactedContent, start, text) };
     }
   }
-  return { text: 'Unknown purpose', redaction };
+  return { text: 'Unknown purpose', redaction, urlSpans: [] };
+}
+
+/** `extractDeclaredPurpose` for a file with no frontmatter. Exported for tests. */
+export function declaredPurposeForTest(content: string): { text: string; urlSpans: Array<[number, number]> } {
+  const { text, urlSpans } = extractDeclaredPurpose(content);
+  return { text, urlSpans };
 }
 
 /**
@@ -1579,7 +1614,7 @@ function hasCanonicalCredentialFormat(content: string): boolean {
     let match = regex.exec(content);
     // A match the shape's own predicate rejects is not a credential, so look
     // past it rather than letting it decide for the whole pattern.
-    while (match && accept && !accept(match[0])) {
+    while (match && accept && !accept(match[0], content, match.index + match[0].length)) {
       match = regex.exec(content);
     }
     if (match) {
@@ -1763,8 +1798,10 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
    * filters. A shape whose regex alone admits ordinary identifiers carries its
    * discriminator here instead of in a lookahead: a lookahead re-reads the run
    * from every start position, and that is how a quadratic scan gets in.
+   * `content` and `end` (the offset just past the match) are for a shape that
+   * judges what follows the match; such a check must bound its own reading.
    */
-  accept?: (matched: string) => boolean;
+  accept?: (matched: string, content: string, end: number) => boolean;
 }> = [
   { label: 'Anthropic API key', regex: vendor(String.raw`sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}`) },
   { label: 'OpenAI project key', regex: vendor(String.raw`sk-proj-[a-zA-Z0-9_-]{20,}`) },
@@ -1854,8 +1891,134 @@ const CANONICAL_CREDENTIAL_PATTERNS: Array<{
   // with two long segments (`MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE`
   // was positively identified as a credential once already — see the note in
   // src/types/credential-format.ts). Do not relax them.
-  { label: 'PEM private key', regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g },
+  // `accept` holds out an armor header and END pair framing a placeholder or
+  // a redaction (`<your key here>`, `...`, `[REDACTED]`) with nothing
+  // key-like on either side of it — see `pemPlaceholderHeaderEnds`. Every
+  // other header is reported.
+  {
+    label: 'PEM private key',
+    regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g,
+    accept: (_matched, content, end) => !pemPlaceholderHeaderEnds(content).has(end),
+  },
 ];
+
+/**
+ * The base64-alphabet characters a key body holds at least, in one run.
+ *
+ * 40 is less than one line of a real PEM body (64 characters), and more than
+ * the letters of a placeholder such as `<YOUR PRIVATE KEY HERE>` (18) or
+ * `[REDACTED]` (8). The smallest private key in PEM, an Ed25519 PKCS#8 key,
+ * has a 64-character body.
+ */
+const PEM_MIN_BODY_BASE64_CHARS = 40;
+const PEM_END_MARKER = '-----END ';
+
+/** The PEM private-key shape's own header pattern, sticky, built on first use. */
+let pemPrivateKeyHeaderAt: RegExp | undefined;
+function pemHeaderAt(): RegExp {
+  if (pemPrivateKeyHeaderAt === undefined) {
+    const shape = CANONICAL_CREDENTIAL_PATTERNS.find(p => p.label === 'PEM private key');
+    if (shape === undefined) throw new Error('the PEM private key shape is missing from CANONICAL_CREDENTIAL_PATTERNS');
+    pemPrivateKeyHeaderAt = new RegExp(shape.regex.source, 'y');
+  }
+  return pemPrivateKeyHeaderAt;
+}
+
+/** `A-Z`, `a-z`, `0-9`, `+` and `/`: the 64 characters of the base64 alphabet. */
+function isBase64AlphabetCode(code: number): boolean {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57)
+    || code === 43 || code === 47;
+}
+
+/** The content `pemPlaceholderHeaderEnds` last read, and its answer. */
+let pemPlaceholderCache: { content: string; ends: ReadonlySet<number> } | undefined;
+
+/**
+ * The end offsets of the PEM private-key headers in `content` that frame a
+ * placeholder rather than a key. A header is held out ONLY when all of these
+ * hold:
+ *
+ * - an END marker follows it before the next private-key header (or the end
+ *   of the text), with fewer than `PEM_MIN_BODY_BASE64_CHARS` base64-alphabet
+ *   characters between the header and that END;
+ * - no base64 run of key-body length — `PEM_MIN_BODY_BASE64_CHARS` or more
+ *   alphabet characters in a row, line breaks and escaped line breaks (`\n`,
+ *   `\r` as written in a JSON string) not breaking the run — stands anywhere
+ *   between the previous private-key header (or the start of the text) and
+ *   the next one (or the end of the text).
+ *
+ * So a body placed after the END, before the header, past any amount of
+ * filler, after a second END, or behind an END written in a comment between
+ * string pieces keeps the header reported. No fixed window and no placeholder
+ * list: whether text between two headers holds a key body is the whole
+ * judgement.
+ *
+ * One pass over `content`, linear in its length: each character is read once,
+ * and at a `-` the two markers are compared at a bounded length. The answer
+ * for the last content read is kept, so the per-header `accept` calls of one
+ * scan read the text once between them.
+ */
+function pemPlaceholderHeaderEnds(content: string): ReadonlySet<number> {
+  if (pemPlaceholderCache?.content === content) return pemPlaceholderCache.ends;
+  const n = content.length;
+  // Gap g is the text before header g (gap 0 starts the text, the last gap
+  // ends it). Per gap: whether it holds a body-length run, and how many
+  // alphabet characters precede its first END marker (-1: no END).
+  const headerEnds: number[] = [];
+  const gapRun: boolean[] = [false];
+  const gapEnd: number[] = [-1];
+  let g = 0;
+  let run = 0;
+  let alphabet = 0;
+  const header = pemHeaderAt();
+  for (let i = 0; i < n; ) {
+    const code = content.charCodeAt(i);
+    if (code === 45 /* - */) {
+      // The sticky header test fails within a few characters wherever no
+      // header starts, so each `-` costs a bounded read.
+      header.lastIndex = i;
+      if (header.test(content)) {
+        i = header.lastIndex;
+        headerEnds.push(i);
+        gapRun.push(false);
+        gapEnd.push(-1);
+        g++;
+        run = 0;
+        alphabet = 0;
+        continue;
+      }
+      if (gapEnd[g] === -1 && content.startsWith(PEM_END_MARKER, i)) gapEnd[g] = alphabet;
+      run = 0;
+      i++;
+      continue;
+    }
+    if (code === 10 || code === 13) {
+      i++;
+      continue;
+    }
+    if (code === 92 /* \ */) {
+      const next = content.charCodeAt(i + 1);
+      if (next === 110 /* n */ || next === 114 /* r */) {
+        i += 2;
+        continue;
+      }
+    }
+    if (isBase64AlphabetCode(code)) {
+      alphabet++;
+      if (++run >= PEM_MIN_BODY_BASE64_CHARS) gapRun[g] = true;
+    } else {
+      run = 0;
+    }
+    i++;
+  }
+  const ends = new Set<number>();
+  for (let k = 0; k < headerEnds.length; k++) {
+    const closed = gapEnd[k + 1] >= 0 && gapEnd[k + 1] < PEM_MIN_BODY_BASE64_CHARS;
+    if (closed && !gapRun[k] && !gapRun[k + 1]) ends.add(headerEnds[k]);
+  }
+  pemPlaceholderCache = { content, ends };
+  return ends;
+}
 
 /**
  * Name-gated credential patterns: contextless secret formats that have NO
@@ -2012,7 +2175,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
     while ((match = regex.exec(content)) !== null) {
       const matched = match[0];
       // The shape's own discriminator first, then the shared filters below.
-      if (accept && !accept(matched)) {
+      if (accept && !accept(matched, content, match.index + matched.length)) {
         continue;
       }
       // Narrow preceding context: just the 40 chars before the match,

@@ -159,10 +159,17 @@ interface CredentialRedactionRule {
 
 /**
  * The rules, in the order they must run. Order and pattern bodies are carried
- * over verbatim from the sequential `.replace()` chain this table replaced;
+ * over from the sequential `.replace()` chain this table replaced;
  * `redaction-rule-table-parity.test.ts` pins that the folded output is
  * byte-identical to the chain's on every fixture, so the table is a
- * refactoring and not a behaviour change.
+ * refactoring and not a behaviour change. One body has been widened since, in
+ * the table and in that test's chain alike: `openai-key` from `{48,}` to
+ * `{32,}`, the floor the detector reports the shape at.
+ *
+ * Every vendor rule redacts at least the lengths the detector reports for its
+ * shape (`CANONICAL_CREDENTIAL_PATTERNS` in `compiler/semantic-compiler.ts`):
+ * text this table produces, the declared purpose among it, never carries a key
+ * the scan reports. `pinned-credential-shapes.test.ts` holds each shape to it.
  *
  * Two registry shapes are deliberately ABSENT and must stay absent in this
  * release: `entropy-blob` and `jwt`. Adding `entropy-blob` is the measured S4
@@ -179,7 +186,12 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
   // independent of the class staying that way.
   { id: 'anthropic-key', pattern: /sk-ant-api\d{2}-[a-zA-Z0-9_-]{20,}/g, replacement: '[REDACTED_ANTHROPIC_KEY]' },
   { id: 'openai-project-key', pattern: /sk-proj-[a-zA-Z0-9_-]{20,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
-  { id: 'openai-key', pattern: /sk-[a-zA-Z0-9]{48,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
+  // `{32,}`, the floor the detector reports this shape at: its 'OpenAI-style
+  // sk- key' entry covers a 32 to 47 character body and its 'OpenAI legacy
+  // key' entry 48 and up (semantic-compiler.ts CANONICAL_CREDENTIAL_PATTERNS).
+  // A floor above the detector's leaves a reported key verbatim in every text
+  // this table produces, the declared purpose among them.
+  { id: 'openai-key', pattern: /sk-[a-zA-Z0-9]{32,}/g, replacement: '[REDACTED_OPENAI_KEY]' },
   { id: 'aws-access-key-id', pattern: /AKIA[0-9A-Z]{16}/g, replacement: '[REDACTED_AWS_KEY]' },
   { id: 'github-pat', pattern: /ghp_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
   { id: 'github-oauth', pattern: /gho_[a-zA-Z0-9]{36}/g, replacement: '[REDACTED_GITHUB_TOKEN]' },
@@ -225,7 +237,7 @@ const CREDENTIAL_REDACTION_RULES: readonly CredentialRedactionRule[] = [
  * Upper bound, in bytes, on the content the rules above will be run against.
  *
  * Most of those patterns end in an unbounded lower-bound quantifier over a
- * single character class — `{20,}`, `{48,}`, `{24,}`, `{10,}`, `{34,}`, `{60,}`,
+ * single character class — `{20,}`, `{32,}`, `{24,}`, `{10,}`, `{34,}`, `{60,}`,
  * and the AWS rule's `[A-Za-z0-9/+=]{40,}`. Against an unbroken same-alphabet
  * run they do not merely get slow: `String.prototype.replace` exhausts V8's
  * backtrack stack and throws `RangeError: Maximum call stack size exceeded`
@@ -369,10 +381,107 @@ export function redactSecretsForReportReporting(content: string): {
 } {
   const shapePass = redactCredentialShapesReporting(content);
   const text = shapePass.text.replace(
-    /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi,
+    REPORT_NAME_GATED_VALUE,
     (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
   );
   return { text, shapes: shapePass.shapes };
+}
+
+/** The report boundary's name-gated rule: a no-whitespace quoted value assigned to a secret-named identifier. */
+const REPORT_NAME_GATED_VALUE = /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi;
+
+/**
+ * `redactSecretsForReportReporting`, with the origin of every character of
+ * the redacted text: character `i` of `text` was produced from the original
+ * characters `[from[i], to[i])`. A character the rules left alone maps to
+ * itself; every character of a replacement maps to the whole stretch the
+ * replacement took, so a position in the original can be found in the
+ * redacted text whatever the rules did around it.
+ *
+ * Built from the same rule table and the same name-gated rule, in the same
+ * order, so `text` equals `redactSecretsForReportReporting(content).text`; a
+ * caller that holds both compares them and treats a difference as a map it
+ * cannot use. Linear in the content per rule.
+ * Content refused for size maps every character of `REDACTION_WITHHELD` to the
+ * whole content.
+ */
+export function redactSecretsForReportWithOrigins(content: string): {
+  text: string;
+  from: Int32Array;
+  to: Int32Array;
+} {
+  if (Buffer.byteLength(content, 'utf-8') > MAX_REDACTION_INPUT_BYTES) {
+    const n = REDACTION_WITHHELD.length;
+    return { text: REDACTION_WITHHELD, from: new Int32Array(n), to: new Int32Array(n).fill(content.length) };
+  }
+  let text = content;
+  let from = new Int32Array(content.length);
+  let to = new Int32Array(content.length);
+  for (let i = 0; i < content.length; i++) {
+    from[i] = i;
+    to[i] = i + 1;
+  }
+
+  /**
+   * One global replace over `text`, recording origins. `keep(match, groups)`
+   * is how many leading characters of the match the replacement carries over
+   * verbatim; the rest of the replacement is `insert(match, groups)`.
+   */
+  const apply = (
+    pattern: RegExp,
+    keep: (match: string, groups: string[]) => number,
+    insert: (match: string, groups: string[]) => string,
+  ): void => {
+    const edits: Array<{ start: number; end: number; inserted: string }> = [];
+    pattern.lastIndex = 0;
+    for (let m = pattern.exec(text); m !== null; m = pattern.exec(text)) {
+      if (m[0].length === 0) {
+        pattern.lastIndex++;
+        continue;
+      }
+      const groups = m.slice(1).map(g => g ?? '');
+      const kept = keep(m[0], groups);
+      edits.push({ start: m.index + kept, end: m.index + m[0].length, inserted: insert(m[0], groups) });
+    }
+    pattern.lastIndex = 0;
+    if (edits.length === 0) return;
+
+    let length = text.length;
+    for (const e of edits) length += e.inserted.length - (e.end - e.start);
+    const pieces: string[] = [];
+    const nextFrom = new Int32Array(length);
+    const nextTo = new Int32Array(length);
+    let at = 0;
+    let last = 0;
+    const copy = (a: number, b: number): void => {
+      pieces.push(text.slice(a, b));
+      nextFrom.set(from.subarray(a, b), at);
+      nextTo.set(to.subarray(a, b), at);
+      at += b - a;
+    };
+    for (const e of edits) {
+      copy(last, e.start);
+      pieces.push(e.inserted);
+      nextFrom.fill(from[e.start], at, at + e.inserted.length);
+      nextTo.fill(to[e.end - 1], at, at + e.inserted.length);
+      at += e.inserted.length;
+      last = e.end;
+    }
+    copy(last, text.length);
+    text = pieces.join('');
+    from = nextFrom;
+    to = nextTo;
+  };
+
+  for (const rule of CREDENTIAL_REDACTION_RULES) {
+    // A `$1` replacement keeps the first group, which every such rule opens
+    // with; any other replacement is literal.
+    const keepsGroup = rule.replacement.startsWith('$1');
+    const literal = keepsGroup ? rule.replacement.slice(2) : rule.replacement;
+    apply(rule.pattern, (_m, g) => (keepsGroup ? (g[0] ?? '').length : 0), () => literal);
+  }
+  apply(REPORT_NAME_GATED_VALUE, m => m.split(/[=:]/)[0].length, () => '=[REDACTED]');
+  return { text, from, to };
 }
 
 // ============================================================================

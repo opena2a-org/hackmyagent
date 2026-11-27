@@ -19,7 +19,6 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -35,6 +34,24 @@ import { cpuTimeMs } from '../helpers/scaling-time';
 
 const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const PLACEHOLDER = /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE/i;
+
+/**
+ * The draws come from a fixed seed (mulberry32), so a failing draw is the same
+ * on every run of this file and can be reproduced. Change SEED to explore other
+ * draws; the space drawn from is every alphanumeric body.
+ */
+const SEED = 0x316;
+let state = SEED;
+function randomBytes(n: number): Uint8Array {
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    out[i] = ((t ^ (t >>> 14)) >>> 0) & 0xff;
+  }
+  return out;
+}
 
 /** `n` random alphanumerics that spell no placeholder marker. */
 function randomBody(n: number): string {
@@ -116,7 +133,7 @@ describe('#316: secure reports a hardcoded sk- key with a 32-character body', { 
 });
 
 describe('#316: controls that must produce nothing', () => {
-  const sha256 = () => randomBytes(32).toString('hex');
+  const sha256 = () => Buffer.from(randomBytes(32)).toString('hex');
   const controls: Array<[string, () => string]> = [
     ['task- plus 64 hex characters', () => `const id = "task-${sha256()}";\n`],
     ['disk- plus 64 hex characters', () => `primary: "disk-${sha256()}",\n`],
@@ -168,10 +185,13 @@ describe('#316: the 32-47 band hands off to the legacy shape at 48', () => {
   });
 });
 
-describe('#316: scan time is linear on 1 MB of sk- and alphanumerics', () => {
+describe('#316: scan time is linear on 1 MB of sk-, alphanumerics and PEM headers', () => {
   // The cap is the largest input the scan reads, so it is the input to time.
   const size = maxCredentialScanBytesForTest();
   const fill = (unit: string, n: number) => unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+  // Assembled from parts so this file holds no complete armor line.
+  const pemBegin = '-----B' + 'EGIN RSA PRIVATE KEY-----';
+  const pemEnd = '-----E' + 'ND RSA PRIVATE KEY-----';
   const hostile = (n: number) => [
     // One unbroken run: the legacy shape consumes it in one match.
     `sk-${fill(ALNUM, n - 3)}`,
@@ -182,6 +202,23 @@ describe('#316: scan time is linear on 1 MB of sk- and alphanumerics', () => {
     fill(`-sk-${fill(ALNUM, 40)}`, n),
     // Bare prefixes: every start fails on its second body character.
     fill('sk-', n),
+    // The PEM private-key shape reads the whole text once for its placeholder
+    // rule, whatever the number of headers. Headers back to back: every one
+    // is a hit.
+    fill(pemBegin, n),
+    // A header per 4 KB of text with no alphabet character and no END.
+    fill(`${pemBegin}${'.'.repeat(4000)}`, n),
+    // A header per 4 KB of dashes: every dash opens a candidate header and a
+    // candidate END marker, and none finishes either.
+    fill(`${pemBegin}${'-'.repeat(4000)}`, n),
+    // Header text one dash short, back to back: every candidate header reads
+    // to its last character before it fails.
+    fill(pemBegin.slice(0, -1), n),
+    // Placeholder blocks that each close: every header is read and dropped.
+    fill(`${pemBegin}\n<your private key here>\n${pemEnd}\n`, n),
+    // Escaped line breaks between body runs, as in a JSON string: none ends
+    // a run, and every block keeps its header.
+    fill(`${pemBegin}\\n${pemEnd}\\n${fill(ALNUM, 20)}\\r\\n${fill(ALNUM, 20)}\\n`, n),
   ];
 
   /**
