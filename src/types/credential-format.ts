@@ -1156,6 +1156,28 @@ function findCredibleWindowOffset(run: string): number | undefined {
   }
 }
 
+/**
+ * `name=name`: an identifier bound to the same identifier.
+ *
+ * The fallback's class carries `=`, so a keyword argument that forwards a
+ * variable of the same name (`tokenizer_provenance=tokenizer_provenance,` in a
+ * Python call) is one 41-character run, and a credential noun inside the name
+ * (`token` in `tokenizer`) then reported it as a hardcoded secret. The value
+ * side repeats the name byte for byte, so it holds nothing the name does not:
+ * it is a reference, never a literal.
+ *
+ * Deliberately this narrow. A run whose value differs from its name is still
+ * judged as before, so `DB_PASSWORD=my_super_secret_database_password` in an
+ * `.env` file stays a finding: an unquoted value there IS the literal. The
+ * check is two string comparisons over one run, so the walk stays linear.
+ */
+function isSameNameBinding(run: string): boolean {
+  const eq = run.indexOf('=');
+  if (eq <= 0 || run.length !== eq * 2 + 1) return false;
+  const name = run.slice(0, eq);
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && run.slice(eq + 1) === name;
+}
+
 /* ------------------------------------------------------------------ *
  * Entry points
  * ------------------------------------------------------------------ */
@@ -1199,6 +1221,7 @@ export function findCredentialFormatMatch(
     // Runs are disjoint and left to right, so nothing from here on can be
     // leftmost.
     if (best && m.index >= best.index) break;
+    if (isSameNameBinding(m[0])) continue;
     const offset = findCredibleWindowOffset(m[0]);
     if (offset !== undefined) {
       const index = m.index + offset;
