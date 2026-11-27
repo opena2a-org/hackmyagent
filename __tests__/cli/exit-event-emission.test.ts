@@ -128,15 +128,15 @@ describe('#350 endings emit their command event', { timeout: 300_000 }, () => {
     expect(r.events[0].success).toBe(false);
   });
 
-  it('PIN: secure on a missing target is a dark refusal with exit 2', () => {
-    // #481 moved this ending from exit 1 (which claimed a critical/high
-    // finding) to exit 2, not measured. It is still the ratchet's S002, a
-    // registered pre-work refusal, so it deliberately emits NO event: an event
-    // that cannot say "refused" would land in the failed bucket. #525 flips
-    // this cell to one event carrying the refusal reason.
+  it('secure on a missing target emits exactly one event and keeps exit 2', () => {
+    // The refusal used to hard-exit before the postAction hook, so the run
+    // emitted nothing. It now ends through the recorded exit: one event, the
+    // exit code unchanged, and not counted as a success.
     const r = run(['secure', `./no-such-dir-${ARGV_MARKER}`], tmp('hma-481-secure-'));
     expect(r.status).toBe(2);
-    expect(r.events, r.raw.join('\n')).toHaveLength(0);
+    expect(r.events, r.raw.join('\n')).toHaveLength(1);
+    expect(r.events[0].name).toBe('secure');
+    expect(r.events[0].success).toBe(false);
   });
 
   it('PIN: a UsageError refusal is dark — it never lands in the crash bucket', () => {

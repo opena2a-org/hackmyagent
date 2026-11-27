@@ -5486,11 +5486,10 @@ Backups (--fix):
       // settled record's top-level keys (`verdict`, `exitCode`, `measured`)
       // and `check`'s `coverage` block, so one reader parses both commands.
       //
-      // The ending stays a registered pre-work refusal and emits no event:
-      // an event that cannot say "refused" would land in the failed bucket,
-      // and #525 converts these sites together once the schema carries the
-      // reason. `writeJsonStdout` writes synchronously, so the hard exit
-      // cannot cut the document short on a pipe.
+      // The ending goes through `exitRecorded`, so the run emits exactly one
+      // event, with the 'unmeasured' reason (not counted as a success).
+      // `writeJsonStdout` writes synchronously, so the exit cannot cut the
+      // document short on a pipe.
       if (!require('fs').existsSync(originalTarget)) {
         const verdict = unmeasured(
           'target-not-found',
@@ -5541,7 +5540,7 @@ Backups (--fix):
             console.error('  For a record of this run, add: --format json -o "${REPORT:?set REPORT to the path for the json report}"');
           }
         }
-        process.exit(verdict.exitCode); // exit-unsettled(#350/S002): pre-work refusal; events await the schema reason field (#525)
+        await exitRecorded(verdict.exitCode, 'unmeasured');
       }
 
       // Single-FILE target handling.
