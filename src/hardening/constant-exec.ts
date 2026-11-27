@@ -17,9 +17,21 @@
  *     `fileURLToPath`, `tmpdir`, `mkdtemp`, `mkdtempSync`, `JSON.stringify`, ...)
  *     whose arguments are all constant,
  *   - a `+` concatenation of constant parts, or an `await` of a constant, or
- *   - an identifier bound once in the file, by a single-line `const` whose
- *     value is constant, and never assigned, imported, destructured or taken
- *     as a parameter anywhere in the file.
+ *   - an identifier with exactly one binding in the whole file, that binding a
+ *     top-level, single-line `const` whose value is constant.
+ *
+ * The bindings of an identifier are found by reading the file as tokens and
+ * counting every place the name is bound: a parameter of any function,
+ * method, arrow function or catch clause (whatever the shape of its
+ * parameter list), a `const`, `let`, `var`, `using`, `function`, `class`,
+ * `enum` or import of the name in any scope, an assignment or update, a
+ * destructuring target and a loop variable. When the file cannot be read
+ * that way (it is larger than MAX_SOURCE_LENGTH, a string, comment, template
+ * or regular expression does not end, a bracket is left open or closed
+ * twice, a `/` could start either a division or a regular expression, where
+ * a regular expression ends depends on its flags, a character is not one the
+ * reader knows, the file holds `<!--` or `-->`, or it calls `eval` or uses
+ * `with`), no identifier in it counts as constant.
  *
  * Anything else (a parameter, `req.body.x`, `process.argv`, `process.env`, an
  * unknown call, a call spanning lines) is not constant, so the classification
@@ -33,17 +45,6 @@ const IDENT_ONLY = new RegExp(`^${IDENT}$`);
 const CALL_HEAD = new RegExp(`^(${IDENT}(?:\\s*\\.\\s*${IDENT})*)\\s*\\(`);
 const EXEC_CALL = /\bexec(Sync)?\s*\(/g;
 const NUMBER = /^-?\d+(?:\.\d+)?$/;
-const CONST_DECLARATION = new RegExp(
-  `^[ \\t]*(?:export[ \\t]+)?const[ \\t]+(${IDENT})[ \\t]*(?::[^=\\n]{0,200})?=(?![=>])[ \\t]*(.*?)[ \\t]*;?[ \\t]*$`,
-  'gm',
-);
-const IDENT_MENTION = new RegExp(`(?<![\\w$.])(${IDENT})(?![\\w$])`, 'g');
-// `import.meta` is not an import.
-const IMPORT_OR_REQUIRE = /\bimport\b(?!\s*\.)|\brequire\b/;
-// A parenthesised list followed by `=>` or `{` (a parameter list, or a
-// condition such as `if (x) {`, which only makes the check more cautious).
-const PARAM_LIST = /\(([^()]*)\)\s*(?::[^={};]{0,200})?(?:=>|\{)/g;
-const DESTRUCTURING = /\b(?:const|let|var)\s*[{[]([^=]*)[}\]]\s*=/g;
 
 const TRUSTED_VALUES = new Set([
   'process.execPath',
@@ -149,88 +150,486 @@ export function isConstantExpression(expression: string, constants: ReadonlySet<
   return false;
 }
 
-/**
- * `src` with comments, string literals and the text of template literals
- * blanked to spaces, keeping `${...}` expressions and every line break, so
- * offsets into the result are offsets into `src`.
- */
-function codeOnly(src: string): string {
-  const blank = (from: number, to: number) => src.slice(from, to).replace(/[^\n]/g, ' ');
-  // Brace depth at which each open `${` started; its `}` resumes the template.
-  const templates: number[] = [];
-  let depth = 0;
-  let out = '';
-  let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    let j = i + 1;
-    if (c === '/' && src[i + 1] === '/') {
-      j = src.indexOf('\n', i);
-      if (j < 0) j = src.length;
-    } else if (c === '/' && src[i + 1] === '*') {
-      j = src.indexOf('*/', i + 2);
-      j = j < 0 ? src.length : j + 2;
-    } else if (c === '"' || c === "'") {
-      while (j < src.length && src[j] !== c && src[j] !== '\n') j += src[j] === '\\' ? 2 : 1;
-      j = Math.min(j + 1, src.length);
-    } else if (c === '`' || (c === '}' && templates.length > 0 && templates[templates.length - 1] === depth)) {
-      if (c === '}') templates.pop();
-      while (j < src.length && src[j] !== '`' && !(src[j] === '$' && src[j + 1] === '{')) j += src[j] === '\\' ? 2 : 1;
-      if (src[j] === '$') {
-        templates.push(depth);
-        j += 2;
-      } else {
-        j = Math.min(j + 1, src.length);
-      }
-    } else {
-      if (c === '{') depth++;
-      else if (c === '}') depth--;
-      out += c;
-      i = j;
-      continue;
-    }
-    out += blank(i, j);
-    i = j;
+// ---------- Reading the file as tokens ----------
+
+/** Files longer than this are not read for bindings; nothing in them counts as constant. */
+export const MAX_SOURCE_LENGTH = 1024 * 1024;
+
+type TokenKind = 'ident' | 'number' | 'string' | 'template' | 'regex' | 'punct';
+
+interface Token {
+  kind: TokenKind;
+  text: string;
+  start: number;
+  end: number;
+  /** Number of brackets (including template `${`) open around the token. */
+  depth: number;
+}
+
+interface TokenList {
+  tokens: Token[];
+  /** For an opening or closing bracket, the index of its partner; -1 otherwise. */
+  partner: number[];
+}
+
+const IDENT_AT = /[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*/uy;
+const IDENT_PART = /[\p{ID_Continue}$\u200c\u200d]/u;
+const NUMBER_AT = /(?:\d|\.\d)[\w.]*/y;
+const SPACE = /\s/u;
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+// Longest first, so `>>>=` is read before `>>`.
+const PUNCTUATORS = [
+  '>>>=', '...', '===', '!==', '**=', '<<=', '>>=', '>>>', '&&=', '||=', '??=',
+  '=>', '==', '!=', '<=', '>=', '**', '++', '--', '<<', '>>', '&&', '||', '??', '?.',
+  '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
+  '{', '}', '(', ')', '[', ']', ';', ',', '<', '>', '+', '-', '*', '/', '%', '&', '|',
+  '^', '!', '~', '?', ':', '=', '.', '@', '#',
+];
+const OPENERS = new Set(['(', '[', '{']);
+const CLOSER_OF: Record<string, string> = { '(': ')', '[': ']', '{': '}', '${': '}' };
+// Words after which a `/` starts a regular expression.
+const REGEX_AFTER_WORD = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'new', 'delete', 'void', 'throw', 'case', 'do', 'else', 'extends',
+  'default',
+]);
+// Words after which a `/` may start either; see `slashStartsRegex`.
+const AMBIGUOUS_WORDS = new Set(['of', 'yield', 'await']);
+// Statement heads whose parenthesised part is a condition, not a parameter list.
+const CONDITION_HEADS = new Set(['if', 'while', 'switch', 'with', 'for']);
+
+/** End (exclusive) of the quoted string starting at `start`; -1 if a line or the file ends first. */
+function quotedEnd(src: string, start: number): number {
+  const quote = src[start];
+  for (let j = start + 1; j < src.length; j++) {
+    const c = src[j];
+    if (c === '\\') {
+      if (src[j + 1] === '\r' && src[j + 2] === '\n') j += 2;
+      else j++;
+    } else if (c === quote) return j + 1;
+    else if (c === '\n' || c === '\r') return -1;
   }
-  return out;
+  return -1;
 }
 
 /**
- * Identifiers in `content` that hold a constant: bound by exactly one
- * single-line `const` with a constant value, and never assigned, imported,
- * required, destructured or taken as a parameter elsewhere in the file.
+ * Index of the `/` that closes the body of the regular expression literal at
+ * `start`, reading a `[` inside a class as a nested class when `nested` (the
+ * `v` flag) and as a character otherwise; -1 if the line ends first.
+ */
+function regexBodyEnd(src: string, start: number, nested: boolean): number {
+  let classes = 0;
+  for (let j = start + 1; j < src.length; j++) {
+    const c = src[j];
+    if (LINE_TERMINATOR.test(c)) return -1;
+    if (c === '\\') {
+      j++;
+      if (LINE_TERMINATOR.test(src[j] ?? '')) return -1;
+    } else if (c === '[') {
+      if (classes === 0 || nested) classes++;
+    } else if (c === ']') {
+      if (classes > 0) classes--;
+    } else if (c === '/' && classes === 0) return j;
+  }
+  return -1;
+}
+
+/** End (exclusive) of the flags after the body end `bodyEnd`. */
+function flagsEnd(src: string, bodyEnd: number): number {
+  let e = bodyEnd + 1;
+  while (e < src.length && IDENT_PART.test(src[e])) e++;
+  return e;
+}
+
+/**
+ * End (exclusive, flags included) of the regular expression literal at
+ * `start`; -1 if the line ends first, or if where it ends depends on whether
+ * its classes nest, which the `v` flag decides.
+ */
+function regexEnd(src: string, start: number): number {
+  const flat = regexBodyEnd(src, start, false);
+  if (flat < 0) return -1;
+  const end = flagsEnd(src, flat);
+  const nested = regexBodyEnd(src, start, true);
+  if (nested === flat) return end;
+  if (src.slice(flat + 1, end).includes('v')) return -1;
+  if (nested >= 0 && src.slice(nested + 1, flagsEnd(src, nested)).includes('v')) return -1;
+  return end;
+}
+
+function isPunct(token: Token | undefined, text: string): boolean {
+  return token !== undefined && token.kind === 'punct' && token.text === text;
+}
+
+function isWord(token: Token | undefined, text: string): boolean {
+  return token !== undefined && token.kind === 'ident' && token.text === text;
+}
+
+/** True when the token at `k` is a property name: after `.`, `?.` or `#`. */
+function isProperty(tokens: Token[], k: number): boolean {
+  const before = tokens[k - 1];
+  return before !== undefined && before.kind === 'punct' && (before.text === '.' || before.text === '?.' || before.text === '#');
+}
+
+/**
+ * Whether the `/` at `at` starts a regular expression, from the tokens before
+ * it; null when it could start either and reading it one way or the other
+ * would change what the rest of the line is.
+ */
+function slashStartsRegex(src: string, at: number, list: TokenList): boolean | null {
+  const { tokens, partner } = list;
+  const last = tokens.length - 1;
+  const prev = tokens[last];
+  if (!prev) return true;
+  const ambiguous = () => {
+    const lineEnd = src.indexOf('\n', at + 1);
+    return src.slice(at + 1, lineEnd < 0 ? src.length : lineEnd).includes('/') ? null : false;
+  };
+  switch (prev.kind) {
+    case 'number':
+    case 'string':
+    case 'template':
+    case 'regex':
+      return false;
+    case 'ident':
+      if (isProperty(tokens, last)) return false;
+      if (REGEX_AFTER_WORD.has(prev.text)) return true;
+      if (AMBIGUOUS_WORDS.has(prev.text)) return ambiguous();
+      return false;
+    default:
+      if (prev.text === ']' || prev.text === '++' || prev.text === '--') return false;
+      if (prev.text === ')') {
+        // After the condition of `if (...)`, `while (...)`, `for (...)` a statement starts.
+        const open = partner[last];
+        const head = tokens[open - 1];
+        if (head?.kind === 'ident' && CONDITION_HEADS.has(head.text) && !isProperty(tokens, open - 1)) return true;
+        if (isWord(head, 'await') && isWord(tokens[open - 2], 'for')) return true;
+        return false;
+      }
+      // A `}` ends either a block (a statement, so a regular expression may
+      // follow) or an expression (a division may follow); a `>` may end a
+      // type argument list.
+      if (prev.text === '}' || prev.text === '>') return ambiguous();
+      if (prev.text === '!') {
+        // A `!` after a value is a non-null assertion, after which a
+        // division may follow; otherwise it is a logical not.
+        const before = tokens[last - 1];
+        const afterValue =
+          before !== undefined &&
+          (before.kind !== 'punct' ? !(before.kind === 'ident' && REGEX_AFTER_WORD.has(before.text)) : [')', ']', '}'].includes(before.text));
+        return afterValue ? ambiguous() : true;
+      }
+      return true;
+  }
+}
+
+/**
+ * The tokens of a TypeScript or JavaScript source, with every bracket paired.
+ * Comments and whitespace are dropped; template literal text becomes
+ * `template` tokens around the `${` ... `}` of each interpolation, whose
+ * contents are tokens like any other code. Null when the source cannot be
+ * read that way (see the module comment).
+ */
+function tokenize(src: string): TokenList | null {
+  const tokens: Token[] = [];
+  const partner: number[] = [];
+  const open: number[] = [];
+  const list: TokenList = { tokens, partner };
+  const push = (kind: TokenKind, start: number, end: number): number => {
+    tokens.push({ kind, text: src.slice(start, end), start, end, depth: open.length });
+    partner.push(-1);
+    return tokens.length - 1;
+  };
+  // Template text from `from` (an opening backtick, or just after the `}` of
+  // an interpolation) to the closing backtick or the next `${`; returns the
+  // position after it, or -1 when the file ends first.
+  const templateText = (from: number, opening: boolean): number => {
+    for (let j = opening ? from + 1 : from; j < src.length; j++) {
+      const c = src[j];
+      if (c === '\\') j++;
+      else if (c === '`') {
+        push('template', from, j + 1);
+        return j + 1;
+      } else if (c === '$' && src[j + 1] === '{') {
+        if (j > from) push('template', from, j);
+        open.push(push('punct', j, j + 2));
+        return j + 2;
+      }
+    }
+    return -1;
+  };
+
+  let i = 0;
+  if (src.startsWith('#!')) {
+    i = src.indexOf('\n');
+    if (i < 0) i = src.length;
+  }
+  while (i < src.length) {
+    const c = src[i];
+    if (SPACE.test(c)) {
+      i++;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '/') {
+      i += 2;
+      while (i < src.length && !LINE_TERMINATOR.test(src[i])) i++;
+      continue;
+    }
+    // `<!--` and `-->` start a comment in a script and not in a module.
+    if (src.startsWith('<!--', i) || src.startsWith('-->', i)) return null;
+    if (c === '/' && src[i + 1] === '*') {
+      const e = src.indexOf('*/', i + 2);
+      if (e < 0) return null;
+      i = e + 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const e = quotedEnd(src, i);
+      if (e < 0) return null;
+      push('string', i, e);
+      i = e;
+      continue;
+    }
+    if (c === '`') {
+      i = templateText(i, true);
+      if (i < 0) return null;
+      continue;
+    }
+    if (c === '/') {
+      const regex = slashStartsRegex(src, i, list);
+      if (regex === null) return null;
+      if (regex) {
+        const e = regexEnd(src, i);
+        if (e < 0) return null;
+        push('regex', i, e);
+        i = e;
+        continue;
+      }
+    }
+    IDENT_AT.lastIndex = i;
+    const word = IDENT_AT.exec(src);
+    if (word) {
+      push('ident', i, i + word[0].length);
+      i += word[0].length;
+      continue;
+    }
+    NUMBER_AT.lastIndex = i;
+    const number = NUMBER_AT.exec(src);
+    if (number) {
+      push('number', i, i + number[0].length);
+      i += number[0].length;
+      continue;
+    }
+    let p = PUNCTUATORS.find((candidate) => src.startsWith(candidate, i));
+    // A backslash (a Unicode escape in a name) or any other character this
+    // reader does not know leaves the file unread.
+    if (p === undefined) return null;
+    if (p === '?.' && /\d/.test(src[i + 2] ?? '')) p = '?';
+    if (OPENERS.has(p)) {
+      open.push(push('punct', i, i + 1));
+    } else if (p === ')' || p === ']' || p === '}') {
+      const o = open.pop();
+      if (o === undefined || CLOSER_OF[tokens[o].text] !== p) return null;
+      const k = push('punct', i, i + 1);
+      partner[o] = k;
+      partner[k] = o;
+      if (tokens[o].text === '${') {
+        i = templateText(i + 1, false);
+        if (i < 0) return null;
+        continue;
+      }
+    } else {
+      push('punct', i, i + p.length);
+    }
+    i += p.length;
+  }
+  return open.length === 0 ? list : null;
+}
+
+// ---------- Where names are bound ----------
+
+const ASSIGNMENT = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '&&=', '||=', '??=']);
+const DECLARATION = new Set(['const', 'let', 'var', 'using']);
+// Words followed by the name they bind.
+const NAMING_WORDS = new Set([...DECLARATION, 'function', 'class', 'interface', 'type', 'enum', 'namespace', 'module']);
+// Words that start a statement, ending a declaration list read without its `;`.
+const STATEMENT_WORDS = new Set([
+  ...DECLARATION, 'function', 'class', 'if', 'for', 'while', 'do', 'return', 'import', 'export', 'switch', 'try',
+  'throw', 'break', 'continue',
+]);
+
+/**
+ * Indices of every identifier token in a binding position. The positions are
+ * read generously: a whole parameter list counts, default values and type
+ * annotations included, so a name is never missed for being nested. Null
+ * when the file calls `eval` or uses `with`, either of which can bind a name
+ * no token shows.
+ */
+function bindingSites(list: TokenList): Set<number> | null {
+  const { tokens, partner } = list;
+  const sites = new Set<number>();
+  // Tokens inside a bracket pair already counted whole.
+  const counted = new Uint8Array(tokens.length);
+  const mark = (k: number) => {
+    if (tokens[k]?.kind === 'ident' && !isProperty(tokens, k)) sites.add(k);
+  };
+  const markGroup = (o: number) => {
+    if (counted[o]) return;
+    for (let k = o + 1; k < partner[o]; k++) {
+      counted[k] = 1;
+      mark(k);
+    }
+  };
+  // A binding target (a name, or an object or array pattern) at `k`;
+  // returns the index after it, or `k` when there is none.
+  const markTarget = (k: number): number => {
+    const t = tokens[k];
+    if (t?.kind === 'ident') {
+      mark(k);
+      return k + 1;
+    }
+    if (isPunct(t, '{') || isPunct(t, '[')) {
+      markGroup(k);
+      return partner[k] + 1;
+    }
+    return k;
+  };
+  // `const a = 1, b = 2`: every target after a `,` of the same list.
+  const markDeclarationList = (keyword: number) => {
+    let j = markTarget(keyword + 1);
+    if (j === keyword + 1) return;
+    while (j < tokens.length) {
+      const t = tokens[j];
+      if (t.kind === 'punct') {
+        if (partner[j] > j) {
+          j = partner[j] + 1;
+          continue;
+        }
+        if (t.text === ';' || partner[j] >= 0) return;
+        if (t.text === ',') {
+          j = Math.max(markTarget(j + 1), j + 1);
+          continue;
+        }
+      } else if (t.kind === 'ident' && STATEMENT_WORDS.has(t.text) && !isProperty(tokens, j)) return;
+      j++;
+    }
+  };
+  // `for (name in o)`, `for ([a, b] of o)`: the first target of the head.
+  const markLoopHead = (o: number) => {
+    const first = tokens[o + 1];
+    const after = first?.kind === 'ident' ? tokens[o + 2] : isPunct(first, '[') || isPunct(first, '{') ? tokens[partner[o + 1] + 1] : undefined;
+    if (isWord(after, 'in') || isWord(after, 'of')) markTarget(o + 1);
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const next = tokens[i + 1];
+    const prev = tokens[i - 1];
+    if (t.kind === 'ident') {
+      if (isProperty(tokens, i)) continue;
+      if (t.text === 'eval' || (t.text === 'with' && isPunct(next, '('))) return null;
+      if (next?.kind === 'punct' && (ASSIGNMENT.has(next.text) || next.text === '=>' || next.text === '++' || next.text === '--')) mark(i);
+      if (isPunct(prev, '++') || isPunct(prev, '--') || isWord(next, 'of')) mark(i);
+      if (prev?.kind === 'ident' && NAMING_WORDS.has(prev.text) && !isProperty(tokens, i - 1)) mark(i);
+      if (isPunct(prev, '*') && isWord(tokens[i - 2], 'function')) mark(i);
+      if (DECLARATION.has(t.text)) markDeclarationList(i);
+      if (t.text === 'import' && !isPunct(next, '(') && !isPunct(next, '.')) {
+        // Every name up to the module specifier.
+        for (let k = i + 1; k < tokens.length && tokens[k].kind !== 'string' && !isPunct(tokens[k], ';'); k++) mark(k);
+      }
+      continue;
+    }
+    if (t.kind !== 'punct' || partner[i] <= i || t.text === '${') continue;
+    const after = tokens[partner[i] + 1];
+    const assigned = after?.kind === 'punct' && ASSIGNMENT.has(after.text);
+    if (t.text === '(') {
+      const head = prev?.kind === 'ident' && !isProperty(tokens, i - 1) ? prev.text : '';
+      if (head === 'catch') markGroup(i);
+      else if (head === 'for' || (head === 'await' && isWord(tokens[i - 2], 'for'))) markLoopHead(i);
+      else if (CONDITION_HEADS.has(head)) continue;
+      // A parameter list: before an arrow, a body or a return type.
+      else if (assigned || isPunct(after, '=>') || isPunct(after, '{') || isPunct(after, ':')) markGroup(i);
+    } else {
+      // `[a, b] = ...` and `{ a, b } = ...` are destructuring; `x[k] = ...` is not.
+      const member =
+        t.text === '[' &&
+        prev !== undefined &&
+        (prev.kind === 'number' || prev.kind === 'string' || prev.kind === 'template' || prev.kind === 'regex' ||
+          (prev.kind === 'ident' && !REGEX_AFTER_WORD.has(prev.text)) ||
+          isPunct(prev, ')') || isPunct(prev, ']'));
+      if (!member && (assigned || isWord(after, 'of'))) markGroup(i);
+    }
+  }
+  return sites;
+}
+
+/**
+ * The value of the top-level `const` whose name is at `nameIndex`: the text
+ * after `=` up to its `;` or the end of the line, when the declaration has
+ * one target, stays on one line and cannot run on into the next one; null
+ * otherwise.
+ */
+function singleLineValue(src: string, list: TokenList, nameIndex: number): string | null {
+  const { tokens, partner } = list;
+  let j = nameIndex + 1;
+  if (isPunct(tokens[j], ':')) {
+    // A type annotation.
+    for (j++; j < tokens.length && !isPunct(tokens[j], '='); j++) {
+      if (isPunct(tokens[j], ';') || isPunct(tokens[j], ',')) return null;
+      if (partner[j] > j) j = partner[j];
+    }
+  }
+  if (!isPunct(tokens[j], '=')) return null;
+  let lineEnd = src.indexOf('\n', tokens[j].end);
+  if (lineEnd < 0) lineEnd = src.length;
+  const first = j + 1;
+  let k = first;
+  while (k < tokens.length && tokens[k].start < lineEnd && !isPunct(tokens[k], ';')) {
+    if (isPunct(tokens[k], ',')) return null;
+    if (partner[k] > k) k = partner[k];
+    if (tokens[k].end > lineEnd) return null;
+    k++;
+  }
+  if (k === first) return null;
+  // Without a `;`, the next line must start a new statement rather than
+  // continue the value (`+ x`, `(x)`, `.x`, a template, ...).
+  const following = tokens[k];
+  if (
+    following !== undefined &&
+    !isPunct(following, ';') &&
+    !(following.kind === 'ident' && !['in', 'instanceof', 'as', 'satisfies'].includes(following.text)) &&
+    following.kind !== 'string' &&
+    following.kind !== 'number'
+  ) {
+    return null;
+  }
+  return src.slice(tokens[first].start, tokens[k - 1].end);
+}
+
+/**
+ * Identifiers in `content` that hold a constant: each has exactly one binding
+ * in the file, a top-level, single-line `const` whose value is constant, and
+ * no other binding of any kind anywhere in the file. When the file cannot be
+ * read for bindings, the set is empty.
  */
 export function constantIdentifiers(content: string): Set<string> {
-  // Bindings are searched in the code alone, so a `--dir` flag inside a
-  // command string or a word in a comment is not read as one.
-  const code = codeOnly(content);
+  if (content.length > MAX_SOURCE_LENGTH) return new Set();
+  const list = tokenize(content);
+  if (list === null) return new Set();
+  const sites = bindingSites(list);
+  if (sites === null) return new Set();
+  const { tokens } = list;
+  const bindingCount = new Map<string, number>();
+  for (const k of sites) bindingCount.set(tokens[k].text, (bindingCount.get(tokens[k].text) ?? 0) + 1);
+
   const candidates = new Map<string, string>();
-  const rebound = new Set<string>();
-  for (const m of code.matchAll(CONST_DECLARATION)) {
-    const declaration = new RegExp(CONST_DECLARATION.source).exec(content.slice(m.index!, m.index! + m[0].length));
-    if (!declaration) continue;
-    if (candidates.has(m[1])) rebound.add(m[1]);
-    candidates.set(m[1], declaration[2]);
+  for (let i = 0; i + 1 < tokens.length; i++) {
+    if (!isWord(tokens[i], 'const') || tokens[i].depth !== 0 || isProperty(tokens, i)) continue;
+    const name = tokens[i + 1];
+    if (name.kind !== 'ident' || !sites.has(i + 1) || bindingCount.get(name.text) !== 1) continue;
+    const value = singleLineValue(content, list, i + 1);
+    if (value !== null) candidates.set(name.text, value);
   }
   if (candidates.size === 0) return new Set();
-
-  for (const name of candidates.keys()) {
-    const escaped = name.replace(/\$/g, '\\$');
-    const bindings = code.match(new RegExp(`\\b(?:const|let|var|function|class)\\s+${escaped}(?![\\w$])`, 'g'));
-    const assignments = code.match(
-      new RegExp(`(?<![\\w$.])${escaped}\\s*(?:[-+*/%&|^]|\\*\\*|\\?\\?|&&|\\|\\||<<|>>>?)?=(?![=>])`, 'g'),
-    );
-    const arrowParam = new RegExp(`(?<![\\w$.])${escaped}\\s*=>`).test(code);
-    const updated = new RegExp(`(?:\\+\\+|--)\\s*${escaped}(?![\\w$])|(?<![\\w$.])${escaped}\\s*(?:\\+\\+|--)`).test(code);
-    if ((bindings?.length ?? 0) > 1 || (assignments?.length ?? 0) > 1 || arrowParam || updated) rebound.add(name);
-  }
-  const mentionsIn = (text: string) => {
-    for (const m of text.matchAll(IDENT_MENTION)) rebound.add(m[1]);
-  };
-  for (const m of code.matchAll(PARAM_LIST)) mentionsIn(m[1]);
-  for (const m of code.matchAll(DESTRUCTURING)) mentionsIn(m[1]);
-  for (const line of code.split('\n')) if (IMPORT_OR_REQUIRE.test(line)) mentionsIn(line);
-  for (const name of rebound) candidates.delete(name);
 
   const constants = new Set<string>();
   for (let grew = true; grew; ) {
