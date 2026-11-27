@@ -66,7 +66,8 @@ export interface RegistryTrustForRichBlock {
   found: boolean;
   name: string;
   trustScore: number;
-  trustLevel: number;
+  /** null when the Registry gave no level on the 0..4 scale: unknown, never Blocked. */
+  trustLevel: number | null;
   verdict: string;
   scanStatus?: string;
   lastScannedAt?: string;
@@ -147,7 +148,7 @@ export async function checkSkillOrMcp(
     ? {
         trustVerdict: deriveTrustVerdict(
           trust.verdict,
-          trust.trustLevel,
+          trust.trustLevel ?? undefined,
           trust.scanStatus,
         ),
         trustScore:

@@ -392,6 +392,18 @@ import {
 import { rewriteRemoteUnreadRemedy, UNREAD_INPUT_CHECK_ID } from './check/remote-unread-remedy';
 import { withoutUrlUserinfo } from './check/url-userinfo';
 import { formatRegistryDeps } from './check/registry-deps';
+import {
+  isNilPackageId,
+  knownTrustLevel,
+  parseRetryAfter,
+  registryAnswerExitCode,
+  registryAnswerState,
+  registryErrorClass,
+  registryErrorKind,
+  registryErrorReason,
+  trustLevelName,
+  trustLevelWords,
+} from './check/registry-answer';
 import { FIX_LINES } from './hardening/fix-lines';
 import {
   summarizeCoverage,
@@ -858,6 +870,16 @@ Exit codes:
      and could not be read. In the last case what DID run is still reported,
      and the risk level is an upper bound rather than a measurement of the
      target — the run names each unread input and the errno.
+
+With --no-scan the registry's answer is the result:
+  0  the registry's level is Listed (2 of 4), Scanned (3 of 4) or
+     Verified (4 of 4)
+  1  the registry's level is Blocked (0 of 4) or Warning (1 of 4)
+  2  the registry does not know the name (nothing is downloaded or
+     scanned); it gave no trust level it could read (shown as unknown);
+     or it could not be asked: a network failure, a timeout, a rate limit
+     (429, with the wait it asked for) or a server error. That is not a
+     verdict: nothing about the target was checked.
 
 Examples:
   $ ${CLI_PREFIX} check @sentry/mcp-server
@@ -1854,7 +1876,7 @@ function buildRegistryCheckCtas(registry: RegistryTrustData): NextStepsCta[] {
   const meterGate = mapScanStatusForMeter(registry.scanStatus);
   const isUnscanned = meterGate === undefined;
 
-  if (isUnscanned || registry.trustLevel <= 2 || normalized === 'blocked' || normalized === 'warning') {
+  if (isUnscanned || registry.trustLevel === null || registry.trustLevel <= 2 || normalized === 'blocked' || normalized === 'warning') {
     ctas.push({
       label: 'Fresh scan',
       command: `${CLI_PREFIX} check ${citationPath(registry.name) ?? '<name>'}`,
@@ -1895,7 +1917,8 @@ function renderRegistryOnlyCheck(
     name,
     packageType: registry.packageType,
     version,
-    trustLevel: registry.trustLevel,
+    // -1 is off the scale; the Level line is rewritten below either way.
+    trustLevel: registry.trustLevel ?? -1,
     trustScore: registry.trustScore,
     verdict: registry.verdict,
     scanStatus: scanStatusForMeter,
@@ -1918,10 +1941,20 @@ function renderRegistryOnlyCheck(
     : colors.dim;
   console.log(`  ${verdictColor}${colors.bold}${block.verdict.text}${RESET()}`);
 
-  // Body lines
+  // Body lines. The Level line carries the level's word beside its number,
+  // and a level the Registry did not give reads `unknown`: the shared block
+  // would print `Unknown (-1)` and the whole Blocked..Verified legend.
   console.log();
   for (const line of block.lines) {
     const label = line.label.padEnd(CHECK_LABEL_WIDTH);
+    if (line.label === 'Level') {
+      const level = registry.trustLevel;
+      const value = level === null
+        ? 'unknown (the registry gave no trust level it could read)'
+        : `${trustLevelWords(level)}  ${line.value.slice(line.value.indexOf('  ') + 2)}`;
+      console.log(`  ${colors.dim}${label}${RESET()}${paintCheckTone(level === null ? 'dim' : line.tone, value)}`);
+      continue;
+    }
     console.log(`  ${colors.dim}${label}${RESET()}${paintCheckTone(line.tone, line.value)}`);
   }
 
@@ -3281,9 +3314,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
         console.log(`  Trust     ${colors.dim}[—] ${reason}${RESET()}`);
       }
     }
-    const tlColor = trustLevelColor(registry.trustLevel);
-    const tlLabel = trustLevelLabel(registry.trustLevel);
-    console.log(`  Level     ${tlColor}${colors.bold}${tlLabel}${RESET()} ${colors.dim}(${registry.trustLevel}/4)${RESET()}`);
+    const knownLevel = registry.trustLevel;
+    const tlColor = knownLevel === null ? colors.dim : trustLevelColor(knownLevel);
+    if (knownLevel === null) {
+      console.log(`  Level     ${tlColor}unknown (the registry gave no trust level it could read)${RESET()}`);
+    } else {
+      console.log(`  Level     ${tlColor}${colors.bold}${trustLevelLabel(knownLevel)}${RESET()} ${colors.dim}(${knownLevel} of 4)${RESET()}`);
+    }
     if (registry.communityScans !== undefined) {
       console.log(`  Community ${registry.communityScans > 0 ? colors.green : colors.dim}${registry.communityScans} scan${registry.communityScans !== 1 ? 's' : ''} shared${RESET()}`);
     }
@@ -3301,11 +3338,11 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     }
 
     // Trust level legend (when not fully verified)
-    if (registry.trustLevel < 4) {
+    if (knownLevel !== null && knownLevel < 4) {
       const levels = ['Blocked', 'Warning', 'Listed', 'Scanned', 'Verified'];
       const legend = levels.map((l, i) => {
-        if (i === registry.trustLevel) return `${tlColor}${colors.bold}${l}${RESET()}`;
-        if (i < registry.trustLevel) return `${colors.dim}${l}${RESET()}`;
+        if (i === knownLevel) return `${tlColor}${colors.bold}${l}${RESET()}`;
+        if (i < knownLevel) return `${colors.dim}${l}${RESET()}`;
         return `${colors.dim}${l}${RESET()}`;
       }).join(`${colors.dim} > ${RESET()}`);
       console.log(`  ${colors.dim}${legend}${RESET()}`);
@@ -14166,7 +14203,8 @@ interface RegistryTrustData {
   found: boolean;
   name: string;
   trustScore: number;
-  trustLevel: number;
+  /** 0 Blocked .. 4 Verified; null when the Registry gave no level on that scale. */
+  trustLevel: number | null;
   verdict: string;
   scanStatus?: string;
   lastScannedAt?: string;
@@ -14198,11 +14236,19 @@ interface RegistryTrustData {
 type RegistryQueryResult =
   | { status: 'found'; data: RegistryTrustData }
   | { status: 'not-found' }
-  | { status: 'error'; message: string; statusCode?: number };
+  | { status: 'error'; message: string; statusCode?: number; code?: string; retryAfterSeconds?: number };
 
 async function queryRegistryResult(name: string): Promise<RegistryQueryResult> {
   let client: InstanceType<typeof import('@opena2a/registry-client').RegistryClient>;
   let PackageNotFoundError: typeof import('@opena2a/registry-client').PackageNotFoundError;
+  // The client does not keep the response headers, so the fetch it is given
+  // keeps the Retry-After of a 429: how long the Registry asked us to wait.
+  let retryAfterHeader: string | null = null;
+  const fetchKeepingRetryAfter: typeof fetch = async (input, init) => {
+    const response = await fetch(input, init);
+    if (response.status === 429) retryAfterHeader = response.headers.get('retry-after');
+    return response;
+  };
   try {
     const mod = await import('@opena2a/registry-client');
     PackageNotFoundError = mod.PackageNotFoundError;
@@ -14210,13 +14256,16 @@ async function queryRegistryResult(name: string): Promise<RegistryQueryResult> {
       baseUrl: REGISTRY_URL,
       userAgent: `hackmyagent/${VERSION}`,
       timeoutMs: REGISTRY_QUERY_TIMEOUT_MS,
+      fetch: fetchKeepingRetryAfter,
     });
   } catch (err) {
-    return { status: 'error', message: `registry client unavailable: ${err instanceof Error ? err.message : String(err)}` };
+    return { status: 'error', code: 'client_unavailable', message: `registry client unavailable: ${err instanceof Error ? err.message : String(err)}` };
   }
   try {
     const data = await client.checkTrust(name);
-    if (!data.packageId) return { status: 'not-found' };
+    // A missing id, or one of all zeros, names no package: the Registry does
+    // not carry this name, whatever else the answer holds.
+    if (isNilPackageId(data.packageId)) return { status: 'not-found' };
     const deps = data.dependencies;
     return {
       status: 'found',
@@ -14224,7 +14273,8 @@ async function queryRegistryResult(name: string): Promise<RegistryQueryResult> {
         found: true,
         name: data.name ?? name,
         trustScore: data.trustScore ?? 0,
-        trustLevel: data.trustLevel ?? 0,
+        // A level the Registry did not give is unknown, never Blocked.
+        trustLevel: knownTrustLevel(data.trustLevel),
         verdict: data.verdict ?? 'unknown',
         scanStatus: data.scanStatus,
         lastScannedAt: data.lastScannedAt,
@@ -14243,7 +14293,15 @@ async function queryRegistryResult(name: string): Promise<RegistryQueryResult> {
   } catch (err) {
     if (err instanceof PackageNotFoundError) return { status: 'not-found' };
     const statusCode = (err as { statusCode?: number } | null)?.statusCode;
-    return { status: 'error', message: err instanceof Error ? err.message : String(err), statusCode };
+    const code = (err as { code?: unknown } | null)?.code;
+    const retryAfterSeconds = statusCode === 429 ? parseRetryAfter(retryAfterHeader) : undefined;
+    return {
+      status: 'error',
+      message: err instanceof Error ? err.message : String(err),
+      statusCode,
+      ...(typeof code === 'string' ? { code } : {}),
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+    };
   }
 }
 
@@ -14254,28 +14312,46 @@ async function queryRegistry(name: string): Promise<RegistryTrustData | null> {
 }
 
 /**
- * `--no-scan` and the Registry query produced NO answer (timeout, 5xx, network):
- * that is an error, never a "not found". It exits non-zero with the error named
- * in the body AND on stderr in every mode, so a machine consumer and a retry
- * keyed on the exit both see it. Shared by the npm, PyPI and GitHub paths,
- * which used to read the same `null` as a definitive absence (and, on npm,
- * fell through to a scan the user had switched off).
+ * `--no-scan` and the Registry query produced NO answer (timeout, 429, 5xx,
+ * network): that is an error, never a "not found" and never a verdict. It
+ * exits non-zero with the error named in the body AND on stderr in every mode,
+ * so a machine consumer and a retry keyed on the exit both see it. Shared by
+ * the npm, PyPI and GitHub paths, which used to read the same `null` as a
+ * definitive absence (and, on npm, fell through to a scan the user had
+ * switched off).
+ *
+ * The JSON carries no `found`: the question was never answered, so neither
+ * true nor false is the truth. `state` says so, `errorClass` says which class
+ * (`registry-rate-limited` for a 429, `registry-unreachable` otherwise),
+ * `registryError` names what happened and `retryAfterSeconds` how long the
+ * Registry asked the caller to wait.
  */
 function emitRegistryQueryError(
   name: string,
-  result: { status: 'error'; message: string; statusCode?: number },
+  result: { status: 'error'; message: string; statusCode?: number; code?: string; retryAfterSeconds?: number },
   options: { json?: boolean },
+  localTarget: string = name,
 ): void {
   const message = `Registry query for "${name}" failed: ${result.message}`;
-  console.error(`${escapeForDisplay(message)} (--no-scan: not scanning; nothing was verified)`);
+  const kind = registryErrorKind(result);
+  const errorClass = registryErrorClass(kind);
+  const reason = registryErrorReason(kind, result, REGISTRY_QUERY_TIMEOUT_MS);
+  const shownName = escapeForDisplay(name);
+  const local = commandNaming(localTarget, (cited) => `${getCheckCommand()} ${cited}`);
+  console.error(`Could not get an answer from the registry (${escapeForDisplay(REGISTRY_URL)}): ${reason}.`);
+  console.error(`This is not a verdict. Nothing about ${shownName} was checked (--no-scan: not scanning).`);
+  if (local) console.error(`Next: ${local}   (scans it on this machine instead)`);
+  console.error(`${colors.dim}${escapeForDisplay(message)}${RESET()}`);
   if (options.json) {
     writeJsonStdout({
       name,
       source: 'registry',
-      found: false,
+      state: 'registry-error',
       error: message,
-      errorClass: 'registry-unreachable',
+      errorClass,
+      registryError: kind,
       ...(typeof result.statusCode === 'number' ? { statusCode: result.statusCode } : {}),
+      ...(typeof result.retryAfterSeconds === 'number' ? { retryAfterSeconds: result.retryAfterSeconds } : {}),
       coverage: coverageJson(unmeasured(
         'target-unreachable',
         `${escapeForDisplay(name)}: the OpenA2A Registry query did not complete (${escapeForDisplay(result.message)}), so nothing was verified.`,
@@ -14283,6 +14359,41 @@ function emitRegistryQueryError(
     });
   }
   raiseExitCode(EXIT_UNMEASURED);
+}
+
+/**
+ * The record as check-core's `buildCheckOutput` takes it. A level the Registry
+ * did not give stays null in the JSON (`"trustLevel": null`), where it used to
+ * be 0, the number for Blocked.
+ */
+function registryForCheckOutput(data: RegistryTrustData | null): Parameters<typeof buildCheckOutput>[0]['registry'] {
+  return data as Parameters<typeof buildCheckOutput>[0]['registry'] | null;
+}
+
+/**
+ * `--no-scan` and the Registry has a record: the record is the output, and its
+ * level decides the exit code (`registryAnswerExitCode`): Blocked and Warning
+ * exit 1, a level the Registry did not give exits 2. Settled before either
+ * channel renders, so no renderer can change it.
+ */
+async function emitRegistryAnswer(
+  name: string,
+  data: RegistryTrustData,
+  options: { json?: boolean; verbose?: boolean; nanomind?: boolean; analm?: boolean },
+  sourceLabel?: string,
+): Promise<void> {
+  const code = registryAnswerExitCode(data.trustLevel);
+  if (code !== 0) await finishWithFindings(code);
+  if (options.json) {
+    writeJsonStdout({
+      ...data,
+      source: 'registry',
+      state: registryAnswerState(data.trustLevel, data.scanStatus),
+      trustLevelName: trustLevelName(data.trustLevel),
+    });
+    return;
+  }
+  displayUnifiedCheck({ name, ...(sourceLabel ? { sourceLabel } : {}), registry: data, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
 }
 
 /**
@@ -14894,11 +15005,7 @@ async function checkGitHubRepo(
   if (options.scan === false) {
     const result = await registryResultPromise;
     if (result.status === 'found') {
-      if (options.json) {
-        writeJsonStdout({ ...result.data, source: 'registry' });
-        return;
-      }
-      displayUnifiedCheck({ name: displayName, sourceLabel: 'GitHub', registry: result.data, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      await emitRegistryAnswer(displayName, result.data, options, 'GitHub');
       return;
     }
     if (result.status === 'error') {
@@ -15025,7 +15132,7 @@ async function checkGitHubRepo(
             analystEscalations,
             coverageSweep,
           },
-          registry: registryData,
+          registry: registryForCheckOutput(registryData),
         }),
         coverage: coverageJson(verdict),
       });
@@ -15178,16 +15285,12 @@ async function checkPyPiPackage(
   if (options.scan === false) {
     const result = await registryResultPromise;
     if (result.status === 'found') {
-      if (options.json) {
-        writeJsonStdout({ ...result.data, source: 'registry' });
-        return;
-      }
-      displayUnifiedCheck({ name, registry: result.data, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      await emitRegistryAnswer(name, result.data, options);
       return;
     }
     if (result.status === 'error') {
       // A transient is not an absence (see the GitHub path).
-      emitRegistryQueryError(name, result, options);
+      emitRegistryQueryError(name, result, options, target);
       return;
     }
     // --no-scan with no Registry hit: emit a not-found block in the same
@@ -15377,7 +15480,7 @@ async function checkPyPiPackage(
             coverageSweep,
             version: meta.info.version,
           },
-          registry: registryData,
+          registry: registryForCheckOutput(registryData),
         }),
         coverage: coverageJson(verdict),
       });
@@ -15816,34 +15919,39 @@ async function checkNpmPackage(
   const registryPromise = registryResultPromise.then((r) => (r.status === 'found' ? r.data : null));
 
   // Registry-only mode (--no-scan): a record is the output; a query that
-  // produced NO answer is an error and returns here; a genuine not-found keeps
-  // its prior path (see the end of this block).
+  // produced NO answer is an error; a name the Registry does not know is the
+  // not-found block. Each returns here: --no-scan downloads nothing.
   if (options.scan === false && options.registry !== false) {
     const result = await registryResultPromise;
     if (result.status === 'found') {
-      if (options.json) {
-        writeJsonStdout({ ...result.data, source: 'registry' });
-        return;
-      }
-      displayUnifiedCheck({ name, registry: result.data, verbose: !!options.verbose, usedAnalm: resolveNanomindFlag(options) });
+      await emitRegistryAnswer(name, result.data, options);
       return;
     }
     if (result.status === 'error') {
       // A query that produced no answer is not a miss. Previously this fell
       // through to a download-and-scan and exited 0 with a scan document.
-      emitRegistryQueryError(name, result, options); // errorClass: 'registry-unreachable'
+      emitRegistryQueryError(name, result, options); // errorClass: 'registry-unreachable' (or 'registry-rate-limited' for a 429)
       return;
     }
-    // --no-scan with no Registry record: UNCHANGED from before this fix. The
-    // npm path resolves the name against npm next (`npm pack`), and for a name
-    // npm does not carry that yields the "not found on npm" block that the
-    // parity fixture check-not-found and check-not-found-json.test.ts (F3)
-    // both pin. For a name npm DOES carry this still scans it under --no-scan,
-    // the #195 class on the npm path; changing it moves that golden and is a
-    // separate, coordinated change (named as a residual of the 2026-09-11 parity-gate fix).
-    if (!options.json && !globalCiMode) {
-      console.error(`No registry data found for ${name}. Running local scan...`);
+    // --no-scan and the Registry does not know the name: the not-found block,
+    // exit 2, and no `npm pack`. This used to fall through to the download
+    // and, for a name npm carries, scan it under --no-scan (#195 on npm).
+    const errorHint = `Verify the URL: https://www.npmjs.com/package/${name}`;
+    if (options.json) {
+      writeJsonStdout({
+        ...buildNotFoundOutput({
+          name,
+          ecosystem: 'npm',
+          error: `Package "${name}" not found in the OpenA2A Registry.`,
+          errorHint,
+        }),
+        coverage: notFoundCoverage(name, 'the OpenA2A Registry'),
+      });
+    } else {
+      printNotFoundBlock({ pkg: name, ecosystem: 'npm', errorHint });
     }
+    raiseExitCode(EXIT_UNMEASURED);
+    return;
   }
 
   // Download and scan
@@ -15963,7 +16071,7 @@ async function checkNpmPackage(
             analystEscalations,
             coverageSweep,
           },
-          registry: registryData,
+          registry: registryForCheckOutput(registryData),
         }),
         coverage: coverageJson(verdict),
       });

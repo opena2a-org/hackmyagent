@@ -104,7 +104,7 @@ describe('PyPI Registry-query end-to-end (smoke, local-only)', () => {
       if (res.status === EXIT_UNMEASURED) {
         const body = parseJsonOrNull(res.stdout);
         if (
-          body?.errorClass === 'registry-unreachable' &&
+          (body?.errorClass === 'registry-unreachable' || body?.errorClass === 'registry-rate-limited') &&
           body?.coverage?.measured === false &&
           body?.coverage?.reason === 'target-unreachable'
         ) {

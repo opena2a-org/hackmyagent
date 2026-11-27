@@ -103,14 +103,14 @@ function shimEnv(): NodeJS.ProcessEnv {
 }
 
 /**
- * Non-vacuity guard. If PATH injection ever silently stops working the
- * spawned CLI would fall back to the real npm and these tests would pass
- * for the wrong reason (and flake again). Assert the shim actually served
- * the `pack` call under test.
+ * Every npm case here runs `--no-scan`, and a name the Registry does not know
+ * is the not-found block with no `npm pack` at all. These cases used to assert
+ * the opposite, that the shim served the download --no-scan had switched off.
+ * The shim stays on PATH so a download put back would be recorded here.
  */
-function expectShimServedPack(name: string): void {
+function expectShimServedNoPack(name: string): void {
   const log = existsSync(markerFile!) ? readFileSync(markerFile!, 'utf8') : '';
-  expect(log).toContain(`pack ${name}`);
+  expect(log).not.toContain(`pack ${name}`);
 }
 
 /**
@@ -118,8 +118,9 @@ function expectShimServedPack(name: string): void {
  * produced no answer the spawned CLI exits 2 (EXIT_UNMEASURED), writes
  * `Registry query for "<name>" failed: Registry request timed out after <n>ms`
  * (or `... Registry network error: ...` / `... Registry API returned 5xx`) to
- * stderr and, in --json, emits `found:false` with `errorClass:
- * "registry-unreachable"` and no `ecosystem` (cli.ts emitRegistryQueryError).
+ * stderr and, in --json, emits `state: "registry-error"` with `errorClass:
+ * "registry-unreachable"` (or `"registry-rate-limited"` for a 429), no
+ * `found` and no `ecosystem` (cli.ts emitRegistryQueryError).
  * vitest prints neither stream of a spawnSync child, so that outage surfaced
  * here as `expected '' to contain 'pack ...'` and `expected undefined to be
  * 'github'` with no line in the CI log naming the class (Test matrix run
@@ -343,7 +344,7 @@ describe('check --json not-found wired through dist/cli.js (spawned, local Regis
 
     expectRegistryAnswered(res);
     expectOnlyStubRegistry();
-    expectShimServedPack(bareName);
+    expectShimServedNoPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
     // never fetched; the PyPI arm of this same suite already asserted 2. Every
@@ -367,7 +368,7 @@ describe('check --json not-found wired through dist/cli.js (spawned, local Regis
 
     expectRegistryAnswered(res);
     expectOnlyStubRegistry();
-    expectShimServedPack(bareName);
+    expectShimServedNoPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
     // never fetched; the PyPI arm of this same suite already asserted 2. Every
@@ -391,7 +392,7 @@ describe('check --json not-found wired through dist/cli.js (spawned, local Regis
 
     expectRegistryAnswered(res);
     expectOnlyStubRegistry();
-    expectShimServedPack(bareName);
+    expectShimServedNoPack(bareName);
     // #417 — a package that does not exist was not measured. This asserted 1,
     // which told a CI consumer "scanned, and high risk" about a name that was
     // never fetched; the PyPI arm of this same suite already asserted 2. Every
