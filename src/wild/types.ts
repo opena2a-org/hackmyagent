@@ -66,8 +66,16 @@ export interface WildScanReport {
   endTime: Date;
   /** Duration in ms */
   duration: number;
-  /** Pages scanned */
+  /** Pages scanned: attack pages that answered with a 2xx status */
   pagesScanned: number;
+  /**
+   * False when no attack page answered with a 2xx status (the target was
+   * unreachable, or every fetch failed or returned an error status). Nothing
+   * was measured, so the score and the rating are null.
+   */
+  measured: boolean;
+  /** Why the scan measured nothing; set only when `measured` is false */
+  notMeasuredReason?: string;
   /** Individual page results */
   pages: WildPageResult[];
   /** Summary statistics */
@@ -79,10 +87,10 @@ export interface WildScanReport {
     callbackPages: number;
     canaryPages: number;
   };
-  /** Overall wild resilience score (0-100) */
-  wildResilienceScore: number;
-  /** Resilience rating */
-  resilienceRating: 'strong' | 'good' | 'moderate' | 'needs-attention' | 'critical';
+  /** Overall wild resilience score (0-100); null when nothing was measured */
+  wildResilienceScore: number | null;
+  /** Resilience rating; null when nothing was measured */
+  resilienceRating: 'strong' | 'good' | 'moderate' | 'needs-attention' | 'critical' | null;
   /** File fetches tested (robots.txt, llms.txt, sitemap.xml) */
   fileFetches: FileFetchResult[];
 }

@@ -25,7 +25,7 @@ interface ScoreInput {
  */
 export function computeResilienceScore(input: ScoreInput): {
   score: number;
-  rating: WildScanReport['resilienceRating'];
+  rating: NonNullable<WildScanReport['resilienceRating']>;
   summary: WildScanReport['summary'];
 } {
   const { pages, fileFetches } = input;
@@ -108,7 +108,7 @@ export function computeResilienceScore(input: ScoreInput): {
   // Cap deductions at 100
   const score = Math.max(0, Math.round(100 - Math.min(deductions, 100)));
 
-  let rating: WildScanReport['resilienceRating'];
+  let rating: NonNullable<WildScanReport['resilienceRating']>;
   if (score >= 80) rating = 'strong';
   else if (score >= 60) rating = 'good';
   else if (score >= 40) rating = 'moderate';

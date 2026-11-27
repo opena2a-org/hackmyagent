@@ -296,3 +296,9 @@ export class Scanner {
     };
   }
 }
+
+// Run directly (`node dist/index.js <command>`), this file is the CLI, the same
+// as the `hackmyagent` bin. Imported as a library, it only exports.
+if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
+  require('./cli');
+}
