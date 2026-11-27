@@ -446,6 +446,35 @@ function extractDataAccess(content: string, capabilities: string[]): string[] {
   return patterns;
 }
 
+/**
+ * A stated rule as the one line its surface label quotes (#505).
+ *
+ * A rule runs to the first `.`, so one wrapped across lines in the artifact
+ * (`must not merge pull requests, push to the default branch, delete` /
+ * `  branches or ...`) kept its line break, and the text report, which escapes
+ * every line break in scanned text, printed it as the two characters `\n`.
+ * Each line break here becomes one space, with the spaces and tabs around it
+ * dropped and blank lines skipped, so the label reads as the sentence does.
+ * Every other character is kept, and the renderer still escapes what it
+ * escapes. Which statements become surfaces is decided before this runs, on
+ * the statement as written.
+ *
+ * A loop rather than a regex with `[ \t]*` around the break: the statement has
+ * no length cap, and a regex that retries a long run of spaces at every
+ * position is quadratic (#402).
+ */
+function statementOnOneLine(statement: string): string {
+  const parts: string[] = [];
+  for (const line of statement.split(/\r\n|\r|\n/)) {
+    let start = 0;
+    let end = line.length;
+    while (start < end && (line[start] === ' ' || line[start] === '\t')) start++;
+    while (end > start && (line[end - 1] === ' ' || line[end - 1] === '\t')) end--;
+    if (end > start) parts.push(line.slice(start, end));
+  }
+  return parts.join(' ');
+}
+
 function buildVulnerabilitySurface(
   purpose: string,
   capabilities: string[],
@@ -477,7 +506,7 @@ function buildVulnerabilitySurface(
   for (const statement of modalStatements) {
     if (/never|must not|forbidden/i.test(statement)) {
       surface.push({
-        surface: `Stated rule: ${statement.slice(0, 80)}`,
+        surface: `Stated rule: ${statementOnOneLine(statement).slice(0, 80)}`,
         exploitApproach: 'Craft input that satisfies the wording while violating intent',
         attackCategory: 'soul_bypass',
         estimatedSuccess: 0.4,
