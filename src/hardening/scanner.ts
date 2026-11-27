@@ -16,7 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
 import { execFile } from 'child_process';
-import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure, SkippedDirectoryRecord, ExcludedFixWrite } from './security-check';
+import type { ScanResult, SecurityFinding, SecurityFindingDraft, Severity, ProjectType, HmaIgnoreDisclosure, SkippedDirectoryRecord, SkippedEntryRecord, ExcludedFixWrite } from './security-check';
 import { isScopeChannel } from './security-check';
 import { emitFinding, reemitFinding } from './finding-emit';
 import { StructuralAnalyzer, toSecurityFindings, LLMAnalyzer } from '../semantic';
@@ -1046,10 +1046,100 @@ function readCheckDir(dir: string, admit: (name: string) => boolean): Promise<Di
   return classifyDirRead(() => fs.readdir(dir), admit);
 }
 
-type DirEntryLike = { name: string; isDirectory(): boolean };
+type DirEntryLike = { name: string; isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 
 function readCheckDirents(dir: string, admit: (entry: DirEntryLike) => boolean): Promise<DirRead<DirEntryLike>> {
   return classifyDirRead<DirEntryLike>(() => fs.readdir(dir, { withFileTypes: true }), admit);
+}
+
+/**
+ * Whether a listed entry of `dir` may be opened for its contents: a regular
+ * file, or a symbolic link whose `stat` target is one. A FIFO, a socket or a
+ * device is not (`readFile` on a FIFO with no writer blocks forever, and the
+ * scan never finished), nor is a directory. `skippedTopLevelEntries` names the
+ * entries this refuses, other than directories, on the report.
+ *
+ * A link whose `stat` rejects is still opened: `open` rejects on the same
+ * path, so the read cannot block, and the tracked `fs` keeps its handling of
+ * that read (a link out of the tree is refused and disclosed, an unreadable
+ * target is an unread input).
+ */
+async function isRegularFileEntry(dir: string, entry: DirEntryLike): Promise<boolean> {
+  if (entry.isFile()) return true;
+  if (!entry.isSymbolicLink()) return false;
+  try {
+    return (await fs.stat(path.join(dir, entry.name))).isFile();
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The top-level files of `dir` whose names pass `admit`, in listing order,
+ * as the `readCheckDir` states: `read` when at least one entry is a regular
+ * file (`isRegularFileEntry`) that `admit` takes, `absent` when none is, and
+ * `unread` when the listing failed for a reason other than not-there.
+ */
+async function readTopLevelFiles(dir: string, admit: (name: string) => boolean): Promise<DirRead<string>> {
+  const listed = await readCheckDirents(dir, (entry) => !entry.isDirectory() && admit(entry.name));
+  if (listed.state !== 'read') return listed;
+  const files: string[] = [];
+  for (const entry of listed.entries) {
+    if (entry.isDirectory() || !admit(entry.name)) continue;
+    if (await isRegularFileEntry(dir, entry)) files.push(entry.name);
+  }
+  return files.length > 0 ? { state: 'read', entries: files } : { state: 'absent' };
+}
+
+/** A top-level entry no check opened because it is not a regular file. See `coverage.skippedEntries`. */
+function nonRegularFileType(st: { isFIFO(): boolean; isSocket(): boolean; isCharacterDevice(): boolean; isBlockDevice(): boolean }): string {
+  if (st.isFIFO()) return 'FIFO';
+  if (st.isSocket()) return 'socket';
+  if (st.isCharacterDevice()) return 'character device';
+  if (st.isBlockDevice()) return 'block device';
+  return 'special file';
+}
+
+/**
+ * Every top-level entry of the scanned tree that is neither a regular file
+ * nor a directory, nor a symbolic link to one, with its type: the entries
+ * `isRegularFileEntry` keeps the root-reading checks from opening. Read with
+ * the untracked `fs`, as `skippedDistDirectories` is: naming an entry is not
+ * examining it. A link whose target cannot be `stat`ed is not listed, as the
+ * checks still open it (see `isRegularFileEntry`), and neither is a link that
+ * resolves outside the tree: it is resolved with `realpath` and never followed,
+ * and the withheld-link channel discloses it. Names are target-relative.
+ */
+async function skippedTopLevelEntries(targetDir: string, ignoredPaths: string[]): Promise<SkippedEntryRecord[]> {
+  let entries: fsSync.Dirent[];
+  let realRoot: string;
+  try {
+    entries = await fsSync.promises.readdir(targetDir, { withFileTypes: true });
+    realRoot = await fsSync.promises.realpath(targetDir);
+  } catch {
+    return [];
+  }
+  const found: SkippedEntryRecord[] = [];
+  for (const entry of entries) {
+    if (entry.isFile() || entry.isDirectory()) continue;
+    if (isPathIgnored(entry.name, ignoredPaths)) continue;
+    if (entry.isSymbolicLink()) {
+      let target: fsSync.Stats;
+      try {
+        const real = await fsSync.promises.realpath(path.join(targetDir, entry.name));
+        const rel = path.relative(realRoot, real);
+        if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+        target = await fsSync.promises.stat(real);
+      } catch {
+        continue;
+      }
+      if (target.isFile() || target.isDirectory()) continue;
+      found.push({ path: entry.name, type: `symbolic link to a ${nonRegularFileType(target)}` });
+    } else {
+      found.push({ path: entry.name, type: nonRegularFileType(entry) });
+    }
+  }
+  return found;
 }
 
 /** #1273 — the extensions the source checks select across the tree (widening them is #414). */
@@ -1062,8 +1152,9 @@ const SOURCE_CHECK_EXTENSIONS = ['.ts', '.js'];
  * Their subject used to be the top-level listing alone, so code under `src/`
  * read as absent, and one config file at the top level was enough for a check
  * to decide on that file and pass over code it never read (#1207). The top
- * level is still that listing: every admitted entry that is not a directory,
- * in listing order, so a `.ts`/`.js` file that is a symbolic link is read
+ * level is still that listing: every admitted entry that is a regular file or
+ * a link to one (`readTopLevelFiles`; a FIFO blocked the scan forever), in
+ * listing order, so a `.ts`/`.js` file that is a symbolic link is read
  * through the tracked `fs` as before (its containment policy refuses and
  * discloses a target outside the tree), and the other names `admit` takes (a
  * site's `.json` files) stay top-level only, because that subject is
@@ -1088,11 +1179,9 @@ async function readSourceCheckDir(
   sourceFiles: () => Promise<string[]>,
   admit: (file: string) => boolean,
 ): Promise<DirRead<string>> {
-  const root = await readCheckDirents(dir, (entry) => admit(entry.name));
+  const root = await readTopLevelFiles(dir, admit);
   if (root.state === 'unread') return root;
-  const atRoot = root.state === 'read'
-    ? root.entries.filter((entry) => admit(entry.name) && !entry.isDirectory()).map((entry) => entry.name)
-    : [];
+  const atRoot = root.state === 'read' ? root.entries : [];
   const below = (await sourceFiles()).filter((rel) => rel.includes(path.sep) && admit(rel));
   const entries = [...atRoot, ...below];
   return entries.length > 0 ? { state: 'read', entries } : { state: 'absent' };
@@ -6453,6 +6542,9 @@ export class HardeningScanner {
     // tell "nothing examined" from "nothing found". Nothing to name when the
     // run walked `dist/`.
     const skippedDirectories = this.includeDist ? [] : await skippedDistDirectories(targetDir, allIgnoredPaths);
+    // The top-level FIFOs, sockets and devices the root-reading checks did
+    // not open (`isRegularFileEntry`), named for the same reason.
+    const skippedEntries = await skippedTopLevelEntries(targetDir, allIgnoredPaths);
 
     // It also halves the work: a finding in both channels is redacted once.
     const emitted = new Map<SecurityFindingDraft, ReturnType<typeof emitFinding>>();
@@ -6545,6 +6637,9 @@ export class HardeningScanner {
         // #1010 — absent when no `dist/` was skipped, so a tree without one
         // produces the document it produced before this key existed.
         ...(skippedDirectories.length > 0 ? { skippedDirectories } : {}),
+        // Absent when every top-level entry is a regular file, a directory or
+        // a link to one, so such a tree produces the document it did before.
+        ...(skippedEntries.length > 0 ? { skippedEntries } : {}),
         // Env and config files deep analysis did not send, by design. Absent
         // when there were none, so a run without --deep is an unchanged
         // document. Target-relative paths, never the target itself.
@@ -10934,12 +11029,12 @@ dist/
     // at mode 000 fails open() with EACCES before EISDIR can say "not a
     // file" — which put `.git`/`node_modules` on the coverage ledger as an
     // unread FILE at standard depth (#588). A directory is never this
-    // probe's input; a file, symlink or anything else keeps today's read.
-    const dirReadSec003 = await readCheckDirents(targetDir, (entry) => !entry.isDirectory());
+    // probe's input, and neither is a FIFO, socket or device: only a regular
+    // file, or a link to one, is opened (`readTopLevelFiles`), as a FIFO with
+    // no writer blocked `readFile` and the scan never finished.
+    const dirReadSec003 = await readTopLevelFiles(targetDir, () => true);
     if (dirReadSec003.state === 'read') {
-      for (const entry of dirReadSec003.entries) {
-        if (entry.isDirectory()) continue;
-        const file = entry.name;
+      for (const file of dirReadSec003.entries) {
         try {
           const content = await fs.readFile(path.join(targetDir, file), 'utf-8');
           if (content.includes('rotation') || content.includes('rotate') || content.includes('KEY_VERSION')) {
