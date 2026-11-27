@@ -10979,13 +10979,15 @@ Examples:
   $ ${CLI_PREFIX} scan-soul                    Scan current directory
   $ ${CLI_PREFIX} scan-soul ./my-agent         Scan specific directory
   $ ${CLI_PREFIX} scan-soul --json             Machine-readable output
+  $ ${CLI_PREFIX} scan-soul --format json      Same as --json
   $ ${CLI_PREFIX} scan-soul --verbose          Show all controls
   $ ${CLI_PREFIX} scan-soul --profile conversational  Override profile
   $ ${CLI_PREFIX} scan-soul --deep             Enable LLM semantic analysis
   $ ${CLI_PREFIX} scan-soul --explain          Print the 9-domain governance model
   $ ${CLI_PREFIX} scan-soul ./my-agent --publish  Scan and publish results to registry`)
   .argument('[directory]', 'Directory to scan (defaults to current directory)', '.')
-  .option('--json', 'Output as JSON')
+  .option('-f, --format <format>', 'Output format: text, json', 'text')
+  .option('--json', 'Output as JSON (shorthand for --format json)')
   .option('-v, --verbose', 'Show individual control results')
   .option('--tier <tier>', 'Override agent tier detection (BASIC, TOOL-USING, AGENTIC, MULTI-AGENT)')
   .option('--profile <profile>', 'Override agent profile (conversational, code-assistant, tool-agent, autonomous, orchestrator, custom)')
@@ -10998,7 +11000,7 @@ Examples:
   .option('--no-contribute', 'Do not share findings for this scan (overrides config)')
   .option('--ci', 'CI mode: suppress interactive prompts and disable contribution. Also exits non-zero on a HIGH-severity SOUL finding (governance violation, profile mismatch, or unrecognized --profile value)')
   .option('--explain', 'Print the 9-domain governance model and exit (no scan)')
-  .action(async (directory: string, options: { json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean; explain?: boolean }) => {
+  .action(async (directory: string, options: { format?: string; json?: boolean; verbose?: boolean; tier?: string; profile?: string; failBelow?: string; deep?: boolean; publish?: boolean; registryUrl?: string; contribute?: boolean; ci?: boolean; explain?: boolean }, cmd: Command) => {
     try {
       if (options.explain) {
         const { printGovernanceModel } = await import('./soul/governance-model');
@@ -11013,10 +11015,28 @@ Examples:
         if (options.contribute === undefined) options.contribute = false;
       }
 
-      if (!require('fs').existsSync(targetDir)) {
-        process.stderr.write(`Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
+      // `--format json` is `--json` spelled the way `secure` and `attack`
+      // spell it; `text` is the default report. The contradiction rule is
+      // #605's: `--json --format text` names two outputs and is refused,
+      // while the redundant `--json --format json` runs. `??`, not `||`, so
+      // `--format ''` is refused rather than falling to text (#632).
+      const validFormats = ['text', 'json'];
+      const format = options.format ?? 'text';
+      const formatContradiction = options.json
+        && cmd.getOptionValueSource('format') === 'cli'
+        && format !== 'json';
+      const formatInvalid = !validFormats.includes(format);
+      // One refusal site for the flag errors and the missing directory, so
+      // the exit-surface baseline (#350) is unchanged.
+      if (formatContradiction || formatInvalid || !require('fs').existsSync(targetDir)) {
+        process.stderr.write(formatContradiction
+          ? `Error: --json is shorthand for --format json and contradicts --format '${escapeForDisplay(String(options.format))}'. Drop one of the two flags.\n`
+          : formatInvalid
+            ? `Error: Invalid format '${escapeForDisplay(String(format))}'. Use: ${validFormats.join(', ')}\n`
+            : `Error: Directory '${escapePathForDisplay(targetDir)}' does not exist.\n`);
         process.exit(1); // exit-unsettled(#350/S026): pre-work refusal; events await the schema reason field (#525)
       }
+      if (format === 'json') options.json = true;
 
       const prefix = getCommandPrefix();
       const scanner = new SoulScanner();
