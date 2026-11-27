@@ -73,7 +73,10 @@ describe('check <npm-name> --no-scan: lock-in over src/cli.ts', () => {
     expect(body).toContain('console.error(');
     expect(body).not.toContain('!options.json');
     expect(body).not.toContain('globalCiMode');
-    expect(body).toContain("errorClass: 'registry-unreachable'");
+    // `registry-unreachable` for every class it named before; a 429 is
+    // `registry-rate-limited` (registryErrorClass in src/check/registry-answer.ts).
+    expect(body).toContain('errorClass,');
+    expect(body).toContain('registryErrorClass(kind)');
     expect(body).toContain('raiseExitCode(EXIT_UNMEASURED)');
   });
 
@@ -215,7 +218,11 @@ describe('check <npm-name> --no-scan --json against a local fake Registry', () =
     expect(r.json, r.stdout + r.stderr).not.toBeNull();
     expect(r.status).not.toBe(0);
     expect(r.json?.source).toBe('registry');
-    expect(r.json?.found).toBe(false);
+    // The Registry was not asked successfully, so the document claims no
+    // answer either way: no `found`, and a state that says what happened.
+    expect(r.json).not.toHaveProperty('found');
+    expect(r.json?.state).toBe('registry-error');
+    expect(r.json?.registryError).toBe('server-error');
     expect(r.json?.errorClass).toBe('registry-unreachable');
     expect(String(r.json?.error)).toMatch(/Registry/);
     expect(r.json?.type).not.toBe('npm-package');
