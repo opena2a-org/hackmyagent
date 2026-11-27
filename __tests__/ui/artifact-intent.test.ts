@@ -126,6 +126,32 @@ describe('artifact intent reconciliation (deterministic — #252 contract gate)'
     expect(artifacts[0].intent).toBe('malicious');
   });
 
+  it('resolves an absolute finding path against the scan root', () => {
+    const root = '/tmp/hma-scan-abc';
+    const own = reconcileArtifactIntents(
+      [artifact('SOUL.md', 'malicious')],
+      [{ file: '/tmp/hma-scan-abc/SOUL.md', severity: 'high' }],
+      root,
+    );
+    expect(own.artifacts[0].intent).toBe('malicious');
+
+    // A same-named file outside the scan root is another project's artifact.
+    const other = reconcileArtifactIntents(
+      [artifact('SOUL.md', 'benign')],
+      [{ file: '/other/project/SOUL.md', severity: 'high' }],
+      root,
+    );
+    expect(other.artifacts[0].intent).toBe('benign');
+    expect(other.suppressed).toEqual([]);
+
+    const nested = reconcileArtifactIntents(
+      [artifact('SOUL.md', 'malicious')],
+      [{ file: '/tmp/hma-scan-abc/nested/SOUL.md', severity: 'high' }],
+      root,
+    );
+    expect(nested.artifacts[0].intent).toBe('unknown');
+  });
+
   it('does not match a same-named file in a nested directory', () => {
     // `nested/SOUL.md` is its own artifact with its own summary line; a
     // finding on it must not clear the root SOUL.md.

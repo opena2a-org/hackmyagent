@@ -86,16 +86,24 @@ function normalizePath(p: string): string {
  *
  * Findings from the semantic pipeline carry the scan-relative path, which
  * matches the artifact path exactly. A few static checks emit an absolute
- * path instead; those are matched on a full trailing path segment so
- * `/tmp/scan/SOUL.md` matches `SOUL.md` while `nested/SOUL.md` (a different
- * artifact, which would have its own summary line) does not match a relative
- * `SOUL.md`.
+ * path instead. With the scan root known, that path is resolved against it and
+ * must land on the artifact exactly: `/tmp/scan/SOUL.md` matches `SOUL.md`
+ * under `/tmp/scan`, while `/other/project/SOUL.md` is a different file and
+ * does not. Without a scan root there is nothing to resolve against, so an
+ * absolute path falls back to a full trailing path segment match, which still
+ * keeps `nested/SOUL.md` from matching a relative `SOUL.md`.
  */
-function isSameArtifact(findingFile: string, artifactPath: string): boolean {
+function isSameArtifact(findingFile: string, artifactPath: string, scanRoot?: string): boolean {
   const file = normalizePath(findingFile);
   const artifact = normalizePath(artifactPath);
   if (file === artifact) return true;
-  return file.startsWith('/') && file.endsWith(`/${artifact}`);
+  if (!file.startsWith('/') && !/^[A-Za-z]:\//.test(file)) return false;
+  if (scanRoot) {
+    const root = normalizePath(scanRoot);
+    const prefix = root.endsWith('/') ? root : `${root}/`;
+    return file.startsWith(prefix) && file.slice(prefix.length) === artifact;
+  }
+  return file.endsWith(`/${artifact}`);
 }
 
 export interface ReconcileResult<T> {
@@ -108,11 +116,13 @@ export interface ReconcileResult<T> {
 /**
  * Rewrite uncorroborated concerning intent labels, and benign labels this
  * scan contradicts, to `unknown`, and report what was withheld. Pure; returns
- * copies and never mutates its input.
+ * copies and never mutates its input. `scanRoot` is the directory the
+ * findings' absolute paths resolve against; see `isSameArtifact`.
  */
 export function reconcileArtifactIntents<T extends { path: string; intent: ArtifactIntent }>(
   artifacts: readonly T[],
   findings: readonly { file?: string; severity?: string }[],
+  scanRoot?: string,
 ): ReconcileResult<T> {
   const suppressed: SuppressedIntent[] = [];
 
@@ -122,7 +132,7 @@ export function reconcileArtifactIntents<T extends { path: string; intent: Artif
     .map(f => f.file as string);
 
   const reconciled = artifacts.map(a => {
-    const onArtifact = highOrCriticalFiles.filter(file => isSameArtifact(file, a.path)).length;
+    const onArtifact = highOrCriticalFiles.filter(file => isSameArtifact(file, a.path, scanRoot)).length;
     if (a.intent === 'benign') {
       if (onArtifact === 0) return a;
       suppressed.push({ path: a.path, rawIntent: a.intent, contradictedBy: onArtifact });
