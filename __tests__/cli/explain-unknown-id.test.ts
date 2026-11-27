@@ -364,8 +364,9 @@ describe('input normalisation and self-referencing help (spawn)', () => {
     const stderr = res.stderr ?? '';
     expect(stderr).not.toMatch(/missing required argument/i);
     expect(stderr).toMatch(/No check ID given/);
-    // Same exit as the empty-id refusal and the other bare commands.
-    expect(res.status).toBe(1);
+    // A usage error, the exit Commander's own "missing required argument"
+    // ends with (#505): distinct from exit 1, which a scan uses for findings.
+    expect(res.status).toBe(64);
     expect(res.stdout ?? '').toBe('');
 
     // The example it offers is a command the CLI answers.

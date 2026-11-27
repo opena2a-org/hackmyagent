@@ -178,6 +178,7 @@ grep -A3 hackmyagent .mcp.json    # Claude Code; or .cursor/mcp.json, .vscode/mc
 | 1 | Measured. Critical or high severity issues found. For `scan-soul`, also conformance `none`: a critical governance control was not detected, whatever the score. |
 | 2 | **Not measured.** Each case is in the table below. |
 | 3 | QUARANTINE. Binary integrity check failed (tampered installation). |
+| 64 | Usage error. The command line could not be parsed: an unknown command or option, a missing or extra operand, an option without its value, or a bare `explain`. Nothing ran, so nothing was measured or found. |
 
 ### Exit 2, case by case
 
@@ -188,7 +189,7 @@ grep -A3 hackmyagent .mcp.json    # Claude Code; or .cursor/mcp.json, .vscode/mc
 | `red-team`, `attack --local` | They exit 2 on every run: both generate payloads without executing any against an agent, so neither concludes anything about the target. |
 | `secure --deep` | The static results ARE reported and scored; the deep layer did not finish, so the run reaches no deep-scan verdict. |
 | `secure`, `check` | A file or directory inside the target was discovered and could not be read (`EACCES`, `ELOOP`, an unreadable mount): what DID run is still reported and scored, and the score or risk level is an upper bound rather than a measurement of the tree. The run names each file and the errno (`SCAN-UNREAD-001`). |
-| any command | The target does not exist (`check <missing path>`, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. |
+| any command | The target does not exist (`check <missing path>`, `scan-soul <missing path>`, `fix-all <missing path>` in every mode, an unknown package), was unreachable, answered no payload, or the command reaches no verdict by design. |
 | any scan | A scan whose plugins failed is also 2. |
 | `scan-soul` | It exits 2 over a tree with no governance file: no score or conformance level is reported, because nothing was read. |
 | `secure -b oasb-2` | It does the same for its governance half: the governance score, conformance and composite print as not measured. |
