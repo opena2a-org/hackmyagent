@@ -106,7 +106,7 @@ export const SECURITY_RELEVANT_EXTENSIONS = new Set([
   //
   // `.jsx`/`.tsx` are deliberately included with them: same language, same
   // credential risk, same omission waiting to be found.
-  '.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx', '.py', '.go', '.rs',
+  '.ts', '.js', '.mjs', '.cjs', '.mts', '.cts', '.tsx', '.jsx', '.py', '.go', '.rs',
   '.env', '.cfg', '.ini', '.conf',
 ]);
 

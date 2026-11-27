@@ -54,7 +54,7 @@ import { assertDistFresh, assertDistFreshIfPresent } from '../helpers/dist-fresh
  * Adding a language to the scanner means adding a row here. Removing one is then
  * a visible decision rather than a silent omission — which is the whole defect.
  */
-const MUST_BE_SCANNED = ['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx'] as const;
+const MUST_BE_SCANNED = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.tsx', '.jsx'] as const;
 
 /**
  * Extensions that must NOT be treated as compilable source. Without these the

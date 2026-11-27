@@ -54,7 +54,7 @@ import { assertDistFresh } from '../helpers/dist-freshness';
  * then becomes a visible decision rather than a silent omission, which is the
  * entire defect this file exists for.
  */
-const MUST_BE_SCANNED = ['.ts', '.js', '.mjs', '.cjs', '.tsx', '.jsx'] as const;
+const MUST_BE_SCANNED = ['.ts', '.js', '.mjs', '.cjs', '.mts', '.cts', '.tsx', '.jsx'] as const;
 
 /**
  * Extensions that must NOT be swept into the JS family. These are not "files we

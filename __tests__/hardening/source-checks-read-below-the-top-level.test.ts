@@ -1,5 +1,5 @@
 /**
- * #1273 / #1207 — the 27 source checks select `.ts` and `.js` files across the
+ * #1273 / #1207 — the 27 source checks select JavaScript-family files across the
  * scanned tree, not only its top level.
  *
  * LOG-002 and the 26 checks from AUTH-003 to AUDIT-004 took their files from a
@@ -43,7 +43,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { HardeningScanner } from '../../src/hardening/scanner';
+import { HardeningScanner, JS_FAMILY_EXTENSIONS } from '../../src/hardening/scanner';
 import type { ScanOptions } from '../../src/hardening/scanner';
 import type { ScanResult, Severity } from '../../src/hardening/security-check';
 import { assertDistFresh, BUILT_CLI } from '../helpers/dist-freshness';
@@ -55,10 +55,10 @@ type Rec = NonNullable<ScanResult['allFindings']>[number];
 const PROBE_PACKAGE = '{"name":"probe","version":"1.0.0"}\n';
 const LOGS_PASSWORD = 'export function login(password: string): void { console.log(password); }\n';
 
-const SOURCE_SUBJECT = 'source files (.ts, .js)';
-const NO_SOURCE_IN_TREE = 'No .ts or .js files in the scanned tree, so there is no source to inspect.';
+const SOURCE_SUBJECT = 'source files (.ts, .js, .mjs, .cjs, .mts, .cts, .tsx, .jsx)';
+const NO_SOURCE_IN_TREE = 'No JavaScript or TypeScript files in the scanned tree, so there is no source to inspect.';
 const NO_SOURCE_OR_ROOT_CONFIG =
-  'No .ts or .js files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.';
+  'No JavaScript or TypeScript files in the scanned tree and no .json files at the scanned root, so there is nothing to inspect.';
 
 /** A new directory holding `files` (paths relative to it), removed when the test ends. */
 function project(files: Record<string, string>, prefix = 'hma-1273-'): string {
@@ -414,7 +414,10 @@ describe('the selection: one walk per scan, per run', () => {
     const walk = vi.spyOn(proto, 'walkDirectory');
     const dir = project({ ...API_PROJECT, 'src/index.ts': LOGS_PASSWORD });
     await scan(dir);
-    const selections = walk.mock.calls.filter(([, extensions, depth]) => depth === 0 && JSON.stringify(extensions) === '[".ts",".js"]');
+    const selections = walk.mock.calls.filter(
+      ([, extensions, depth, maxDepth]) =>
+        depth === 0 && maxDepth === 10 && JSON.stringify(extensions) === JSON.stringify(JS_FAMILY_EXTENSIONS),
+    );
     expect(selections).toHaveLength(1);
     expect(selections[0][0]).toBe(dir);
   });
@@ -471,7 +474,7 @@ describe('a site that also reads .json reads it at the root only', () => {
   it('AUTH-003 is not applicable, with the tree-wide reason, when the only .json sits below the root', async () => {
     const dir = project({ ...API_PROJECT, 'src/session.json': '{"cookie": "httpOnly: true"}\n' });
     expect(record(await scan(dir), 'AUTH-003')?.notApplicable).toEqual({
-      subject: 'source or config files (.ts, .js, .json)',
+      subject: 'source or config files (.ts, .js, .mjs, .cjs, .mts, .cts, .tsx, .jsx, .json)',
       reason: NO_SOURCE_OR_ROOT_CONFIG,
     });
   });
