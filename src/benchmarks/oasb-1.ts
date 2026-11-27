@@ -108,6 +108,27 @@ export interface BenchmarkResult {
    * `unverifiedControls`.
    */
   notApplicableControls: number;
+  /**
+   * Controls the run's own suppression left unscored: a check one of them
+   * maps to was set aside by `--ignore`, an `.hmaignore` check rule or an
+   * `.hmaignore` path rule, and no other check failed the control. They are
+   * counted in `unverifiedControls` and leave every denominator; present only
+   * when at least one control was suppressed, so an unsuppressed run's
+   * document is unchanged.
+   */
+  suppressedControls?: number;
+}
+
+/**
+ * What the run's own suppression set aside from one control: the mapped
+ * check IDs, and the channel (`ignore-flag`, `hmaignore-check`,
+ * `hmaignore-path`, `hmaignore-path-check`) of each.
+ */
+export interface BenchmarkControlSuppression {
+  checkIds: string[];
+  suppressedBy: string[];
+  /** Failing findings of those checks the suppression withheld from the assessor. */
+  findings: number;
 }
 
 export interface BenchmarkCategoryResult {
@@ -119,6 +140,11 @@ export interface BenchmarkCategoryResult {
   unverified: number;
   /** Controls whose subject artifacts are absent from this tree (#458). */
   notApplicable: number;
+  /**
+   * Controls in this category left unscored by the run's suppression,
+   * counted inside `unverified`. Present only when non-zero.
+   */
+  suppressed?: number;
   controls: BenchmarkControlResult[];
 }
 
@@ -164,6 +190,13 @@ export interface BenchmarkControlResult {
   audit?: string;
   /** The absent subject artifacts, when status is `not-applicable` (#458). */
   notApplicableSubjects?: string[];
+  /**
+   * Set when a check this control maps to was set aside by the run's own
+   * suppression. A suppressed control is never `passed` and never
+   * `not-applicable`: unless another check failed it, it is `unverified` and
+   * outside every denominator.
+   */
+  suppressed?: BenchmarkControlSuppression;
 }
 
 /**
