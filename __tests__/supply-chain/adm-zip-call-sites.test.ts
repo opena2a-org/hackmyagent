@@ -1,7 +1,7 @@
 /**
  * QGF-254 — `adm-zip` reaches no first-party call site, and this is what says so.
  *
- * `adm-zip` is in this tree for exactly one reason: `onnxruntime-node@1.27.0`
+ * `adm-zip` is in this tree for exactly one reason: `onnxruntime-node@1.30.0`
  * declares it. Nothing under `src/` imports it, requires it, dynamically
  * imports it or calls any of its extraction entry points, and the open advisory
  * `GHSA-vwc7-r8mq-g2x9` is recorded as known-open on that basis — see

@@ -11,11 +11,11 @@
  * `$HOME/Library/Application Support/Microsoft/DeveloperTools/.onnxruntime/`
  * holding `deviceid` and `onnxruntime.db`, even when the model bytes do not
  * parse. With the variable in the environment at start, or assigned to
- * `process.env` before the require, it writes nothing. 1.27.0, the version
- * this repository's lockfile resolves, carries no such client: its native
- * libraries contain none of the variable, the store path or the collector
- * URL. `package.json` declares `^1.27.0`, so a fresh install of this tool
- * resolves the newest 1.x release, which can carry it.
+ * `process.env` before the require, it writes nothing. 1.27.0 carries no
+ * such client: its native libraries contain none of the variable, the store
+ * path or the collector URL. `package.json` declares exactly `1.30.0`, the
+ * version this repository's lockfile resolves, so a fresh install of this
+ * tool resolves a runtime that carries it.
  *
  * Four layers:
  *  1. Source: every load of onnxruntime-node in `src/` is in one function,
@@ -116,7 +116,7 @@ function runtimeDir(): string {
  * True when the runtime's native library for this host carries the telemetry
  * client. Its opt-out variable is compiled into the library as a string when
  * the client is; 1.27.0 has it in no platform's library and 1.30.0 has it in
- * the macOS one.
+ * the macOS and Linux ones.
  */
 function runtimeCarriesTelemetryClient(dir: string): boolean {
   const native = path.join(dir, 'bin', 'napi-v6', process.platform, process.arch);
@@ -126,11 +126,36 @@ function runtimeCarriesTelemetryClient(dir: string): boolean {
 }
 
 /**
+ * The variables the runtime's telemetry client reads as "this is a CI run" and
+ * stays off under, as its 1.30.0 native library names them. GitHub Actions
+ * sets GITHUB_ACTIONS as well as CI, so removing CI alone leaves the client
+ * off there and the control below writes no store.
+ */
+const CI_MARKERS = [
+  'CI',
+  'TF_BUILD',
+  'GITHUB_ACTIONS',
+  'GITLAB_CI',
+  'CIRCLECI',
+  'TRAVIS',
+  'JENKINS_URL',
+  'CODEBUILD_BUILD_ID',
+  'BUILDKITE',
+  'TEAMCITY_VERSION',
+  'APPVEYOR',
+  'BITBUCKET_BUILD_NUMBER',
+  'SYSTEM_TEAMFOUNDATIONCOLLECTIONURI',
+  'ORT_RUNNING_UNIT_TESTS',
+];
+
+/**
  * An environment rooted in `root`: an empty HOME, the cache, data, config and
- * state directories and TMPDIR inside it, and no ORT_DISABLE_TELEMETRY or CI.
+ * state directories and TMPDIR inside it, and no ORT_DISABLE_TELEMETRY or CI
+ * marker.
  * ORT_DISABLE_TELEMETRY is removed because this worker may already have
  * assigned it, and a child that inherited it would pass whatever the code
- * under test does. CI is removed because the client does not start under it.
+ * under test does. The CI markers are removed because the client does not
+ * start under any of them.
  */
 function freshEnvironment(root: string): NodeJS.ProcessEnv {
   const home = path.join(root, 'home');
@@ -141,9 +166,9 @@ function freshEnvironment(root: string): NodeJS.ProcessEnv {
   for (const name of ['XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'ORT_DISABLE_TELEMETRY']) {
     delete env[name];
   }
-  // The runtime's telemetry client stays off when CI is set, so a CI run
-  // would see no store in the control whatever the runtime carries.
-  delete env.CI;
+  // The runtime's telemetry client stays off when any CI marker is set, so a
+  // CI run would see no store in the control whatever the runtime carries.
+  for (const name of CI_MARKERS) delete env[name];
   // No hosted-model request: this run measures the local runtime only.
   delete env.ANTHROPIC_API_KEY;
   if (process.env.HMA_TEST_ONNXRUNTIME_NODE) env.HMA_TEST_ONNXRUNTIME_NODE = runtimeDir();

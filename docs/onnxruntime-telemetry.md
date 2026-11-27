@@ -5,7 +5,7 @@ The NanoMind classifier that every `secure` scan runs executes in `onnxruntime-n
 ## What this tool does
 
 - **Variable:** every load of the runtime goes through one loader that sets `ORT_DISABLE_TELEMETRY=1` in this tool's own process before the runtime loads. Upstream documents that the variable prevents the uploader, the events and the identifier.
-- **Runtime version:** `package.json` declares `onnxruntime-node` `^1.27.0`, so a fresh install of this tool resolves the newest 1.x release. On 2026-10-17 that was 1.30.0, whose macOS and Linux libraries carry the client; 1.27.0, the version this repository's lockfile resolves, carries none. With 1.30.0 on macOS, a scan under an empty home directory wrote both files without the variable and nothing with it, measured on 2026-10-16.
+- **Runtime version:** `package.json` declares `onnxruntime-node` `1.30.0`, exactly, so a fresh install of this tool resolves 1.30.0, the version measured here. Its macOS and Linux libraries carry the client. With 1.30.0 on macOS, a scan under an empty home directory wrote both files without the variable and nothing with it, measured on 2026-10-16.
 
 The variable is set in this tool's process only. It does not change another program that loads onnxruntime.
 

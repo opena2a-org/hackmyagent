@@ -81,8 +81,8 @@ describe('the adm-zip advisory is recorded as known-open, with its evidence inli
   });
 
   it('QGF-254.AC3 it states the single edge into this tree, inline', () => {
-    expect(flat).toContain('onnxruntime-node@1.27.0');
-    expect(flat).toContain('adm-zip: ^0.5.16');
+    expect(flat).toContain('onnxruntime-node@1.30.0');
+    expect(flat).toContain('adm-zip: ^0.6.0');
     expect(flat).toContain(
       '`dependencies` of its `node_modules/onnxruntime-node` entry in `package-lock.json`',
     );
@@ -206,9 +206,9 @@ function manifestCitationDrift(pkg: any, lock: any): string[] {
   const onnx = lock.packages?.['node_modules/onnxruntime-node'];
   const cited: Array<[string, unknown, unknown]> = [
     ['package.json overrides["adm-zip"]', pkg.overrides?.['adm-zip'], '^0.6.0'],
-    ['package-lock.json node_modules/onnxruntime-node version', onnx?.version, '1.27.0'],
+    ['package-lock.json node_modules/onnxruntime-node version', onnx?.version, '1.30.0'],
     ['package-lock.json node_modules/onnxruntime-node hasInstallScript', onnx?.hasInstallScript, true],
-    ['package-lock.json node_modules/onnxruntime-node dependencies["adm-zip"]', onnx?.dependencies?.['adm-zip'], '^0.5.16'],
+    ['package-lock.json node_modules/onnxruntime-node dependencies["adm-zip"]', onnx?.dependencies?.['adm-zip'], '^0.6.0'],
     ['package-lock.json node_modules/adm-zip version', lock.packages?.['node_modules/adm-zip']?.version, '0.6.1'],
   ];
   return cited
@@ -325,7 +325,7 @@ describe('the record cannot go stale unwitnessed', () => {
     // record and the lockfile still has to move a number a reader can see.
     expect(stated['declarer count']).toBe('1');
     expect(stated['declaring path']).toBe('node_modules/onnxruntime-node');
-    expect(stated['declared range']).toBe('^0.5.16');
+    expect(stated['declared range']).toBe('^0.6.0');
     expect(stated['resolved version']).toBe('0.6.1');
   });
 
