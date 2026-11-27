@@ -32,6 +32,7 @@ import { execFileSync } from 'node:child_process';
 import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { CLI_PREFIX } from '../../cli-prefix';
 import { escapePathForDisplay, escapeForDisplay } from '../../ui/display-safe';
 import {
   sendClassify,
@@ -254,7 +255,7 @@ export async function setupAnalystModel(quiet = false, install: AnalystInstall =
       process.stderr.write(
         'NanoMind analyst is installed and its daemon is stopped.\n' +
         `Start it: ${ANALYST_START_COMMAND}\n` +
-        'Verify:   hackmyagent nanomind status\n' +
+        `Verify:   ${CLI_PREFIX} nanomind status\n` +
         '\n' +
         'Setup did not run the install again. To run it again: nanomind-analyst install\n',
       );
@@ -288,7 +289,7 @@ export async function setupAnalystModel(quiet = false, install: AnalystInstall =
         `Default daemon socket path: ${DEFAULT_SOCK_PATH}\n` +
         'Override with NANOMIND_GUARD_SOCK=/path/to/your.sock\n' +
         '\n' +
-        'After install, verify with: hackmyagent nanomind status\n',
+        `After install, verify with: ${CLI_PREFIX} nanomind status\n`,
       );
     }
     return false;
@@ -325,7 +326,7 @@ export async function setupAnalystModel(quiet = false, install: AnalystInstall =
     process.stderr.write(
       '\nnanomind-analyst exited 0 but the daemon is not responding on\n' +
       `  ${DEFAULT_SOCK_PATH}\n` +
-      'Run `hackmyagent nanomind status` for diagnostics, or re-run\n' +
+      `Run \`${CLI_PREFIX} nanomind status\` for diagnostics, or re-run\n` +
       '`nanomind-analyst install` to retry.\n',
     );
   }

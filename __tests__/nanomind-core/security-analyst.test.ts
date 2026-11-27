@@ -362,6 +362,86 @@ describe('security-analyst — installed, stopped', () => {
     expect(existsSync(sentinel)).toBe(true);
     expect(lines.join('')).not.toContain('nanomind-analyst start');
   });
+
+  /**
+   * Runs setupAnalystModel from a fresh module load under HMA_CLI_PREFIX, the
+   * way a wrapper CLI spawns hackmyagent, and returns what it wrote to stderr.
+   */
+  async function setupOutputUnderPrefix(
+    prefix: string,
+    install: Parameters<typeof setupAnalystModel>[1],
+  ): Promise<string> {
+    const original = process.env.HMA_CLI_PREFIX;
+    process.env.HMA_CLI_PREFIX = prefix;
+    vi.resetModules();
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      const mod = await import('../../src/nanomind-core/inference/security-analyst');
+      await mod.setupAnalystModel(/* quiet */ false, install);
+    } finally {
+      spy.mockRestore();
+      if (original === undefined) delete process.env.HMA_CLI_PREFIX;
+      else process.env.HMA_CLI_PREFIX = original;
+      vi.resetModules();
+    }
+    return lines.join('');
+  }
+
+  it('the stopped-daemon Verify line cites the wrapper CLI prefix', async () => {
+    const agentSocketPath = stoppedSocket();
+    const out = await setupOutputUnderPrefix('opena2a', {
+      platform: 'darwin', homeDir: installedHome(), agentSocketPath,
+    });
+
+    expect(out).toContain('Verify:   opena2a nanomind status\n');
+    expect(out).not.toContain('hackmyagent nanomind status');
+  });
+
+  it('the installer-not-on-PATH message cites the wrapper CLI prefix (darwin)', async () => {
+    if (process.platform !== 'darwin') {
+      return; // the installer is looked up only on darwin
+    }
+    const agentSocketPath = stoppedSocket();
+    const originalPath = process.env.PATH;
+    process.env.PATH = '';
+    let out: string;
+    try {
+      out = await setupOutputUnderPrefix('opena2a', {
+        platform: 'darwin', homeDir: tempDir('analyst-empty-home-'), agentSocketPath,
+      });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    expect(out).toContain('After install, verify with: opena2a nanomind status\n');
+    expect(out).not.toContain('hackmyagent nanomind status');
+  });
+
+  it('the post-install diagnostic cites the wrapper CLI prefix (darwin shim test)', async () => {
+    if (process.platform !== 'darwin') {
+      return; // the installer is run only on darwin
+    }
+    const agentSocketPath = stoppedSocket();
+    const { dir, sentinel } = installerShim();
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${dir}:${originalPath}`;
+    let out: string;
+    try {
+      out = await setupOutputUnderPrefix('opena2a', {
+        platform: 'darwin', homeDir: tempDir('analyst-empty-home-'), agentSocketPath,
+      });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    expect(existsSync(sentinel)).toBe(true);
+    expect(out).toContain('Run `opena2a nanomind status` for diagnostics');
+    expect(out).not.toContain('hackmyagent nanomind status');
+  });
 });
 
 describe('security-analyst — setupAnalystModel', () => {
