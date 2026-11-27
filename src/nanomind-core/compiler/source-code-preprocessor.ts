@@ -63,7 +63,14 @@ export function detectSourceLanguage(path?: string): SourceLanguage {
   if (!path) return 'unknown';
   const lower = path.toLowerCase();
   if (lower.endsWith('.go')) return 'go';
-  if (lower.endsWith('.ts') || lower.endsWith('.tsx')) return 'typescript';
+  if (
+    lower.endsWith('.ts') ||
+    lower.endsWith('.tsx') ||
+    lower.endsWith('.mts') ||
+    lower.endsWith('.cts')
+  ) {
+    return 'typescript';
+  }
   if (
     lower.endsWith('.js') ||
     lower.endsWith('.jsx') ||
