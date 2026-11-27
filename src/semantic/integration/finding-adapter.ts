@@ -80,25 +80,23 @@ const CATEGORY_LABELS: Record<string, string> = {
  * can be found, which is the correct answer for the absence-shaped findings
  * (`SEM-PERM-002 Unrestricted Bash access`) that have no single trigger line.
  *
- * NO DETECTOR IN `src/semantic/` REACHES THAT RECOVERY TODAY, and an earlier
- * revision of this docblock claimed it did. Enumerated: `SEM-CRED-001`
+ * WHICH DETECTORS REACH THAT RECOVERY. `SEM-PERM-002` and `SEM-PERM-003`
+ * (`structural/permission-model.ts`, #496) do: they read the parsed settings,
+ * so they quote the allow entries they matched as evidence with no line, and
+ * the line is found here in the file's own bytes. `SEM-CRED-001`
  * (`structural/credential-context.ts`) and the bounded `SEM-INST-001`
- * (`structural/instruction.ts`, #734) are the only sites that set `evidence`
- * at all, and both always set a valid `line` AND `evidence.lines[0].n`, so
- * `resolveFindingLine` returns at step 1 without consulting `rawContent`.
- * Every semantic finding that LACKS a line — `SEM-MCP-005/006` (cross-server
- * and whole-file), the other `SEM-MCP-*` checks when their search of the raw
- * text finds no line (#644), `SEM-INST-003/004`, `SEM-PERM-001/002/003`,
- * `SEM-CRED-004` — sets no
- * `evidence`, so there is no verbatim trigger to locate and the result is
- * undefined whatever the caller passes.
+ * (`structural/instruction.ts`, #734) also set `evidence`, but always with a
+ * valid `line` AND `evidence.lines[0].n`, so `resolveFindingLine` returns at
+ * step 1 without consulting `rawContent`. The other semantic findings that
+ * LACK a line — `SEM-MCP-005/006` (cross-server and whole-file), the other
+ * `SEM-MCP-*` checks when their search of the raw text finds no line (#644),
+ * `SEM-INST-003/004`, `SEM-PERM-001`, `SEM-CRED-004` — set no `evidence`, so
+ * there is no verbatim trigger to locate and the result is undefined whatever
+ * the caller passes.
  *
- * So the parameter is wiring ahead of its producers, not a live recovery path:
- * dropping the reader argument at both `hardening/scanner.ts` call sites leaves
- * the whole suite green and `secure --json` byte-identical, which was measured.
- * It is kept because the fix for those detectors is to make them carry
- * evidence, and this is the boundary that will consume it — but until then
- * nothing here changes behaviour, and the docblock must not imply otherwise.
+ * The reader both `hardening/scanner.ts` call sites hand down is pinned by
+ * `__tests__/hardening/semantic-line-recovery-real-scan.test.ts`, which runs a
+ * real scan and fails when either call site drops it.
  */
 export function toSecurityFinding(
   finding: SemanticFinding,

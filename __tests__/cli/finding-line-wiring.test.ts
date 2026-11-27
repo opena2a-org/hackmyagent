@@ -42,6 +42,13 @@
  *     there would pin nothing. What is asserted instead is the boundary's own
  *     contract, against the real exported adapter. Stated plainly rather than
  *     dressed up as coverage it does not have.
+ *
+ *     That measurement predates #496. `SEM-PERM-002` and `SEM-PERM-003` now
+ *     quote the allow entry they matched and carry no line, so a real scan
+ *     reaches the recovery. The adapter tests below supply their own reader
+ *     and cannot see the scanner stop handing one down; that half — the
+ *     reader at both `hardening/scanner.ts` call sites — is pinned through a
+ *     real scan in `__tests__/hardening/semantic-line-recovery-real-scan.test.ts`.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';

@@ -8,6 +8,28 @@
  */
 
 import type { SemanticFinding, AnalysisFile, ClaudeSettings } from '../types';
+import type { Evidence } from '../../types/finding-evidence';
+
+/**
+ * The allow entries a finding is about, as positive evidence (#496).
+ *
+ * The analyzer reads the PARSED settings, so it knows which entries it matched
+ * but not where they sit in the file. Each entry is quoted as JSON writes it
+ * (`"Write(/home/**)"`), and its line is left at 0, the value
+ * `resolveFindingLine` treats as no line. The line is then recovered at the
+ * semantic -> SecurityFinding boundary from the file's own bytes, under that
+ * module's rules: long enough to be specific, and present exactly once. An
+ * entry that is too short (`"Bash"`) or written twice gets no line, which is
+ * what these findings carried before; it never gets a guessed one.
+ *
+ * The finding itself, its severity and its count do not depend on this.
+ */
+function allowEntryEvidence(entries: string[], why: string): Evidence {
+  return {
+    kind: 'positive',
+    lines: entries.map((entry) => ({ n: 0, content: JSON.stringify(entry), why })),
+  };
+}
 
 export class PermissionModelAnalyzer {
   analyze(files: AnalysisFile[]): SemanticFinding[] {
@@ -73,12 +95,10 @@ export class PermissionModelAnalyzer {
     );
 
     // If Bash is allowed without any pattern restriction
-    const hasUnrestrictedBash = bashEntries.some((entry) => {
-      // "Bash" or "Bash(*)" is unrestricted
-      return entry === 'Bash' || entry === 'Bash(*)';
-    });
+    // "Bash" or "Bash(*)" is unrestricted
+    const unrestricted = bashEntries.filter((entry) => entry === 'Bash' || entry === 'Bash(*)');
 
-    if (hasUnrestrictedBash) {
+    if (unrestricted.length > 0) {
       return [
         {
           id: 'SEM-PERM-002',
@@ -93,6 +113,7 @@ export class PermissionModelAnalyzer {
             'Restrict Bash to specific commands: "Bash(npm test)", "Bash(git *)" or use deny rules to block dangerous commands.',
           layer: 2,
           autoFixable: false,
+          evidence: allowEntryEvidence(unrestricted, 'permissions.allow grants Bash with no command restriction'),
         },
       ];
     }
@@ -140,6 +161,7 @@ export class PermissionModelAnalyzer {
             'Scope write permissions to the project directory only. Remove paths outside the project from the allow list.',
           layer: 2,
           autoFixable: false,
+          evidence: allowEntryEvidence(outsidePaths, 'permissions.allow grants write access outside the project directory'),
         },
       ];
     }
