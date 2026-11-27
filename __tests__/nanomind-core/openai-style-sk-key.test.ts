@@ -14,11 +14,16 @@
  * WHY THE KEYS ARE GENERATED AT RUN TIME: a credential-shaped literal in a
  * public repo is worse than a test that draws its own. A draw that spells a
  * placeholder marker is redrawn, because the detector correctly skips it and
- * the fixture would then pass for the wrong reason.
+ * the fixture would then pass for the wrong reason. *
+ * Each run draws a new seed and prints it; HMA_TEST_SEED=<seed> replays that
+ * run. Every case draws from its own stream, made from the seed and the
+ * case's index, so a case draws the same keys when it runs alone, and a
+ * failure names the seed and the case.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash, randomInt } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -35,13 +40,29 @@ import { cpuTimeMs } from '../helpers/scaling-time';
 const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 const PLACEHOLDER = /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE/i;
 
+/** The run's seed: HMA_TEST_SEED when set, otherwise a new one for this run. */
+function runSeed(): number {
+  const given = process.env.HMA_TEST_SEED;
+  if (given === undefined || given.trim() === '') return randomInt(0, 2 ** 32);
+  const seed = Number(given);
+  if (!Number.isInteger(seed) || seed < 0 || seed >= 2 ** 32) {
+    throw new Error(`HMA_TEST_SEED must be an integer from 0 to 4294967295, got ${JSON.stringify(given)}`);
+  }
+  return seed;
+}
+const SEED = runSeed();
+process.stdout.write(`__tests__/nanomind-core/openai-style-sk-key.test.ts seed: HMA_TEST_SEED=${SEED}\n`);
+
+/** The seed of case `index`'s own stream. */
+function caseSeed(index: number): number {
+  return createHash('sha256').update(`${SEED}:${index}`).digest().readUInt32BE(0);
+}
+
 /**
- * The draws come from a fixed seed (mulberry32), so a failing draw is the same
- * on every run of this file and can be reproduced. Change SEED to explore other
- * draws; the space drawn from is every alphanumeric body.
+ * The draws come from mulberry32, restarted by each case from its own seed;
+ * the space drawn from is every alphanumeric body.
  */
-const SEED = 0x316;
-let state = SEED;
+let state = 0;
 function randomBytes(n: number): Uint8Array {
   const out = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
@@ -62,6 +83,32 @@ function randomBody(n: number): string {
   }
 }
 
+/**
+ * Runs case `index` from its own stream. A failure's message is led by the
+ * seed and the case's index.
+ */
+function generatedCase<T>(index: number, run: () => T): T {
+  state = caseSeed(index);
+  const named = (error: unknown): unknown => {
+    if (error instanceof Error) error.message = `seed ${SEED}, case ${index}: ${error.message}`;
+    return error;
+  };
+  let result: T;
+  try {
+    result = run();
+  } catch (error) {
+    throw named(error);
+  }
+  if (result instanceof Promise) {
+    return result.catch((error: unknown) => {
+      throw named(error);
+    }) as T;
+  }
+  return result;
+}
+
+let nextCase = 0;
+
 /** The reported carrier, byte for byte apart from the key. */
 const reported = (key: string) => `const openai = "${key}";\n`;
 
@@ -79,6 +126,9 @@ async function failingFindings(content: string): Promise<string[]> {
 }
 
 describe('#316: secure reports a hardcoded sk- key with a 32-character body', { timeout: 300_000 }, () => {
+  // The project's key is case 0; the tests that scan it name that case.
+  const bodyCase = nextCase++;
+  state = caseSeed(bodyCase);
   const body = randomBody(32);
   let project: string;
   let home: string;
@@ -104,31 +154,38 @@ describe('#316: secure reports a hardcoded sk- key with a 32-character body', { 
   }
 
   it('secure --json reports the hardcoded secret at index.js:1, without quoting it', () => {
-    const out = secure(['--json']).stdout ?? '';
-    const report = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1));
-    const hardcoded = report.findings.filter(
-      (f: { checkId: string; passed: boolean }) => !f.passed && f.checkId === 'AST-CRED-003',
-    );
-    expect(hardcoded).toHaveLength(1);
-    expect(hardcoded[0]).toMatchObject({
-      name: 'Hardcoded Secret Detected',
-      severity: 'critical',
-      file: 'index.js',
-      line: 1,
+    generatedCase(bodyCase, () => {
+      const out = secure(['--json']).stdout ?? '';
+      const report = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1));
+      const hardcoded = report.findings.filter(
+        (f: { checkId: string; passed: boolean }) => !f.passed && f.checkId === 'AST-CRED-003',
+      );
+      expect(hardcoded).toHaveLength(1);
+      expect(hardcoded[0]).toMatchObject({
+        name: 'Hardcoded Secret Detected',
+        severity: 'critical',
+        file: 'index.js',
+        line: 1,
+      });
+      expect(hardcoded[0].message).toContain('OpenAI-style sk- key');
+      expect(out).not.toContain(body);
     });
-    expect(hardcoded[0].message).toContain('OpenAI-style sk- key');
-    expect(out).not.toContain(body);
   });
 
   it('secure --ci exits 1', () => {
-    expect(secure(['--ci']).status).toBe(1);
+    generatedCase(bodyCase, () => {
+      expect(secure(['--ci']).status).toBe(1);
+    });
   });
 
+  const index = nextCase++;
   it('gets the same check ids and severities as a 48-character legacy key', async () => {
-    const legacy = await failingFindings(reported(`sk-${randomBody(48)}`));
-    // Without this, two empty lists would compare equal and prove nothing.
-    expect(legacy).toContain('AST-CRED-003:critical');
-    expect(await failingFindings(reported(`sk-${body}`))).toEqual(legacy);
+    await generatedCase(index, async () => {
+      const legacy = await failingFindings(reported(`sk-${randomBody(48)}`));
+      // Without this, two empty lists would compare equal and prove nothing.
+      expect(legacy).toContain('AST-CRED-003:critical');
+      expect(await failingFindings(reported(`sk-${body}`))).toEqual(legacy);
+    });
   });
 });
 
@@ -142,29 +199,41 @@ describe('#316: controls that must produce nothing', () => {
     ['process.env.OPENAI_API_KEY', () => 'const openai = process.env.OPENAI_API_KEY;\n'],
   ];
   for (const [name, make] of controls) {
+    const index = nextCase++;
     it(`${name} produces no finding`, async () => {
-      const content = make();
-      expect(scanCanonicalCredentialFormatsForTest(content)).toEqual([]);
-      expect(await failingFindings(content)).toEqual([]);
+      await generatedCase(index, async () => {
+        const content = make();
+        expect(scanCanonicalCredentialFormatsForTest(content)).toEqual([]);
+        expect(await failingFindings(content)).toEqual([]);
+      });
     }, 120_000);
   }
 });
 
 describe('#316: the 32-47 band hands off to the legacy shape at 48', () => {
+  const index31 = nextCase++;
   it('31 characters is below the band', () => {
-    expect(labels(reported(`sk-${randomBody(31)}`))).toEqual([]);
+    generatedCase(index31, () => {
+      expect(labels(reported(`sk-${randomBody(31)}`))).toEqual([]);
+    });
   });
 
+  const indexBand = nextCase++;
   it('every body from 32 to 47 characters is reported once, under the new label', () => {
-    for (let n = 32; n <= 47; n++) {
-      expect(labels(reported(`sk-${randomBody(n)}`)), `${n} characters`).toEqual(['OpenAI-style sk- key']);
-    }
+    generatedCase(indexBand, () => {
+      for (let n = 32; n <= 47; n++) {
+        expect(labels(reported(`sk-${randomBody(n)}`)), `${n} characters`).toEqual(['OpenAI-style sk- key']);
+      }
+    });
   });
 
+  const indexLegacy = nextCase++;
   it('every body from 48 characters up is reported once, under the legacy label', () => {
-    for (const n of [48, 49, 64, 120]) {
-      expect(labels(reported(`sk-${randomBody(n)}`)), `${n} characters`).toEqual(['OpenAI legacy key']);
-    }
+    generatedCase(indexLegacy, () => {
+      for (const n of [48, 49, 64, 120]) {
+        expect(labels(reported(`sk-${randomBody(n)}`)), `${n} characters`).toEqual(['OpenAI legacy key']);
+      }
+    });
   });
 
   it('a body of six distinct characters is a mask, a body of seven is not', () => {
@@ -172,16 +241,22 @@ describe('#316: the 32-47 band hands off to the legacy shape at 48', () => {
     expect(labels(reported(`sk-${'abc1234'.repeat(5).slice(0, 32)}`))).toEqual(['OpenAI-style sk- key']);
   });
 
+  const indexSiblings = nextCase++;
   it('the prefixed siblings keep their own labels', () => {
-    expect(labels(reported(`sk-proj-${randomBody(32)}`))).toEqual(['OpenAI project key']);
-    expect(labels(reported(`sk-ant-api03-${randomBody(32)}`))).toEqual(['Anthropic API key']);
+    generatedCase(indexSiblings, () => {
+      expect(labels(reported(`sk-proj-${randomBody(32)}`))).toEqual(['OpenAI project key']);
+      expect(labels(reported(`sk-ant-api03-${randomBody(32)}`))).toEqual(['Anthropic API key']);
+    });
   });
 
+  const indexKeyword = nextCase++;
   it('the keyword-context path reads the new entry through its own loop', () => {
-    expect(analyzeCredentialKeywordContext(`{"token": null}\n${reported(`sk-${randomBody(32)}`)}`))
-      .toBe('value-present');
-    expect(analyzeCredentialKeywordContext(`{"token": null}\n${reported(`sk-${'x'.repeat(32)}`)}`))
-      .toBe('schema-only');
+    generatedCase(indexKeyword, () => {
+      expect(analyzeCredentialKeywordContext(`{"token": null}\n${reported(`sk-${randomBody(32)}`)}`))
+        .toBe('value-present');
+      expect(analyzeCredentialKeywordContext(`{"token": null}\n${reported(`sk-${'x'.repeat(32)}`)}`))
+        .toBe('schema-only');
+    });
   });
 });
 

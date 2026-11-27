@@ -13,11 +13,15 @@
  * placeholder is judged on the value, and a placeholder on line 1 says nothing
  * about a real key on line 3.
  *
- * Every key is drawn at run time from a fixed seed: no credential-shaped
- * literal sits in the repository, and a failing draw is the same on every run.
+ * Every key is drawn at run time: no credential-shaped literal sits in the
+ * repository. Each run draws a new seed and prints it; HMA_TEST_SEED=<seed>
+ * replays that run. Every case draws from its own stream, made from the seed
+ * and the case's index, so a case draws the same keys when it runs alone, and
+ * a failure names the seed and the case.
  */
 
 import { describe, it, expect } from 'vitest';
+import { createHash, randomInt } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -33,8 +37,26 @@ const UPPER_ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const UNWANTED =
   /FAKE|EXAMPLE|PLACEHOLDER|DUMMY|SAMPLE|XXX|YOUR_?KEY|YOUR_?TOKEN|REPLACE_ME|INSERT_HERE|TEST|DOCUMENTATION|FIXTURE|DEMO/i;
 
-/** mulberry32 from a fixed seed. */
-let state = 0x1993;
+/** The run's seed: HMA_TEST_SEED when set, otherwise a new one for this run. */
+function runSeed(): number {
+  const given = process.env.HMA_TEST_SEED;
+  if (given === undefined || given.trim() === '') return randomInt(0, 2 ** 32);
+  const seed = Number(given);
+  if (!Number.isInteger(seed) || seed < 0 || seed >= 2 ** 32) {
+    throw new Error(`HMA_TEST_SEED must be an integer from 0 to 4294967295, got ${JSON.stringify(given)}`);
+  }
+  return seed;
+}
+const SEED = runSeed();
+process.stdout.write(`__tests__/nanomind-core/report-redaction-key-lengths.test.ts seed: HMA_TEST_SEED=${SEED}\n`);
+
+/** The seed of case `index`'s own stream. */
+function caseSeed(index: number): number {
+  return createHash('sha256').update(`${SEED}:${index}`).digest().readUInt32BE(0);
+}
+
+/** mulberry32, restarted by each case from its own seed. */
+let state = 0;
 function nextByte(): number {
   state = (state + 0x6d2b79f5) | 0;
   let t = Math.imul(state ^ (state >>> 15), 1 | state);
@@ -56,6 +78,22 @@ function bodyWith(word: string, length: number, alphabet = ALNUM): string {
   const before = nextByte() % (length - word.length + 1);
   return `${filler(before, alphabet)}${word}${filler(length - word.length - before, alphabet)}`;
 }
+
+/**
+ * Runs case `index` from its own stream. A failure's message is led by the
+ * seed and the case's index.
+ */
+async function generatedCase(index: number, run: () => Promise<void>): Promise<void> {
+  state = caseSeed(index);
+  try {
+    await run();
+  } catch (error) {
+    if (error instanceof Error) error.message = `seed ${SEED}, case ${index}: ${error.message}`;
+    throw error;
+  }
+}
+
+let nextCase = 0;
 
 const SPELLINGS = ['demo', 'tEsT', 'DOCUMENTATION', 'fixture'] as const;
 const LENGTHS = [32, 40, 47] as const;
@@ -80,11 +118,14 @@ describe('F1: an sk- key of 32 to 47 characters spelling a purpose word is repor
   for (const length of LENGTHS) {
     for (const spelling of SPELLINGS) {
       for (const { file, line } of CARRIERS) {
+        const index = nextCase++;
         it(`a ${length}-character body containing ${spelling}, in ${file}`, async () => {
-          const body = bodyWith(spelling, length);
-          const content = line(`sk-${body}`);
-          expect(scanCanonicalCredentialFormatsForTest(content)).toHaveLength(1);
-          expect(await failingIds(file, content)).toEqual(BOTH);
+          await generatedCase(index, async () => {
+            const body = bodyWith(spelling, length);
+            const content = line(`sk-${body}`);
+            expect(scanCanonicalCredentialFormatsForTest(content)).toHaveLength(1);
+            expect(await failingIds(file, content)).toEqual(BOTH);
+          });
         }, 120_000);
       }
     }
@@ -131,9 +172,12 @@ const SHAPE_ROWS: Array<{ shape: string; value: () => string; line: (v: string) 
 
 describe('F2: every detector shape whose body can spell a word is reported', () => {
   for (const { shape, value, line, ids } of SHAPE_ROWS) {
+    const index = nextCase++;
     it(shape, async () => {
-      const key = value();
-      expect(await failingIds('index.ts', line(key))).toEqual(ids);
+      await generatedCase(index, async () => {
+        const key = value();
+        expect(await failingIds('index.ts', line(key))).toEqual(ids);
+      });
     }, 120_000);
   }
 });
@@ -148,17 +192,20 @@ describe('F3: a placeholder on line 1 does not hide a real key on line 3', () =>
     ['a high-entropy placeholder containing EXAMPLE', () => bodyWith('EXAMPLE', 48)],
   ];
   for (const [name, placeholder] of placeholders) {
+    const index = nextCase++;
     it(`${name}, then a real sk- key`, async () => {
-      const first = `const placeholder = "${placeholder()}";\n`;
-      const real = `sk-${filler(40)}`;
-      const content = `${first}${middle}const value = "${real}";\n`;
-      expect(content.indexOf(real) - first.length).toBeGreaterThan(120);
-      expect(content.split('\n')[2]).toContain(real);
-      // The real key is the one the detector reports; the placeholder alone
-      // keeps its rule and produces no finding.
-      expect(scanCanonicalCredentialFormatsForTest(content).map(h => h.label)).toEqual(['OpenAI-style sk- key']);
-      expect(await failingIds('index.ts', `${first}${middle}`)).toEqual([]);
-      expect(await failingIds('index.ts', content)).toEqual(BOTH);
+      await generatedCase(index, async () => {
+        const first = `const placeholder = "${placeholder()}";\n`;
+        const real = `sk-${filler(40)}`;
+        const content = `${first}${middle}const value = "${real}";\n`;
+        expect(content.indexOf(real) - first.length).toBeGreaterThan(120);
+        expect(content.split('\n')[2]).toContain(real);
+        // The real key is the one the detector reports; the placeholder alone
+        // keeps its rule and produces no finding.
+        expect(scanCanonicalCredentialFormatsForTest(content).map(h => h.label)).toEqual(['OpenAI-style sk- key']);
+        expect(await failingIds('index.ts', `${first}${middle}`)).toEqual([]);
+        expect(await failingIds('index.ts', content)).toEqual(BOTH);
+      });
     }, 120_000);
   }
 });
@@ -168,18 +215,21 @@ describe('F4: the declared purpose holds none of the key and records the redacti
   for (const length of LENGTHS) {
     for (const spelling of SPELLINGS) {
       for (const { file, line } of CARRIERS) {
+        const index = nextCase++;
         it(`a ${length}-character body containing ${spelling}, in ${file}`, async () => {
-          const body = bodyWith(spelling, length);
-          const { ast } = await compiler.compile(line(`sk-${body}`), file);
-          // No run of the body of six or more characters survives in the
-          // purpose, the purpose word among them.
-          for (let i = 0; i + 6 <= body.length; i++) {
-            expect(ast.declaredPurpose, `run at ${i}`).not.toContain(body.slice(i, i + 6));
-          }
-          expect(ast.declaredPurpose.toLowerCase()).not.toContain(spelling.toLowerCase());
-          expect(ast.declaredPurpose).toContain('[REDACTED_OPENAI_KEY]');
-          expect(ast.declaredPurposeRedaction?.status).toBe('applied');
-          expect(ast.declaredPurposeRedaction?.shapes).toContain('openai-key');
+          await generatedCase(index, async () => {
+            const body = bodyWith(spelling, length);
+            const { ast } = await compiler.compile(line(`sk-${body}`), file);
+            // No run of the body of six or more characters survives in the
+            // purpose, the purpose word among them.
+            for (let i = 0; i + 6 <= body.length; i++) {
+              expect(ast.declaredPurpose, `run at ${i}`).not.toContain(body.slice(i, i + 6));
+            }
+            expect(ast.declaredPurpose.toLowerCase()).not.toContain(spelling.toLowerCase());
+            expect(ast.declaredPurpose).toContain('[REDACTED_OPENAI_KEY]');
+            expect(ast.declaredPurposeRedaction?.status).toBe('applied');
+            expect(ast.declaredPurposeRedaction?.shapes).toContain('openai-key');
+          });
         });
       }
     }
@@ -187,21 +237,30 @@ describe('F4: the declared purpose holds none of the key and records the redacti
 });
 
 describe('F5: controls that keep their result', () => {
+  const index48 = nextCase++;
   it('a 48-character body spelling a purpose word reports both findings', async () => {
-    for (const { file, line } of CARRIERS) {
-      expect(await failingIds(file, line(`sk-${bodyWith('demo', 48)}`))).toEqual(BOTH);
-    }
+    await generatedCase(index48, async () => {
+      for (const { file, line } of CARRIERS) {
+        expect(await failingIds(file, line(`sk-${bodyWith('demo', 48)}`))).toEqual(BOTH);
+      }
+    });
   }, 120_000);
 
+  const indexLine3 = nextCase++;
   it('a key on line 3 after a clean long line reports both findings', async () => {
-    const content =
-      'const region = process.env.DEPLOY_REGION ?? "eu-central-1";\n' +
-      'const retries = 3;\n' +
-      `const value = "sk-${bodyWith('tEsT', 40)}";\n`;
-    expect(await failingIds('index.ts', content)).toEqual(BOTH);
+    await generatedCase(indexLine3, async () => {
+      const content =
+        'const region = process.env.DEPLOY_REGION ?? "eu-central-1";\n' +
+        'const retries = 3;\n' +
+        `const value = "sk-${bodyWith('tEsT', 40)}";\n`;
+      expect(await failingIds('index.ts', content)).toEqual(BOTH);
+    });
   }, 120_000);
 
+  const indexApiKey = nextCase++;
   it('a key under the name apiKey reports both findings', async () => {
-    expect(await failingIds('index.ts', `const apiKey = "sk-${bodyWith('fixture', 40)}";\n`)).toEqual(BOTH);
+    await generatedCase(indexApiKey, async () => {
+      expect(await failingIds('index.ts', `const apiKey = "sk-${bodyWith('fixture', 40)}";\n`)).toEqual(BOTH);
+    });
   }, 120_000);
 });
