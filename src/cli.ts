@@ -11936,9 +11936,10 @@ Examples:
       // the tree — disclosed below in the same withheldLinks shape as the
       // scan side, merged one line per link.
       let hardenBackupWithheld: ReturnType<typeof withheldLinkRecords> = [];
+      let hardening: import('./hardening/scanner.js').HardeningScanner | undefined;
       if (!options.dryRun) {
         const { HardeningScanner } = await import('./hardening/scanner.js');
-        const hardening = new HardeningScanner();
+        hardening = new HardeningScanner();
         hardenBackup = await hardening.beginExternalBackup(targetDir);
         hardenBackupWithheld = withheldLinkRecords(hardening.backupWithheldLinks(), prefix);
         if (hardenBackup === null) {
@@ -11952,15 +11953,37 @@ Examples:
           process.exitCode = 1; // exit-unsettled(#350/S028): bare assignment outside the funnel; migrate to raiseExitCode
           return;
         }
-        hardenGuard = (rel: string) => hardening.ensureGovernanceBackup(targetDir, rel);
+        const guardScanner = hardening;
+        hardenGuard = (rel: string) => guardScanner.ensureGovernanceBackup(targetDir, rel);
       }
 
-      const result = await scanner.hardenSoul(targetDir, {
-        dryRun: options.dryRun,
-        profile: options.profile,
-        tier: options.tier,
-        writeGuard: hardenGuard,
-      });
+      let result: Awaited<ReturnType<typeof scanner.hardenSoul>>;
+      try {
+        result = await scanner.hardenSoul(targetDir, {
+          dryRun: options.dryRun,
+          profile: options.profile,
+          tier: options.tier,
+          writeGuard: hardenGuard,
+        });
+      } catch (err) {
+        // A refused run (a `--tier` the file's marker contradicts) wrote
+        // nothing, so it leaves no backup behind either.
+        if (hardening) await hardening.discardExternalBackupIfEmpty();
+        throw err;
+      }
+
+      // #505 — `rollback` undoes what the backup records. A SOUL.md this run
+      // created is recorded with its hash, as `secure --fix` records it, so
+      // rollback removes it (and keeps it if it was edited since). A run that
+      // changed nothing leaves no backup: `rollback` undoes the newest run,
+      // and an empty one would be undone in place of the `--fix` before it.
+      // With no backup left, no Undo line is printed below.
+      if (hardening && hardenBackup) {
+        if (!result.writeRefused && result.content.length > 0) {
+          await hardening.recordCreatedFiles(targetDir, hardenBackup, [result.file]);
+        }
+        if (await hardening.discardExternalBackupIfEmpty()) hardenBackup = null;
+      }
 
       // Links `findGovernanceFile` refused to follow because they resolve
       // outside the target tree — announced on both channels, in the wording

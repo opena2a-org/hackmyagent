@@ -882,6 +882,44 @@ export class BackupStore {
   }
 
   /**
+   * Remove the run `beginExternalBackup` created when nothing in it can be
+   * undone (#505). Returns true when the run was removed.
+   *
+   * A standalone `harden-soul` that wrote nothing (every domain covered, or
+   * the write refused) left an empty run behind, and `rollback` undoes the
+   * newest run: it consumed the empty one, restored nothing, and left the
+   * run of the `--fix` before it for a second rollback. So a run that lists
+   * no copy, no created file and no mode is removed here.
+   *
+   * Only this run's own directory, decided by identity, and only when it
+   * holds nothing but its manifest: a copy the manifest does not list (a
+   * manifest write that failed after the copy) keeps the run.
+   */
+  async discardExternalBackupIfEmpty(): Promise<boolean> {
+    const ctx = this.backupContext;
+    if (!ctx) return false;
+    try {
+      const manifestPath = path.join(ctx.backupDir, '.manifest.json');
+      const manifest = this.parseManifest(await fs.readFile(manifestPath, 'utf-8'));
+      if (
+        manifest.existingFiles.length > 0
+        || manifest.createdFiles.length > 0
+        || (manifest.legacyCreatedFiles?.length ?? 0) > 0
+        || Object.keys(manifest.modeOnlyFiles ?? {}).length > 0
+      ) return false;
+      if (!sameIdentity(identityOrUndefined(await identityOf(ctx.backupDir)), ctx.backupIdent)) return false;
+      const entries = await fs.readdir(ctx.backupDir);
+      if (entries.some((e) => e !== '.manifest.json')) return false;
+      await fs.unlink(manifestPath);
+      await fs.rmdir(ctx.backupDir);
+      this.backupContext = undefined;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Copy candidates the last backup WITHHELD because they resolve outside the
    * scanned tree, for the caller that renders the run's disclosures.
    * `harden-soul` merges these with the scan-side records — same

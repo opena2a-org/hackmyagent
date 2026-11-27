@@ -151,11 +151,13 @@ describe('harden-soul backup confinement (HMA-42)', () => {
       expect(soulRecords.length, JSON.stringify(out.withheldLinks)).toBe(1);
       expect(soulRecords[0].resolved).toBe(resolved);
 
-      const runDir = await backupRunDir(tree);
-      expect(fs.existsSync(path.join(runDir, 'SOUL.md')), 'a file was created for the withheld candidate').toBe(false);
-      const manifest = readManifest(runDir);
-      expect(manifest.existingFiles).not.toContain('SOUL.md');
-      expect(manifest.absentAtBackup, 'a withheld candidate is not absent either — rollback must never delete through it').not.toContain('SOUL.md');
+      // #505 — the write through the link is refused, so the run holds
+      // nothing to undo and is removed: no copy of the withheld candidate and
+      // no manifest entry for it exist anywhere, and rollback cannot delete
+      // through it.
+      expect(out.writeRefused?.path).toBe('SOUL.md');
+      expect(fs.existsSync(path.join(tree, BACKUP_DIR_NAME)), `a backup was written under ${tree}`).toBe(false);
+      expect(await storeRuns(tree), 'a refused harden-soul left a backup run').toEqual([]);
     } finally {
       fs.rmSync(base, { recursive: true, force: true });
     }
