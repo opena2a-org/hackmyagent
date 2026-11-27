@@ -19,7 +19,7 @@ a finding that instrument's severity floor cannot reach.
 ## The edge into this tree
 
 `adm-zip` is here because one package declares it, and only one:
-`onnxruntime-node@1.27.0` declares `adm-zip: ^0.5.16` in the `dependencies`
+`onnxruntime-node@1.30.0` declares `adm-zip: ^0.6.0` in the `dependencies`
 of its `node_modules/onnxruntime-node` entry in `package-lock.json`. That entry
 carries `"hasInstallScript": true`, so its postinstall runs on a plain
 `npm install`.
@@ -30,7 +30,7 @@ which resolves the `node_modules/adm-zip` entry in `package-lock.json` to
 lockfile update that moves lines does not move the citation. That pin governs **this** tree and no other:
 npm applies an `overrides` block only to the tree that declares it, and
 `overrides` are not published, so a consumer installing `hackmyagent` resolves
-`adm-zip` from `onnxruntime-node`'s own `^0.5.16` range and not from this pin.
+`adm-zip` from `onnxruntime-node`'s own `^0.6.0` range and not from this pin.
 What a consumer actually resolves is measured by
 `scripts/audit-consumer-resolution.mjs`, which packs this tool and resolves the
 tree a user gets; it is not asserted by this file, because this file cannot see
@@ -50,7 +50,7 @@ which is first-party and has no dependency on `adm-zip`.
 
 ## Where it IS reached
 
-Inside `onnxruntime-node@1.27.0`'s postinstall, on every install:
+Inside `onnxruntime-node@1.30.0`'s postinstall, on every install:
 
 - `script/install.js:22` requires `install-utils.js` at module top, and
   `install-utils.js:11` requires `adm-zip` at module top. Both requires
@@ -125,5 +125,5 @@ and the value the lockfile now carries.
 
 - declarer count: `1`
 - declaring path: `node_modules/onnxruntime-node`
-- declared range: `^0.5.16`
+- declared range: `^0.6.0`
 - resolved version: `0.6.1`
