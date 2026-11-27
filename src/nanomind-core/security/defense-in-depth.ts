@@ -314,6 +314,38 @@ export function redactCredentialShapes(content: string): string {
 
 
 /**
+ * A quoted value of 1 to 7 characters after a password name, which the
+ * name-gated rules below leave alone because they need 8 (#1024):
+ * `PASSWORD="abc"` was shown and sent as written. A password is a password at
+ * any length, while `token: "none"` or `key: "id"` is not a credential, so only
+ * password names count here: `password`, `passwd`, `passphrase`, `pwd`, and
+ * `pass` as a whole name segment (`DB_PASS`, not `bypass`). A JSON key's
+ * closing quote may sit between the name and the separator.
+ *
+ * The value is replaced and its quotes kept (`PASSWORD="[REDACTED]"`), the
+ * marker the red-team target reader writes for the same value. The marker is
+ * longer than 7 characters, so a second pass leaves it as it is.
+ *
+ * Group 1 is the name and separator, 2 the opening quote. The value ends at
+ * the quote that opened it.
+ */
+const SHORT_PASSWORD_NAME = String.raw`(?:password|passwd|passphrase|pwd|(?<![a-z0-9])pass(?![a-z]))`;
+const REPORT_SHORT_PASSWORD = new RegExp(
+  String.raw`(${SHORT_PASSWORD_NAME}["']?\s*[=:]\s*)(?:(")[^"\s]{1,7}"|(')[^'\s]{1,7}')`,
+  'gi',
+);
+/** The daemon boundary's spelling: whitespace inside the value is allowed, a line break is not. */
+const DAEMON_SHORT_PASSWORD = new RegExp(
+  String.raw`(${SHORT_PASSWORD_NAME}["']?\s*[=:]\s*)(?:(")[^"\n]{1,7}"|(')[^'\n]{1,7}')`,
+  'gi',
+);
+
+function shortPasswordMarker(_match: string, prefix: string, double?: string, single?: string): string {
+  const quote = double ?? single ?? '"';
+  return `${prefix}${quote}[REDACTED]${quote}`;
+}
+
+/**
  * Daemon boundary. Shapes, plus an aggressive name-gated rule that redacts ANY
  * sufficiently long quoted value assigned to a password/secret/token/key
  * identifier, whether or not it looks like a credential.
@@ -326,7 +358,7 @@ export function redactSecretsForNanoMind(content: string): string {
   return redactCredentialShapes(content).replace(
     /(?:password|secret|token|key)\s*[=:]\s*['"][^'"]{8,}['"]/gi,
     (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
-  );
+  ).replace(DAEMON_SHORT_PASSWORD, shortPasswordMarker);
 }
 
 /**
@@ -371,7 +403,7 @@ export function redactSecretsForReportReporting(content: string): {
   const text = shapePass.text.replace(
     /(?:password|secret|token|key)\s*[=:]\s*['"]([^'"\s]{8,})['"]/gi,
     (match) => `${match.split(/[=:]/)[0]}=[REDACTED]`,
-  );
+  ).replace(REPORT_SHORT_PASSWORD, shortPasswordMarker);
   return { text, shapes: shapePass.shapes };
 }
 
