@@ -84,6 +84,24 @@ function readConfig(): Opena2aConfig {
   return {};
 }
 
+/**
+ * The `contribute` or `telemetry` section of a config, made a plain object
+ * when it is not one. A string, number, boolean, array or null there reads as
+ * empty, like a top-level value that is not an object: a property set on a
+ * primitive throws in strict mode, and one set on an array is dropped when
+ * the config is written.
+ */
+function ownSection<K extends 'contribute' | 'telemetry'>(
+  config: Opena2aConfig,
+  key: K,
+): NonNullable<Opena2aConfig[K]> {
+  const value: unknown = config[key];
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    config[key] = {} as Opena2aConfig[K];
+  }
+  return config[key] as NonNullable<Opena2aConfig[K]>;
+}
+
 function writeConfig(config: Opena2aConfig): void {
   const configPath = getConfigPath();
   const dir = require('path').dirname(configPath);
@@ -104,22 +122,22 @@ function createLocalBackend(): ConfigBackend {
 
     setContributeEnabled(enabled: boolean): void {
       const config = readConfig();
-      if (!config.contribute) config.contribute = {};
-      config.contribute.enabled = enabled;
-      config.contribute.consentedAt = enabled ? new Date().toISOString() : null;
+      const contribute = ownSection(config, 'contribute');
+      contribute.enabled = enabled;
+      contribute.consentedAt = enabled ? new Date().toISOString() : null;
       // A version the file already records is kept.
-      if (config.contribute.consentVersion === undefined) {
-        config.contribute.consentVersion = CONSENT_VERSION;
+      if (contribute.consentVersion === undefined) {
+        contribute.consentVersion = CONSENT_VERSION;
       }
       writeConfig(config);
     },
 
     incrementScanCount(): number {
       const config = readConfig();
-      if (!config.telemetry) config.telemetry = {};
-      config.telemetry.scanCount = (config.telemetry.scanCount ?? 0) + 1;
+      const telemetry = ownSection(config, 'telemetry');
+      telemetry.scanCount = (telemetry.scanCount ?? 0) + 1;
       writeConfig(config);
-      return config.telemetry.scanCount;
+      return telemetry.scanCount;
     },
 
     getScanCount(): number {
@@ -148,8 +166,8 @@ function createLocalBackend(): ConfigBackend {
 
     dismissContributePrompt(): void {
       const config = readConfig();
-      if (!config.telemetry) config.telemetry = {};
-      config.telemetry.contributePromptDismissedAt = new Date().toISOString();
+      const telemetry = ownSection(config, 'telemetry');
+      telemetry.contributePromptDismissedAt = new Date().toISOString();
       writeConfig(config);
     },
   };
