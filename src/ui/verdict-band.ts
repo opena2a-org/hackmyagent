@@ -107,8 +107,8 @@ export function countsAgainstScore(f: {
  * #274 — a fix the count surfaces may call "fixed": attempted AND not
  * disproved. The complement of `countsAgainstScore` over the fixed ones, so
  * the two counts on a summary line partition the findings: a finding is an
- * outstanding issue or a confirmed fix, never both. The HTML report and the
- * Registry remediation report already drew this line inline, and the text
+ * outstanding issue or a confirmed fix, never both. The HTML report already
+ * drew this line inline, and the text
  * fix summary leads with what was confirmed (`fixSummaryLine`); the MCP
  * summary and the OpenClaw arm counted every attempt.
  */
@@ -122,8 +122,8 @@ export function confirmedFix(f: {
   // the one predicate where the NA short-circuit in `countsAgainstScore`
   // INVERTS instead of composing: on an NA record `countsAgainstScore` is
   // false, so `!countsAgainstScore(f)` reads "not an issue" as "confirmed",
-  // and an NA record carrying a stray `fixed: true` would be published as a
-  // remediation (src/registry/remediation.ts). No current emitter writes that
+  // and an NA record carrying a stray `fixed: true` would be counted as a
+  // confirmed fix. No current emitter writes that
   // shape; the guard exists so the three-way partition (issue / confirmed
   // fix / not-applicable) never depends on emitter discipline. Same
   // first-position rule as the two siblings.

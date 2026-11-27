@@ -50,7 +50,7 @@ describe('#458 confirmedFix: an NA record is never a confirmed fix', () => {
   // `countsAgainstScore` INVERTS instead of composing: NA makes
   // `countsAgainstScore` false, so `!countsAgainstScore(f)` reads "not an
   // issue" as "confirmed" and a stray `fixed: true` on an NA record would be
-  // published as a remediation (src/registry/remediation.ts:37). Red on
+  // counted as a confirmed fix. Red on
   // 4f02a0a (measured): `confirmedFix({ ...NA, fixed: true })` was true.
   it('NA alone is not a confirmed fix', () => {
     expect(confirmedFix(NA)).toBe(false);

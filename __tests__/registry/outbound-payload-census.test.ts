@@ -38,8 +38,6 @@ const SENDERS = new Set([
   'buildPublishPayload',
   'reportPublishResult',
   'requestScanToken',
-  'reportFindings',
-  'reportRemediation',
   // community and version reports
   'reportCommunityResult',
   'reportScanResult',

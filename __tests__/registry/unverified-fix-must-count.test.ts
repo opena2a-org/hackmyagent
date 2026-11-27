@@ -1,5 +1,5 @@
 /**
- * #285 M29 / M43 / M44 — an auto-fix that did not land must count as an
+ * #285 M29 / M44 — an auto-fix that did not land must count as an
  * outstanding issue in every surface that reports findings.
  *
  * `countsAgainstScore` exists because a fix can *claim* success and be wrong.
@@ -8,7 +8,7 @@
  * verification pass catches it and sets `fixVerified: false`. The issue is
  * still there, so every consumer has to keep counting it.
  *
- * Five consumers read that predicate and a 48-mutation pass found every one
+ * Four consumers read that predicate and a 48-mutation pass found every one
  * of them unguarded — reverting any to a hand-rolled `!f.passed && !f.fixed`
  * left the full suite green. The consequences are not cosmetic:
  *
@@ -16,9 +16,6 @@
  *     `0 failed checks` for a run the CLI exits 1 on. `score` is inside the
  *     SIGNED strong canonical, so the signature attested a figure the tool
  *     never displayed.
- *   - `reportRemediation` POSTed the disproved fix to `/remediation/remediated`
- *     while `reportFindings` POSTed the same checkId to `/remediation/track`
- *     as still open — one command, two contradictory claims.
  *   - `toASSF`, `buildScanReport` and `buildCommunityReport` dropped it from
  *     Security Hub and from the Registry package page entirely.
  *
@@ -31,7 +28,6 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { buildPublishPayload } from '../../src/registry/publish';
 import { buildScanReport, buildCommunityReport } from '../../src/registry/client';
 import { toASSF } from '../../src/output/asff';
-import { reportRemediation, reportFindings } from '../../src/registry/remediation';
 import { countsAgainstScore } from '../../src/ui/verdict-band';
 import type { SecurityFinding } from '../../src/hardening';
 import { emitFinding } from '../../src/hardening/finding-emit';
@@ -199,58 +195,6 @@ describe('#285 an unverified fix counts as outstanding, in every consumer', () =
       ).toContain('PERM-001');
 
       expect(toASSF([VERIFIED_FIX], 'demo-agent')).not.toContain('PERM-002');
-    });
-  });
-
-  describe('M43 — remediation reporting cannot contradict itself', () => {
-    /** Capture every URL the reporters POST to, per checkId. */
-    async function postedEndpoints(findings: SecurityFinding[]): Promise<Map<string, string[]>> {
-      const byCheck = new Map<string, string[]>();
-      const bodies: { url: string; checkId: string }[] = [];
-
-      vi.stubGlobal(
-        'fetch',
-        vi.fn(async (url: string, init?: { body?: string }) => {
-          const parsed = JSON.parse(String(init?.body ?? '{}'));
-          const checkId = parsed.findingId ?? parsed.checkId ?? '(unknown)';
-          bodies.push({ url: String(url), checkId });
-          return { ok: true, status: 200, json: async () => ({}) };
-        }),
-      );
-
-      await reportRemediation('https://registry.test', 'scan-1', 'demo-agent', findings, 50);
-      await reportFindings('https://registry.test', 'scan-1', 'demo-agent', findings, 50);
-
-      for (const { url, checkId } of bodies) {
-        byCheck.set(checkId, [...(byCheck.get(checkId) ?? []), url]);
-      }
-      return byCheck;
-    }
-
-    it('does not report the same checkId as both remediated and still open', async () => {
-      const byCheck = await postedEndpoints([UNVERIFIED_FIX]);
-      const urls = byCheck.get('PERM-001') ?? [];
-
-      // Sanity: the reporters must have transmitted something, or this
-      // proves nothing.
-      expect(urls.length, 'no remediation traffic captured at all').toBeGreaterThan(0);
-
-      const remediated = urls.filter((u) => u.includes('/remediated'));
-      const tracked = urls.filter((u) => u.includes('/track'));
-
-      expect(
-        remediated.length > 0 && tracked.length > 0,
-        `PERM-001 was POSTed as remediated AND as still open:\n${urls.join('\n')}`,
-      ).toBe(false);
-      expect(tracked.length, 'an unresolved CRITICAL was not tracked as open').toBeGreaterThan(0);
-      expect(remediated.length, 'a disproved fix was reported as remediated').toBe(0);
-    });
-
-    it('still reports a fix that actually landed as remediated', async () => {
-      const byCheck = await postedEndpoints([VERIFIED_FIX]);
-      const urls = byCheck.get('PERM-002') ?? [];
-      expect(urls.some((u) => u.includes('/remediated')), 'a confirmed fix was never reported').toBe(true);
-      expect(urls.some((u) => u.includes('/track')), 'a confirmed fix was tracked as still open').toBe(false);
     });
   });
 });

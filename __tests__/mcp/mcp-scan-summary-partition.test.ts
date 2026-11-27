@@ -3,8 +3,8 @@
  *
  * `Score: N/100 | 1 issue found | 1 fixed` was printed for ONE finding: an
  * auto-fix that was attempted and then disproved by the verification pass
- * counted as an outstanding issue AND as a completed fix. The HTML report and
- * the Registry remediation report count a fix only when it is confirmed, and
+ * counted as an outstanding issue AND as a completed fix. The HTML report
+ * counts a fix only when it is confirmed, and
  * the text fix summary leads with what was confirmed; the MCP summary and the
  * OpenClaw arm were the holdouts.
  * `confirmedFix` is the complement of `countsAgainstScore` over the attempted

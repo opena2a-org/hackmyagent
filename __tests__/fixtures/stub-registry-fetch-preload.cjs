@@ -7,8 +7,8 @@
  * byte-level publish payload at the process boundary: `secure --publish`
  * routes through dist/registry/publish.js -> dist/registry/client.js, whose
  * network primitive is global fetch (client.ts:349 POST /api/v1/trust/publish).
- * Stubbing fetch intercepts every path (unified, legacy fallback,
- * reportFindings/reportRemediation) without touching the module graph.
+ * Stubbing fetch intercepts every path (unified, legacy fallback)
+ * without touching the module graph.
  *
  * Gated on HMA_STUB_REGISTRY_CAPTURE: the path of an append-only JSONL file,
  * one line per request: {"url": ..., "method": ..., "body": ...}.
