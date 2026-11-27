@@ -18,6 +18,9 @@
  *       without a throw, no tip is due, and the scan count writes an object
  *       in its place. With a file holding null, NanoMind's per-file step,
  *       which reads the setting ahead of the analyzers, still runs them.
+ *   (f) A `contribute` or `telemetry` value that is not an object (a string,
+ *       a number, true, an array) reads as empty too: the scan count advances,
+ *       and a yes or a no is saved, each section written as an object.
  *
  * The other halves of the tip rule (fewer than 3 scans, an explicit yes, a
  * dismissal inside 30 days) are pinned in contribute.test.ts.
@@ -313,4 +316,56 @@ describe('(e) a config file whose JSON value is not an object reads as empty', (
     const scope = result.astFindings.filter((f) => f.checkId.startsWith('AST-SCOPE') && !f.passed);
     expect(scope.length).toBeGreaterThan(0);
   });
+});
+
+describe('(f) a contribute or telemetry value that is not an object reads as empty', () => {
+  /** [label, the file's value]: an object whose section is not one. */
+  const SECTION_NOT_AN_OBJECT: Array<[string, Record<string, unknown>]> = [
+    ['telemetry a string', { telemetry: 'x' }],
+    ['contribute a string', { contribute: 'yes' }],
+    ['contribute a number and telemetry true', { contribute: 5, telemetry: true }],
+    ['telemetry an array', { telemetry: [] }],
+  ];
+
+  it.each(SECTION_NOT_AN_OBJECT)(
+    '%s: the scan count advances and is written as an object',
+    (_label, value) => {
+      const file = useHome(tempDir('hma-optin-f-'));
+      writeConfig(file, value);
+
+      expect(incrementScanCount()).toBe(1);
+      expect(readConfig(file).telemetry).toEqual({ scanCount: 1 });
+      expect(incrementScanCount()).toBe(2);
+      expect(readConfig(file).telemetry).toEqual({ scanCount: 2 });
+    },
+  );
+
+  it.each(SECTION_NOT_AN_OBJECT)(
+    '%s: a yes is saved as an object and reads back as enabled',
+    (_label, value) => {
+      const file = useHome(tempDir('hma-optin-f-'));
+      writeConfig(file, value);
+
+      expect(() => saveContributeChoice(true)).not.toThrow();
+      const after = readConfig(file);
+      expect(after.contribute.enabled).toBe(true);
+      expect(typeof after.contribute.consentedAt).toBe('string');
+      expect(after.contribute.consentVersion).toBe('1.0');
+      expect(isContributeEnabled()).toBe(true);
+    },
+  );
+
+  it.each(SECTION_NOT_AN_OBJECT)(
+    '%s: a no is saved as an object with the dismissal recorded',
+    (_label, value) => {
+      const file = useHome(tempDir('hma-optin-f-'));
+      writeConfig(file, value);
+
+      expect(() => saveContributeChoice(false)).not.toThrow();
+      const after = readConfig(file);
+      expect(after.contribute).toEqual({ enabled: false, consentedAt: null, consentVersion: '1.0' });
+      expect(typeof after.telemetry.contributePromptDismissedAt).toBe('string');
+      expect(isContributeEnabled()).toBeUndefined();
+    },
+  );
 });
