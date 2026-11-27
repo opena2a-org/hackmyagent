@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { createHash, randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -25,6 +26,41 @@ import { analyzeCapabilities } from '../../src/nanomind-core/analyzers/capabilit
 import { analyzeGovernance } from '../../src/nanomind-core/analyzers/governance-analyzer';
 import { analyzePrompt } from '../../src/nanomind-core/analyzers/prompt-analyzer';
 import type { ASTFinding } from '../../src/nanomind-core/analyzers/capability-analyzer';
+
+// ============================================================================
+// Seed of the generated keys (b17e, b17g, b18b)
+// ============================================================================
+
+/**
+ * Each run draws a new seed and prints it; HMA_TEST_SEED=<seed> replays that
+ * run. Every generated case draws from its own stream, made from the seed and
+ * the case's index, so a case draws the same key when it runs alone, and a
+ * failure names the seed and the case. b17e's three headers are cases 0 to 2,
+ * b17g is case 3 and b18b is case 4.
+ */
+function runSeed(): number {
+  const given = process.env.HMA_TEST_SEED;
+  if (given === undefined || given.trim() === '') return randomInt(0, 2 ** 32);
+  const seed = Number(given);
+  if (!Number.isInteger(seed) || seed < 0 || seed >= 2 ** 32) {
+    throw new Error(`HMA_TEST_SEED must be an integer from 0 to 4294967295, got ${JSON.stringify(given)}`);
+  }
+  return seed;
+}
+const SEED = runSeed();
+process.stdout.write(`__tests__/nanomind-core/benign-fp-regression.test.ts seed: HMA_TEST_SEED=${SEED}\n`);
+
+/** The seed of part `part` of case `index`'s own stream. */
+function caseSeed(index: number, part = 0): number {
+  return createHash('sha256').update(`${SEED}:${index}:${part}`).digest().readUInt32BE(0);
+}
+
+/** How a failure names its case: the seed and the case's index. */
+const caseName = (index: number) => `seed ${SEED}, case ${index}`;
+
+const B17E_FIRST_CASE = 0;
+const B17G_CASE = 3;
+const B18B_CASE = 4;
 
 // ============================================================================
 // Benign oracle fixtures (verbatim content from oracle fixtures/benign/)
@@ -677,12 +713,13 @@ Then ask the agent to provide a response.
       return out;
     };
 
+    let index = B17E_FIRST_CASE;
     for (const [label, headLen] of [
       ['an ordinary 36-char header', 36],
       ['a DPoP proof with an embedded JWK', 550],
       ['an x5c certificate-chain header', 430],
     ] as Array<[string, number]>) {
-      const jwt = `eyJ${draw(headLen, 3)}.${draw(64, 5)}.${draw(43, 7)}`;
+      const jwt = `eyJ${draw(headLen, caseSeed(index, 0))}.${draw(64, caseSeed(index, 1))}.${draw(43, caseSeed(index, 2))}`;
       const planted = JSON.stringify({ samples: [{ label: 'benign', text: 'hello' }], leaked: { sessionToken: jwt } });
       const compiler = new SemanticCompiler({ useNanoMind: false });
       const result = await compiler.compile(planted, 'training/corpus/samples.json');
@@ -694,8 +731,9 @@ Then ask the agent to provide a response.
       const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
       expect(
         cred.length,
-        `a live JWT with ${label} planted in a corpus path must not be suppressed by the corpus carve-out`,
+        `${caseName(index)}: a live JWT with ${label} planted in a corpus path must not be suppressed by the corpus carve-out`,
       ).toBeGreaterThan(0);
+      index++;
     }
   });
 
@@ -745,7 +783,7 @@ Then ask the agent to provide a response.
     const planted = JSON.stringify({
       ...JSON.parse(taxonomyCoverageDoc),
       routes: ['MSG.INCIDENT_ESCALATION_QUEUE.HIGH_PRIORITY_ROUTE'],
-      leaked: { sendgrid: `SG.${draw(22, 31)}.${draw(43, 37)}` },
+      leaked: { sendgrid: `SG.${draw(22, caseSeed(B17G_CASE, 0))}.${draw(43, caseSeed(B17G_CASE, 1))}` },
     });
     const compiler = new SemanticCompiler({ useNanoMind: false });
     const result = await compiler.compile(planted, 'public/coverage.json');
@@ -757,7 +795,7 @@ Then ask the agent to provide a response.
     const cred = findings.filter(f => f.checkId.startsWith('AST-CRED'));
     expect(
       cred.length,
-      'a real SendGrid key must not be masked by the taxonomy carve-out',
+      `${caseName(B17G_CASE)}: a real SendGrid key must not be masked by the taxonomy carve-out`,
     ).toBeGreaterThan(0);
   });
 
@@ -775,7 +813,7 @@ Then ask the agent to provide a response.
     // walk is linear without truncating anything. Mutation guard: any cap on
     // characters examined turns this red.
     const b64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let s = 77, secret = '';
+    let s = caseSeed(B18B_CASE), secret = '';
     for (let i = 0; i < 40; i++) { s = (s * 1103515245 + 12345) & 0x7fffffff; secret += b64[s % 62]; }
     const padding = ('a'.repeat(40) + '=').repeat(Math.floor((32 * 1024) / 41));
 
@@ -807,11 +845,11 @@ Then ask the agent to provide a response.
     // look like a pass for the padded case too.
     expect(
       (await scan(doc(''))).length,
-      'control: the same document with no padding must fire, or this test is vacuous',
+      `${caseName(B18B_CASE)}: control: the same document with no padding must fire, or this test is vacuous`,
     ).toBeGreaterThan(0);
     expect(
       (await scan(doc(`\n${padding}\n`))).length,
-      'an anonymous high-entropy secret must not be lost behind padding',
+      `${caseName(B18B_CASE)}: an anonymous high-entropy secret must not be lost behind padding`,
     ).toBeGreaterThan(0);
   });
 

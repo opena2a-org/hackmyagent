@@ -14,11 +14,15 @@
  * hands their positions in the redacted purpose to the analyzer, so each cell
  * below holds both on the line as written and on the line through the table.
  *
- * Every key below is drawn at run time from a fixed seed: no credential-shaped
- * literal sits in the repository, and a failing line is the same on every run.
+ * Every key below is drawn at run time: no credential-shaped literal sits in
+ * the repository. Each run draws a new seed and prints it; HMA_TEST_SEED=<seed>
+ * replays that run. Every case draws from its own stream, made from the seed
+ * and the case's index, so a case draws the same line when it runs alone, and
+ * a failure names the seed and the case.
  */
 
 import { describe, it, expect } from 'vitest';
+import { createHash, randomInt } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -32,7 +36,46 @@ import {
 } from '../../src/nanomind-core/security/defense-in-depth';
 import { tempDir } from '../helpers/temp-dir';
 
-const SEED = 0x1987;
+/** The run's seed: HMA_TEST_SEED when set, otherwise a new one for this run. */
+function runSeed(): number {
+  const given = process.env.HMA_TEST_SEED;
+  if (given === undefined || given.trim() === '') return randomInt(0, 2 ** 32);
+  const seed = Number(given);
+  if (!Number.isInteger(seed) || seed < 0 || seed >= 2 ** 32) {
+    throw new Error(`HMA_TEST_SEED must be an integer from 0 to 4294967295, got ${JSON.stringify(given)}`);
+  }
+  return seed;
+}
+const SEED = runSeed();
+process.stdout.write(`__tests__/nanomind-core/purpose-removals-together.test.ts seed: HMA_TEST_SEED=${SEED}\n`);
+
+/** The seed of case `index`'s own stream. */
+function caseSeed(index: number): number {
+  return createHash('sha256').update(`${SEED}:${index}`).digest().readUInt32BE(0);
+}
+
+/** How a failure names its case: the seed and the case's index. */
+const caseName = (index: number) => `seed ${SEED}, case ${index}`;
+
+/** Runs case `index`; a failure's message is led by the seed and the case's index. */
+function generatedCase<T>(index: number, run: () => T): T {
+  const named = (error: unknown): unknown => {
+    if (error instanceof Error) error.message = `${caseName(index)}: ${error.message}`;
+    return error;
+  };
+  let result: T;
+  try {
+    result = run();
+  } catch (error) {
+    throw named(error);
+  }
+  if (result instanceof Promise) {
+    return result.catch((error: unknown) => {
+      throw named(error);
+    }) as T;
+  }
+  return result;
+}
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 const ALNUM = `${LETTERS}0123456789`;
 const B64URL = `${ALNUM}_-`;
@@ -96,63 +139,100 @@ async function failingFindings(file: string, content: string): Promise<string[]>
     .sort();
 }
 
-const d = drawer(SEED);
+/** Cases 0 to 3 are the four lines below, each drawn from its own stream. */
+const VENDOR_CASE = 0;
+const VENDOR48_CASE = 1;
+const JWT_CASE = 2;
+const ENTROPY_CASE = 3;
 
 /**
  * A quoted value: a word character and `_`, then the key, then `://h/test`. A
  * source file is tagged as reading credentials by a canonical vendor key; a
  * config file by the word `credential`, so the JWT and entropy lines are YAML.
  */
-const vendorLine = `const openai = "a_sk-${d.run(32)}://h/test";\n`;
-const vendorLine48 = `const openai = "a_sk-${d.run(48)}://h/test";\n`;
-const jwtLine = `credential: "a_eyJ${d.run(24, B64URL)}.${d.run(40, B64URL)}.${d.run(43, B64URL)}://h/test"\n`;
+const vendorLine = `const openai = "a_sk-${drawer(caseSeed(VENDOR_CASE)).run(32)}://h/test";\n`;
+const vendorLine48 = `const openai = "a_sk-${drawer(caseSeed(VENDOR48_CASE)).run(48)}://h/test";\n`;
+/**
+ * The JWT's segments draw from the base64url alphabet, `_` included, and
+ * whether the base read the URL tail as a URL depends on the characters
+ * drawn: about four draws in ten fall outside this cell, with the base
+ * finding the word as well. Every line drawn is kept: the ones outside the
+ * cell are held to U3's property, and the first one inside it is `jwtLine`.
+ */
+const jwtLines: string[] = [];
+{
+  const p = drawer(caseSeed(JWT_CASE));
+  do {
+    jwtLines.push(`credential: "a_eyJ${p.run(24, B64URL)}.${p.run(40, B64URL)}.${p.run(43, B64URL)}://h/test"\n`);
+  } while (basePurposeWords(jwtLines[jwtLines.length - 1]).length > 0);
+}
+const jwtLine = jwtLines[jwtLines.length - 1];
 /** A 40-character secret glued to underscore filler: the credible window starts inside the filler. */
-const entropyRun = `${'_'.repeat(45)}=${d.run(40)}`;
+const entropyRun = `${'_'.repeat(45)}=${drawer(caseSeed(ENTROPY_CASE)).run(40)}`;
 const entropyLine = `credential: "${entropyRun}://h/test"\n`;
 
 describe('a key glued to a URL whose path holds a purpose word is reported, as at the base', () => {
   it('U1: a word character and underscore, a 32-character sk- key, then ://h/test', async () => {
-    expect(basePurposeWords(vendorLine)).toEqual([]);
-    expect(purposeWordsFoundForTest(vendorLine)).toEqual([]);
-    expect(declaredPurposeForTest(vendorLine).text).toContain('[REDACTED_OPENAI_KEY]://h/test');
-    expect(tablePurposeWords(vendorLine)).toEqual([]);
-    const found = await failingFindings('index.js', vendorLine);
-    expect(found).toContain('AST-CRED-001');
-    expect(found).toContain('AST-CRED-003');
+    await generatedCase(VENDOR_CASE, async () => {
+      expect(basePurposeWords(vendorLine)).toEqual([]);
+      expect(purposeWordsFoundForTest(vendorLine)).toEqual([]);
+      expect(declaredPurposeForTest(vendorLine).text).toContain('[REDACTED_OPENAI_KEY]://h/test');
+      expect(tablePurposeWords(vendorLine)).toEqual([]);
+      const found = await failingFindings('index.js', vendorLine);
+      expect(found).toContain('AST-CRED-001');
+      expect(found).toContain('AST-CRED-003');
+    });
   }, 120_000);
 
   it('U1: the same with a 48-character sk- key', async () => {
-    expect(basePurposeWords(vendorLine48)).toEqual([]);
-    expect(purposeWordsFoundForTest(vendorLine48)).toEqual([]);
-    expect(declaredPurposeForTest(vendorLine48).text).toContain('[REDACTED_OPENAI_KEY]://h/test');
-    expect(tablePurposeWords(vendorLine48)).toEqual([]);
-    const found = await failingFindings('index.js', vendorLine48);
-    expect(found).toContain('AST-CRED-001');
-    expect(found).toContain('AST-CRED-003');
+    await generatedCase(VENDOR48_CASE, async () => {
+      expect(basePurposeWords(vendorLine48)).toEqual([]);
+      expect(purposeWordsFoundForTest(vendorLine48)).toEqual([]);
+      expect(declaredPurposeForTest(vendorLine48).text).toContain('[REDACTED_OPENAI_KEY]://h/test');
+      expect(tablePurposeWords(vendorLine48)).toEqual([]);
+      const found = await failingFindings('index.js', vendorLine48);
+      expect(found).toContain('AST-CRED-001');
+      expect(found).toContain('AST-CRED-003');
+    });
   }, 120_000);
 
   it('U2: the same with a JWT-shaped value', async () => {
-    expect(basePurposeWords(jwtLine)).toEqual([]);
-    expect(purposeWordsFoundForTest(jwtLine)).toEqual([]);
-    expect(tablePurposeWords(jwtLine)).toEqual([]);
-    const found = await failingFindings('config.yaml', jwtLine);
-    expect(found).toContain('AST-CRED-001');
-    expect(found).toContain('AST-CRED-003');
+    await generatedCase(JWT_CASE, async () => {
+      // Lines drawn before it, outside the cell: no word is added to the base's.
+      for (const line of jwtLines.slice(0, -1)) {
+        const base = new Set(basePurposeWords(line));
+        expect(purposeWordsFoundForTest(line).filter(w => !base.has(w)), JSON.stringify(line)).toEqual([]);
+        expect(tablePurposeWords(line).filter(w => !base.has(w)), `through the table, ${JSON.stringify(line)}`).toEqual([]);
+      }
+      expect(basePurposeWords(jwtLine)).toEqual([]);
+      expect(purposeWordsFoundForTest(jwtLine)).toEqual([]);
+      expect(tablePurposeWords(jwtLine)).toEqual([]);
+      const found = await failingFindings('config.yaml', jwtLine);
+      expect(found).toContain('AST-CRED-001');
+      expect(found).toContain('AST-CRED-003');
+    });
   }, 120_000);
 
   it('U2: the same with a high-entropy run that begins partway through a longer run', async () => {
-    const hit = findCredentialFormatMatch(entropyRun);
-    expect(hit).toBeDefined();
-    expect(hit!.index).toBeGreaterThan(0);
-    expect(hit!.index).toBeLessThan(45);
-    expect(basePurposeWords(entropyLine)).toEqual([]);
-    expect(purposeWordsFoundForTest(entropyLine)).toEqual([]);
-    expect(tablePurposeWords(entropyLine)).toEqual([]);
-    const found = await failingFindings('config.yaml', entropyLine);
-    expect(found).toContain('AST-CRED-001');
-    expect(found).toContain('AST-CRED-003');
+    await generatedCase(ENTROPY_CASE, async () => {
+      const hit = findCredentialFormatMatch(entropyRun);
+      expect(hit).toBeDefined();
+      expect(hit!.index).toBeGreaterThan(0);
+      expect(hit!.index).toBeLessThan(45);
+      expect(basePurposeWords(entropyLine)).toEqual([]);
+      expect(purposeWordsFoundForTest(entropyLine)).toEqual([]);
+      expect(tablePurposeWords(entropyLine)).toEqual([]);
+      const found = await failingFindings('config.yaml', entropyLine);
+      expect(found).toContain('AST-CRED-001');
+      expect(found).toContain('AST-CRED-003');
+    });
   }, 120_000);
 });
+
+/** U3's lines are cases 4 to 403; the origin map's inputs are case 404. */
+const LINES = 400;
+const FIRST_LINE_CASE = 4;
+const ORIGIN_CASE = FIRST_LINE_CASE + LINES;
 
 describe('U3: removing credential values never adds a purpose word', () => {
   const MIXED = (word: string, p: ReturnType<typeof drawer>): string =>
@@ -188,10 +268,12 @@ describe('U3: removing credential values never adds a purpose word', () => {
   ];
 
   it('for 400 generated lines the words found are a subset of the base words, as written and through the table', () => {
-    const p = drawer(SEED + 1);
     let withKey = 0;
     let redacted = 0;
-    for (let n = 0; n < 400; n++) {
+    for (let n = 0; n < LINES; n++) {
+      // Line n is case FIRST_LINE_CASE + n, drawn from its own stream.
+      const index = FIRST_LINE_CASE + n;
+      const p = drawer(caseSeed(index));
       const all = pieces(p);
       const count = 2 + (p.next() % 7);
       let line = '';
@@ -199,42 +281,44 @@ describe('U3: removing credential values never adds a purpose word', () => {
       if (findCredentialFormatMatch(line) !== undefined) withKey++;
       const base = new Set(basePurposeWords(line));
       const added = purposeWordsFoundForTest(line).filter(w => !base.has(w));
-      expect(added, `seed ${SEED + 1}, line ${n}: ${JSON.stringify(line)}`).toEqual([]);
+      expect(added, `${caseName(index)}, line ${n}: ${JSON.stringify(line)}`).toEqual([]);
       const mapped = redactSecretsForReportWithOrigins(line);
-      expect(mapped.text, `origin map, line ${n}`).toBe(redactSecretsForReport(line));
+      expect(mapped.text, `origin map, ${caseName(index)}, line ${n}`).toBe(redactSecretsForReport(line));
       const purpose = declaredPurposeForTest(line).text;
       if (purpose.includes('[REDACTED_')) redacted++;
       const addedByTable = tablePurposeWords(line).filter(w => !base.has(w));
-      expect(addedByTable, `through the table, seed ${SEED + 1}, line ${n}: ${JSON.stringify(line)}`).toEqual([]);
+      expect(addedByTable, `through the table, ${caseName(index)}, line ${n}: ${JSON.stringify(line)}`).toEqual([]);
     }
     // The cell is about lines holding keys: most of them do, and the table
     // replaces a key on many of them.
-    expect(withKey).toBeGreaterThan(200);
-    expect(redacted).toBeGreaterThan(100);
+    expect(withKey, `lines holding a key, seed ${SEED}`).toBeGreaterThan(200);
+    expect(redacted, `lines the table redacts, seed ${SEED}`).toBeGreaterThan(100);
   });
 });
 
 describe('the origin map of the report redaction', () => {
   it('produces the report redaction text, with origins in order', () => {
-    const p = drawer(SEED + 2);
-    const pemLines = [`-----B${'EGIN'} RSA PRIVATE KEY-----`, p.run(64, `${ALNUM}+/`), p.run(64, `${ALNUM}+/`), `-----E${'ND'} RSA PRIVATE KEY-----`];
-    const inputs = [
-      `head\n${pemLines.join('\n')}\ntail https://h/x`,
-      `aws_secret_access_key = "${p.run(40, `${ALNUM}/+`)}" then postgres://u:p@h/db`,
-      `password: "${p.run(12)}" and sk-${p.run(40)} and ghp_${p.run(36)}`,
-      'nothing to redact here',
-    ];
-    for (const input of inputs) {
-      const { text, from, to } = redactSecretsForReportWithOrigins(input);
-      expect(text).toBe(redactSecretsForReport(input));
-      expect(from).toHaveLength(text.length);
-      for (let i = 0; i < text.length; i++) {
-        expect(from[i]).toBeLessThan(to[i]);
-        if (i > 0) expect(from[i]).toBeGreaterThanOrEqual(from[i - 1]);
+    generatedCase(ORIGIN_CASE, () => {
+      const p = drawer(caseSeed(ORIGIN_CASE));
+      const pemLines = [`-----B${'EGIN'} RSA PRIVATE KEY-----`, p.run(64, `${ALNUM}+/`), p.run(64, `${ALNUM}+/`), `-----E${'ND'} RSA PRIVATE KEY-----`];
+      const inputs = [
+        `head\n${pemLines.join('\n')}\ntail https://h/x`,
+        `aws_secret_access_key = "${p.run(40, `${ALNUM}/+`)}" then postgres://u:p@h/db`,
+        `password: "${p.run(12)}" and sk-${p.run(40)} and ghp_${p.run(36)}`,
+        'nothing to redact here',
+      ];
+      for (const input of inputs) {
+        const { text, from, to } = redactSecretsForReportWithOrigins(input);
+        expect(text).toBe(redactSecretsForReport(input));
+        expect(from).toHaveLength(text.length);
+        for (let i = 0; i < text.length; i++) {
+          expect(from[i]).toBeLessThan(to[i]);
+          if (i > 0) expect(from[i]).toBeGreaterThanOrEqual(from[i - 1]);
+        }
       }
-    }
-    // Untouched text maps to itself.
-    const plain = redactSecretsForReportWithOrigins('nothing to redact here');
-    expect([...plain.from]).toEqual([...Array(22).keys()]);
+      // Untouched text maps to itself.
+      const plain = redactSecretsForReportWithOrigins('nothing to redact here');
+      expect([...plain.from]).toEqual([...Array(22).keys()]);
+    });
   });
 });
