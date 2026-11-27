@@ -312,11 +312,21 @@ describe('analyzeCredentialKeywordContext', () => {
   });
 
   it('returns value-present when PEM private key is embedded', () => {
+    // One 64-character body line: the base64 a key body is made of.
+    const body = 'MIIEowIBAAKCAQEA' + 'q7Xv'.repeat(12);
+    const content = `{
+      "credentials": null,
+      "provider_cert": "-----BEGIN RSA PRIVATE KEY-----\\n${body}\\n...\\n-----END RSA PRIVATE KEY-----"
+    }`;
+    expect(analyzeCredentialKeywordContext(content)).toBe('value-present');
+  });
+
+  it('stays schema-only when the PEM block holds a placeholder, not a key', () => {
     const content = `{
       "credentials": null,
       "provider_cert": "-----BEGIN RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----"
     }`;
-    expect(analyzeCredentialKeywordContext(content)).toBe('value-present');
+    expect(analyzeCredentialKeywordContext(content)).toBe('schema-only');
   });
 
   it('stays schema-only when canonical format is clearly a FAKE test fixture', () => {
