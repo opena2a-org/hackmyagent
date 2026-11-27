@@ -181,6 +181,16 @@ interface ProbeResult {
   body?: string;
 }
 
+/** One HTTP GET against a port under scan; null when nothing answered. */
+type HttpGet = (url: string) => Promise<ProbeResult | null>;
+
+/** What the probes of one open port found, and whether the port answered any. */
+interface PortCheck {
+  findings: ExternalFinding[];
+  answered: boolean;
+  baseUrl: string;
+}
+
 /** What a port answers for a path that cannot exist, and the path it was asked. */
 interface Baseline {
   path: string;
@@ -305,7 +315,24 @@ export class ExternalScanner {
       const perPort = await Promise.all(
         openPorts.map((port) => this.checkPort(hostname, port, timeout, insecure, parsed.scheme))
       );
-      const findings: ExternalFinding[] = perPort.flat();
+      const findings: ExternalFinding[] = perPort.flatMap((p) => p.findings);
+      // An open port that answered no request was not examined by any check.
+      // Name each one; when no open port answered, nothing was tested and the
+      // score is not applicable, as for a host with no open port.
+      const unansweredPorts = openPorts.filter((_, i) => !perPort[i].answered);
+      const unansweredFindings: ExternalFinding[] = openPorts.flatMap((port, i) =>
+        perPort[i].answered ? [] : [{
+          id: generateId(),
+          checkId: 'SCAN-NO-ANSWER',
+          severity: 'medium' as FindingSeverity,
+          title: 'Port accepted a connection but gave no HTTP answer',
+          description: `Port ${port} of ${hostname} accepted a TCP connection, but no HTTP request to it was answered within ${timeout}ms. No check examined this port.`,
+          port,
+          evidence: `No HTTP response from ${perPort[i].baseUrl} on any probed path`,
+          impact: 'No exposure was measured on this port; it is untested, not clean',
+          fix: 'Check that the service on this port speaks HTTP (or HTTPS with a certificate this machine trusts) and is answering, then scan again, with a longer -t timeout if it is slow.',
+        }]
+      );
 
       // If no port was open, nothing was tested and the score is not applicable.
       // Say WHICH of the three states the host is in: it never answered, its
@@ -363,7 +390,25 @@ export class ExternalScanner {
         };
       }
 
-      // Calculate score using exponential decay (diminishing returns per finding)
+      if (unansweredPorts.length === openPorts.length && openPorts.length > 0) {
+        return {
+          id: generateId(),
+          target,
+          score: -1,
+          grade: 'N/A',
+          findings: [...findings, ...unansweredFindings],
+          duration: Date.now() - startTime,
+          timestamp: new Date(),
+          openPorts,
+          ...(hostReachable === undefined ? {} : { hostReachable }),
+          ...(portStates === undefined ? {} : { portStates }),
+          unansweredPorts,
+        };
+      }
+
+      // Calculate score using exponential decay (diminishing returns per finding).
+      // The score measures the ports that answered; a port that answered
+      // nothing is reported beside it (SCAN-NO-ANSWER), not scored.
       let weightedSum = 0;
       for (const finding of findings) {
         weightedSum += SEVERITY_WEIGHTS[finding.severity];
@@ -381,12 +426,13 @@ export class ExternalScanner {
         target,
         score,
         grade,
-        findings,
+        findings: [...findings, ...unansweredFindings],
         duration,
         timestamp: new Date(),
         openPorts,
         ...(hostReachable === undefined ? {} : { hostReachable }),
         ...(portStates === undefined ? {} : { portStates }),
+        ...(unansweredPorts.length > 0 ? { unansweredPorts } : {}),
       };
     };
 
@@ -463,7 +509,7 @@ export class ExternalScanner {
     timeout: number,
     insecure = false,
     scheme?: 'http' | 'https'
-  ): Promise<ExternalFinding[]> {
+  ): Promise<PortCheck> {
     // 443 is TLS; a URL target that named its scheme and port is believed.
     const useHttps = port === 443 || (scheme === 'https' && port !== 80);
     const host = net.isIPv6(hostname) ? `[${hostname}]` : hostname;
@@ -473,21 +519,31 @@ export class ExternalScanner {
     // chain (the longest is CONFIG_PATHS, MAX_PROBE_CHAIN). 0.33.0 ran all
     // seventeen requests one after another, which is what outran the budget.
     // The baseline request starts with them, so waiting on it adds no step.
+    // Every request goes through `get`, which notes whether the port gave
+    // any HTTP answer at all: a port that accepts the connection and answers
+    // nothing was not examined, and must not read as a clean one.
+    let answered = false;
+    const get: HttpGet = async (url) => {
+      const result = await this.httpProbe(url, timeout, insecure);
+      if (result) answered = true;
+      return result;
+    };
     const missing = baselinePath();
-    const baseline: Promise<Baseline> = this.httpProbe(baseUrl + missing, timeout, insecure).then((result) => ({ path: missing, result }));
+    const baseline: Promise<Baseline> = get(baseUrl + missing).then((result) => ({ path: missing, result }));
     const [sse, tools, configs, claudeMd, apiKeys] = await Promise.all([
-      this.probeMcpSse(baseUrl, port, timeout, insecure),
-      this.probeMcpTools(baseUrl, port, timeout, insecure),
-      this.probeConfigFiles(baseUrl, port, timeout, insecure, baseline),
-      this.probeClaudeMd(baseUrl, port, timeout, insecure, baseline),
-      this.probeRootForApiKeys(baseUrl, port, timeout, insecure),
+      this.probeMcpSse(baseUrl, port, get),
+      this.probeMcpTools(baseUrl, port, get),
+      this.probeConfigFiles(baseUrl, port, get, baseline),
+      this.probeClaudeMd(baseUrl, port, get, baseline),
+      this.probeRootForApiKeys(baseUrl, port, get),
     ]);
-    return [...sse, ...tools, ...configs, ...claudeMd, ...apiKeys];
+    await baseline;
+    return { findings: [...sse, ...tools, ...configs, ...claudeMd, ...apiKeys], answered, baseUrl };
   }
 
-  private async probeMcpSse(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
+  private async probeMcpSse(baseUrl: string, port: number, get: HttpGet): Promise<ExternalFinding[]> {
     for (const path of MCP_SSE_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
+      const result = await get(baseUrl + path);
       if (result && result.contentType?.includes('text/event-stream')) {
         return [{
           id: generateId(),
@@ -506,9 +562,9 @@ export class ExternalScanner {
     return [];
   }
 
-  private async probeMcpTools(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
+  private async probeMcpTools(baseUrl: string, port: number, get: HttpGet): Promise<ExternalFinding[]> {
     for (const path of MCP_TOOLS_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
+      const result = await get(baseUrl + path);
       if (result && result.status === 200 && looksLikeToolsListing(result)) {
         return [{
           id: generateId(),
@@ -533,10 +589,10 @@ export class ExternalScanner {
    * have. A config counts when its body differs from the baseline and has
    * its file's shape.
    */
-  private async probeConfigFiles(baseUrl: string, port: number, timeout: number, insecure: boolean, baseline: Promise<Baseline>): Promise<ExternalFinding[]> {
+  private async probeConfigFiles(baseUrl: string, port: number, get: HttpGet, baseline: Promise<Baseline>): Promise<ExternalFinding[]> {
     const findings: ExternalFinding[] = [];
     for (const path of CONFIG_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
+      const result = await get(baseUrl + path);
       if (
         result && result.status === 200 && result.body &&
         hasConfigShape(path, result.body) &&
@@ -562,9 +618,9 @@ export class ExternalScanner {
     return findings;
   }
 
-  private async probeClaudeMd(baseUrl: string, port: number, timeout: number, insecure: boolean, baseline: Promise<Baseline>): Promise<ExternalFinding[]> {
+  private async probeClaudeMd(baseUrl: string, port: number, get: HttpGet, baseline: Promise<Baseline>): Promise<ExternalFinding[]> {
     for (const path of CLAUDE_MD_PATHS) {
-      const result = await this.httpProbe(baseUrl + path, timeout, insecure);
+      const result = await get(baseUrl + path);
       if (
         result && result.status === 200 && result.body && !looksLikeHtml(result.body) &&
         !matchesBaseline(result.body, path, await baseline)
@@ -587,8 +643,8 @@ export class ExternalScanner {
     return [];
   }
 
-  private async probeRootForApiKeys(baseUrl: string, port: number, timeout: number, insecure: boolean): Promise<ExternalFinding[]> {
-    const rootResult = await this.httpProbe(baseUrl + '/', timeout, insecure);
+  private async probeRootForApiKeys(baseUrl: string, port: number, get: HttpGet): Promise<ExternalFinding[]> {
+    const rootResult = await get(baseUrl + '/');
     if (rootResult && rootResult.body) {
       for (const { name, pattern } of API_KEY_PATTERNS) {
         if (pattern.test(rootResult.body)) {

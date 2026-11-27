@@ -182,9 +182,11 @@ describe('ExternalScanner reachability', () => {
     expect(exposed.findings.map((f) => f.checkId)).toContain('CLAUDE-MD-EXPOSED');
   });
 
-  it('a host that opens the port but never answers HTTP completes with a score instead of timing out', async () => {
+  it('a host that opens the port but never answers HTTP completes inside the budget, untested rather than clean', async () => {
     // The 0.33.0 defect on a live site: the port scan succeeded, then the
     // sequential probes outran a budget that only counted the port scan.
+    // No probe was answered, so no check examined the port: the result names
+    // it (SCAN-NO-ANSWER) with score N/A, where it used to read 100 and clean.
     const { server, port } = await listen(() => { /* hold the request open */ });
     servers.push(server);
     const timeout = 200;
@@ -194,10 +196,44 @@ describe('ExternalScanner reachability', () => {
 
     expect(result.openPorts).toEqual([port]);
     expect(result.hostReachable).toBe(true);
-    expect(result.score).toBe(100);
-    expect(result.findings).toEqual([]);
+    expect(result.score).toBe(-1);
+    expect(result.grade).toBe('N/A');
+    expect(result.unansweredPorts).toEqual([port]);
+    expect(result.findings.map((f) => [f.checkId, f.port])).toEqual([['SCAN-NO-ANSWER', port]]);
     // Probe categories run concurrently per port; the longest chain is six
     // requests, each bounded by `timeout` end to end, not only when idle.
     expect(Date.now() - started).toBeLessThan(timeout * 9);
+  });
+
+  it('host:port scans that port alone, and an answering port leaves nothing untested', async () => {
+    const { server, port } = await listen((_req, res) => { res.writeHead(404); res.end('not found'); });
+    servers.push(server);
+
+    const result = await scanner.scan(`127.0.0.1:${port}`, { timeout: 1000 });
+
+    expect(result.openPorts).toEqual([port]);
+    expect(result.portStates).toEqual({ [port]: 'open' });
+    expect(result.score).toBe(100);
+    expect(result.unansweredPorts).toBeUndefined();
+    expect(result.findings).toEqual([]);
+  });
+
+  it('a silent port beside an answering one is named, and the answering port is still scored', async () => {
+    const { server, port } = await listen((req, res) => {
+      if (req.url === '/.env') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('APP_MODE=production\n'); return; }
+      res.writeHead(404); res.end('not found');
+    });
+    servers.push(server);
+    const { server: silent, port: silentPort } = await listen(() => { /* hold the request open */ });
+    servers.push(silent);
+
+    const result = await scanner.scan('127.0.0.1', { ports: [port, silentPort], timeout: 300 });
+
+    expect(result.unansweredPorts).toEqual([silentPort]);
+    expect(result.score).not.toBe(-1);
+    const byId = result.findings.map((f) => [f.checkId, f.port]);
+    expect(byId).toContainEqual(['CONFIG-EXPOSED', port]);
+    expect(byId).toContainEqual(['SCAN-NO-ANSWER', silentPort]);
+    expect(byId).not.toContainEqual(['SCAN-NO-ANSWER', port]);
   });
 });

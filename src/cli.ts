@@ -8137,10 +8137,13 @@ Detects externally exposed:
   • Debug/admin interfaces
 
 Scoring: strong (90-100), good (80-89), moderate (70-79), improving (60-69), needs-attention (<60)
-Exit code 1 if critical/high issues found.
+Exit code 1 if critical/high issues found. Exit code 2 if the scan left the
+target or one of its open ports untested: unreachable, no open port, or an
+open port that answered no HTTP request.
 
 Examples:
   $ ${CLI_PREFIX} scan example.com
+  $ ${CLI_PREFIX} scan 192.168.1.100:3000
   $ ${CLI_PREFIX} scan 192.168.1.100 -p 3000,8080
   $ ${CLI_PREFIX} scan example.com --verbose
   $ ${CLI_PREFIX} scan example.com --json`)
@@ -8195,10 +8198,24 @@ Examples:
         const criticalOrHigh = result.findings.some(
           (f) => f.severity === 'critical' || f.severity === 'high'
         );
+        // A target the scan could not reach, or an open port no request was
+        // answered on, was not tested: exit 2, the code every scan command
+        // gives an incomplete run, never the 0 of a clean one. It outranks
+        // the 1 of a finding (finishWithFindings only raises the code).
+        const untested = result.score === -1 || (result.unansweredPorts?.length ?? 0) > 0;
+        const untestedNote = untested
+          ? (result.score === -1
+              ? 'Nothing at the target was tested, so this run reached no verdict. Exit code 2.'
+              : `Open port${result.unansweredPorts!.length === 1 ? '' : 's'} ${result.unansweredPorts!.join(', ')} answered no HTTP request and ${result.unansweredPorts!.length === 1 ? 'was' : 'were'} not tested. Exit code 2.`)
+          : '';
 
         if (options.json) {
           writeJsonStdout(result);
           if (criticalOrHigh) await finishWithFindings(1);
+          if (untested) {
+            console.error(untestedNote);
+            await finishWithFindings(2);
+          }
           return;
         }
 
@@ -8279,7 +8296,10 @@ Examples:
 
         if (criticalOrHigh) {
           await finishWithFindings(1);
-          return;
+        }
+        if (untested) {
+          console.log(untestedNote + '\n');
+          await finishWithFindings(2);
         }
       } catch (error) {
         if (error instanceof UsageError) {
