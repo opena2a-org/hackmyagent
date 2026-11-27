@@ -8,9 +8,15 @@
  *
  * Endpoint:  POST api.oa2a.org/api/v1/nanomind/telemetry
  *
- * PRIVACY: Only content type, content hash (SHA-256), classification,
- * confidence, verdict, and model version are sent. No file paths,
- * no source code, no raw content, no PII.
+ * PRIVACY: Only toolId (hackmyagent@<version>), timestamp, and each
+ * stat's content type, content hash (SHA-256), classification,
+ * confidence, verdict, and model version are sent. The posted body is
+ * exactly:
+ *   { toolId, stats: [{ contentType, contentHash, classification,
+ *     confidence, verdict, modelVersion, timestamp }] }
+ * where toolId is `hackmyagent@<version>` and timestamp is the ISO 8601
+ * time the batch is posted, set per stat. No file paths, no source
+ * code, no raw content, no PII.
  *
  * Respects the same contribute.enabled opt-in as scan contributions.
  */
