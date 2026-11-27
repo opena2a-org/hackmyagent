@@ -367,8 +367,17 @@ const typeHeading = l => {
   return m ? (TYPE_BY_LABEL.get(m[1].toLowerCase()) ?? null) : null;
 };
 
+/**
+ * Lowercase words joined by single hyphens, at most SLUG_MAX characters. A
+ * longer slug is cut at the last hyphen inside the cap, so it ends on a whole
+ * word; only a single word longer than the cap is cut inside the word.
+ */
 function slugify(s) {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, SLUG_MAX).replace(/-+$/, '');
+  const slug = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (slug.length <= SLUG_MAX) return slug;
+  if (slug[SLUG_MAX] === '-') return slug.slice(0, SLUG_MAX);
+  const cut = slug.lastIndexOf('-', SLUG_MAX - 1);
+  return cut > 0 ? slug.slice(0, cut) : slug.slice(0, SLUG_MAX);
 }
 
 function branchSlug() {

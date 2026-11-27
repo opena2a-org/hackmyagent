@@ -262,6 +262,24 @@ describe('new: the default name', () => {
     expect(long.length).toBeLessThanOrEqual(80);
     expect(nameOn(WORK, ['--issue', '875'], '- (#875)\n')).toMatch(/^875-[0-9a-f]{6}\.md$/);
   });
+
+  it('ends on a whole word when a long first line is cut (#895)', () => {
+    // The 60-character cap falls inside "long" in the third repetition.
+    const long = nameOn(WORK, ['--issue', '875'], `- ${'a very long first line '.repeat(6)}\n`);
+    expect(long).toMatch(/^875-a-very-long-first-line-a-very-long-first-line-a-very-[0-9a-f]{6}\.md$/);
+
+    const words = 'Scanner reports every unreadable configuration directory alongside its permission errors';
+    const cut = nameOn(WORK, ['--issue', '895'], `- ${words}\n`).replace(/-[0-9a-f]{6}\.md$/, '');
+    expect(cut.length).toBeLessThanOrEqual(60);
+    const known = new Set(['895', ...words.toLowerCase().split(' ')]);
+    for (const w of cut.split('-')) expect(known, w).toContain(w);
+    expect(cut).toBe('895-scanner-reports-every-unreadable-configuration-directory');
+  });
+
+  it('cuts a single word longer than the cap at the cap', () => {
+    const name = nameOn(`fix/${'x'.repeat(70)}`, [], '- a fix\n');
+    expect(name.replace(/-[0-9a-f]{6}\.md$/, '')).toBe('x'.repeat(60));
+  });
 });
 
 describe('check R1: every file in changelog.d is a valid fragment', () => {
