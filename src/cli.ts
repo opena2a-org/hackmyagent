@@ -13133,6 +13133,14 @@ Examples:
         }
       }
 
+      // No attack page answered 2xx: nothing was measured, so the run is not
+      // a pass. Same exit code as every other not-measured result.
+      if (!report.measured) {
+        await recordTelemetry(EXIT_UNMEASURED, 'unmeasured');
+        raiseExitCode(EXIT_UNMEASURED);
+        return;
+      }
+
       // Exit with non-zero if resilience is poor
       if (report.resilienceRating === 'critical' || report.resilienceRating === 'needs-attention') {
         await finishWithFindings(1);
@@ -13198,14 +13206,21 @@ function printWildReport(report: WildScanReport): void {
   }
 
   // Score
-  const scoreColor = report.wildResilienceScore >= 60
-    ? colors.green
-    : report.wildResilienceScore >= 40
-      ? colors.yellow
-      : colors.red;
-
   console.log(`\n${'━'.repeat(50)}`);
-  console.log(`\n${colors.dim}Wild Resilience Score:${colors.reset} ${scoreColor}${report.wildResilienceScore}/100 (${report.resilienceRating})${colors.reset}`);
+  if (!report.measured || report.wildResilienceScore === null) {
+    console.log(`\n${colors.dim}Wild Resilience:${colors.reset} ${colors.yellow}not measured${colors.reset}`);
+    if (report.notMeasuredReason) {
+      console.log(`  ${escapeForDisplay(report.notMeasuredReason)}`);
+    }
+    console.log(`  No score or rating is given. Exit code ${EXIT_UNMEASURED} (not measured).`);
+  } else {
+    const scoreColor = report.wildResilienceScore >= 60
+      ? colors.green
+      : report.wildResilienceScore >= 40
+        ? colors.yellow
+        : colors.red;
+    console.log(`\n${colors.dim}Wild Resilience Score:${colors.reset} ${scoreColor}${report.wildResilienceScore}/100 (${report.resilienceRating})${colors.reset}`);
+  }
   console.log(`${colors.dim}Pages Scanned:${colors.reset} ${report.pagesScanned}`);
   console.log(`${colors.dim}Total Payloads:${colors.reset} ${report.summary.totalPayloads}`);
   console.log(`${colors.dim}Callback Pages:${colors.reset} ${report.summary.callbackPages}`);

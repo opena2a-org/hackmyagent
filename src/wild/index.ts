@@ -60,6 +60,11 @@ export const parseWildDelay = (raw: string | undefined) => parseWildIntegerOptio
 /** `--tier` bounds: the tiers the attack catalogue publishes. */
 export const parseWildTier = (raw: string | undefined) => parseWildIntegerOption('--tier', raw, 1, WILD_MAX_TIER);
 
+/** A 2xx response: the only kind that counts as a scanned page. */
+export function isSuccessStatus(status: number): boolean {
+  return Number.isInteger(status) && status >= 200 && status <= 299;
+}
+
 export class WildScanner {
   private options: WildScanOptions;
 
@@ -223,23 +228,45 @@ export class WildScanner {
     }
 
     // 4. Compute resilience score
+    // Only a page that answered 2xx was scanned. An unreachable target, or
+    // one where every attack page failed or returned 404, measured nothing:
+    // scoring it gave 100/100 (strong) and exited 0, a green gate on no data.
+    // Every fetched page still goes to the scorer and the report, so a
+    // reachable target scores as it did before.
     const endTime = new Date();
+    const pagesScanned = pages.filter(p => isSuccessStatus(p.statusCode)).length;
+    const measured = pagesScanned > 0;
     const { score, rating, summary } = computeResilienceScore({
       pages,
       fileFetches,
-      pagesScanned: pages.length,
+      pagesScanned,
     });
+
+    let notMeasuredReason: string | undefined;
+    if (!measured) {
+      const answered = pages.length;
+      const failed = attackUrls.length - answered;
+      const parts: string[] = [];
+      if (failed > 0) parts.push(`${failed} could not be fetched`);
+      if (answered > 0) {
+        const statuses = [...new Set(pages.map(p => p.statusCode))].sort((a, b) => a - b).join(', ');
+        parts.push(`${answered} answered with a non-2xx status (${statuses})`);
+      }
+      notMeasuredReason = `no attack page answered with a 2xx status: of ${attackUrls.length} attack pages, ${parts.join(' and ')}`;
+    }
 
     return {
       target: baseUrl,
       startTime,
       endTime,
       duration: endTime.getTime() - startTime.getTime(),
-      pagesScanned: pages.length,
+      pagesScanned,
+      measured,
+      ...(notMeasuredReason !== undefined ? { notMeasuredReason } : {}),
       pages,
       summary,
-      wildResilienceScore: score,
-      resilienceRating: rating,
+      wildResilienceScore: measured ? score : null,
+      resilienceRating: measured ? rating : null,
       fileFetches,
     };
   }
