@@ -6124,19 +6124,23 @@ export class HardeningScanner {
         // `standard`, so a `--fix --scan-depth quick` run was verified by checks
         // the user's run never ran.
         //
-        // `deep` is deliberately NOT threaded, and `scanDepth` is capped below it.
-        // Layer 3 puts file CONTENT on the wire to the LLM API, and confirming a
-        // static fix needs none of it. A tree can still hold an archive an earlier
-        // version wrote into it, which holds the plaintext copy of a credential a
-        // fix redacted; a threaded `deep` would send it again (#385).
-        const verifyDepth: ScanDepth = scanDepth === 'deep' ? 'standard' : scanDepth;
+        // That includes `deep`. It was capped at `standard` while this run's
+        // archive sat inside the tree: the verify scan has no backup context,
+        // so its Layer 3 walked into the archive and sent the plaintext copies
+        // of the credentials this run had just redacted. The archive is in the
+        // backup store outside the tree now (`prepareArchiveStore` refuses a
+        // store inside it), so a deep verify scan reads exactly the files the
+        // user's next `--deep` scan reads, and nothing of the archive. Capped,
+        // a fix whose Layer-3 finding persisted was confirmed by checks that
+        // never looked (#386).
         const verifyScanner = new HardeningScanner();
         const verifyResult = await verifyScanner.scan({
           targetDir,
           autoFix: false,
           ignore: ignoredChecks.size > 0 ? [...ignoredChecks] : [],
           cliName: this.cliName,
-          scanDepth: verifyDepth,
+          scanDepth,
+          deep: options.deep,
           ignorePaths: options.ignorePaths,
           isNpmPackage: options.isNpmPackage,
           includeDist: options.includeDist,
