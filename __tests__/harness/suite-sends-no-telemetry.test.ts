@@ -25,8 +25,9 @@
  *     OPENA2A_TELEMETRY in that object. Without either, the CLI sees no marker
  *     and sends a usage event: one file did exactly that, naming a variable
  *     nothing reads in place of OPENA2A_TELEMETRY. The object is followed
- *     through a variable, and a marker counts only with a value the CLI reads
- *     as one (#999).
+ *     through a variable and through a helper function the file declares
+ *     (`env: cliEnv()`), and a marker counts only with a value the CLI reads
+ *     as one (#999). A spawn that fails this fails the suite.
  *
  * And one for the release and measurement scripts under scripts/, which run
  * outside this suite: each environment a script that runs the CLI builds for
@@ -218,6 +219,9 @@ interface EnvShape { inherits: boolean; values: Map<string, ts.Expression | unde
  */
 function envShape(expr: ts.Expression, from: ts.Node, depth = 0): EnvShape | undefined {
   const e = unwrap(expr);
+  if (ts.isIdentifier(e) && restOfProcessEnv(e.text, from)) {
+    return withAssignments({ inherits: true, values: new Map() }, e.text, from);
+  }
   const obj = objectAt(e, from);
   if (!obj || depth > 3) return undefined;
   const shape: EnvShape = { inherits: false, values: new Map() };
@@ -236,23 +240,98 @@ function envShape(expr: ts.Expression, from: ts.Node, depth = 0): EnvShape | und
       shape.values.set(p.name.text, undefined);
     }
   }
-  if (ts.isIdentifier(e)) {
-    const variable = e.text;
-    const assigned = (node: ts.Node): void => {
-      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-        const left = node.left;
-        if (ts.isPropertyAccessExpression(left) && ts.isIdentifier(left.expression) && left.expression.text === variable) {
-          shape.values.set(left.name.text, node.right);
-        } else if (ts.isElementAccessExpression(left) && ts.isIdentifier(left.expression)
-          && left.expression.text === variable && ts.isStringLiteralLike(left.argumentExpression)) {
-          shape.values.set(left.argumentExpression.text, node.right);
+  return ts.isIdentifier(e) ? withAssignments(shape, e.text, from) : shape;
+}
+
+/** `shape` with the properties this file assigns to the variable later (`env.CI = 'true'`). */
+function withAssignments(shape: EnvShape, variable: string, from: ts.Node): EnvShape {
+  const assigned = (node: ts.Node): void => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const left = node.left;
+      if (ts.isPropertyAccessExpression(left) && ts.isIdentifier(left.expression) && left.expression.text === variable) {
+        shape.values.set(left.name.text, node.right);
+      } else if (ts.isElementAccessExpression(left) && ts.isIdentifier(left.expression)
+        && left.expression.text === variable && ts.isStringLiteralLike(left.argumentExpression)) {
+        shape.values.set(left.argumentExpression.text, node.right);
+      }
+    }
+    ts.forEachChild(node, assigned);
+  };
+  assigned(from.getSourceFile());
+  return shape;
+}
+
+/**
+ * Whether `name` is declared around `from` as the rest of a destructuring of
+ * `process.env` (`const { KEY, ...env } = process.env`): the worker's
+ * environment less some names, and its test-runner marker with it.
+ */
+function restOfProcessEnv(name: string, from: ts.Node): boolean {
+  for (let scope: ts.Node | undefined = from.parent; scope; scope = scope.parent) {
+    if (!ts.isBlock(scope) && !ts.isSourceFile(scope) && !ts.isModuleBlock(scope)) continue;
+    for (const st of scope.statements) {
+      if (!ts.isVariableStatement(st)) continue;
+      for (const d of st.declarationList.declarations) {
+        if (ts.isObjectBindingPattern(d.name) && d.initializer && unwrap(d.initializer).getText() === 'process.env'
+          && d.name.elements.some((el) => el.dotDotDotToken && ts.isIdentifier(el.name) && el.name.text === name)) {
+          return true;
         }
       }
-      ts.forEachChild(node, assigned);
-    };
-    assigned(from.getSourceFile());
+    }
   }
-  return shape;
+  return false;
+}
+
+/** The function a call names, when this file declares it around `from`: `function f() {}` or `const f = () => {}`. */
+function declaredFunction(name: string, from: ts.Node): ts.FunctionLikeDeclaration | undefined {
+  for (let scope: ts.Node | undefined = from.parent; scope; scope = scope.parent) {
+    if (!ts.isBlock(scope) && !ts.isSourceFile(scope) && !ts.isModuleBlock(scope)) continue;
+    for (const st of scope.statements) {
+      if (ts.isFunctionDeclaration(st) && st.name?.text === name && st.body) return st;
+      if (!ts.isVariableStatement(st)) continue;
+      for (const d of st.declarationList.declarations) {
+        const init = d.initializer && unwrap(d.initializer);
+        if (ts.isIdentifier(d.name) && d.name.text === name && init
+          && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) return init;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Each expression a function returns, without entering the functions inside it. */
+function returnedExpressions(fn: ts.FunctionLikeDeclaration): Array<{ expr: ts.Expression; at: ts.Node }> {
+  if (ts.isArrowFunction(fn) && !ts.isBlock(fn.body)) return [{ expr: fn.body, at: fn.body }];
+  const out: Array<{ expr: ts.Expression; at: ts.Node }> = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isReturnStatement(n) && n.expression) out.push({ expr: n.expression, at: n });
+    if (n !== fn && ts.isFunctionLike(n)) return;
+    ts.forEachChild(n, walk);
+  };
+  if (fn.body) walk(fn.body);
+  return out;
+}
+
+/**
+ * Every environment an `env` option can hold: the one `envShape` reads, or,
+ * when the option is a call of a function this file declares (`env: cliEnv()`)
+ * or a variable set from one (`const env = baseEnv()`), one per return of that
+ * function (#963: a helper's return value was not read, so a spawn through it
+ * passed whatever it built). Empty when the file does not say.
+ */
+function envShapes(expr: ts.Expression, from: ts.Node, depth = 0): EnvShape[] {
+  const e = unwrap(expr);
+  const variable = ts.isIdentifier(e) ? e.text : undefined;
+  const value = variable ? declaredValue(variable, from) : e;
+  const call = value && unwrap(value);
+  if (call && ts.isCallExpression(call) && ts.isIdentifier(call.expression) && depth <= 3) {
+    const fn = declaredFunction(call.expression.text, call);
+    if (!fn) return [];
+    return returnedExpressions(fn).flatMap((r) => envShapes(r.expr, r.at, depth + 1))
+      .map((shape) => (variable ? withAssignments(shape, variable, from) : shape));
+  }
+  const shape = envShape(e, from);
+  return shape ? [shape] : [];
 }
 
 /** Whether `args` name the built CLI: by a name tests give it, by a declaration naming its entry file, or in a string. */
@@ -340,8 +419,9 @@ function scan(file: string): Finding[] {
         const env = options?.properties.find((p) => (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))
           && keyName(p.name) === 'env');
         const given = env && (ts.isPropertyAssignment(env) ? env.initializer : env.name);
-        const shape = given && envShape(given, node);
-        if (given && shape && !shape.inherits && ![...shape.values].some(([k, v]) => keepsOff(k, v))) {
+        const bare = given && envShapes(given, node).find((shape) => !shape.inherits
+          && ![...shape.values].some(([k, v]) => keepsOff(k, v)));
+        if (given && bare) {
           findings.push({
             file: rel,
             line: at(given),
@@ -456,6 +536,44 @@ describe('a test that turns telemetry on keeps it on this machine (#963)', () =>
     const found = scan(bad);
     expect(found.every((f) => /^spawns the CLI with an environment that replaces/.test(f.problem))).toBe(true);
     expect(found.map((f) => f.line).sort((a, b) => a - b)).toEqual([2, 3, 4, 5, 6, 7, 8, 10, 11]);
+  });
+
+  // #963 — an environment built by a helper in the same file was not read, so
+  // a spawn through it passed whatever the helper returned. Lines 2, 6, 9 and
+  // 11 each spawn through a helper whose environment carries no marker.
+  it('the scan follows an environment a helper function builds (non-vacuity)', () => {
+    const dir = tempDir('hma-963-helper-');
+    const bad = path.join(dir, 'bad.test.ts');
+    writeFileSync(bad, [
+      "function bare() { return { PATH: '', HOME: '' }; }",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: bare() });",
+      "const viaArrow = (home) => { const env = { PATH: '' }; env.HOME = home; return env; };",
+      "function run() {",
+      "  const env = viaArrow('/x');",
+      "  return spawnSync(process.execPath, [CLI, 'secure', '.'], { env });",
+      "}",
+      "function either(flag) { if (flag) return { ...process.env }; return { PATH: '' }; }",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: either(true) });",
+      "const viaConst = () => ({ PATH: '' });",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: viaConst() });",
+      // Not problems: a helper that spreads the worker's environment, one that
+      // sets its own telemetry choice, the rest of process.env, a marker
+      // assigned to the variable a helper returned, and a helper this file
+      // does not declare.
+      "function inheriting() { return { ...process.env, HOME: '' }; }",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: inheriting() });",
+      "const offEnv = () => ({ PATH: '', OPENA2A_TELEMETRY: 'off' });",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: offEnv() });",
+      "function rest() { const { KEY: _k, ...env } = process.env; return env; }",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: rest() });",
+      "const marked = bare(); marked.CI = 'true';",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: marked });",
+      "spawnSync(process.execPath, [CLI, 'secure', '.'], { env: imported() });",
+      '',
+    ].join('\n'));
+    const found = scan(bad);
+    expect(found.every((f) => /^spawns the CLI with an environment that replaces/.test(f.problem))).toBe(true);
+    expect(found.map((f) => f.line).sort((a, b) => a - b)).toEqual([2, 6, 9, 11]);
   });
 });
 
