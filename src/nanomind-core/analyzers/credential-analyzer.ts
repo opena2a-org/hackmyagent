@@ -27,6 +27,7 @@ import {
 } from '../../types/credential-format.js';
 import { isCorpusPath, isIntegrityManifestPath } from '../../hardening/path-context.js';
 import { credHarvestNounPattern } from '../compiler/semantic-compiler.js';
+import { attachReportedCredentials, reportedCredentialsOf } from '../../hardening/finding-emit.js';
 
 // ============================================================================
 // Public API
@@ -594,8 +595,29 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
         ? credentialEvidence[0].text.slice(0, 120)
         : credentialRisks[0]?.evidence ?? 'Credential pattern detected';
 
-  /** Everything but the two per-instance fields, which every emit below shares. */
-  const emit = (summary: string, line: number | undefined): ASTFinding => ({
+  /**
+   * Everything but the per-instance fields, which every emit below shares.
+   *
+   * `reported` is the raw value this finding reports, when the route knows
+   * it. It rides on the finding out of band (`attachReportedCredentials`), so
+   * the report boundary can remove that exact value from every other field it
+   * recurs in — an AST-CRED-001 request clause quotes it verbatim, and an
+   * anonymous high-entropy run is a shape no rule of the boundary removes.
+   *
+   * The finding's own text was composed with that value removed (masked or
+   * named by label), so it carries the fact of removal: the boundary's pass
+   * finds nothing left to remove and would otherwise stamp it `'clean'`.
+   */
+  const emit = (summary: string, line: number | undefined, reported?: string): ASTFinding => {
+    const finding = attachReportedCredentials(buildFinding(summary, line), reported !== undefined ? [reported] : []);
+    const shapes = reportedCredentialsOf(finding).map(r => r.shape);
+    if (shapes.length > 0) {
+      finding.redactionStatus = 'applied';
+      finding.redactedShapes = [...new Set(shapes)].sort();
+    }
+    return finding;
+  };
+  const buildFinding = (summary: string, line: number | undefined): ASTFinding => ({
     checkId: 'AST-CRED-003',
     name: 'Hardcoded Secret Detected',
     description:
@@ -640,15 +662,17 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   // exactly the finding it produced before, at the same severity, plus the
   // line it always had the data for.
   if (artifactContent !== undefined) {
-    const located = new Map<number, string>();
+    const located = new Map<number, { summary: string; length?: number }>();
     for (const r of credentialRisks) {
       if (typeof r.offset === 'number' && r.offset >= 0 && !located.has(r.offset)) {
-        located.set(r.offset, r.evidence);
+        located.set(r.offset, { summary: r.evidence, length: r.length });
       }
     }
     if (located.size > 0) {
-      for (const [offset, summary] of [...located.entries()].sort((a, b) => a[0] - b[0])) {
-        findings.push(emit(summary, lineFromOffset(artifactContent, offset)));
+      for (const [offset, { summary, length }] of [...located.entries()].sort((a, b) => a[0] - b[0])) {
+        const value =
+          typeof length === 'number' && length > 0 ? artifactContent.slice(offset, offset + length) : undefined;
+        findings.push(emit(summary, lineFromOffset(artifactContent, offset), value));
       }
       return findings;
     }
@@ -663,7 +687,7 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
   if (artifactContent !== undefined) {
     const first = findFirstCredentialFormat(artifactContent);
     if (first !== undefined) {
-      findings.push(emit(first.match, first.line));
+      findings.push(emit(first.match, first.line, first.value));
       return findings;
     }
   }
@@ -678,7 +702,7 @@ function checkHardcodedSecrets(ast: SecurityAST, artifactContent?: string): ASTF
     : undefined;
   const fallbackLine = lineFromSpan ?? findLineFromString(artifactContent, evidenceSummary);
 
-  findings.push(emit(evidenceSummary, fallbackLine));
+  findings.push(emit(evidenceSummary, fallbackLine, valueHit?.value));
 
   return findings;
 }
@@ -1135,7 +1159,9 @@ function shouldSuppressCredentialChecks(
  * The shared helper skips candidates that fail the entropy floor, so a form
  * blank early in a document no longer masks a real credential later in it.
  */
-function findFirstCredentialFormat(content: string): { line: number; match: string } | undefined {
+function findFirstCredentialFormat(
+  content: string,
+): { line: number; match: string; value: string } | undefined {
   const hit = findCredentialFormatMatch(content);
   if (!hit) return undefined;
   // Count newlines before the match index — 1-based line number.
@@ -1143,7 +1169,9 @@ function findFirstCredentialFormat(content: string): { line: number; match: stri
   for (let i = 0; i < hit.index; i++) {
     if (content.charCodeAt(i) === 10 /* \n */) line++;
   }
-  return { line, match: maskCredentialValue(hit.value) };
+  // `value` is the raw match, for the report boundary only (see `emit`); it
+  // never becomes finding text.
+  return { line, match: maskCredentialValue(hit.value), value: hit.value };
 }
 
 /**

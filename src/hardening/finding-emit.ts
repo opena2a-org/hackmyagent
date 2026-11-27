@@ -18,7 +18,11 @@
  */
 
 import type { Evidence, PositiveEvidence, AbsenceEvidence } from '../types/finding-evidence';
-import { redactDetectedCredentialShapesReporting, type ShapeId } from '../types/credential-format';
+import {
+  CREDENTIAL_REDACTION_MARKERS,
+  redactDetectedCredentialShapesReporting,
+  type ShapeId,
+} from '../types/credential-format';
 import type { SecurityFinding, SecurityFindingDraft } from './security-check';
 import {
   MAX_REDACTION_INPUT_BYTES,
@@ -106,15 +110,94 @@ export function redactForReport(value: string): { text: string; shapes: ShapeId[
   return { text: report.text, shapes: [...new Set([...detected.shapes, ...report.shapes])].sort() };
 }
 
+/**
+ * A value the scan itself reported as a credential (AST-CRED-003), verbatim,
+ * with the shape it was reported as.
+ *
+ * The report boundary's own rules are narrower than the detector: they apply
+ * nothing for `entropy-blob`, because an anonymous 40-character run is a git
+ * SHA or a content hash as often as a secret. A run the scan has already
+ * judged and REPORTED as a secret is not anonymous any more, so the boundary
+ * removes that exact value wherever it recurs in finding text (the request
+ * clause an AST-CRED-001 row quotes, a line another rule cites), and nothing
+ * else: a hash the scan did not report is still left as it is.
+ */
+export interface ReportedCredential {
+  readonly value: string;
+  readonly shape: ShapeId;
+}
+
+/**
+ * The key under which an AST finding carries the raw values it reported.
+ *
+ * A symbol, so `JSON.stringify` never serializes it, and enumerable, so it
+ * survives the spreads an AST finding goes through on its way to the bridge
+ * (fix enrichment, the document vendor tier). It does not cross the
+ * boundary: the bridge rebuilds a finding field by field, and `emitThrough`
+ * drops the key from anything it emits, so the raw value stays in the AST
+ * layer that already holds the raw artifact.
+ */
+const REPORTED_CREDENTIALS: unique symbol = Symbol('hackmyagent.reportedCredentials');
+
+/**
+ * Record on `finding` the raw values it reported as credentials. Classified
+ * by the registry's own rules where they recognise the whole value, and as
+ * `entropy-blob` where they do not (the shape no rule names). Returns
+ * `finding`.
+ */
+export function attachReportedCredentials<T extends object>(finding: T, values: readonly string[]): T {
+  const reported: ReportedCredential[] = [];
+  for (const value of values) {
+    if (value.length === 0) continue;
+    const { text, shapes } = redactForReport(value);
+    const whole = shapes.length > 0 && !text.includes(value.slice(-8));
+    reported.push({ value, shape: whole ? shapes[0] : 'entropy-blob' });
+  }
+  if (reported.length > 0) {
+    (finding as { [REPORTED_CREDENTIALS]?: readonly ReportedCredential[] })[REPORTED_CREDENTIALS] = reported;
+  }
+  return finding;
+}
+
+/** The raw values `finding` reported as credentials; empty when it reported none. */
+export function reportedCredentialsOf(finding: object): readonly ReportedCredential[] {
+  return (finding as { [REPORTED_CREDENTIALS]?: readonly ReportedCredential[] })[REPORTED_CREDENTIALS] ?? [];
+}
+
+/** Deduplicated by value, longest first, so a value that contains another is removed whole. */
+function normalizeReported(reported: readonly ReportedCredential[]): ReportedCredential[] {
+  const byValue = new Map<string, ReportedCredential>();
+  for (const r of reported) {
+    if (typeof r?.value === 'string' && r.value.length > 0 && !byValue.has(r.value)) byValue.set(r.value, r);
+  }
+  return [...byValue.values()].sort((a, b) => b.value.length - a.value.length);
+}
+
 /** Accumulates redaction outcomes across every field of one finding. */
 class RedactionPass {
   private changed = false;
   private readonly shapes = new Set<ShapeId>();
+  private readonly reported: readonly ReportedCredential[];
+  /** True once a reported value was found and removed from any field. */
+  reportedHit = false;
+
+  constructor(reported: readonly ReportedCredential[] = []) {
+    this.reported = normalizeReported(reported);
+  }
 
   /** Redact one string; undefined passes through so optional fields stay optional. */
   run<T extends string | undefined>(value: T): T {
     if (value === undefined) return value;
-    const { text, shapes } = redactForReport(value);
+    // Exact reported values FIRST: the registry pass below may consume part of
+    // a value (a vendor head) and leave a remainder no exact match can find.
+    let input: string = value;
+    for (const r of this.reported) {
+      if (!input.includes(r.value)) continue;
+      input = input.split(r.value).join(CREDENTIAL_REDACTION_MARKERS[r.shape]);
+      this.shapes.add(r.shape);
+      this.reportedHit = true;
+    }
+    const { text, shapes } = redactForReport(input);
     if (text !== value) this.changed = true;
     for (const s of shapes) this.shapes.add(s);
     return text as T;
@@ -337,8 +420,36 @@ function redactDetails(
  * Returns a NEW object; the draft is never mutated, so a caller holding the
  * draft for its own bookkeeping does not observe redaction applied under it.
  */
-export function emitFinding(draft: SecurityFindingDraft): RedactedFinding {
-  const pass = new RedactionPass();
+export function emitFinding(
+  draft: SecurityFindingDraft,
+  options?: { readonly reportedCredentials?: readonly ReportedCredential[] },
+): RedactedFinding {
+  return emitThrough(draft, new RedactionPass(options?.reportedCredentials));
+}
+
+/**
+ * Remove every value the scan reported as a credential from every field of
+ * every finding, and stamp the findings that carried one `'applied'` with the
+ * reported shape.
+ *
+ * A finding that carries none of the values is returned AS IS — the same
+ * object — so a scan that reported no credential, or a finding that never
+ * quoted one, is not rebuilt.
+ */
+export function redactReportedCredentials<T extends SecurityFindingDraft>(
+  findings: readonly T[],
+  reported: readonly ReportedCredential[],
+): Array<T | RedactedFinding> {
+  const values = normalizeReported(reported);
+  if (values.length === 0) return [...findings];
+  return findings.map(f => {
+    const pass = new RedactionPass(values);
+    const emitted = emitThrough(f, pass);
+    return pass.reportedHit ? emitted : f;
+  });
+}
+
+function emitThrough(draft: SecurityFindingDraft, pass: RedactionPass): RedactedFinding {
 
   // A value that has ALREADY crossed the boundary can arrive here: several
   // producers are public exports (`scanAssembly` at `src/index.ts:47`) and must
@@ -358,7 +469,9 @@ export function emitFinding(draft: SecurityFindingDraft): RedactedFinding {
   const priorApplied = prior.redactionStatus === 'applied';
   const priorShapes: readonly ShapeId[] = prior.redactedShapes ?? [];
 
-  const emitted: Record<string, unknown> = { ...draft };
+  const emitted: Record<string | symbol, unknown> = { ...draft };
+  // The raw values an AST finding reported never cross the boundary.
+  delete emitted[REPORTED_CREDENTIALS];
   for (const field of BYTE_CARRYING_FIELDS) {
     const value = draft[field];
     if (typeof value === 'string') emitted[field] = pass.run(value);
@@ -416,7 +529,7 @@ export function emitFinding(draft: SecurityFindingDraft): RedactedFinding {
 export function emitFindings(
   drafts: readonly SecurityFindingDraft[],
 ): RedactedFinding[] {
-  return drafts.map(emitFinding);
+  return drafts.map(d => emitFinding(d));
 }
 
 /**

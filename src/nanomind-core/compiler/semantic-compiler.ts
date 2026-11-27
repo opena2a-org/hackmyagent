@@ -265,6 +265,7 @@ export class SemanticCompiler {
         // analysis view `mapRiskSurfaces` works from. Every consumer that turns
         // this back into a line is handed the same `content`.
         offset: hit.index,
+        length: hit.length,
       })),
     ];
     const deterministicFindings = deterministicSurfaces.map(toDeterministicFinding);
@@ -1616,6 +1617,8 @@ interface CanonicalCredentialHit {
    * (#368). It carries no part of the value, only where the value is.
    */
   index: number;
+  /** Length of the matched secret bytes at `index`. */
+  length: number;
 }
 
 /**
@@ -2046,6 +2049,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
         // acts on (which vendor), and `file`/`line` carry where.
         evidence: `${label}: [REDACTED]`,
         index: match.index,
+        length: matched.length,
       });
     }
   }
@@ -2093,6 +2097,7 @@ function scanCanonicalCredentialFormats(content: string): CanonicalCredentialSca
         // captures the value as its final segment, so the value ends where the
         // match does.
         index: match.index + match[0].length - value.length,
+        length: value.length,
       });
     }
   }

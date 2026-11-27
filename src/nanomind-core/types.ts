@@ -230,6 +230,14 @@ export interface RiskSurface {
    * is recorded at the point of the match instead, where it is exact.
    */
   offset?: number;
+  /**
+   * Length of the matched value at `offset`, where the producer matched a
+   * credential VALUE (the canonical credential scan). Lets the analyzer that
+   * reports the value hand the report boundary its exact bytes, so they can be
+   * removed wherever else finding text quotes them; `evidence` never carries
+   * them.
+   */
+  length?: number;
   /** How to mitigate */
   mitigation?: string;
 }
