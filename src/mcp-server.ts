@@ -173,8 +173,8 @@ export function buildScanToolText(result: {
   assertRedactionProvenance(result.findings, 'mcp-scan-text');
   const issues = result.findings.filter((f) => countsAgainstScore(f));
   // #274 — attempted-and-disproved is an issue above, not a fix here: the two
-  // counts partition the findings, as on the HTML report, the Registry
-  // remediation report and the OpenClaw arm's `fixed` count.
+  // counts partition the findings, as on the HTML report and the
+  // OpenClaw arm's `fixed` count.
   const fixed = result.findings.filter((f) => confirmedFix(f));
 
   let summary = `Score: ${result.score}/${result.maxScore} | ${issues.length} issue${issues.length !== 1 ? 's' : ''} found`;

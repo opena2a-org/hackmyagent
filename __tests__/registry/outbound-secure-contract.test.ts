@@ -3,7 +3,7 @@
  * the run's own result, at every send site the command has.
  *
  * Sites: `--publish` in the JSON arm and in the text arm (with its scan-token
- * request and the remediation records that follow it), `--registry-report`
+ * request), `--registry-report`
  * (community report and its scan-token request), `--version-id` (version
  * report), `--ci-publish`, and the contribution event in both arms.
  *
@@ -64,7 +64,6 @@ const PUBLISH_ROUTE = 'POST /api/v1/trust/publish';
 const COMMUNITY_ROUTE = 'POST /api/v1/registry/community/scan-result';
 const VERSION_ROUTE = 'POST /internal/scan-result';
 const CI_ROUTE = 'POST /api/v1/registry/ci/scan-result';
-const TRACK_ROUTE = 'POST /api/v1/remediation/track';
 /** The categories the community report leaves off a package page (src/registry/client.ts). */
 const LOCAL_ONLY = new Set(['git', 'permissions', 'environment', 'logging', 'claude-code', 'cursor', 'vscode']);
 
@@ -174,14 +173,6 @@ describe('secure --publish, JSON arm', () => {
 
   it('hashes the scanned tree, not the working directory', () => {
     expect(only(jsonRun, PUBLISH_ROUTE).treeHash).toBe(treeHashOf(target));
-  });
-
-  it('sends one remediation record per failed finding, with the severity the run printed', () => {
-    const track = bodies(jsonRun, TRACK_ROUTE);
-    const scanTime = only(jsonRun, PUBLISH_ROUTE).scanTimestamp;
-    expect(track.map((t) => [t.findingId, t.initialSeverity])).toEqual(failed().map((f) => [f.checkId, f.severity]));
-    expect(new Set(track.map((t) => `${t.agentIdentifier} ${t.sourceEventId} ${t.initialScore}`)))
-      .toEqual(new Set([`outbound-fixture ${scanTime} ${printed.score}`]));
   });
 });
 
@@ -307,7 +298,6 @@ describe('what secure sends, against what the unchanged source sent', () => {
     const current: Record<string, string> = {
       'json: scan token': n(rawBodies(jsonRun, TOKEN_ROUTE)[0]),
       'json: publish': n(rawBodies(jsonRun, PUBLISH_ROUTE)[0]),
-      'json: remediation records': n(JSON.stringify(bodies(jsonRun, TRACK_ROUTE))),
       'json: contribution event': n(JSON.stringify(contributedEvent(jsonRun))),
       'text: scan tokens': n(JSON.stringify(bodies(textRun, TOKEN_ROUTE))),
       'text: community report': n(rawBodies(textRun, COMMUNITY_ROUTE)[0]),

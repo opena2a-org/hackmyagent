@@ -6107,7 +6107,7 @@ Backups (--fix):
       //
       // Projected ONCE, here, from the same predicates the floor above and the
       // per-arm critical/high lines read, so every record that leaves the
-      // process — the publish payload, the remediation report, the scan/
+      // process — the publish payload, the scan/
       // community/ci reports, the contribution event — carries the numbers
       // this run settled, never a recomputation from the narrowed findings
       // list. `Math.max` is the #512 precedence rule (2 outranks 1 outranks

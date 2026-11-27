@@ -19,7 +19,6 @@ import type { AttackReport } from '../attack';
 import type { SoulScanResult } from '../soul';
 import type { BenchmarkResult } from '../benchmarks';
 import { RegistryClient, type UnifiedPublishPayload, type UnifiedFinding } from './client';
-import { reportFindings, reportRemediation } from './remediation';
 import type { SettledOutcome } from '../hardening/settled-outcome';
 import { firstPartySignerFromEnv } from '@opena2a/registry-client';
 
@@ -519,31 +518,6 @@ export async function publishScanResults(
 
     if (result.publishId) {
       console.error(`Published to registry (${result.publishId.slice(0, 8)})`);
-    }
-
-    // Report remediation tracking (non-blocking)
-    if (data.hardeningFindings) {
-      // #464 — the settled score, never a second ratio: the pass-fraction
-      // computed here was the third spelling of the run's score on one wire
-      // (`initialScore` / `rescanScore` disagreed with the published `score`
-      // and with the terminal). The ratio remains only for the non-settled
-      // (attack) path.
-      const score = settled
-        ? settled.score
-        : data.hardeningFindings.length > 0
-          ? Math.round(
-              (data.hardeningFindings.filter(f => !countsAgainstScore(f)).length /
-                data.hardeningFindings.length) *
-                100,
-            )
-          : 100;
-
-      try {
-        await reportFindings(registryUrl, result.scanId, data.packageName, data.hardeningFindings, score);
-        await reportRemediation(registryUrl, result.scanId, data.packageName, data.hardeningFindings, score);
-      } catch {
-        // Non-blocking -- remediation tracking should never fail the publish
-      }
     }
 
     return {
