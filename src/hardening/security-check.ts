@@ -650,6 +650,18 @@ export interface ScanResult {
      */
     skippedDirectories?: SkippedDirectoryRecord[];
     /**
+     * Each top-level entry of the scanned tree that is not a regular file, a
+     * directory, or a symbolic link to either (a FIFO, a socket, a device),
+     * by target-relative name, with its type. The checks that read every
+     * top-level file (SEC-003 and the source checks) do not open these: a
+     * FIFO with no writer blocked the read and the scan never finished.
+     *
+     * Absent when there is none. Not part of `unreadableInputs`: these were
+     * left out by policy, not lost to an error, so they do not move the exit
+     * code.
+     */
+    skippedEntries?: SkippedEntryRecord[];
+    /**
      * Env and config files deep analysis found and did not send to the
      * analysis provider, by target-relative path, with the reason. Withheld by
      * design: Layers 1 and 2 examined each one on this machine, so it is not an
@@ -669,6 +681,14 @@ export interface SkippedDirectoryRecord {
   files: number;
   /** Set when the count stopped at its bound, so `files` is a lower bound. */
   countCapped?: true;
+}
+
+/** A top-level entry no check opened because it is not a regular file. See `coverage.skippedEntries`. */
+export interface SkippedEntryRecord {
+  /** Target-relative name. Never absolute. */
+  path: string;
+  /** What it is: `FIFO`, `socket`, `character device`, `block device`, or a symbolic link to one. */
+  type: string;
 }
 
 /** One check method's execution record. Mirrors `CheckExecution`. */

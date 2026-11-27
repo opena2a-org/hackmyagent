@@ -2284,6 +2284,13 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     console.log(`  ${colors.dim}The risk level below does not cover ${skippedDirs.length === 1 ? 'that directory' : 'those directories'}. Where dist/ is the code that runs (an extracted package): ${CLI_PREFIX} secure --include-dist ${cited}${RESET()}`);
   }
 
+  // Each top-level FIFO, socket or device the root-reading checks did not
+  // open. A disclosure, not a finding: reading a FIFO with no writer blocked
+  // the scan forever, and the score is over what was read.
+  for (const e of localScan?.coverage?.skippedEntries ?? []) {
+    console.log(`  ${colors.yellow}Not read${RESET()}     ${escapePathForDisplay(e.path)}  ${colors.dim}(${escapeForDisplay(e.type)}, not a regular file)${RESET()}`);
+  }
+
   // ── Verdict + Score ─────────────────────────────────────────────────
   if (localScan || nanomindScan) {
     let verdictText: string;
