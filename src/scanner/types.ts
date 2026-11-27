@@ -44,6 +44,11 @@ export interface ExternalScanResult {
   hostReachable?: boolean;
   /** The state of every port scanned, keyed by port number. */
   portStates?: Record<number, PortState>;
+  /**
+   * Open ports that accepted a connection and gave no HTTP answer to any
+   * probe, so no check examined them. Absent when every open port answered.
+   */
+  unansweredPorts?: number[];
 }
 
 export interface ScannerOptions {

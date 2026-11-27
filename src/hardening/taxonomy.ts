@@ -534,6 +534,9 @@ export const TAXONOMY_EXEMPT_CHECKIDS: ReadonlySet<string> = new Set([
   // Its sibling: the host answered, no scanned port was open. Also a
   // scan-status indicator with score N/A, not a threat.
   'SCAN-NO-OPEN-PORTS',
+  // Its sibling for an open port that answered no HTTP request: no check
+  // examined the port. A scan-status indicator, not a threat.
+  'SCAN-NO-ANSWER',
   // Reports that a fix landed inside a nested project's backup directory, so
   // that project's own `rollback` no longer restores the original. A statement
   // about what THIS run did and how to undo it, in the same family as
