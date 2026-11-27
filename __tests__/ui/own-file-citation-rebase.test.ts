@@ -52,6 +52,11 @@ describe('#524 rebaseOwnFileCitation', () => {
       .toBe('xxd /work/skill-out/tags.js | grep "f3a0"');
     expect(rebaseOwnFileCitation(`xxd 'my tags.js' | grep "f3a0"`, 'my tags.js', ROOT))
       .toBe(`xxd '/work/skill-out/my tags.js' | grep "f3a0"`);
+    const search = `LC_ALL=C grep -nbo "$(printf '\\363\\240[\\200-\\207][\\200-\\277]')"`;
+    expect(rebaseOwnFileCitation(`${search} tags.js   # one row each`, 'tags.js', ROOT))
+      .toBe(`${search} /work/skill-out/tags.js   # one row each`);
+    expect(rebaseOwnFileCitation(`${search} 'my tags.js'`, 'my tags.js', ROOT))
+      .toBe(`${search} '/work/skill-out/my tags.js'`);
     const script = `'const s=require("fs").readFileSync(process.argv[1],"utf8"); console.log(s)'`;
     expect(rebaseOwnFileCitation(`node -e ${script} lib/eval.js`, 'lib/eval.js', ROOT))
       .toBe(`node -e ${script} /work/skill-out/lib/eval.js`);

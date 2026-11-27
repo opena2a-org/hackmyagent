@@ -184,9 +184,9 @@ function historyVerifyCommand(
  * the emit site produced from `f.file`.
  *
  * Narrow on purpose. Only `hackmyagent <verb> <own file>` is rewritten, along
- * with the commands the steganography checks cite (#1017): `xxd <own file>`
- * (UNICODE-STEGO-004), `perl -CSD -i -pe '<script>' <own file>`
- * (UNICODE-STEGO-001) and `node -e '<script>' <own file>`
+ * with the commands the steganography checks cite (#1017): `LC_ALL=C grep -nbo
+ * "<pattern>" <own file>` (UNICODE-STEGO-004), `perl -CSD -i -pe '<script>'
+ * <own file>` (UNICODE-STEGO-001) and `node -e '<script>' <own file>`
  * (UNICODE-STEGO-003). Pasted from the parent of the target, `xxd tags.js`
  * answered `tags.js: No such file or directory` while the `Verify:` line of the
  * same finding named the file in full. The operand must be the whole token;
@@ -206,7 +206,7 @@ export function rebaseOwnFileCitation(
   const rebased = citationPath(join(scanRoot, file));
   if (rebased === null || rebased === own) return text;
   const escaped = own.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(\\b(?:hackmyagent [a-z][a-z0-9-]*|xxd|node -e '[^']*'|perl -CSD -i -pe '[^']*') )${escaped}(?=$|\\s|\`)`, 'g');
+  const re = new RegExp(`(\\b(?:hackmyagent [a-z][a-z0-9-]*|xxd|LC_ALL=C grep -nbo "[^"]*"|node -e '[^']*'|perl -CSD -i -pe '[^']*') )${escaped}(?=$|\\s|\`)`, 'g');
   // A replacer FUNCTION: `rebased` is a path, and `$&` or `$1` inside a
   // replacement STRING would be read as a pattern (#600).
   return text.replace(re, (_m, head: string) => head + rebased);
