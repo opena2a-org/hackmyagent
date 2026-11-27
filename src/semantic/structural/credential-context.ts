@@ -10,6 +10,7 @@
 
 import type { SemanticFinding, AnalysisFile } from '../types';
 import type { GitContext } from './git-context';
+import { positiveEvidenceAt } from './evidence';
 import { isVisualFiller } from '../../types/credential-format.js';
 import { commandNaming } from '../../ui/shell-quote';
 
@@ -899,6 +900,14 @@ function detectMcpEnvSecrets(file: AnalysisFile): SemanticFinding[] {
           recommendation: 'opena2a protect .  — migrates hardcoded secrets into the Secretless vault (local, keychain, 1Password, or HashiCorp Vault). Keys are injected at runtime; source files reference them by name only.',
           layer: 2,
           autoFixable: false,
+          // The value is redacted out of the recorded line: the finding is
+          // about a secret, and its evidence must not repeat it.
+          evidence: positiveEvidenceAt(
+            file.content,
+            lineNum,
+            `Server "${serverName}" sets ${key} to a ${mcpSecType} in its env block. MCP configs are commonly committed to version control.`,
+            [value]
+          ),
         });
       }
     }

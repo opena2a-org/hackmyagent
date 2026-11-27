@@ -219,6 +219,10 @@ export class InstructionAnalyzer {
   }
 
   private checkMissingSecurityBoundaries(file: AnalysisFile): SemanticFinding[] {
+    // SEM-INST-003 is the absence of security guidance anywhere in the file:
+    // there is no line to cite, so it carries no line and no evidence and stays
+    // unlocated. See `evidence.ts`.
+    //
     // Only flag if the file is non-trivial (>200 chars)
     if (file.content.length < 200) return [];
 
@@ -249,6 +253,8 @@ export class InstructionAnalyzer {
   }
 
   private checkLargeAttackSurface(file: AnalysisFile): SemanticFinding[] {
+    // SEM-INST-004 is the size of the whole file, not any one line: it carries
+    // no line and no evidence and stays unlocated. See `evidence.ts`.
     const size = Buffer.byteLength(file.content, 'utf-8');
 
     if (size > LARGE_INSTRUCTION_THRESHOLD) {

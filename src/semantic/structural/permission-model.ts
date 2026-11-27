@@ -8,6 +8,17 @@
  */
 
 import type { SemanticFinding, AnalysisFile, ClaudeSettings } from '../types';
+import { lineOfJsonValue } from '../../scanner/json-locate';
+import { positiveEvidenceAt } from './evidence';
+
+/**
+ * The line of `permissions.allow[index]`, by following that path through the
+ * raw JSON (never by searching the text for the entry, which also appears in
+ * `deny`). Undefined when the path does not resolve to `entry`.
+ */
+function allowEntryLine(content: string, index: number, entry: string): number | undefined {
+  return lineOfJsonValue(content, ['permissions', 'allow', index], entry);
+}
 
 export class PermissionModelAnalyzer {
   analyze(files: AnalysisFile[]): SemanticFinding[] {
@@ -38,7 +49,9 @@ export class PermissionModelAnalyzer {
     const allow = settings.permissions?.allow;
     if (!allow) return [];
 
-    if (allow.includes('*')) {
+    const wildcardIndex = allow.indexOf('*');
+    if (wildcardIndex >= 0) {
+      const line = allowEntryLine(file.content, wildcardIndex, '*');
       return [
         {
           id: 'SEM-PERM-001',
@@ -49,10 +62,16 @@ export class PermissionModelAnalyzer {
           category: 'permission',
           severity: 'critical',
           file: file.path,
+          line,
           recommendation:
             'Replace wildcard with specific tool permissions: ["Read", "Glob", "Grep"] for read-only, adding "Edit", "Write", "Bash" only as needed.',
           layer: 2,
           autoFixable: false,
+          evidence: positiveEvidenceAt(
+            file.content,
+            line,
+            'permissions.allow contains "*", which grants every tool without restriction.'
+          ),
         },
       ];
     }
@@ -72,6 +91,10 @@ export class PermissionModelAnalyzer {
       (p) => typeof p === 'string' && p.toLowerCase().startsWith('bash')
     );
 
+    // SEM-PERM-002 is reported for the ABSENCE of a restriction on the Bash
+    // grant, not for a line that is dangerous on its own: it carries no line and
+    // no evidence, and stays unlocated. See `evidence.ts`.
+    //
     // If Bash is allowed without any pattern restriction
     const hasUnrestrictedBash = bashEntries.some((entry) => {
       // "Bash" or "Bash(*)" is unrestricted
@@ -126,6 +149,11 @@ export class PermissionModelAnalyzer {
     });
 
     if (outsidePaths.length > 0) {
+      // The first entry outside the project that `allow` holds, located by
+      // its position in the array. The other entries are named in the
+      // description.
+      const firstIndex = allow.indexOf(outsidePaths[0]);
+      const line = firstIndex >= 0 ? allowEntryLine(file.content, firstIndex, outsidePaths[0]) : undefined;
       return [
         {
           id: 'SEM-PERM-003',
@@ -136,10 +164,16 @@ export class PermissionModelAnalyzer {
           category: 'permission',
           severity: 'high',
           file: file.path,
+          line,
           recommendation:
             'Scope write permissions to the project directory only. Remove paths outside the project from the allow list.',
           layer: 2,
           autoFixable: false,
+          evidence: positiveEvidenceAt(
+            file.content,
+            line,
+            `permissions.allow grants "${outsidePaths[0]}", a write to a path outside the project directory.`
+          ),
         },
       ];
     }

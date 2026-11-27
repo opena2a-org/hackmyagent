@@ -511,7 +511,7 @@ export const CREDENTIAL_SHAPES: readonly CredentialShape[] = [
     rationale:
       'Redacted by defense-in-depth but detected by neither this module nor the canonical list. ' +
       'Note the scheme sets already disagree: the redactor covers 4 schemes while ' +
-      'credential-context.ts:58 URL_CREDENTIAL_PATTERN covers 10 (adding postgresql, amqp, ' +
+      'credential-context.ts:59 URL_CREDENTIAL_PATTERN covers 10 (adding postgresql, amqp, ' +
       'rabbitmq, ftp, sftp, http, https), so six schemes are located and never redacted here.',
   },
 ];

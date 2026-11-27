@@ -80,25 +80,19 @@ const CATEGORY_LABELS: Record<string, string> = {
  * can be found, which is the correct answer for the absence-shaped findings
  * (`SEM-PERM-002 Unrestricted Bash access`) that have no single trigger line.
  *
- * NO DETECTOR IN `src/semantic/` REACHES THAT RECOVERY TODAY, and an earlier
- * revision of this docblock claimed it did. Enumerated: `SEM-CRED-001`
- * (`structural/credential-context.ts`) and the bounded `SEM-INST-001`
- * (`structural/instruction.ts`, #734) are the only sites that set `evidence`
- * at all, and both always set a valid `line` AND `evidence.lines[0].n`, so
- * `resolveFindingLine` returns at step 1 without consulting `rawContent`.
- * Every semantic finding that LACKS a line — `SEM-MCP-005/006` (cross-server
- * and whole-file), the other `SEM-MCP-*` checks when their search of the raw
- * text finds no line (#644), `SEM-INST-003/004`, `SEM-PERM-001/002/003`,
- * `SEM-CRED-004` — sets no
- * `evidence`, so there is no verbatim trigger to locate and the result is
- * undefined whatever the caller passes.
+ * Positive findings carry `evidence` set at the detector (see
+ * `structural/evidence.ts`), with a valid `line` and `evidence.lines[0].n`, so
+ * `resolveFindingLine` returns at step 1 without consulting `rawContent`:
+ * `SEM-CRED-001`, `SEM-CRED-004`, `SEM-MCP-001..004`, `SEM-MCP-007/008`,
+ * `SEM-PERM-001/003` and the bounded `SEM-INST-001`. A detector that cannot
+ * confirm the line it would cite records no evidence for that finding.
  *
- * So the parameter is wiring ahead of its producers, not a live recovery path:
- * dropping the reader argument at both `hardening/scanner.ts` call sites leaves
- * the whole suite green and `secure --json` byte-identical, which was measured.
- * It is kept because the fix for those detectors is to make them carry
- * evidence, and this is the boundary that will consume it — but until then
- * nothing here changes behaviour, and the docblock must not imply otherwise.
+ * Absence and aggregate findings are UNLOCATED by design and set no `evidence`:
+ * `SEM-MCP-005/006` (properties of the whole set of servers), `SEM-INST-003`
+ * (no security guidance anywhere in the file), `SEM-INST-004` (the size of the
+ * file) and `SEM-PERM-002` (no restriction on the Bash grant). There is no
+ * verbatim trigger to locate for them, so the result is undefined whatever the
+ * caller passes, and they render without a `Verify:`.
  */
 export function toSecurityFinding(
   finding: SemanticFinding,
