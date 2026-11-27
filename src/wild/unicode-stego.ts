@@ -37,6 +37,7 @@ export interface HiddenRun {
 const TAG_FIRST = 0xe0020;
 const TAG_LAST = 0xe007e;
 const TAG_OFFSET = 0xe0000;
+const CANCEL_TAG = 0xe007f;
 
 /** Zero width space, non-joiner, joiner, word joiner, and U+FEFF. All BMP. */
 const ZERO_WIDTH = new Set([0x200b, 0x200c, 0x200d, 0x2060, 0xfeff]);
@@ -65,15 +66,21 @@ function decodeBits(text: string, start: number, end: number, one: number): stri
  * Every run of hidden code points in `text` that one of the two encodings can
  * read, with its candidate decodings. One linear pass over the code points.
  *
- * A tag run is a maximal sequence of U+E0020-U+E007E; U+E0001 and U+E007F
- * (language tag, cancel tag) and every other character end it. A zero-width
- * run is a maximal sequence of the five characters in ZERO_WIDTH, decoded only
- * when it is at least 8 long and uses exactly two of them.
+ * A tag run is a maximal sequence of U+E0020-U+E007E. Inside a run, the
+ * invisible separators (the characters in ZERO_WIDTH and U+E007F, cancel tag)
+ * are skipped rather than ending it, so a message split by them decodes as a
+ * whole (#1085); U+E0001 (language tag) and every other character end it. A
+ * zero-width run is a maximal sequence of the five characters in ZERO_WIDTH,
+ * decoded only when it is at least 8 long and uses exactly two of them. Zero-
+ * width characters that sit between two tag characters are separators, not a
+ * run of their own; those after the last tag character of a run are still read
+ * as a zero-width run.
  */
 export function hiddenRuns(text: string): HiddenRun[] {
   const runs: HiddenRun[] = [];
   let tag = '';
   let zwStart = -1;
+  const inTagRun = () => tag.length > 0;
 
   const endTagRun = () => {
     if (tag.length > 0) runs.push({ encoding: 'tag-characters', decodings: [tag] });
@@ -99,11 +106,15 @@ export function hiddenRuns(text: string): HiddenRun[] {
     const cp = text.codePointAt(i) ?? 0;
     const width = cp > 0xffff ? 2 : 1;
     if (cp >= TAG_FIRST && cp <= TAG_LAST) {
-      endZeroWidthRun(i);
+      // Zero-width characters between two tag characters were separators.
+      if (inTagRun()) zwStart = -1;
+      else endZeroWidthRun(i);
       tag += String.fromCharCode(cp - TAG_OFFSET);
     } else if (ZERO_WIDTH.has(cp)) {
-      endTagRun();
       if (zwStart < 0) zwStart = i;
+    } else if (cp === CANCEL_TAG && inTagRun()) {
+      // A separator inside the tag run, and so is any zero-width before it.
+      zwStart = -1;
     } else {
       endTagRun();
       endZeroWidthRun(i);

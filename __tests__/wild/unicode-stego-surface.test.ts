@@ -46,6 +46,11 @@ function toZeroWidth(text: string, zero = ZWSP, one = ZWNJ): string {
   return out;
 }
 
+/** `text` as U+XXXX code points, for assertion labels. */
+function codePoints(text: string): string {
+  return Array.from(text, (c) => `U+${c.codePointAt(0)!.toString(16).toUpperCase()}`).join(' ');
+}
+
 function page(html: string): FetchedPage {
   return { url: 'https://example.test/p', statusCode: 200, headers: {}, html, responseTime: 1 };
 }
@@ -71,11 +76,27 @@ describe('#988 decoding hidden runs', () => {
     expect(runs[0].decodings[0]).toBe('hi');
   });
 
-  it('decodes a subdivision flag to its region code and stops at the cancel tag', () => {
+  it('decodes a subdivision flag to its region code and stops at the next flag', () => {
     expect(hiddenRuns(`${SCOTLAND}${ENGLAND}`)).toEqual([
       { encoding: 'tag-characters', decodings: ['gbsct'] },
       { encoding: 'tag-characters', decodings: ['gbeng'] },
     ]);
+  });
+
+  it('#1085 reads a tag run split by zero-width characters or U+E007F as one message', () => {
+    for (const sep of ['​', '‌', '‍', '⁠', '﻿', '\u{E007F}', '​\u{E007F}‌']) {
+      const split = Array.from(toTags('hello world'), (c) => c + sep).join('');
+      expect(hiddenRuns(`a${split}b`), `separator ${codePoints(sep)}`).toEqual([
+        { encoding: 'tag-characters', decodings: ['hello world'] },
+      ]);
+    }
+  });
+
+  it('#1085 still reads a zero-width run that follows a tag run', () => {
+    const runs = hiddenRuns(`a${toTags('hello')}${toZeroWidth('hi')}b`);
+    expect(runs.map((r) => r.encoding)).toEqual(['tag-characters', 'zero-width-binary']);
+    expect(runs[0].decodings).toEqual(['hello']);
+    expect(runs[1].decodings[0]).toBe('hi');
   });
 
   it('decodes no zero-width run that is short, single-symbol or three-symbol', () => {
@@ -94,6 +115,17 @@ describe('#988 the unicode-stego surface on a page', () => {
   it('records FAKE tag-character smuggling in body text', () => {
     const found = stego(`<html><body><p>Welcome to the docs.${toTags(PAYLOAD)}</p></body></html>`);
     expect(found).toEqual([{ type: 'unicode-stego', content: PAYLOAD, stealthScore: 8 }]);
+  });
+
+  it('#1085 records a FAKE tag message separated by U+200B or U+E007F', () => {
+    for (const sep of ['​', '\u{E007F}']) {
+      const words = PAYLOAD.split(' ').map(toTags).join(toTags(' ') + sep);
+      const perChar = Array.from(toTags(PAYLOAD), (c) => c + sep).join('');
+      for (const hidden of [words, perChar]) {
+        const found = stego(`<p>Welcome to the docs.${hidden}</p>`);
+        expect(found, `separator ${codePoints(sep)}`).toEqual([{ type: 'unicode-stego', content: PAYLOAD, stealthScore: 8 }]);
+      }
+    }
   });
 
   it('records FAKE zero-width binary in either bit assignment', () => {
