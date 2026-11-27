@@ -913,8 +913,8 @@ function isDocumentationOrTestContext(ast: SecurityAST): boolean {
   // location, not a purpose, and is removed before the test (#569). With no
   // frontmatter the purpose is the artifact's first long line, so a JSON
   // document whose first value was `https://example-corp.com/collect` read as
-  // an "example" and silenced every credential check here, a live forwarding
-  // hook included. Words outside a URL keep their reading. Credential-shaped
+  // an "example" and silenced the credential checks that defer to this
+  // reading, a live forwarding hook included. Words outside a URL keep their reading. Credential-shaped
   // values are removed with them: a key's own characters are not a purpose.
   const purpose = purposeWithoutUrlsOrCredentialValues(ast.declaredPurpose, ast.declaredPurposeUrlSpans);
   if (PURPOSE_WORDS.some(word => purpose.includes(word))) {
