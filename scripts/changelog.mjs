@@ -410,13 +410,14 @@ function titleIssues(body) {
  */
 function defaultSlug(body, issueText) {
   const branch = branchSlug();
+  // The --issue parts stay strings: Number() would round a long one.
   const issues = issueText === undefined
-    ? firstLineIssues(body)
-    : issueText.split(',').map(s => s.trim()).filter(p => /^[1-9]\d*$/.test(p)).map(Number);
+    ? firstLineIssues(body).map(String)
+    : issueText.split(',').map(s => s.trim()).filter(p => /^[1-9]\d*$/.test(p));
   if (!issues.length) return branch;
   // A date in the branch name is not an issue number.
   const parts = branch.replace(/(^|-)\d{4}-\d{2}-\d{2}(?=-|$)/g, '$1').split('-');
-  if (issues.some(n => parts.includes(String(n)))) return branch;
+  if (issues.some(n => parts.includes(n))) return branch;
   return slugify(`${issues[0]} ${body.split('\n')[0].replace(/#\d+\b/g, ' ')}`);
 }
 

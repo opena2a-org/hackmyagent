@@ -244,6 +244,11 @@ describe('new: the default name', () => {
     expect(name).toMatch(/^649-eval-oracle-refuses-an-unknown-format-[0-9a-f]{6}\.md$/);
   });
 
+  it('keeps a long --issue number as written, not rounded', () => {
+    expect(nameOn(WORK, ['--issue', '99999999999999999999'], '- a fix\n')).toMatch(/^99999999999999999999-a-fix-[0-9a-f]{6}\.md$/);
+    expect(nameOn('fix/99999999999999999999-topic', ['--issue', '99999999999999999999'], '- a fix\n')).toMatch(/^99999999999999999999-topic-[0-9a-f]{6}\.md$/);
+  });
+
   it('does not read a date in the branch name as an issue number', () => {
     expect(nameOn(WORK, ['--issue', '10'], '- a fix\n')).toMatch(/^10-a-fix-[0-9a-f]{6}\.md$/);
     expect(nameOn(WORK, ['--issue', '2026'], '- a fix\n')).toMatch(/^2026-a-fix-[0-9a-f]{6}\.md$/);
