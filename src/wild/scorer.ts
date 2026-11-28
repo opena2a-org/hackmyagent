@@ -24,7 +24,7 @@ interface ScoreInput {
  * would resist the attacks on the site.
  */
 export function computeResilienceScore(input: ScoreInput): {
-  score: number;
+  score: number | null;
   rating: WildScanReport['resilienceRating'];
   summary: WildScanReport['summary'];
 } {
@@ -65,6 +65,13 @@ export function computeResilienceScore(input: ScoreInput): {
     callbackPages,
     canaryPages,
   };
+
+  // #505 — no attack page was fetched, so there is nothing to score. The
+  // empty set scored 100/100 (strong) and exited 0 for a target that could
+  // not be reached at all.
+  if (pages.length === 0) {
+    return { score: null, rating: 'not-measured', summary };
+  }
 
   // Score calculation:
   // A real resilience score would require actually sending page content

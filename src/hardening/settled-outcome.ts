@@ -196,6 +196,63 @@ export function settledOutcome(result: ScanResult, exitCode: 0 | 1 | 2): Settled
   };
 }
 
+/** Why a `secure` run exited non-zero, one entry per cause the settlement read. */
+export type SecureGateReason =
+  | 'unread-inputs'
+  | 'critical-or-high-findings'
+  | 'deep-scan-incomplete'
+  | 'below-fail-below';
+
+/**
+ * The `gate` object of `secure --json` (#505): the exit code the run settled
+ * on and every cause that moved it, read from the SAME predicates as
+ * `settleSecureExit` and the `--fail-below` settlement, so the object cannot
+ * name a cause the exit code did not see. `reason` is the cause that set the
+ * code (the #512 precedence: 2 outranks 1); `null` exactly when nothing did.
+ */
+export interface SecureGate {
+  failed: boolean;
+  exitCode: 0 | 1 | 2;
+  reason: SecureGateReason | null;
+  reasons: SecureGateReason[];
+  /** Counted critical + high over `gateSet` (suppressed entries included). */
+  criticalOrHigh: number;
+  unreadInputs: number;
+  /** `null` when `--fail-below` was not given. */
+  failBelow: { threshold: number; score: number; breached: boolean } | null;
+}
+
+export function secureGate(
+  result: ScanResult,
+  exitCode: 0 | 1 | 2,
+  failBelow: number | undefined,
+): SecureGate {
+  const criticalOrHigh = gateSet(result).filter(
+    (f: any) => countsAgainstScore(f) && (f.severity === 'critical' || f.severity === 'high'),
+  ).length;
+  const unreadInputs = unreadInputCount(result);
+  const incomplete = deepScanIncomplete(result);
+  const breached = failBelow !== undefined && result.score < failBelow;
+  const reasons: SecureGateReason[] = [];
+  if (unreadInputs > 0) reasons.push('unread-inputs');
+  if (criticalOrHigh > 0) reasons.push('critical-or-high-findings');
+  if (incomplete) reasons.push('deep-scan-incomplete');
+  if (breached) reasons.push('below-fail-below');
+  const exit2: SecureGateReason[] = ['unread-inputs', 'deep-scan-incomplete'];
+  const reason = exitCode === 0
+    ? null
+    : reasons.find((r) => (exitCode === 2 ? exit2.includes(r) : !exit2.includes(r))) ?? null;
+  return {
+    failed: exitCode !== 0,
+    exitCode,
+    reason,
+    reasons,
+    criticalOrHigh,
+    unreadInputs,
+    failBelow: failBelow === undefined ? null : { threshold: failBelow, score: result.score, breached },
+  };
+}
+
 /**
  * May this run publish, report, or contribute ANYTHING outbound?
  *
