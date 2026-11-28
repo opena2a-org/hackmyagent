@@ -467,7 +467,7 @@ import { describeSemanticFamilyCoverage } from './ui/semantic-coverage-labels';
 import type { SemanticFamilyCoverage } from './nanomind-core/scanner-bridge.js';
 import { attachSuppressedLocations, clampDisclosure, clampScoreToVerdictBand, countsAgainstScore, confirmedFix, expandSuppressed, isMeasured, locateSuppressed, retainForVerdict, summarizeSuppressed, type MeasuredFinding, type SuppressedLocation } from './ui/verdict-band';
 import { refilterAfterLateSemanticMerge, refilterAfterSemanticMerge } from './hardening/semantic-refilter';
-import { gateSet, deepScanIncomplete, deepScanNotRunLines, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed } from './hardening/settled-outcome';
+import { gateSet, deepScanIncomplete, deepScanNotRunLines, unreadInputCount, settledOutcome, settleSecureExit, outboundAllowed, secureGate } from './hardening/settled-outcome';
 import { shouldPrintVersionFooter, watchStreamWrites } from './ui/version-footer';
 import { soulScopeDisclosureLines } from './ui/soul-scope-disclosure';
 import { fixSummaryLine } from './ui/fix-summary';
@@ -494,6 +494,9 @@ import {
   type SuppressionDisclosure,
 } from './output/suppression-disclosure';
 import { generateBenchmarkReport, failingRecordsForControl } from './benchmarks/benchmark-report';
+import { aspCapabilities, aspSupplyChainFlags, credentialChecksRan } from './benchmarks/asp-posture';
+import { measuredTrustScore, trustScoreCell } from './ui/trust-score';
+import { governanceDomainCell } from './soul/domain-cell';
 import { levelPopulation } from './benchmarks/oasb-1';
 import { UsageError, usageError, isRefusal, networkTimeoutError } from './checker/errors';
 import { RootRefusalError } from './mcp/roots';
@@ -3260,7 +3263,7 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
 
   // ── Registry ────────────────────────────────────────────────────────
   if (registry?.found) {
-    const trustScore = Math.round(registry.trustScore * 100);
+    const measuredTrust = measuredTrustScore(registry.trustScore, registry.scanStatus);
     // HMA-1: gate the Trust meter on a usable scanStatus. When the
     // registry's most recent scan errored / pending / never ran, a
     // numeric meter on the same line as the local Security meter is
@@ -3268,12 +3271,12 @@ function displayUnifiedCheck(opts: UnifiedCheckDisplayOptions): void {
     // contradiction). Render a "[—] not yet measured" qualifier
     // instead so the registry section still anchors the user but
     // doesn't claim a measurement that did not succeed.
-    const scanStatusUsable = registry.scanStatus === 'completed';
+    // #505 — the same rule as the registry-only view and the batch table.
 
     if (localScan || nanomindScan) {
       divider('Registry');
-      if (scanStatusUsable) {
-        console.log(`  Trust     ${scoreMeter(trustScore)}`);
+      if (measuredTrust !== null) {
+        console.log(`  Trust     ${scoreMeter(measuredTrust)}`);
       } else {
         const reason = registry.scanStatus
           ? `registry scan ${registry.scanStatus}`
@@ -4779,7 +4782,7 @@ function generateScanHtmlReport(scanResult: { findings: SecurityFinding[]; score
 }
 
 // Agent Security Profile (ASP) - our differentiator format
-function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findings: SecurityFinding[]; projectType: string }, targetDir: string): string {
+function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findings: SecurityFinding[]; allFindings?: SecurityFinding[]; projectType: string }, targetDir: string): string {
   assertRedactionProvenance(scanResult.findings, 'asp');
   const fs = require('fs');
   const path = require('path');
@@ -4801,15 +4804,10 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
     }
   }
 
-  // Analyze capabilities from findings
-  const capabilities: Record<string, string> = {};
-  const hasFilesystemAccess = scanResult.findings.some(f => f.checkId.includes('FS-') || f.description.toLowerCase().includes('filesystem'));
-  const hasNetworkAccess = scanResult.findings.some(f => f.checkId.includes('NET-') || f.description.toLowerCase().includes('network'));
-  const hasShellAccess = scanResult.findings.some(f => f.checkId.includes('SHELL-') || f.description.toLowerCase().includes('shell') || f.description.toLowerCase().includes('exec'));
-
-  capabilities['filesystem'] = hasFilesystemAccess ? 'detected' : 'none';
-  capabilities['network'] = hasNetworkAccess ? 'detected' : 'none';
-  capabilities['shell'] = hasShellAccess ? 'detected' : 'none';
+  // #505 — every section below states what the run measured: a check
+  // with no measured record is `null`, a keyword miss is `not detected`.
+  const capabilities = aspCapabilities(scanResult.findings);
+  const allRecords = scanResult.allFindings ?? scanResult.findings;
 
   // Credential hygiene
   // #606 — count the static CRED-* AND semantic SEM-CRED-* credential
@@ -4824,14 +4822,17 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
   const credentialFindings = scanResult.findings.filter(
     f => f.checkId.startsWith('CRED-') || f.checkId.startsWith('SEM-CRED-'),
   );
-  const hardcodedCreds = credentialFindings.filter(f => !f.passed).length;
+  const failedCreds = credentialFindings.filter(f => !f.passed).length;
+  // #505 — zero is a count only when a credential check produced a result.
+  const hardcodedCreds: number | null = failedCreds > 0 || credentialChecksRan([...scanResult.findings, ...allRecords])
+    ? failedCreds
+    : null;
 
   // Supply chain status
   const supplyChainFindings = scanResult.findings.filter(f =>
     f.checkId.startsWith('SKILL-') || f.checkId.startsWith('HEARTBEAT-') || f.checkId.startsWith('DEP-')
   );
-  const signedSkills = !supplyChainFindings.some(f => f.checkId === 'SKILL-001' && !f.passed);
-  const pinnedDeps = !supplyChainFindings.some(f => f.checkId === 'DEP-001' && !f.passed);
+  const { signedComponents: signedSkills, pinnedDependencies: pinnedDeps } = aspSupplyChainFlags(scanResult.findings, allRecords);
 
   const asp = {
     specVersion: '1.0.0',
@@ -4863,7 +4864,9 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
     capabilities,
     credentials: {
       hardcodedSecrets: hardcodedCreds,
-      recommendation: hardcodedCreds > 0 ? 'opena2a protect . — encrypts secrets into a secure vault, injects at runtime' : 'No hardcoded credentials detected',
+      recommendation: hardcodedCreds === null
+        ? 'Not measured: no credential check produced a result in this run'
+        : hardcodedCreds > 0 ? 'opena2a protect . — encrypts secrets into a secure vault, injects at runtime' : 'No hardcoded credentials detected',
     },
     supplyChain: {
       signedComponents: signedSkills,
@@ -4891,10 +4894,11 @@ function generateAspOutput(benchmarkResult: BenchmarkResult, scanResult: { findi
         remediation: c.remediation,
       }))
     ),
-    // Attestation placeholder - could be signed in future
+    // #505 — the profile carries no signature; it says so rather than
+    // leaving a bare timestamp under a key that reads as an attestation.
     attestation: {
+      signed: false,
       timestamp: new Date().toISOString(),
-      // signature: null, // Future: GPG or Sigstore signature
     },
   };
 
@@ -6371,7 +6375,8 @@ Backups (--fix):
             process.stdout.write('\nGovernance Domains (scan-soul):\n');
             for (const domain of govResult.domains) {
               const label = (domain.domain + ':').padEnd(26);
-              process.stdout.write(`  ${label}${domain.passed}/${domain.total}  (${domain.percentage}%)\n`);
+              // #505 — a domain with nothing to grade prints `--`, not `0/0 (0%)`.
+              process.stdout.write(`  ${label}${governanceDomainCell(domain, govResult.agentTier)}\n`);
             }
             if (govResult.criticalFloor) {
               process.stdout.write(`\nCritical Floor: APPLIED (${govResult.criticalMissing.join(', ')} missing)\n`);
@@ -6673,6 +6678,9 @@ Backups (--fix):
           exitCode: settled.exitCode,
           measured: settled.measured,
           counts: settled.counts,
+          // #505 — the exit code and every cause that moved it, from the same
+          // predicates the settlement read (`--fail-below` included).
+          gate: secureGate(result, settled.exitCode, failBelow),
           ...(jsonCoverage ? { coverage: jsonCoverage } : {}),
           ...(nmResult.analystFindings?.length ? { analystFindings: nmResult.analystFindings } : {}),
           ...(nmResult.analystEscalations?.length ? { analystEscalations: nmResult.analystEscalations } : {}),
@@ -12199,9 +12207,9 @@ function trustVerdictColor(verdict: string): string {
   }
 }
 
+// #505 — the rule every trust view shares; see `src/ui/trust-score.ts`.
 function formatTrustScore(trustScore: number, scanStatus?: string): string {
-  if (trustScore === 0 && (!scanStatus || scanStatus === '')) return 'Not scanned';
-  return `${Math.round(trustScore * 100)}/100`;
+  return trustScoreCell(trustScore, scanStatus);
 }
 
 function formatTrustConfidence(confidence?: number): string | null {
@@ -13133,6 +13141,16 @@ Examples:
         }
       }
 
+      // #505 — no attack page was fetched: nothing was scored, so the run
+      // neither passes nor fails a score; it exits at the not-measured floor.
+      if (report.wildResilienceScore === null) {
+        console.error(
+          `Wild resilience score is not measured: no attack page could be fetched from the target. Exit code raised to ${EXIT_UNMEASURED} (not measured).`,
+        );
+        await finishWithFindings(EXIT_UNMEASURED);
+        return;
+      }
+
       // Exit with non-zero if resilience is poor
       if (report.resilienceRating === 'critical' || report.resilienceRating === 'needs-attention') {
         await finishWithFindings(1);
@@ -13197,15 +13215,21 @@ function printWildReport(report: WildScanReport): void {
     }
   }
 
-  // Score
-  const scoreColor = report.wildResilienceScore >= 60
-    ? colors.green
-    : report.wildResilienceScore >= 40
-      ? colors.yellow
-      : colors.red;
+  // Score. #505 — null when no attack page was fetched: nothing was scored.
+  const score = report.wildResilienceScore;
+  const scoreColor = score === null
+    ? colors.dim
+    : score >= 60
+      ? colors.green
+      : score >= 40
+        ? colors.yellow
+        : colors.red;
+  const scoreText = score === null
+    ? 'not measured (no attack page could be fetched)'
+    : `${score}/100 (${report.resilienceRating})`;
 
   console.log(`\n${'━'.repeat(50)}`);
-  console.log(`\n${colors.dim}Wild Resilience Score:${colors.reset} ${scoreColor}${report.wildResilienceScore}/100 (${report.resilienceRating})${colors.reset}`);
+  console.log(`\n${colors.dim}Wild Resilience Score:${colors.reset} ${scoreColor}${scoreText}${colors.reset}`);
   console.log(`${colors.dim}Pages Scanned:${colors.reset} ${report.pagesScanned}`);
   console.log(`${colors.dim}Total Payloads:${colors.reset} ${report.summary.totalPayloads}`);
   console.log(`${colors.dim}Callback Pages:${colors.reset} ${report.summary.callbackPages}`);

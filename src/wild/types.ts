@@ -79,10 +79,10 @@ export interface WildScanReport {
     callbackPages: number;
     canaryPages: number;
   };
-  /** Overall wild resilience score (0-100) */
-  wildResilienceScore: number;
-  /** Resilience rating */
-  resilienceRating: 'strong' | 'good' | 'moderate' | 'needs-attention' | 'critical';
+  /** Overall wild resilience score (0-100); null when no attack page was fetched */
+  wildResilienceScore: number | null;
+  /** Resilience rating; 'not-measured' exactly when the score is null */
+  resilienceRating: 'strong' | 'good' | 'moderate' | 'needs-attention' | 'critical' | 'not-measured';
   /** File fetches tested (robots.txt, llms.txt, sitemap.xml) */
   fileFetches: FileFetchResult[];
 }
